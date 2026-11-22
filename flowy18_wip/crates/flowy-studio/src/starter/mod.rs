@@ -21,9 +21,9 @@ use gpui::{
 const STAGE_W: f32 = 880.;
 /// Card height. One value: alternating heights made the row look misaligned.
 const CARD_H: f32 = 170.;
-/// Cards grow above this width and refuse to shrink below it, so a narrow
-/// window scrolls instead of squeezing them into unreadable slivers.
-const CARD_MIN_W: f32 = 180.;
+/// Card width. Fixed, so a narrow window scrolls the row instead of squeezing
+/// the cards into unreadable slivers.
+const CARD_W: f32 = 220.;
 
 impl StudioPanel {
     /// Slogan, category chips and the current category's four examples.
@@ -51,7 +51,7 @@ impl StudioPanel {
         // a `ScrollHandle`: GPUI leaves `max_offset` at zero until the node has
         // been laid out, and `set_offset` then clamps every press back to zero.
         let total =
-            category.examples().len() as f32 * (CARD_MIN_W + 40. + 12.) - 12.;
+            category.examples().len() as f32 * (CARD_W + 12.) - 12.;
         let max_scroll = (total - STAGE_W).max(0.);
         let offset = self.starter_offset.clamp(-max_scroll, 0.);
         let strip = div()
@@ -210,7 +210,7 @@ impl StudioPanel {
             SharedString::from(title.clone()),
             &self.theme,
         )
-        .w(px(CARD_MIN_W + 40.))
+        .w(px(CARD_W))
         .h(px(height))
         // Below this the card becomes unreadable, so wrap instead of squeezing.
         .min_w(px(180.))
