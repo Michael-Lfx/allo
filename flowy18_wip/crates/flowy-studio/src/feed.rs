@@ -355,7 +355,10 @@ impl ChatFeed {
     /// Old sessions only carry the single-file row, so both shapes count.
     pub(crate) fn latest_deliverables(&self) -> Option<Vec<flowy_agent::FileEntry>> {
         self.lines.iter().rev().find_map(|line| match line {
-            ChatLine::FileChanges { files } => Some(files.clone()),
+            // An empty summary would open a drawer with nothing in it.
+            ChatLine::FileChanges { files } if !files.is_empty() => {
+                Some(files.clone())
+            }
             ChatLine::FileChange {
                 path,
                 change,
