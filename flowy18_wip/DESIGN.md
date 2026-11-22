@@ -44,6 +44,63 @@ Also:
 - Do not stretch header actions / grids to the window edge on wide screens; right margin comes from the capped column, not only from padding.
 - Prefer `min_w_0` on flex children that can overflow horizontally.
 
+## Layout budget (learned the hard way)
+
+Width is never computed from `window.viewport_size()`. Hand-subtracting a
+sidebar or a drawer looks right until the drawer opens and pushes the content
+past the window edge. Let flex do it:
+
+1. Main content: `flex_1().min_w_0()`. It takes whatever the siblings leave.
+2. Fixed rails (drawer, side panels): `w(px(...))` with no flex grow.
+3. Cap the reading column with `w_full().max_w(px(...))` inside that flex child.
+4. Cards that must keep their size use `w(px(...))` plus an `overflow_x_scroll`
+   host. Do not compute a visible-count and derive widths from it: the row then
+   always fits exactly and never scrolls, and it silently breaks below the
+   computed floor.
+
+Two GPUI traps behind this rule:
+
+- `w_full()` on a child of a `justify_center()` row does not resolve to the row
+  width; the child collapses to its content. Anything centred this way changes
+  width when its content changes, which is why a bold selected chip shifted the
+  whole stage. Centre with an inner `w_full().flex().justify_center()` wrapper
+  instead of `items_center` on the column.
+- `justify_center` on a scroll host makes content taller than the viewport
+  overflow upward, clipping the heading. Use a fixed top padding there.
+
+## GPUI layout traps (verified by running, not by reading)
+
+Each of these cost a build cycle to discover. Read this before restructuring a
+screen so the next person (or agent) does not repeat them.
+
+1. **`w_full` vs `flex_1`.** Inside a centred flex row, `w_full()` collapses to
+   content width. When a block must take its width *from the parent*, use
+   `flex_1().min_w_0()` instead. `w_full().max_w(px(n))` looks right and silently
+   sizes to content.
+2. **`scrollbar_width(px(0.))` disables scrolling.** GPUI lays a `Scroll` node
+   out like `Hidden` when the width is zero, so `max_offset()` stays 0 and
+   programmatic scrolling is clamped away. Use at least 1px.
+3. **`window.viewport_size()` and `window.bounds()` go stale.** After the window
+   is resized they can keep reporting the launch size, so any breakpoint computed
+   from them misfires. Prefer flex and wrapping; only read the window when a
+   column count genuinely cannot be derived from layout.
+4. **Absolute positioning is unreliable.** `absolute().left().right().bottom()`
+   compiles but the child lands in flow order. Compose with `flex_col` and
+   padding instead of overlaying.
+5. **`ScrollHandle` needs the element to be laid out before it reports
+   anything.** `offset()`/`max_offset()` read zero on the first frame; decide
+   whether an arrow should show from known content geometry, not from the handle,
+   on the first paint.
+
+## Working on UI: use the hot-patch loop
+
+Rebuilding and relaunching costs roughly a minute per change. `scripts/dev-hotpatch.ps1`
+keeps one `dx serve` session alive and patches the running window instead; it
+requires `dx 0.7.10` and the MSVC `link.exe` on PATH. Use it for layout work. It
+cannot patch struct-field or initialisation changes, so those still need a
+restart.
+
+
 ## Motion tokens
 
 Durations and curves live in `crates/flowy-studio/src/motion.rs`. Never write

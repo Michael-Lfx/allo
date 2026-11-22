@@ -1,4 +1,9 @@
 //! Shared look tokens for Flowy screens.
+//!
+//! Before restructuring a screen, read "GPUI layout traps" in the crate-level
+//! `DESIGN.md`: `w_full` collapsing inside centred rows, `scrollbar_width(0)`
+//! disabling scroll, stale `viewport_size`, and unreliable absolute positioning
+//! are all behaviours that compile fine and fail only when run.
 
 mod button;
 mod chrome;
