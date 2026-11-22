@@ -759,6 +759,7 @@ impl StudioPanel {
     ) {
         self.deliverables = Some(files);
         self.preview_file = None;
+        self.preview_body = None;
         cx.notify();
     }
 
