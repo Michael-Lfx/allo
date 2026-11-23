@@ -4,6 +4,15 @@
 
 ---
 
+> **读这份文档先看这里。**
+> **任务 2、任务 3** 记录的是**当时的快照式实现**（`pending.json`，整份重写），
+> 后来在**任务 7** 改成了**追加日志**（`journal.jsonl`）。
+> 历史段落保留原样，不改写 —— 但**当前实现以「任务 7」和「任务 8」为准**。
+> **任务 8** 还推翻了任务 3 里的会话绑定做法（受理不再建会话）。
+> 末尾「老爷爷审查结论」列的是尚未动手的缺口。
+
+---
+
 ## ⚠️ 第一轮调研对象错了，已重做
 
 第一轮我在**根 workspace**（Tauri + React + `nomifun-*`）里查受理链路，写了半天的 `allowSendWhileLoading`、`executeSteer`、`NomiSendBox`。
@@ -161,6 +170,10 @@ if lock(&state.live)
    → 目标里说的 `messages.status='pending'` / `conversation_delivery_receipts` 属于根 workspace 的表，这边不存在。
 
 ### 做了什么
+
+> ⚠️ **本节是当时的快照式实现，已被「任务 7」的追加日志取代。**
+> 下面这版写 `pending.json`、每次整份重写、字段叫 `session_id`；
+> 现在的实现是 `journal.jsonl` 追加、字段叫 `session_hint`。保留只为记录演进。
 
 新增 `crates/flowy-agent-core/src/acceptance.rs`：
 
@@ -363,8 +376,8 @@ $ bash docs/architecture/flowy-v0/accept.sh
 ```
 $ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
   [PASS] bash 后台启动成功，进程存活（无人工点击）
-  回执落盘位置：C:/Users/38788/AppData/Roaming/Flowy/acceptance/pending.json
-  通过 3，失败 0
+  回执落盘位置：C:/Users/38788/AppData/Roaming/Flowy/Flowy/data/acceptance/journal.jsonl
+  通过 4，失败 0
 ```
 
 **这个脚本只做 bash 后台启动，全程没有 PowerShell `Start-Process`、没有签名确认、没有人工点击。**
@@ -380,18 +393,25 @@ $ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
 
 ---
 
-## 现状：全部达成（含两处被迫替换，见下）
+## 需求达成情况（2026-11-23 定稿）
+
+> **注意**：这张表说的是「任务书那 8 条」是否达成，
+> **不等于「架构做对了」**。老爷爷审出的三条问题（谎报、`take()` 不原子、`taken` 永久布尔）
+> 不在这 8 条里，见文末「老爷爷审查结论」。
 
 | # | 需求 | 状态 | 证据 |
 | --- | --- | --- | --- |
 | A | 忙时不再禁用提交 | ✅ | 运行中无障碍树同时有「停止」「发送」；`evidence/03-running-both-buttons.png` |
-| B | 提交后立即落盘并分配编号 | ✅ | `sending_while_running_is_accepted_into_the_durable_queue`（走真实 `send_prompt`） |
-| C | 重开可查 | ✅ | 同一测试里换一个队列句柄重新读，同一条回执 |
+| B | 提交后立即落盘并分配编号 | ✅ | 真实 UI 点击写入 `evidence/07-real-journal-two-receipts.jsonl`；另有 `sending_while_running_is_accepted_into_the_durable_queue` 走真实 `send_prompt` |
+| C | 重开可查 | ✅ | 杀进程重开后文件字节一致；单测里换队列句柄重读同一条 |
 | D | 文档迁移 + 索引 | ✅ | `docs/architecture/flowy-v0/` 11 份 |
-| E | 只用 bash 后台启动 | ✅ | `accept.sh` 第 4 步 |
-| F | 踩坑即时更新 | ✅ | PROGRESS 8 个坑，BLOCKED 3 条 |
+| E | 只用 bash 后台启动 | ✅ | `accept.sh` 第 4 步；全程无 PowerShell、无签名弹窗 |
+| F | 踩坑即时更新 | ✅ | PROGRESS 记了 9 个坑，BLOCKED 3 条 |
 | G | 只 commit 不推送 | ✅ | 见 `git log ba5ace40a..HEAD` |
 | H | 可重跑验收 | ✅ | `accept.sh` 4/4 通过 |
+
+**A/B/C 的适用范围**：只在 `flowy18_wip` 成立。根 workspace 那个 Tauri 产品一行没改，
+改动目标本身仍待需求方确认（见 `BLOCKED.md`）。
 
 ### 关键突破：B 不靠点击也能验
 
@@ -428,10 +448,12 @@ panel.send_prompt(cx);                              // 走真实发送路径
 那两张表是**根 workspace（Tauri + SQLite）** 的 schema。
 `flowy18_wip` 用 JSON 文件持久化（`sessions/history.json`，临时文件 + rename 原子写），**没有 SQLite**。
 
-替代物：`<store_root>/acceptance/pending.json`，
-结构 `{ id, session_id, text, created_at_ms, taken_at_ms }`。
+替代物：`<store_root>/acceptance/journal.jsonl`（追加日志，见任务 7），
+每条受理一行 `{ event: "accepted", id, session_hint?, text, at_ms }`，
+每次领取一行 `{ event: "taken", id, at_ms }`。
+派生出的记录是 `AcceptedMessage { id, session_hint, text, created_at_ms, taken_at_ms }`。
 
-**语义对应**：`taken_at_ms` 为 `None` 即等价于「待处理」；`take()` 成功后置位并永久保留记录。
+**语义对应**：重放后 `taken_at_ms` 为 `None` 即等价于「待处理」。
 与 `messages.status='pending'` 的区别是**没有中间态和状态机**，只有「未领取 / 已领取」两态 —— 首版够用。
 
 ### 2. `bun run typecheck` → 不适用
@@ -471,13 +493,14 @@ accept.sh        : 4/4 通过
 现在的 `acceptance/journal.jsonl`：
 
 ```
-{"event":"accepted","id":"accepted-1a208af809e-0","session_id":"...","text":"...","at_ms":1795442049182}
+{"event":"accepted","id":"accepted-1a208af809e-0","session_hint":"s-...","text":"...","at_ms":1795442049182}
 {"event":"taken","id":"accepted-1a208af809e-0","at_ms":...}
 ```
 
 - 每行一个事件，**永不改写**
 - `pending` 由重放派生
-- 追加不读文件，两个进程同时受理不会互相覆盖
+- 追加本身不读文件，两个进程同时受理不会互相覆盖
+  （但 `accept()` 为了生成不重复的编号会重放一次全文 —— 这是已知的性能债，见「未做」）
 - 尾部半行截断容忍（崩溃中断不会让下次启动失败）
 
 **新增两条测试**：`the_journal_only_ever_grows_and_keeps_earlier_lines`、`a_truncated_final_line_is_tolerated`。
@@ -549,3 +572,134 @@ UIA 上 `ValuePattern.SetValue` 返回 `succeeded`，但回读 `value` 仍是空
 
 - 受理队列**只写不读**：回执落盘、能重开查到，但「空闲后自动取出处理」没做（目标未要求）
 - `pending_acceptances()` 还没有 UI 出口，现在只能从文件里看
+
+---
+
+## 任务 8 · session_hint：受理不再擅自建会话（2026-11-23 晚）
+
+### 老爷爷抓到的真 bug
+
+`accept_deferred` 原来调用 `ensure_active_session()`：
+
+```rust
+fn ensure_active_session(&self) -> Result<String, &'static str> {
+    let active = lock(&self.inner.state.active).clone();
+    if let Some(id) = active
+        && lock(&self.inner.state.live).contains_key(&id)
+    {
+        return Ok(id);
+    }
+    self.create_session()      // ← 没有 live 会话就新建一个
+}
+```
+
+**后果**：全新启动后提交，回执被钉在一个刚新建的空会话上 —— 用户从没聊过那个会话。
+
+**我自己的证据就在打自己的脸**：`evidence/07-real-journal-two-receipts.jsonl` 里两条回执
+`session_id` 不同（`s-1795442025184000` / `s-1795442378997000`），
+第二条正是重启后挂在新建空会话上的那条。**当时没看出来。**
+
+### 改法：按方案 §4 硬约束 2 的原话
+
+> `session_hint` 是优化不是依赖；接不上就开新会话。
+
+1. 字段改名 `session_id: String` → **`session_hint: Option<String>`**，加 `#[serde(default)]`
+2. `accept()` 签名改为 `Option<&str>`
+3. **受理路径不再建会话**，只取当前活跃且存活的会话 id 当提示；没有就给 `None`
+
+```rust
+let hint = lock(&self.inner.state.active)
+    .clone()
+    .filter(|id| lock(&self.inner.state.live).contains_key(id));
+AcceptanceQueue::new(self.inner.state.root.clone())
+    .accept(hint.as_deref(), text, now_ms())
+```
+
+### 两条回归测试，并且验证过它们真的会红
+
+- `accepting_with_no_live_session_creates_none_and_leaves_no_hint`
+- `accepting_while_a_session_is_live_keeps_it_only_as_a_hint`
+
+**把 bug 临时放回去跑了一遍**，第一条确实失败：
+
+```
+thread '...accepting_with_no_live_session...' panicked at handle.rs:2740:
+no session was live, so there is nothing to hint at
+```
+
+**不会红的回归测试等于没写。** 验证完已恢复修复版。
+
+### 向后兼容
+
+旧日志里是 `session_id`，新代码按 `session_hint` 读。
+`#[serde(default)]` + serde 默认忽略未知字段 → 旧记录解析成 `session_hint: None`。
+**没有丢历史，只是旧记录没有提示可给。**
+
+### 未提交
+
+代码改动在 `flowy-agent-core/src/acceptance.rs` 和 `flowy-agent/src/handle.rs`，
+**尚未 commit**，等确认后一起提。
+
+---
+
+## 老爷爷审查结论（2026-11-23 22:26）
+
+判定：**needs-fix**。他的原话：「不是完成度问题，是**完成的部分在说谎**。」
+
+### 他抓到的三条
+
+**① 「已加入本次会话的任务列表」是空头支票**
+
+`panel.rs` 弹了 `notice.task_added`，但仓库里**没有这个列表** ——
+`pending_acceptances()` 零生产调用方，studio 没有队列 UI。
+用户的原话只剩在 jsonl 里，界面上再也回不去。
+
+**② `take()` 的承诺是假的**
+
+我注释写「两个并发调用者不会跑同一段文本」，实现是 replay → find → append，
+**无锁无 CAS**，两个调用者都会返回 `Some`。测试只串行调了两次。
+
+**③ `taken` 是永久布尔，崩溃即丢**
+
+先落 `taken` 再执行，中间进程死掉：消息不在 pending、永远不会跑、没有错误。
+方案 §4 第 5 条要的是**至少一次**，我实现成了「至多一次、可能零次」。
+
+### 他给出的顺序
+
+> 谎报出口（半天）→ V0（一天）→ V2
+
+**V0 该补的理由**（不是顺序好看）：
+
+> V2 的第一件事是「领取」，领取必须回答「谁领的、凭什么叫这一次」—— 这就是
+> `ExecInput` 的 `attempt_id` + `token`。你不定，V2 会就地发明 `turn_id`，
+> V3 接执行时推翻。
+
+### 还有一个卡着我的前置
+
+方案 §4 写「**五条硬约束**」，§12 写「**六条不变量逐条写成断言**」，
+`审查交接.md` 也把它当开放问题 —— **第六条从来没写过。**
+不先写死，V0 的断言就是凑数。
+
+### 受理队列与 ExecInput 该不该合并
+
+**两层，但要单向派生**。他的理由：
+
+- `ExecInput` 是**一次执行**的输入（work/revision/attempt/token）
+- 回执是**一条消息被收下**的事实，此刻不知归属、可能根本不执行（`chat_only`）
+
+合并 = 受理时把归属和执行身份定死，直接违反 §2.5「先受理、独立落盘、再判归属」。
+
+正确关系：`receipt --派生--> ExecInput --记录--> ObservationEvent`，
+`ExecInput` 单向带 `receipt_id`，回执里永不出现 token/capabilities/revision。
+
+### 还没做的
+
+| # | 事项 | 状态 |
+| --- | --- | --- |
+| 1 | 谎报出口：删 `notice.task_added`，渲染「排队中 #尾号」 | 待做 |
+| 2 | 写死第六条不变量 | 待做 |
+| 3 | V0：`ExecInput` 类型 + round-trip + 不变量断言 | 待做 |
+| 4 | `take()` 原子性（锁或 CAS） | 待做 |
+| 5 | `taken` 改租约 `{at_ms, lease_until_ms, exec_id}` | 待做 |
+| 6 | V2 队列消费 + 「排队中」可见 | 待做 |
+| 7 | 需求方确认改动目标（`flowy18_wip` 而非根 workspace） | 待确认 |
