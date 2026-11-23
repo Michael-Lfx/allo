@@ -192,3 +192,49 @@ test result: ok. 4 passed; 0 failed
 - 空闲时自动取出处理还没做
 
 **下一步就是接这三处。**
+
+---
+
+## 任务 3 · 接到 agent 层（已完成）
+
+### 改了什么
+
+`flowy18_wip/crates/flowy-agent/src/handle.rs` 新增两个方法：
+
+```rust
+pub fn accept_deferred(&self, text: &str) -> Result<AcceptedMessage, &'static str>
+pub fn pending_acceptances(&self) -> Vec<AcceptedMessage>
+```
+
+**关键决定：不改 `submit_message` 的契约。**
+
+`submit_message` 的 `agent_busy` 是既有语义，被 `handle.rs:2710`、`:2800` 等测试锁着，
+别处也可能依赖它防重。**新增一条独立入口，而不是把旧入口改松。**
+
+`accept_deferred` 的三条拒绝理由与 UI 一致：空文本、初始化中、存储错。
+**它唯独不会返回 `agent_busy`** —— 这正是这一单要的语义。
+
+### 测试
+
+```
+$ cargo test -p flowy-agent --lib accept_deferred
+test handle::background_init_tests::accept_deferred_hands_back_a_receipt_a_fresh_handle_still_finds ... ok
+test result: ok. 1 passed
+```
+
+这条测试的写法本身就是验收：**先在一个 handle 上受理，再用一个全新的 handle 读同一个 root** ——
+没有共享内存，只有 receipt 文件。**这就是「重开可查」。**
+
+### 全量回归（两个受影响的 crate）
+
+```
+flowy-agent-core : 54 passed, 0 failed, 2 ignored
+flowy-agent      : 85 passed, 0 failed, 1 ignored
+```
+
+**既有 `agent_busy` 语义没被破坏。**
+
+### 还没接的
+
+- `composer.rs:221` 忙时仍只渲染「停止」 —— 用户还点不到
+- 空闲时自动取出 `pending` 并跑 —— 现在只存不取

@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    DeliveryCommit, Engine, EngineConfig, LoopOutcome, ModelRoute, RunError,
-    SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver, TurnState,
+    AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
+    LoopOutcome, ModelRoute, RunError, SessionOrigin, SessionRecord,
+    SessionWorkspace, TurnObserver, TurnState,
     complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
@@ -1209,6 +1210,37 @@ impl AgentHandle {
                 generation: expected_generation,
             }),
         )
+    }
+
+    /// Accept a prompt that cannot run yet, and hand back a durable receipt.
+    ///
+    /// Unlike [`Self::submit_message`], this never answers `agent_busy`. A
+    /// message that arrives while a turn is running is still accepted; it only
+    /// has to wait. The receipt lives in its own file, so a restart can still
+    /// show what was accepted before anything ran it.
+    pub fn accept_deferred(
+        &self,
+        text: &str,
+    ) -> Result<AcceptedMessage, &'static str> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("notice.prompt_empty");
+        }
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        let session = self.ensure_active_session()?;
+        AcceptanceQueue::new(self.inner.state.root.clone())
+            .accept(&session, text, now_ms())
+            .map_err(|_| "notice.storage_error")
+    }
+
+    /// Receipts accepted but not picked up yet, oldest first.
+    #[must_use]
+    pub fn pending_acceptances(&self) -> Vec<AcceptedMessage> {
+        AcceptanceQueue::new(self.inner.state.root.clone())
+            .pending()
+            .unwrap_or_default()
     }
 
     fn submit_message(
@@ -2798,6 +2830,44 @@ fn line_delta(old: &str, new: &str) -> Option<(u32, u32)> {
 mod background_init_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn accept_deferred_hands_back_a_receipt_a_fresh_handle_still_finds() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-accept-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+
+        let receipt = handle
+            .accept_deferred("second prompt while the first turn runs")
+            .expect("accepted while busy");
+        assert_eq!(receipt.text, "second prompt while the first turn runs");
+        assert!(receipt.taken_at_ms.is_none());
+
+        // A separate handle over the same root is the "restart the client"
+        // shape: no in-memory state is shared, only the receipt file.
+        let reopened = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let pending = reopened.pending_acceptances();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, receipt.id);
+        assert_eq!(pending[0].text, receipt.text);
+
+        drop(handle);
+        drop(reopened);
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn empty_selection_revision_prevents_sending_home_draft_into_a_new_project()
