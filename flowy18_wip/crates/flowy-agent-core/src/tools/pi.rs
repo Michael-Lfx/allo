@@ -112,6 +112,7 @@ fn agent_tool_definition_with(
                             content: to_host_content(content),
                             value: details,
                             meta: None,
+                            delivery: None,
                         }
                     }
                     Err(AgentError::StructuredTool(result)) => {
@@ -258,6 +259,10 @@ mod tests {
             agent_id: None,
             cwd: None,
             todos: None,
+            submission_id: None,
+            session_origin: crate::session::SessionOrigin::Unknown,
+            output_root: None,
+            artifact_delivery_available: false,
         }
     }
 
@@ -291,6 +296,7 @@ mod tests {
                 content: vec![crate::types::ContentBlock::text("pong")],
                 value: json!({ "echo": true }),
                 meta: None,
+                delivery: None,
             }
         );
     }

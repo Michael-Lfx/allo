@@ -64,6 +64,9 @@ pub enum ChatLine {
     FileChanges {
         files: Vec<FileEntry>,
     },
+    Artifact {
+        artifact_id: String,
+    },
 }
 
 /// How a file changed during one settled tool call.
@@ -93,6 +96,7 @@ pub enum TurnStatus {
     #[default]
     Idle,
     Running,
+    SavingFiles,
     Completed,
     Stopped,
     Error {
@@ -106,6 +110,7 @@ impl TurnStatus {
         match self {
             Self::Idle => "chat.status_idle",
             Self::Running => "chat.status_running",
+            Self::SavingFiles => "chat.status_saving_files",
             Self::Completed => "chat.status_completed",
             Self::Stopped => "chat.status_stopped",
             Self::Error { .. } => "chat.status_error",
@@ -114,7 +119,7 @@ impl TurnStatus {
 
     #[must_use]
     pub const fn is_busy(&self) -> bool {
-        matches!(self, Self::Running)
+        matches!(self, Self::Running | Self::SavingFiles)
     }
 }
 

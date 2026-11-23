@@ -14,6 +14,49 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{Message, TodoItem};
 
+/// Durable origin label. Older sessions default to `Unknown`; callers must
+/// opt a newly created global-home session into artifact delivery explicitly.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionOrigin {
+    Home,
+    Project {
+        project_id: Option<String>,
+    },
+    #[default]
+    Unknown,
+}
+
+/// Host-assigned workspace for one session, separate from the ambient process
+/// working directory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionWorkspace {
+    pub root: PathBuf,
+}
+
+/// The durable result of a completed turn that delivered one or more files.
+/// The independent artifact-store marker remains the visibility authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryCommit {
+    pub session_id: String,
+    pub submission_id: String,
+    /// Complete, ordered set of artifacts published by this turn.
+    pub artifact_ids: Vec<String>,
+    pub completed_successfully: bool,
+    pub committed_at_ms: u64,
+    #[serde(default)]
+    pub origin: SessionOrigin,
+    #[serde(default)]
+    pub origin_title_snapshot: String,
+}
+
+/// Host callback that makes a prepared delivery group visible in its
+/// independent artifact store. Implementations must be idempotent.
+#[async_trait::async_trait]
+pub trait DeliveryCommitter: Send + Sync {
+    async fn commit(&self, commit: &DeliveryCommit) -> Result<(), String>;
+}
+
 /// Lifecycle state of the last turn in a session.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -51,6 +94,12 @@ pub struct SessionRecord {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub todos: Vec<TodoItem>,
+    #[serde(default)]
+    pub origin: SessionOrigin,
+    #[serde(default)]
+    pub workspace: Option<SessionWorkspace>,
+    #[serde(default)]
+    pub delivery_commits: Vec<DeliveryCommit>,
 }
 
 /// The whole session file.
@@ -153,7 +202,7 @@ impl SessionIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionIndex, SessionRecord, TurnState};
+    use super::{SessionIndex, SessionOrigin, SessionRecord, TurnState};
     use crate::types::{ContentBlock, Message, MessageSource, Role};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -215,6 +264,7 @@ mod tests {
                     tool_call_id: "call-1".into(),
                     content: vec![ContentBlock::text("{\"port\":8080}")],
                     is_error: Some(false),
+                    artifact: None,
                 }],
                 source: MessageSource::Tool {
                     tool: "read_file".into(),
@@ -241,6 +291,9 @@ mod tests {
             status: TurnState::Completed,
             messages: tool_history(),
             todos: Vec::new(),
+            origin: SessionOrigin::Unknown,
+            workspace: None,
+            delivery_commits: Vec::new(),
         }
     }
 
@@ -310,5 +363,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("history.json"), b"{broken").unwrap();
         assert!(SessionIndex::load(&scratch.0).is_err());
+    }
+
+    #[test]
+    fn legacy_sessions_have_unknown_origin_and_no_delivery_authority() {
+        let record: SessionRecord =
+            serde_json::from_str(r#"{"id":"old-session","messages":[]}"#)
+                .unwrap();
+        assert_eq!(record.origin, SessionOrigin::Unknown);
+        assert!(record.workspace.is_none());
+        assert!(record.delivery_commits.is_empty());
+        let result: ContentBlock = serde_json::from_str(
+            r#"{"type":"tool-result","tool_call_id":"old-call","content":[],"is_error":false}"#,
+        ).unwrap();
+        assert!(matches!(
+            result,
+            ContentBlock::ToolResult { artifact: None, .. }
+        ));
     }
 }

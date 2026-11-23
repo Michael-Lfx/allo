@@ -565,6 +565,9 @@ impl ChatFeed {
             ChatLine::FileChanges { files } => self
                 .file_changes_row(index, files, cx)
                 .into_any_element(),
+            // The delivery card is drawn with the library surface. Until that
+            // lands, keep the row in the history without a second file summary.
+            ChatLine::Artifact { .. } => div().into_any_element(),
         }
     }
 

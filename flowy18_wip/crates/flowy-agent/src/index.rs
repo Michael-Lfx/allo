@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::projection::{ChatLine, TurnStatus};
+use flowy_agent_core::{SessionOrigin, SessionWorkspace};
 
 /// A project workspace attached to a chat session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +28,10 @@ pub struct SessionRecord {
     pub titled: bool,
     #[serde(default)]
     pub workspace: Option<AgentWorkspace>,
+    #[serde(default)]
+    pub origin: SessionOrigin,
+    #[serde(default)]
+    pub session_workspace: Option<SessionWorkspace>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -192,6 +197,8 @@ mod tests {
                 status: TurnStatus::Idle,
                 titled: false,
                 workspace: Some(workspace.clone()),
+                origin: Default::default(),
+                session_workspace: None,
             }],
         }
         .save(&root)

@@ -10,6 +10,25 @@ use std::sync::Arc;
 pub type MessageId = String;
 pub type CallId = String;
 
+/// A host-verified file delivered by the current turn. This is a reference,
+/// not a storage path; the artifact store owns the bytes and their lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactReceipt {
+    pub artifact_id: String,
+    pub delivery_key: String,
+    pub session_id: String,
+    pub submission_id: String,
+    pub tool_call_id: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub origin_title_snapshot: String,
+}
+
 /// Cooperative cancellation for one turn, tool call, or provider request.
 ///
 /// Thin wrapper over `tokio_util` so the loop can pass the same token to a
@@ -97,6 +116,11 @@ pub enum ContentBlock {
         content: Vec<Self>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        /// Present only when the host's registered `publish_file` tool
+        /// produced a verified receipt. Legacy tool results deserialize as
+        /// having no artifact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<Box<ArtifactReceipt>>,
     },
 }
 
@@ -175,6 +199,10 @@ pub enum ToolExecutionResult {
         value: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         meta: Option<Value>,
+        /// Typed host-only result. The registry strips this from tools that
+        /// were not explicitly registered as an artifact publisher.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<Box<ArtifactReceipt>>,
     },
     Error {
         message: String,
@@ -189,6 +217,7 @@ impl ToolExecutionResult {
             content: vec![ContentBlock::text(text)],
             value,
             meta: None,
+            delivery: None,
         }
     }
 
@@ -252,6 +281,14 @@ pub struct ToolRunContext {
     pub agent_id: Option<String>,
     pub cwd: Option<String>,
     pub todos: Option<Arc<dyn TodoSink>>,
+    /// Stable identifier created and persisted by the host before the turn.
+    pub submission_id: Option<String>,
+    pub session_origin: crate::session::SessionOrigin,
+    /// Dedicated output directory for this submission, if the host assigned
+    /// one. It is never inferred from the session's general working directory.
+    pub output_root: Option<std::path::PathBuf>,
+    /// True only when this engine run has a durable marker committer wired.
+    pub artifact_delivery_available: bool,
 }
 
 impl std::fmt::Debug for ToolRunContext {
@@ -261,6 +298,13 @@ impl std::fmt::Debug for ToolRunContext {
             .field("agent_id", &self.agent_id)
             .field("cwd", &self.cwd)
             .field("has_todo_sink", &self.todos.is_some())
+            .field("submission_id", &self.submission_id)
+            .field("session_origin", &self.session_origin)
+            .field("output_root", &self.output_root)
+            .field(
+                "artifact_delivery_available",
+                &self.artifact_delivery_available,
+            )
             .finish()
     }
 }

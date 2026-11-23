@@ -3,7 +3,7 @@
 //! Every call still goes through [`ToolRegistry::execute`], so the host policy,
 //! monotonic guards, cancellation check, and argument handling stay in force.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rpi_agent::{AgentError, AgentTool, AgentToolResult, TextContentOrImage};
@@ -13,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::tools::ToolDefinition;
 use crate::tools::registry::ToolRegistry;
 use crate::types::{
-    CancelToken, ContentBlock, ToolExecutionResult, ToolRunContext,
+    ArtifactReceipt, CancelToken, ContentBlock, ToolExecutionResult,
+    ToolRunContext,
 };
 
 /// One registered host tool exposed to the loop.
@@ -22,6 +23,7 @@ pub struct RegistryTool {
     definition: Arc<ToolDefinition>,
     schema: Tool,
     run_ctx: ToolRunContext,
+    artifact_receipts: Option<Arc<Mutex<Vec<ArtifactReceipt>>>>,
 }
 
 impl std::fmt::Debug for RegistryTool {
@@ -37,6 +39,15 @@ impl RegistryTool {
         registry: ToolRegistry,
         definition: Arc<ToolDefinition>,
         run_ctx: ToolRunContext,
+    ) -> Result<Self, String> {
+        Self::new_with_artifact_sink(registry, definition, run_ctx, None)
+    }
+
+    pub(crate) fn new_with_artifact_sink(
+        registry: ToolRegistry,
+        definition: Arc<ToolDefinition>,
+        run_ctx: ToolRunContext,
+        artifact_receipts: Option<Arc<Mutex<Vec<ArtifactReceipt>>>>,
     ) -> Result<Self, String> {
         let core_schema = definition.schema();
         let parameters = serde_json::from_value(core_schema.parameters)
@@ -56,6 +67,7 @@ impl RegistryTool {
                 constrained_sampling: None,
             },
             run_ctx,
+            artifact_receipts,
         })
     }
 }
@@ -79,6 +91,19 @@ impl AgentTool for RegistryTool {
     ) -> Result<AgentToolResult, AgentError> {
         let mut run_ctx = self.run_ctx.clone();
         run_ctx.signal = CancelToken::from_inner(signal);
+        let expected_session = run_ctx.agent_id.clone();
+        let expected_submission = run_ctx.submission_id.clone();
+        let expected_output_root = run_ctx.output_root.is_some();
+        let can_publish = self.definition.name == "publish_file"
+            && self.definition.supports_artifact_delivery()
+            && matches!(
+                run_ctx.session_origin,
+                crate::session::SessionOrigin::Home
+            )
+            && expected_submission.is_some()
+            && expected_output_root
+            && run_ctx.artifact_delivery_available;
+        let expected_call_id = tool_call_id.to_owned();
         let result = self
             .registry
             .execute(
@@ -89,7 +114,28 @@ impl AgentTool for RegistryTool {
             )
             .await;
         match result {
-            ToolExecutionResult::Success { content, value, .. } => {
+            ToolExecutionResult::Success {
+                content,
+                value,
+                delivery,
+                ..
+            } => {
+                let delivery = delivery.filter(|receipt| {
+                    can_publish
+                        && receipt_matches_context(
+                            receipt,
+                            expected_session.as_deref(),
+                            expected_submission.as_deref(),
+                            &expected_call_id,
+                        )
+                });
+                if let Some(receipt) = &delivery
+                    && let Some(sink) = &self.artifact_receipts
+                {
+                    // Only the adapter can reach this private host-side sink;
+                    // untrusted tool details never become receipt metadata.
+                    sink.lock().unwrap().push(receipt.as_ref().clone());
+                }
                 Ok(AgentToolResult {
                     content: to_loop_content(&content),
                     details: value,
@@ -107,6 +153,20 @@ impl AgentTool for RegistryTool {
             }))),
         }
     }
+}
+
+fn receipt_matches_context(
+    receipt: &ArtifactReceipt,
+    session_id: Option<&str>,
+    submission_id: Option<&str>,
+    tool_call_id: &str,
+) -> bool {
+    session_id == Some(receipt.session_id.as_str())
+        && submission_id == Some(receipt.submission_id.as_str())
+        && receipt.tool_call_id == tool_call_id
+        && !receipt.artifact_id.is_empty()
+        && !receipt.delivery_key.is_empty()
+        && !receipt.sha256.is_empty()
 }
 
 fn to_loop_content(content: &[ContentBlock]) -> Vec<TextContentOrImage> {
@@ -166,6 +226,10 @@ mod tests {
             agent_id: Some("agent".into()),
             cwd: None,
             todos: None,
+            submission_id: None,
+            session_origin: crate::session::SessionOrigin::Unknown,
+            output_root: None,
+            artifact_delivery_available: false,
         }
     }
 
