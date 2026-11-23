@@ -77,7 +77,7 @@ if [[ "${WITH_APP:-0}" == "1" ]]; then
         else
             bad "进程未存活，见 /tmp/flowy-accept.log"
         fi
-        printf '  回执落盘位置：%s\n' "$HOME/AppData/Roaming/Flowy/acceptance/journal.jsonl"
+        printf '  回执落盘位置：%s\n' "$HOME/AppData/Roaming/Flowy/Flowy/data/acceptance/journal.jsonl"
         taskkill /F /IM flowy-app.exe >/dev/null 2>&1
     fi
 else
