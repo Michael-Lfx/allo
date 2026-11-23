@@ -29,6 +29,7 @@ pub struct ToolDefinition {
             + Sync,
     >,
     pub is_concurrency_safe: bool,
+    artifact_delivery: bool,
 }
 
 impl std::fmt::Debug for ToolDefinition {
@@ -36,6 +37,7 @@ impl std::fmt::Debug for ToolDefinition {
         f.debug_struct("ToolDefinition")
             .field("name", &self.name)
             .field("concurrency_safe", &self.is_concurrency_safe)
+            .field("artifact_delivery", &self.artifact_delivery)
             .finish_non_exhaustive()
     }
 }
@@ -59,7 +61,22 @@ impl ToolDefinition {
             parameters,
             execute: Arc::new(execute),
             is_concurrency_safe: false,
+            artifact_delivery: false,
         }
+    }
+
+    /// Mark a host-registered tool as the dedicated artifact publisher.
+    /// `RegistryTool` still requires the canonical `publish_file` name and
+    /// validates every receipt against its injected turn context.
+    #[must_use]
+    pub const fn with_artifact_delivery(mut self) -> Self {
+        self.artifact_delivery = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn supports_artifact_delivery(&self) -> bool {
+        self.artifact_delivery
     }
 
     #[must_use]
@@ -262,6 +279,10 @@ mod tests {
             agent_id: Some("agent".into()),
             cwd: None,
             todos: None,
+            submission_id: None,
+            session_origin: crate::session::SessionOrigin::Unknown,
+            output_root: None,
+            artifact_delivery_available: false,
         }
     }
 

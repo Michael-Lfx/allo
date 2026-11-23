@@ -41,6 +41,12 @@ license = "MIT"
 repository = "https://github.com/flowy-app/flowy"
 
 [workspace.dependencies]
+hayro = "0.9"
+oxml-opc = "0.15"
+rpptx = "0.15"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fontdb = "0.23"
 open = "5"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 similar = "2"
@@ -89,6 +95,8 @@ gpui_ce_elements = "0.3.0"
 gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+rustix = { version = "1.1.6", features = ["fs"] }
 thiserror = "2"
 
 # Lint gates follow omatrack's policy: the checks that catch real defects are

@@ -169,8 +169,7 @@ impl FlowyApp {
     ) {
         self.user_menu = false;
         if id == "new-task" {
-            self.studio.update(cx, flowy_studio::StudioPanel::new_task);
-            self.push_section(Section::Studio, cx);
+            self.start_library_conversation(cx);
             return;
         }
         self.push_section(section, cx);
@@ -318,15 +317,19 @@ impl FlowyApp {
                 for session in sessions.iter().filter(|session| {
                     session.project_id.as_deref() == Some(project_id.as_str())
                 }) {
-                    rows = rows.child(self.project_task_row(
-                        &session.id,
+                    rows = rows.child(self.conversation_row(
+                        window,
+                        cx,
+                        format!("project-task-{}", session.id),
+                        session.id.clone(),
                         if session.title.is_empty() {
                             self.t("dock.new_task")
                         } else {
                             session.title.clone()
                         },
                         active_session.as_deref() == Some(session.id.as_str()),
-                        cx,
+                        div().w(px(16.)).h(px(16.)).flex_shrink_0(),
+                        "project-task-row",
                     ));
                 }
             }
@@ -365,41 +368,58 @@ impl FlowyApp {
                 menu_anchor,
                 &self.ui,
             ))
-            .child(theme::tooltip_trigger(
-                format!("project-new-task-tip-{project_id}"),
-                dock_icon_button(
-                    window,
-                    theme::IconButton::new(
-                        format!("project-new-task-{project_id}"),
-                        self.t("project.new_task"),
-                        theme::icons::square_pen(),
+            .child(
+                theme::tooltip_trigger(
+                    format!("project-new-task-tip-{project_id}"),
+                    dock_icon_button(
+                        window,
+                        theme::IconButton::new(
+                            format!("project-new-task-{project_id}"),
+                            self.t("project.new_task"),
+                            theme::icons::square_pen(),
+                        ),
+                        &self.theme,
+                        cx.listener({
+                            let id = project_id.to_owned();
+                            move |app, _event, window, cx| {
+                                app.project_new_task(&id, window, cx);
+                            }
+                        }),
                     ),
-                    &self.theme,
-                    cx.listener({
-                        let id = project_id.to_owned();
-                        move |app, _event, window, cx| {
-                            app.project_new_task(&id, window, cx);
-                        }
-                    }),
-                ),
-                self.t("project.new_task"),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ))
+                    self.t("project.new_task"),
+                    &self.ui,
+                    window,
+                    cx,
+                    self.i18n.locale().is_rtl(),
+                )
+                .debug_selector(|| "project-edit".into()),
+            )
     }
 
-    fn project_task_row(
+    /// Same chrome as a project row, so the more button sits inside the hover
+    /// fill and lines up with the project's edit button.
+    fn conversation_row(
         &self,
-        session_id: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        row_id: String,
+        session_id: String,
         title: String,
         selected: bool,
-        cx: &Context<'_, Self>,
+        leading: impl IntoElement,
+        selector: &'static str,
     ) -> impl IntoElement {
-        let id = format!("project-task-{session_id}");
-        let session_id = session_id.to_owned();
-        theme::interactive(id, title.clone(), &self.theme)
+        let menu_open = self.task_menu.as_deref() == Some(session_id.as_str());
+        let hovered = window.use_keyed_state(
+            gpui::SharedString::from(format!(
+                "conversation-row-hovered-{session_id}"
+            )),
+            cx,
+            |_, _| false,
+        );
+        let show_menu = *hovered.read(cx) || menu_open;
+        let open_id = session_id.clone();
+        theme::interactive(row_id, title.clone(), &self.theme)
             .mx_2()
             .px(self.theme.space(8.))
             .py(self.theme.space(4.))
@@ -407,11 +427,31 @@ impl FlowyApp {
             .flex()
             .items_center()
             .gap_2()
-            .when(selected, |row| row.bg(self.theme.dock_selected()))
-            .when(!selected, |row| {
-                row.hover(|row| row.bg(self.theme.dock_hover()))
+            .bg(if selected {
+                self.theme.dock_selected()
+            } else {
+                self.theme.dock()
             })
-            .child(div().w(px(16.)).h(px(16.)).flex_shrink_0())
+            .when(show_menu, |row| row.bg(self.theme.dock_selected()))
+            .hover(|row| row.bg(self.theme.dock_selected()))
+            .on_hover({
+                let hovered = hovered.clone();
+                move |active, window, cx| {
+                    let changed = hovered.update(cx, |state, cx| {
+                        if *state == *active {
+                            return false;
+                        }
+                        *state = *active;
+                        cx.notify();
+                        true
+                    });
+                    if changed {
+                        window.refresh();
+                    }
+                }
+            })
+            .debug_selector(move || selector.into())
+            .child(leading)
             .child(
                 div()
                     .min_w_0()
@@ -421,17 +461,66 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .when(show_menu, |row| {
+                row.child(self.conversation_row_actions(
+                    window,
+                    cx,
+                    &session_id,
+                ))
+            })
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.user_menu = false;
                 app.section = Section::Studio;
                 app.studio.update(cx, |panel, cx| {
-                    panel.open_session(&session_id, cx);
+                    panel.open_session(&open_id, cx);
                 });
                 cx.notify();
             }))
     }
 
-    fn task_rows(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    /// The conversation's only right-hand button. It sits in the same slot as
+    /// the project's edit button, the rightmost action.
+    fn conversation_row_actions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        session_id: &str,
+    ) -> impl IntoElement {
+        let id = session_id.to_owned();
+        div()
+            .id(format!("task-actions-{session_id}"))
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .debug_selector(|| "task-actions".into())
+            .child(theme::anchor_trigger(
+                dock_icon_button(
+                    window,
+                    theme::IconButton::new(
+                        format!("task-options-{session_id}"),
+                        self.t("library.more"),
+                        theme::icons::ellipsis(),
+                    )
+                    .disabled(self.conversation_delete_busy()),
+                    &self.theme,
+                    cx.listener({
+                        let id = id.clone();
+                        move |app, _, _, cx| {
+                            cx.stop_propagation();
+                            app.toggle_task_menu(&id, cx);
+                        }
+                    }),
+                ),
+                format!("task-menu-trigger-{session_id}"),
+                &self.ui,
+            ))
+    }
+
+    fn task_rows(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
         let studio = self.studio.read(cx);
         let sessions: Vec<_> = studio
             .agent
@@ -465,17 +554,16 @@ impl FlowyApp {
                 session.title
             };
             let selected = active.as_deref() == Some(session_id.as_str());
-            rows = rows.child(
-                item_row(self.theme, id, title, selected, DockIcon::Task)
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
-                        app.user_menu = false;
-                        app.section = Section::Studio;
-                        app.studio.update(cx, |panel, cx| {
-                            panel.open_session(&session_id, cx);
-                        });
-                        cx.notify();
-                    })),
-            );
+            rows = rows.child(self.conversation_row(
+                window,
+                cx,
+                id,
+                session_id,
+                title,
+                selected,
+                DockIcon::Task.render(),
+                "task-row",
+            ));
         }
         rows
     }
@@ -525,7 +613,7 @@ impl FlowyApp {
             toggle,
         ));
         if open {
-            section = section.child(self.task_rows(cx));
+            section = section.child(self.task_rows(window, cx));
         }
         section
     }

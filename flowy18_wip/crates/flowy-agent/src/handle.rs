@@ -4,14 +4,16 @@
 //! rows are projected from loop events and persisted next to the structured
 //! history, so the UI keeps its snapshot semantics.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    Engine, EngineConfig, LoopOutcome, ModelRoute, RunError, SessionRecord,
-    TurnObserver, TurnState, complete_text, echo_stream_fn, log_preview,
+    DeliveryCommit, Engine, EngineConfig, LoopOutcome, ModelRoute, RunError,
+    SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver, TurnState,
+    complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -20,6 +22,9 @@ use flowy_agent_core::{
     },
 };
 
+use crate::artifact_store::{
+    ArtifactRecord, ArtifactStore, SessionDeletionState,
+};
 use crate::config::LlmConfig;
 pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
@@ -38,7 +43,9 @@ pub struct SessionSummary {
 
 #[derive(Clone, Debug)]
 pub enum AgentUpdate {
+    Initialized,
     Sessions,
+    Artifacts,
     Session {
         id: String,
     },
@@ -58,6 +65,8 @@ struct Live {
     updated_at: u64,
     turn_started_at: Option<u64>,
     workspace: Option<AgentWorkspace>,
+    origin: SessionOrigin,
+    session_workspace: Option<SessionWorkspace>,
 }
 
 struct UiState {
@@ -68,22 +77,38 @@ struct UiState {
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
     active: Mutex<Option<String>>,
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
+    origin_for_new_sessions: Mutex<SessionOrigin>,
+    artifact_store: OnceLock<ArtifactStore>,
+    initializing: Mutex<bool>,
+    context_generation: AtomicU64,
     updates: Mutex<VecDeque<AgentUpdate>>,
     load_failed: Mutex<bool>,
+    history_unavailable: Mutex<bool>,
     dispatch: Mutex<()>,
+    index_write: Mutex<()>,
 }
 
 impl UiState {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, artifact_store: Option<ArtifactStore>) -> Self {
+        let store_slot = OnceLock::new();
+        if let Some(store) = artifact_store {
+            let _ = store_slot.set(store);
+        }
         Self {
             root,
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             workspace_for_new_sessions: Mutex::new(None),
+            origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
+            artifact_store: store_slot,
+            initializing: Mutex::new(true),
+            context_generation: AtomicU64::new(0),
             updates: Mutex::new(VecDeque::new()),
             load_failed: Mutex::new(false),
+            history_unavailable: Mutex::new(false),
             dispatch: Mutex::new(()),
+            index_write: Mutex::new(()),
         }
     }
 
@@ -99,6 +124,12 @@ impl UiState {
     }
 
     fn report_storage_error(&self) {
+        tracing::error!(
+            target: "flowy.storage",
+            operation = "report session storage failure",
+            root = %self.root.display(),
+            "session storage failure reached the UI"
+        );
         self.push_update(AgentUpdate::StorageError);
     }
 }
@@ -108,6 +139,11 @@ struct Harness {
     state: Arc<UiState>,
     engine: Mutex<Option<Arc<Engine>>>,
     config: Mutex<LlmConfig>,
+}
+
+struct SubmissionSelection<'a> {
+    active: Option<&'a str>,
+    generation: u64,
 }
 
 #[derive(Clone)]
@@ -135,6 +171,38 @@ impl AgentHandle {
 
     #[must_use]
     pub fn with_config(store_root: PathBuf, config: LlmConfig) -> Self {
+        let handle = Self::uninitialized(store_root, config);
+        handle.initialize();
+        handle
+    }
+
+    /// Load history, recover artifact groups and clean pending deletions off
+    /// the caller's UI thread. Queries remain empty/loading until Initialized.
+    #[must_use]
+    pub fn with_config_background(
+        store_root: PathBuf,
+        config: LlmConfig,
+    ) -> Self {
+        let handle = Self::uninitialized(store_root, config);
+        let worker = handle.clone();
+        if std::thread::Builder::new()
+            .name("flowy-storage-init".into())
+            .spawn(move || worker.initialize())
+            .is_err()
+        {
+            *lock(&handle.inner.state.load_failed) = true;
+            *lock(&handle.inner.state.initializing) = false;
+            handle.inner.state.report_storage_error();
+            handle.inner.state.push_update(AgentUpdate::Initialized);
+        }
+        handle
+    }
+
+    pub fn is_initializing(&self) -> bool {
+        *lock(&self.inner.state.initializing)
+    }
+
+    fn uninitialized(store_root: PathBuf, config: LlmConfig) -> Self {
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
@@ -149,22 +217,53 @@ impl AgentHandle {
             .thread_name("flowy-agent")
             .build()
             .expect("tokio runtime for agent harness");
-        let state = Arc::new(UiState::new(store_root));
-        let handle = Self {
+        let state = Arc::new(UiState::new(store_root, None));
+        Self {
             inner: Arc::new(Harness {
                 runtime,
                 state: Arc::clone(&state),
                 engine: Mutex::new(None),
-                config: Mutex::new(config.clone()),
+                config: Mutex::new(config),
             }),
-        };
-        handle.boot(config);
+        }
+    }
+
+    fn initialize(&self) {
+        let artifact_root = self.inner.state.root.join("artifacts");
+        match ArtifactStore::open(artifact_root.clone()) {
+            Ok(store) => {
+                let _ = self.inner.state.artifact_store.set(store);
+            }
+            Err(error) => {
+                log_storage_io_error(
+                    "open artifact store",
+                    &artifact_root,
+                    &error,
+                );
+            }
+        }
+        let config = lock(&self.inner.config).clone();
+        self.boot(config);
+        // A catalog refresh may have arrived while history was being read.
+        // Apply its latest route before making initialization observable.
+        let engine = lock(&self.inner.engine).clone();
+        let cwd = ensure_tool_cwd(&self.inner.state.root);
+        {
+            let mut initializing = lock(&self.inner.state.initializing);
+            let config = lock(&self.inner.config).clone();
+            if let Some(engine) = engine {
+                engine.set_config(engine_config(&config, &cwd));
+            }
+            *initializing = false;
+        }
+        self.inner.state.push_update(AgentUpdate::Initialized);
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        self.inner.state.push_update(AgentUpdate::Artifacts);
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
             "done"
         );
-        handle
     }
 
     fn boot(&self, config: LlmConfig) {
@@ -178,7 +277,13 @@ impl AgentHandle {
             Ok(index) => index,
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 // Keep the damaged file, but do not let it lock the whole app.
-                if recover_corrupt_index(&state.root).is_err() {
+                if let Err(recovery_error) = recover_corrupt_index(&state.root)
+                {
+                    log_storage_io_error(
+                        "quarantine corrupt session index",
+                        &SessionIndex::path(&state.root),
+                        &recovery_error,
+                    );
                     *lock(&state.load_failed) = true;
                     state.report_storage_error();
                     return;
@@ -186,7 +291,12 @@ impl AgentHandle {
                 state.report_storage_error();
                 SessionIndex::default()
             }
-            Err(_) => {
+            Err(error) => {
+                log_storage_io_error(
+                    "open session index",
+                    &SessionIndex::path(&state.root),
+                    &error,
+                );
                 *lock(&state.load_failed) = true;
                 state.report_storage_error();
                 return;
@@ -204,37 +314,86 @@ impl AgentHandle {
             Ok(engine) => Arc::new(engine),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 // A damaged history file must not hide a usable index.
-                if recover_corrupt_history(&state.root).is_err() {
+                *lock(&state.history_unavailable) = true;
+                if let Err(recovery_error) =
+                    recover_corrupt_history(&state.root)
+                {
+                    log_storage_io_error(
+                        "quarantine corrupt structured history",
+                        &flowy_agent_core::SessionIndex::path(&state.root),
+                        &recovery_error,
+                    );
                     *lock(&state.load_failed) = true;
                     state.report_storage_error();
                     return;
                 }
                 state.report_storage_error();
-                if let Ok(engine) = Engine::open(
+                match Engine::open(
                     state.root.clone(),
                     engine_config(&config, &tool_cwd),
                     observer,
                 ) {
-                    Arc::new(engine)
-                } else {
-                    *lock(&state.load_failed) = true;
-                    state.report_storage_error();
-                    return;
+                    Ok(engine) => Arc::new(engine),
+                    Err(error) => {
+                        log_storage_io_error(
+                            "reopen structured history after recovery",
+                            &flowy_agent_core::SessionIndex::path(&state.root),
+                            &error,
+                        );
+                        *lock(&state.load_failed) = true;
+                        state.report_storage_error();
+                        return;
+                    }
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                log_storage_io_error(
+                    "open structured history",
+                    &flowy_agent_core::SessionIndex::path(&state.root),
+                    &error,
+                );
                 *lock(&state.load_failed) = true;
                 state.report_storage_error();
                 return;
             }
         };
+        let deleted_sessions = if let Some(store) = state.artifact_store.get() {
+            let mut deleted =
+                recover_session_deletions(&store, &engine, &state);
+            deleted.extend(migrate_legacy_source_deletions(
+                &store, &engine, &state,
+            ));
+            deleted
+        } else {
+            BTreeSet::new()
+        };
         let SessionIndex { active, sessions } = index;
         {
             let mut live = lock(&state.live);
             for record in sessions {
+                if deleted_sessions.contains(&record.id) {
+                    continue;
+                }
+                let source_deleted =
+                    state.artifact_store.get().is_some_and(|store| match store
+                        .source_deleted(&record.id)
+                    {
+                        Ok(deleted) => deleted,
+                        Err(error) => {
+                            log_storage_io_error(
+                                "read source deletion marker",
+                                &state.root.join("artifacts"),
+                                &error,
+                            );
+                            false
+                        }
+                    });
+                if engine.session(&record.id).is_none() && source_deleted {
+                    continue;
+                }
                 let mut status = record.status;
                 let mut lines = record.lines;
-                if status == TurnStatus::Running {
+                if status.is_busy() {
                     status = TurnStatus::Stopped;
                     finish_interrupted_lines(&mut lines);
                 }
@@ -250,6 +409,8 @@ impl AgentHandle {
                         updated_at: record.updated_at,
                         turn_started_at: None,
                         workspace: record.workspace,
+                        origin: record.origin,
+                        session_workspace: record.session_workspace,
                     },
                 );
             }
@@ -264,10 +425,80 @@ impl AgentHandle {
         }
         // If the UI index was lost or quarantined, rebuild the visible sessions
         // from the structured history instead of hiding them.
-        import_engine_sessions(&engine, &state);
-        // A crash leaves the old status in the file; persist the repaired view.
-        if persist_index(&state).is_err() {
+        if let Some(store) = state.artifact_store.get() {
+            let mut commits = Vec::new();
+            let mut recovery_ok = !*lock(&state.history_unavailable);
+            for session in engine.sessions() {
+                match store.recover_commits(&session.delivery_commits) {
+                    Ok(()) => {
+                        if let Some(live) =
+                            lock(&state.live).get_mut(&session.id)
+                            && matches!(live.status, TurnStatus::DeliveryFailed)
+                        {
+                            live.status = TurnStatus::Completed;
+                            live.projection.lines.retain(|line| {
+                                !matches!(
+                                    line,
+                                    ChatLine::Status { text }
+                                        if text == "chat.status_delivery_failed"
+                                )
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        log_storage_io_error(
+                            "recover delivered artifacts",
+                            &state.root.join("artifacts"),
+                            &error,
+                        );
+                        recovery_ok = false;
+                        mark_delivery_failed(&state, &session.id);
+                        state.report_storage_error();
+                    }
+                }
+                commits.extend(session.delivery_commits);
+            }
+            // This runs before the engine is published to callers, so there
+            // are no active runs whose staging files could be removed.
+            if let Err(error) = store.cleanup_uncommitted(&commits, recovery_ok)
+            {
+                log_storage_io_error(
+                    "clean up uncommitted artifacts",
+                    &state.root.join("artifacts"),
+                    &error,
+                );
+                state.report_storage_error();
+            }
+        } else {
+            tracing::error!(
+                target: "flowy.storage",
+                operation = "open artifact store",
+                root = %state.root.join("artifacts").display(),
+                "artifact store unavailable"
+            );
             state.report_storage_error();
+        }
+        import_engine_sessions(&engine, &state, &deleted_sessions);
+        // A crash leaves the old status in the file; persist the repaired view.
+        let index_persisted = match persist_index(&state) {
+            Ok(()) => true,
+            Err(_) => {
+                state.report_storage_error();
+                false
+            }
+        };
+        if index_persisted && let Some(store) = state.artifact_store.get() {
+            for session_id in &deleted_sessions {
+                if let Err(error) = store.complete_session_deletion(session_id)
+                {
+                    log_storage_io_error(
+                        "complete recovered session deletion",
+                        &state.root.join("artifacts"),
+                        &error,
+                    );
+                    state.report_storage_error();
+                }
+            }
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
@@ -281,6 +512,13 @@ impl AgentHandle {
     }
 
     pub fn apply_config(&self, config: LlmConfig) -> Result<(), &'static str> {
+        {
+            let initializing = lock(&self.inner.state.initializing);
+            if *initializing {
+                *lock(&self.inner.config) = config;
+                return Ok(());
+            }
+        }
         if *lock(&self.inner.state.load_failed) {
             return Err("notice.storage_error");
         }
@@ -320,6 +558,11 @@ impl AgentHandle {
         lock(&self.inner.state.active).clone()
     }
 
+    /// Memory-only selection revision, including empty Home/Project contexts.
+    pub fn context_generation(&self) -> u64 {
+        self.inner.state.context_generation.load(Ordering::Acquire)
+    }
+
     /// Set the workspace inherited by sessions created from this context.
     /// Existing sessions retain the workspace saved with their own history.
     pub fn set_workspace_for_new_sessions(
@@ -327,6 +570,367 @@ impl AgentHandle {
         workspace: Option<AgentWorkspace>,
     ) {
         *lock(&self.inner.state.workspace_for_new_sessions) = workspace;
+        self.inner
+            .state
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Set the explicit origin used by sessions created through the host.
+    /// Legacy and restored sessions keep their persisted origin.
+    pub fn set_origin_for_new_sessions(&self, origin: SessionOrigin) {
+        *lock(&self.inner.state.origin_for_new_sessions) = origin;
+        self.inner
+            .state
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Create a new global-home session with an isolated, durable workspace.
+    pub fn create_home_session(&self) -> Result<String, &'static str> {
+        *lock(&self.inner.state.workspace_for_new_sessions) = None;
+        self.set_origin_for_new_sessions(SessionOrigin::Home);
+        self.create_session()
+    }
+
+    /// The host-side artifact catalog API. A missing store means startup
+    /// storage initialization failed; callers should surface a storage error.
+    pub fn artifact_store(&self) -> Result<ArtifactStore, &'static str> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .cloned()
+            .ok_or("notice.storage_error")
+    }
+
+    /// A confirmed source deletion is separate from a temporarily missing
+    /// history record. Store reads happen on the caller's background executor.
+    pub fn source_deleted(&self, session_id: &str) -> bool {
+        if *lock(&self.inner.state.load_failed) {
+            return false;
+        }
+        if lock(&self.inner.engine)
+            .as_ref()
+            .is_some_and(|engine| engine.session(session_id).is_some())
+        {
+            return false;
+        }
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .and_then(|store| store.source_deleted(session_id).ok())
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn source_available(&self, session_id: &str) -> bool {
+        if *lock(&self.inner.state.load_failed) {
+            return false;
+        }
+        let record = lock(&self.inner.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(session_id));
+        record.is_some_and(|record| {
+            !*lock(&self.inner.state.history_unavailable)
+                || record.origin != SessionOrigin::Unknown
+        })
+    }
+
+    /// Remove a conversation and every artifact delivered by it. A durable
+    /// session-deletion plan spans the history/index commit and idempotent
+    /// artifact cleanup so a failed cleanup cannot resurrect or orphan files.
+    pub fn delete_session(&self, session_id: &str) -> Result<(), &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        let record = engine.session(session_id).ok_or("notice.agent_failed")?;
+        if record.status.is_busy() {
+            return Err("notice.agent_busy");
+        }
+        let store = self.artifact_store()?;
+        let artifact_ids = record
+            .delivery_commits
+            .iter()
+            .flat_map(|commit| commit.artifact_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let submission_ids = record
+            .delivery_commits
+            .iter()
+            .map(|commit| commit.submission_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        store
+            .prepare_session_deletion(
+                session_id,
+                &artifact_ids,
+                &submission_ids,
+            )
+            .map_err(|error| {
+                log_storage_io_error(
+                    "prepare session deletion",
+                    &self.inner.state.root.join("artifacts"),
+                    &error,
+                );
+                self.inner.state.report_storage_error();
+                "notice.storage_error"
+            })?;
+
+        // Stop a title request before removing the session. `generate_title`
+        // takes the same dispatch lock, so it cannot write a title after the
+        // deletion becomes observable.
+        if let Some(live) = lock(&self.inner.state.live).get(session_id) {
+            live.title_signal.cancel();
+        }
+        if let Err(error) = engine.remove_session(session_id) {
+            log_storage_io_error(
+                "remove structured session",
+                &flowy_agent_core::SessionIndex::path(&self.inner.state.root),
+                &error,
+            );
+            if let Err(cancel_error) = store.cancel_session_deletion(session_id)
+            {
+                log_storage_io_error(
+                    "cancel prepared session deletion",
+                    &self.inner.state.root.join("artifacts"),
+                    &cancel_error,
+                );
+                self.inner.state.report_storage_error();
+            }
+            return Err("notice.storage_error");
+        }
+        let mut live = lock(&self.inner.state.live);
+        let removed = live.remove(session_id);
+        drop(live);
+        let previous_active = lock(&self.inner.state.active).clone();
+        if previous_active.as_deref() == Some(session_id) {
+            *lock(&self.inner.state.active) = None;
+        }
+        if let Err(error) = persist_index(&self.inner.state) {
+            // The UI cache is derived. Restore the complete structured record
+            // when its cache mutation failed, so a failed deletion cannot be
+            // rehydrated from text-only display rows later.
+            if engine.insert_session(record).is_err() {
+                self.inner.state.report_storage_error();
+                self.inner.state.push_update(AgentUpdate::Sessions);
+                self.inner.state.push_update(AgentUpdate::Artifacts);
+                return Err("notice.storage_error");
+            }
+            if engine.set_active(previous_active.clone()).is_err() {
+                self.inner.state.report_storage_error();
+            }
+            if let Some(removed) = removed {
+                lock(&self.inner.state.live)
+                    .insert(session_id.to_owned(), removed);
+            }
+            *lock(&self.inner.state.active) = previous_active;
+            if let Err(cancel_error) = store.cancel_session_deletion(session_id)
+            {
+                log_storage_io_error(
+                    "cancel prepared session deletion",
+                    &self.inner.state.root.join("artifacts"),
+                    &cancel_error,
+                );
+                self.inner.state.report_storage_error();
+            }
+            self.inner.state.report_storage_error();
+            return Err(error);
+        }
+
+        // The conversation removal is the logical deletion commit point. The
+        // committed plan keeps artifacts hidden and makes physical cleanup
+        // retryable even if the process exits midway.
+        if let Err(error) = store.commit_session_deletion(session_id) {
+            log_storage_io_error(
+                "commit session deletion",
+                &self.inner.state.root.join("artifacts"),
+                &error,
+            );
+            self.inner.state.report_storage_error();
+        } else if let Err(error) = store.cleanup_session_deletion(session_id) {
+            log_storage_io_error(
+                "clean up session deletion",
+                &self.inner.state.root.join("artifacts"),
+                &error,
+            );
+            self.inner.state.report_storage_error();
+        } else if let Err(error) = store.complete_session_deletion(session_id) {
+            log_storage_io_error(
+                "complete session deletion",
+                &self.inner.state.root.join("artifacts"),
+                &error,
+            );
+            self.inner.state.report_storage_error();
+        }
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        self.inner.state.push_update(AgentUpdate::Artifacts);
+        Ok(())
+    }
+
+    /// Retry the independent artifact-store marker for a durable delivery
+    /// commit after the turn itself has already completed. The turn is never
+    /// re-run and no new submission or artifact ID is created.
+    pub fn retry_delivery(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let session_id = session_id.ok_or("chat.status_delivery_failed")?;
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        let record = engine
+            .session(session_id)
+            .ok_or("chat.status_delivery_failed")?;
+        if record.delivery_commits.is_empty() {
+            return Err("chat.status_delivery_failed");
+        }
+        if record.status.is_busy()
+            || lock(&self.inner.state.live)
+                .get(session_id)
+                .is_some_and(|session| session.status.is_busy())
+        {
+            return Err("notice.agent_busy");
+        }
+        if !lock(&self.inner.state.live).get(session_id).is_some_and(
+            |session| matches!(session.status, TurnStatus::DeliveryFailed),
+        ) {
+            return Err("chat.status_delivery_failed");
+        }
+        let store = self.artifact_store()?;
+        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+        {
+            session.status = TurnStatus::SavingFiles;
+            session.turn_started_at = Some(now_ms());
+        }
+        self.inner.state.stream_changed(session_id);
+        if let Err(error) = store.recover_commits(&record.delivery_commits) {
+            log_storage_io_error(
+                "retry delivered artifacts",
+                &self.inner.state.root.join("artifacts"),
+                &error,
+            );
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.status = TurnStatus::DeliveryFailed;
+                session.turn_started_at = None;
+            }
+            self.inner.state.stream_changed(session_id);
+            return Err("chat.status_delivery_failed");
+        }
+        for commit in &record.delivery_commits {
+            apply_delivery_commit_to_live(&self.inner.state, commit);
+        }
+        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+        {
+            session.projection.lines.retain(|line| {
+                !matches!(
+                    line,
+                    ChatLine::Status { text }
+                        if text == "chat.status_delivery_failed"
+                )
+            });
+            session.status = TurnStatus::Completed;
+            session.turn_started_at = None;
+            session.updated_at = now_ms();
+        }
+        if persist_index(&self.inner.state).is_err() {
+            self.inner.state.report_storage_error();
+        }
+        self.inner.state.stream_changed(session_id);
+        self.inner.state.push_update(AgentUpdate::Artifacts);
+        Ok(())
+    }
+
+    pub fn artifacts(&self) -> Result<Vec<ArtifactRecord>, std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .list()
+    }
+
+    pub fn artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Option<ArtifactRecord>, std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .get(artifact_id)
+    }
+
+    pub fn set_artifact_favorite(
+        &self,
+        artifact_id: &str,
+        favorite: bool,
+    ) -> Result<(), std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .set_favorite(artifact_id, favorite)
+    }
+
+    pub fn trash_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(), std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .trash(artifact_id)
+    }
+
+    pub fn restore_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(), std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .restore_from_trash(artifact_id)
+    }
+
+    pub fn permanently_delete_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(), std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .permanently_delete(artifact_id)
+    }
+
+    pub fn read_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        self.inner
+            .state
+            .artifact_store
+            .get()
+            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+            .read_payload(artifact_id)
     }
 
     /// Return the active session's workspace, or the context for the next
@@ -403,6 +1007,9 @@ impl AgentHandle {
     }
 
     pub fn create_session(&self) -> Result<String, &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
         if *lock(&self.inner.state.load_failed) {
             return Err("notice.storage_error");
         }
@@ -410,15 +1017,47 @@ impl AgentHandle {
         let now = now_ms();
         let workspace =
             lock(&self.inner.state.workspace_for_new_sessions).clone();
+        let origin = lock(&self.inner.state.origin_for_new_sessions).clone();
+        let session_workspace = match &origin {
+            SessionOrigin::Home => {
+                let root = self
+                    .inner
+                    .state
+                    .root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&id);
+                std::fs::create_dir_all(&root).map_err(|error| {
+                    log_storage_io_error(
+                        "create session workspace",
+                        &root,
+                        &error,
+                    );
+                    "notice.storage_error"
+                })?;
+                Some(SessionWorkspace { root })
+            }
+            SessionOrigin::Project { .. } => {
+                workspace.as_ref().map(|workspace| SessionWorkspace {
+                    root: workspace.root.clone(),
+                })
+            }
+            SessionOrigin::Unknown => None,
+        };
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
         // The durable history write may fail on the same broken volume the
         // index uses; the live session still works in memory and the failure is
         // reported through `AgentUpdate::StorageError`.
-        if engine.create_session(id.clone(), now).is_err() {
-            self.inner.state.report_storage_error();
-        }
+        engine
+            .create_session_with_metadata(
+                id.clone(),
+                now,
+                origin.clone(),
+                session_workspace.clone(),
+            )
+            .map_err(|_| "notice.storage_error")?;
         lock(&self.inner.state.live).insert(
             id.clone(),
             Live {
@@ -431,9 +1070,15 @@ impl AgentHandle {
                 updated_at: now,
                 turn_started_at: None,
                 workspace,
+                origin,
+                session_workspace,
             },
         );
         *lock(&self.inner.state.active) = Some(id.clone());
+        self.inner
+            .state
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
         if persist_index(&self.inner.state).is_err() {
             self.inner.state.report_storage_error();
         }
@@ -442,31 +1087,96 @@ impl AgentHandle {
     }
 
     pub fn select_session(&self, id: &str) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        self.select_session_locked(id)
+    }
+
+    pub fn select_session_if_active(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        if lock(&self.inner.state.active).as_deref() != expected {
+            return Err("notice.agent_busy");
+        }
+        self.select_session_locked(id)
+    }
+
+    fn select_session_locked(&self, id: &str) -> Result<(), &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
         let workspace = lock(&self.inner.state.live)
             .get(id)
             .map(|session| session.workspace.clone())
             .ok_or("notice.agent_failed")?;
+        let previous_active = lock(&self.inner.state.active).clone();
+        let previous_workspace =
+            lock(&self.inner.state.workspace_for_new_sessions).clone();
         *lock(&self.inner.state.active) = Some(id.to_owned());
         *lock(&self.inner.state.workspace_for_new_sessions) = workspace;
         if persist_index(&self.inner.state).is_err() {
+            *lock(&self.inner.state.active) = previous_active;
+            *lock(&self.inner.state.workspace_for_new_sessions) =
+                previous_workspace;
             self.inner.state.report_storage_error();
+            return Err("notice.storage_error");
         }
         self.inner.state.push_update(AgentUpdate::Sessions);
         self.inner
             .state
             .push_update(AgentUpdate::Session { id: id.to_owned() });
+        self.inner
+            .state
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
     pub fn clear_active(&self) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        self.clear_active_locked()
+    }
+
+    fn clear_active_locked(&self) -> Result<(), &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        let previous = lock(&self.inner.state.active).clone();
         *lock(&self.inner.state.active) = None;
-        persist_index(&self.inner.state)?;
+        if let Err(error) = persist_index(&self.inner.state) {
+            *lock(&self.inner.state.active) = previous;
+            self.inner.state.report_storage_error();
+            return Err(error);
+        }
         self.inner.state.push_update(AgentUpdate::Sessions);
+        self.inner
+            .state
+            .context_generation
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    pub fn begin_home_conversation_if_active(
+        &self,
+        expected: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        if lock(&self.inner.state.active).as_deref() != expected {
+            return Err("notice.agent_busy");
+        }
+        self.clear_active_locked()?;
+        *lock(&self.inner.state.workspace_for_new_sessions) = None;
+        *lock(&self.inner.state.origin_for_new_sessions) = SessionOrigin::Home;
         Ok(())
     }
 
     pub fn send(&self, text: &str) -> Result<(), &'static str> {
-        self.submit_message(text, None).map(|_| ())
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
+        self.submit_message(text, Some(u128::from_le_bytes(bytes)), None)
+            .map(|_| ())
     }
 
     /// Return this submission's existing session when its receipt is retried.
@@ -475,13 +1185,33 @@ impl AgentHandle {
         submission: u128,
         text: &str,
     ) -> Result<String, &'static str> {
-        self.submit_message(text, Some(submission))
+        self.submit_message(text, Some(submission), None)
+    }
+
+    /// Submit the captured UI request only while its original selection is
+    /// still current. Retried durable submission IDs keep their original receipt.
+    pub fn submit_chat_if_active(
+        &self,
+        submission: u128,
+        text: &str,
+        expected: Option<&str>,
+        expected_generation: u64,
+    ) -> Result<String, &'static str> {
+        self.submit_message(
+            text,
+            Some(submission),
+            Some(SubmissionSelection {
+                active: expected,
+                generation: expected_generation,
+            }),
+        )
     }
 
     fn submit_message(
         &self,
         text: &str,
         submission: Option<u128>,
+        selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
@@ -493,6 +1223,9 @@ impl AgentHandle {
         );
         if text.is_empty() {
             return Err("notice.prompt_empty");
+        }
+        if self.is_initializing() {
+            return Err("library.loading");
         }
         let state = &self.inner.state;
         if *lock(&state.load_failed) {
@@ -507,6 +1240,12 @@ impl AgentHandle {
         {
             return Ok(session);
         }
+        if selection.is_some_and(|selection| {
+            self.context_generation() != selection.generation
+                || lock(&state.active).as_deref() != selection.active
+        }) {
+            return Err("notice.agent_busy");
+        }
         let id = self.ensure_active_session()?;
         if lock(&state.live)
             .get(&id)
@@ -514,7 +1253,12 @@ impl AgentHandle {
         {
             return Err("notice.agent_busy");
         }
-        if ensure_engine_session(&engine, &id).is_err() {
+        if let Err(error) = ensure_engine_session(&engine, &id) {
+            log_storage_io_error(
+                "ensure structured session",
+                &flowy_agent_core::SessionIndex::path(&state.root),
+                &error,
+            );
             state.report_storage_error();
         }
         let config = lock(&self.inner.config).clone();
@@ -526,7 +1270,42 @@ impl AgentHandle {
         let workspace = lock(&state.live)
             .get(&id)
             .and_then(|session| session.workspace.clone());
-        let cwd = session_working_directory(&state.root, workspace.as_ref());
+        let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
+        let mut run_config = engine_config(
+            &config,
+            &session_working_directory(&state.root, workspace.as_ref()),
+        );
+        let cwd = core_session.workspace.as_ref().map_or_else(
+            || session_working_directory(&state.root, workspace.as_ref()),
+            |workspace| workspace.root.clone(),
+        );
+        run_config.cwd = Some(cwd.display().to_string());
+        run_config.registry = tool_registry(&cwd);
+        if core_session.origin == SessionOrigin::Home
+            && let Some(submission) = submission
+            && let Some(session_workspace) = core_session.workspace.as_ref()
+            && let Some(store) = state.artifact_store.get().cloned()
+        {
+            let submission_id = format!("submission-{submission:032x}");
+            let output_root =
+                session_workspace.root.join("outputs").join(&submission_id);
+            std::fs::create_dir_all(&output_root).map_err(|error| {
+                log_storage_io_error(
+                    "create turn output directory",
+                    &output_root,
+                    &error,
+                );
+                "notice.storage_error"
+            })?;
+            run_config
+                .registry
+                .register(crate::publish_tool::definition(store.clone()));
+            run_config.delivery_committer = Some(Arc::new(store));
+            run_config.system = format!(
+                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file with a path inside that directory, then explicitly call publish_file with a path relative to the output directory. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
+                output_root.display()
+            );
+        }
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -540,14 +1319,27 @@ impl AgentHandle {
             .start_with_config(
                 id.clone(),
                 prompt.clone(),
-                engine_config(&config, &cwd),
+                run_config,
                 stream,
                 submission,
             )
-            .map_err(|error| match error {
-                RunError::Storage(_) => "notice.storage_error",
-                RunError::Busy => "notice.agent_busy",
-                _ => "notice.agent_failed",
+            .map_err(|error| {
+                match &error {
+                    RunError::Storage(storage_error) => {
+                        log_storage_io_error(
+                            "start agent turn",
+                            &flowy_agent_core::SessionIndex::path(&state.root),
+                            storage_error,
+                        );
+                    }
+                    RunError::Busy => {}
+                    _ => {}
+                }
+                match error {
+                    RunError::Storage(_) => "notice.storage_error",
+                    RunError::Busy => "notice.agent_busy",
+                    _ => "notice.agent_failed",
+                }
             })?;
         let (fallback_title, title_signal) = {
             let mut live = lock(&state.live);
@@ -639,12 +1431,37 @@ impl AgentHandle {
 
     pub fn stop(&self) {
         let _dispatch = lock(&self.inner.state.dispatch);
+        self.stop_locked();
+    }
+
+    pub fn stop_if_active(&self, expected: Option<&str>) {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        if lock(&self.inner.state.active).as_deref() == expected {
+            self.stop_locked();
+        }
+    }
+
+    fn stop_locked(&self) {
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
         let engine = lock(&self.inner.engine).clone();
         if let Some(engine) = engine {
-            let _ = engine.cancel(&id);
+            match engine.request_cancel(&id) {
+                Ok(false) => return,
+                Ok(true) => {}
+                Err(error) => {
+                    log_storage_io_error(
+                        "cancel agent turn",
+                        &flowy_agent_core::SessionIndex::path(
+                            &self.inner.state.root,
+                        ),
+                        &error,
+                    );
+                    self.inner.state.report_storage_error();
+                    return;
+                }
+            }
         }
         {
             let mut live = lock(&self.inner.state.live);
@@ -682,7 +1499,83 @@ struct UiObserver {
     state: Arc<UiState>,
 }
 
+fn mark_live_delivery_failed(session: &mut Live) {
+    session.status = TurnStatus::DeliveryFailed;
+    session.turn_started_at = None;
+    if !session.projection.lines.iter().any(|line| {
+        matches!(
+            line,
+            ChatLine::Status { text }
+                if text == "chat.status_delivery_failed"
+        )
+    }) {
+        session.projection.lines.push(ChatLine::Status {
+            text: "chat.status_delivery_failed".into(),
+        });
+    }
+}
+
+fn mark_delivery_failed(state: &UiState, session_id: &str) {
+    if let Some(session) = lock(&state.live).get_mut(session_id) {
+        mark_live_delivery_failed(session);
+    }
+    state.stream_changed(session_id);
+}
+
+fn apply_delivery_commit_to_live(state: &UiState, commit: &DeliveryCommit) {
+    if let Some(session) = lock(&state.live).get_mut(&commit.session_id) {
+        session.projection.flush();
+        for artifact_id in &commit.artifact_ids {
+            if !session.projection.lines.iter().any(|line| {
+                matches!(
+                    line,
+                    ChatLine::Artifact { artifact_id: existing }
+                        if existing == artifact_id
+                )
+            }) {
+                session.projection.lines.push(ChatLine::Artifact {
+                    artifact_id: artifact_id.clone(),
+                });
+            }
+        }
+    }
+}
+
 impl TurnObserver for UiObserver {
+    fn saving_files(&self, session_id: &str) {
+        if let Some(session) = lock(&self.state.live).get_mut(session_id) {
+            session.status = TurnStatus::SavingFiles;
+        }
+        self.state.stream_changed(session_id);
+    }
+
+    fn delivery_committed(&self, commit: &DeliveryCommit) {
+        apply_delivery_commit_to_live(&self.state, commit);
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
+        }
+        self.state.stream_changed(&commit.session_id);
+        self.state.push_update(AgentUpdate::Artifacts);
+    }
+
+    fn delivery_failed(&self, commit: &DeliveryCommit, error: &str) {
+        tracing::error!(
+            target: "flowy.storage",
+            operation = "commit delivered artifacts",
+            session = %commit.session_id,
+            submission = %commit.submission_id,
+            error = %error,
+            "delivery marker failed"
+        );
+        if let Some(session) =
+            lock(&self.state.live).get_mut(&commit.session_id)
+        {
+            session.status = TurnStatus::DeliveryFailed;
+            session.turn_started_at = None;
+        }
+        self.state.stream_changed(&commit.session_id);
+    }
+
     fn text(&self, session: &str, delta: &str) {
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.apply_text(delta);
@@ -740,7 +1633,7 @@ impl TurnObserver for UiObserver {
         &self,
         session: &str,
         call_id: &str,
-        _name: &str,
+        name: &str,
         text: &str,
         is_error: bool,
     ) {
@@ -749,13 +1642,15 @@ impl TurnObserver for UiObserver {
         let cwd = lock(&self.state.live)
             .get(session)
             .and_then(|live| {
-                live.workspace.as_ref().map(|workspace| workspace.root.clone())
+                live.workspace
+                    .as_ref()
+                    .map(|workspace| workspace.root.clone())
             })
-            .unwrap_or_else(|| {
-                self.state.root.join("sessions").join("cwd")
-            });
+            .unwrap_or_else(|| self.state.root.join("sessions").join("cwd"));
+        let display_text = tool_result_display_text(name, text);
         if let Some(live) = lock(&self.state.live).get_mut(session) {
-            live.projection.finish_tool_call(call_id, text, is_error);
+            live.projection
+                .finish_tool_call(call_id, &display_text, is_error);
             // Drop the cached arguments either way; a failed call leaves the
             // file untouched, so only settled calls get a change row.
             let change =
@@ -782,6 +1677,16 @@ impl TurnObserver for UiObserver {
                 live.status = match outcome {
                     LoopOutcome::Completed => TurnStatus::Completed,
                     LoopOutcome::Aborted => TurnStatus::Stopped,
+                    // `delivery_failed` ran before this terminal callback. Keep
+                    // the dedicated status so the retry action remains visible.
+                    LoopOutcome::Failed
+                        if matches!(
+                            live.status,
+                            TurnStatus::DeliveryFailed
+                        ) =>
+                    {
+                        TurnStatus::DeliveryFailed
+                    }
                     // Store an i18n key, never a raw English message: this value
                     // is persisted in the index and may be rendered later.
                     LoopOutcome::Failed => TurnStatus::Error {
@@ -810,7 +1715,14 @@ impl TurnObserver for UiObserver {
         self.state.push_update(AgentUpdate::Sessions);
     }
 
-    fn storage_error(&self, _session: &str) {
+    fn storage_error(&self, session: &str) {
+        tracing::error!(
+            target: "flowy.storage",
+            operation = "persist structured session history",
+            session = %session,
+            path = %flowy_agent_core::SessionIndex::path(&self.state.root).display(),
+            "agent reported a storage failure"
+        );
         self.state.report_storage_error();
     }
 }
@@ -850,7 +1762,15 @@ async fn generate_title(
     let Some(title) = title else {
         return;
     };
-    if engine.set_session_title(&id, title.clone(), true).is_err() {
+    // Serialize the title commit with session deletion. Once the dispatcher
+    // has removed the source, this task must not write the title back.
+    let _dispatch = lock(&state.dispatch);
+    if signal.is_cancelled() {
+        return;
+    }
+    if engine.set_session_title(&id, title.clone(), true).is_ok() {
+        sync_artifact_title(&state, &engine, &id);
+    } else {
         state.report_storage_error();
     }
     if let Some(session) = lock(&state.live).get_mut(&id) {
@@ -864,6 +1784,129 @@ async fn generate_title(
     state.push_update(AgentUpdate::Sessions);
 }
 
+fn recover_session_deletions(
+    store: &ArtifactStore,
+    engine: &Engine,
+    state: &UiState,
+) -> BTreeSet<String> {
+    let mut deleted = BTreeSet::new();
+    let plans = match store.session_deletions() {
+        Ok(plans) => plans,
+        Err(error) => {
+            log_storage_io_error(
+                "load session deletion plans",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            state.report_storage_error();
+            return deleted;
+        }
+    };
+    for plan in plans {
+        let session_exists = engine.session(&plan.session_id).is_some();
+        let result = match plan.state {
+            SessionDeletionState::Prepared if session_exists => {
+                store.cancel_session_deletion(&plan.session_id)
+            }
+            SessionDeletionState::Prepared => {
+                deleted.insert(plan.session_id.clone());
+                store
+                    .commit_session_deletion(&plan.session_id)
+                    .and_then(|()| {
+                        store.cleanup_session_deletion(&plan.session_id)
+                    })
+            }
+            SessionDeletionState::Committed => {
+                deleted.insert(plan.session_id.clone());
+                if session_exists
+                    && let Err(error) = engine.remove_session(&plan.session_id)
+                {
+                    log_storage_io_error(
+                        "remove session for committed deletion",
+                        &flowy_agent_core::SessionIndex::path(&state.root),
+                        &error,
+                    );
+                    state.report_storage_error();
+                }
+                store.cleanup_session_deletion(&plan.session_id)
+            }
+        };
+        if let Err(error) = result {
+            log_storage_io_error(
+                "recover session deletion",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            state.report_storage_error();
+        }
+    }
+    deleted
+}
+
+fn migrate_legacy_source_deletions(
+    store: &ArtifactStore,
+    engine: &Engine,
+    state: &UiState,
+) -> BTreeSet<String> {
+    let mut deleted = BTreeSet::new();
+    let sessions = match store.source_deleted_sessions() {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            log_storage_io_error(
+                "load legacy source deletion markers",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            state.report_storage_error();
+            return deleted;
+        }
+    };
+    for session_id in sessions {
+        if engine.session(&session_id).is_some() {
+            if let Err(error) = store.clear_source_deleted(&session_id) {
+                log_storage_io_error(
+                    "clear stale source deletion marker",
+                    &state.root.join("artifacts"),
+                    &error,
+                );
+                state.report_storage_error();
+            }
+            continue;
+        }
+        deleted.insert(session_id.clone());
+        let result = store
+            .prepare_session_deletion(&session_id, &[], &[])
+            .and_then(|()| store.commit_session_deletion(&session_id))
+            .and_then(|()| store.cleanup_session_deletion(&session_id));
+        if let Err(error) = result {
+            log_storage_io_error(
+                "migrate legacy source deletion",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            state.report_storage_error();
+        }
+    }
+    deleted
+}
+
+fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
+    if let Some(store) = state.artifact_store.get() {
+        let commits = engine
+            .session(id)
+            .map(|record| record.delivery_commits)
+            .unwrap_or_default();
+        if let Err(error) = store.recover_commits(&commits) {
+            log_storage_io_error(
+                "update artifact source title",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            state.report_storage_error();
+        }
+    }
+}
+
 fn clear_auto_title(state: &UiState, id: &str) {
     if let Some(session) = lock(&state.live).get_mut(id) {
         session.auto_title_pending = false;
@@ -871,6 +1914,9 @@ fn clear_auto_title(state: &UiState, id: &str) {
 }
 
 fn persist_index(state: &UiState) -> Result<(), &'static str> {
+    // Serialize snapshots and replacements without holding the read model
+    // mutex while the filesystem syncs, so UI reads remain memory-only.
+    let _write = lock(&state.index_write);
     let live = lock(&state.live);
     let mut sessions: Vec<IndexRecord> = live
         .iter()
@@ -882,6 +1928,8 @@ fn persist_index(state: &UiState) -> Result<(), &'static str> {
             status: session.status.clone(),
             titled: session.titled,
             workspace: session.workspace.clone(),
+            origin: session.origin.clone(),
+            session_workspace: session.session_workspace.clone(),
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -889,9 +1937,8 @@ fn persist_index(state: &UiState) -> Result<(), &'static str> {
         active: lock(&state.active).clone(),
         sessions,
     };
-    let saved = index.save(&state.root);
     drop(live);
-    saved.map_err(|_| "notice.storage_error")
+    index.save(&state.root).map_err(|_| "notice.storage_error")
 }
 
 fn finish_interrupted_lines(lines: &mut [ChatLine]) {
@@ -914,15 +1961,74 @@ fn ensure_engine_session(engine: &Engine, id: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn import_engine_sessions(engine: &Engine, state: &UiState) {
+fn import_engine_sessions(
+    engine: &Engine,
+    state: &UiState,
+    deleted_sessions: &BTreeSet<String>,
+) {
     let records = engine.sessions();
+    let committed = state
+        .artifact_store
+        .get()
+        .and_then(|store| store.committed_ids().ok())
+        .unwrap_or_default();
     let mut live = lock(&state.live);
     for record in records {
-        if let Some(existing) = live.get_mut(&record.id) {
-            restore_existing_history(existing, record);
+        if deleted_sessions.contains(&record.id) {
             continue;
         }
-        let lines = lines_from_messages(&record.messages);
+        let allowed = record
+            .delivery_commits
+            .iter()
+            .flat_map(|commit| &commit.artifact_ids)
+            .filter(|id| committed.contains(*id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let pending_delivery = record
+            .delivery_commits
+            .iter()
+            .filter(|commit| commit.completed_successfully)
+            .flat_map(|commit| &commit.artifact_ids)
+            .any(|id| !committed.contains(id));
+        if let Some(existing) = live.get_mut(&record.id) {
+            existing.origin = record.origin.clone();
+            existing.session_workspace.clone_from(&record.workspace);
+            let existing_ids = existing
+                .projection
+                .lines
+                .iter()
+                .filter_map(|line| {
+                    if let ChatLine::Artifact { artifact_id } = line {
+                        Some(artifact_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<BTreeSet<_>>();
+            if existing_ids != allowed {
+                let mut projected =
+                    lines_from_messages(&record.messages, &allowed);
+                projected.extend(
+                    existing
+                        .projection
+                        .lines
+                        .iter()
+                        .filter(|line| {
+                            matches!(line, ChatLine::TaskReceipt { .. })
+                        })
+                        .cloned(),
+                );
+                existing.projection = ChatProjection::from_lines(projected);
+                existing.status = live_status(record.status.clone());
+                existing.updated_at = record.updated_at;
+            }
+            restore_existing_history(existing, record, &allowed);
+            if pending_delivery {
+                mark_live_delivery_failed(existing);
+            }
+            continue;
+        }
+        let lines = lines_from_messages(&record.messages, &allowed);
         let title = if record.title.is_empty() {
             lines
                 .iter()
@@ -937,6 +2043,11 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
             record.title.clone()
         };
         let titled = record.titled || !title.is_empty();
+        let status = if pending_delivery {
+            TurnStatus::DeliveryFailed
+        } else {
+            live_status(record.status)
+        };
         live.insert(
             record.id.clone(),
             Live {
@@ -945,16 +2056,32 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
                 titled,
                 auto_title_pending: false,
                 title_signal: CancelToken::new(),
-                status: live_status(record.status),
+                status,
                 updated_at: record.updated_at,
                 turn_started_at: None,
-                workspace: None,
+                workspace: match &record.origin {
+                    SessionOrigin::Project {
+                        project_id: Some(project_id),
+                    } => record.workspace.as_ref().map(|workspace| {
+                        AgentWorkspace {
+                            project_id: project_id.clone(),
+                            root: workspace.root.clone(),
+                        }
+                    }),
+                    _ => None,
+                },
+                origin: record.origin,
+                session_workspace: record.workspace,
             },
         );
     }
 }
 
-fn restore_existing_history(existing: &mut Live, record: SessionRecord) {
+fn restore_existing_history(
+    existing: &mut Live,
+    record: SessionRecord,
+    allowed: &BTreeSet<String>,
+) {
     let lines = &mut existing.projection.lines;
     let mut visible = lines.iter().enumerate().filter_map(|(index, line)| {
         if let ChatLine::User { text } = line {
@@ -964,18 +2091,21 @@ fn restore_existing_history(existing: &mut Live, record: SessionRecord) {
         }
     });
     let mut latest = None;
-    for (index, message) in record
-        .messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| message.role == Role::User)
+    for (index, message) in
+        record.messages.iter().enumerate().filter(|(_, message)| {
+            message.role == Role::User
+                && matches!(message.source, MessageSource::User)
+        })
     {
         match visible.next() {
             Some((row, text)) if *text == message.text() => {
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
-                lines.extend(lines_from_messages(&record.messages[index..]));
+                lines.extend(lines_from_messages(
+                    &record.messages[index..],
+                    allowed,
+                ));
                 existing.status = live_status(record.status);
                 existing.updated_at = record.updated_at;
                 return;
@@ -1008,7 +2138,8 @@ fn restore_existing_history(existing: &mut Live, record: SessionRecord) {
             _ => None,
         })
         .peekable();
-    let mut recovered = lines_from_messages(&record.messages[index + 1..]);
+    let mut recovered =
+        lines_from_messages(&record.messages[index + 1..], allowed);
     for line in &mut recovered {
         if let ChatLine::Reasoning {
             text,
@@ -1032,15 +2163,56 @@ fn restore_existing_history(existing: &mut Live, record: SessionRecord) {
     existing.updated_at = record.updated_at;
 }
 
-fn lines_from_messages(messages: &[Message]) -> Vec<ChatLine> {
+fn lines_from_messages(
+    messages: &[Message],
+    allowed: &BTreeSet<String>,
+) -> Vec<ChatLine> {
     let mut lines = Vec::new();
+    let mut pending_artifacts = Vec::new();
     for message in messages {
         match message.role {
             Role::System => {}
             Role::User => {
+                if matches!(message.source, MessageSource::User) {
+                    for artifact_id in std::mem::take(&mut pending_artifacts) {
+                        lines.push(ChatLine::Artifact { artifact_id });
+                    }
+                }
                 let text = message.text();
                 if !text.is_empty() {
                     lines.push(ChatLine::User { text });
+                }
+                let tool_name = match &message.source {
+                    MessageSource::Tool { tool } => Some(tool.as_str()),
+                    _ => None,
+                };
+                for block in &message.content {
+                    if let ContentBlock::ToolResult {
+                        content,
+                        is_error,
+                        artifact,
+                        ..
+                    } = block
+                    {
+                        let text = content
+                            .iter()
+                            .filter_map(ContentBlock::as_text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        lines.push(ChatLine::ToolResult {
+                            text: tool_result_display_text(
+                                tool_name.unwrap_or_default(),
+                                &text,
+                            ),
+                            is_error: is_error.unwrap_or(false),
+                        });
+                        if let Some(receipt) = artifact
+                            && allowed.contains(&receipt.artifact_id)
+                            && !pending_artifacts.contains(&receipt.artifact_id)
+                        {
+                            pending_artifacts.push(receipt.artifact_id.clone());
+                        }
+                    }
                 }
             }
             Role::Assistant => {
@@ -1082,8 +2254,14 @@ fn lines_from_messages(messages: &[Message]) -> Vec<ChatLine> {
                                 .filter_map(ContentBlock::as_text)
                                 .collect::<Vec<_>>()
                                 .join("\n");
+                            let tool_name = match &message.source {
+                                MessageSource::Tool { tool } => tool.as_str(),
+                                _ => "",
+                            };
                             lines.push(ChatLine::ToolResult {
-                                text,
+                                text: tool_result_display_text(
+                                    tool_name, &text,
+                                ),
                                 is_error: is_error.unwrap_or(false),
                             });
                         }
@@ -1092,7 +2270,21 @@ fn lines_from_messages(messages: &[Message]) -> Vec<ChatLine> {
             }
         }
     }
+    for artifact_id in pending_artifacts {
+        lines.push(ChatLine::Artifact { artifact_id });
+    }
     lines
+}
+
+fn tool_result_display_text(tool_name: &str, text: &str) -> String {
+    if tool_name == "publish_file"
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+        && let Some(key) = value.get("ui_key").and_then(|value| value.as_str())
+        && key.starts_with("chat.publish.")
+    {
+        return key.to_owned();
+    }
+    text.to_owned()
 }
 
 fn live_status(state: TurnState) -> TurnStatus {
@@ -1118,8 +2310,10 @@ fn sync_engine_titles(engine: &Engine, state: &UiState) {
         }
         if engine
             .set_session_title(id, session.title.clone(), session.titled)
-            .is_err()
+            .is_ok()
         {
+            sync_artifact_title(state, engine, id);
+        } else {
             state.report_storage_error();
         }
     }
@@ -1148,6 +2342,9 @@ fn hydrate_engine(engine: &Engine, state: &UiState, config: &LlmConfig) {
                     config,
                 ),
                 todos: Vec::new(),
+                origin: SessionOrigin::Unknown,
+                workspace: None,
+                delivery_commits: Vec::new(),
             })
             .is_err()
         {
@@ -1209,12 +2406,30 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         registry: tool_registry(cwd),
         cwd: Some(cwd.display().to_string()),
         todos: None,
+        delivery_committer: None,
     }
+}
+
+fn log_storage_io_error(
+    operation: &'static str,
+    path: &Path,
+    error: &std::io::Error,
+) {
+    tracing::error!(
+        target: "flowy.storage",
+        operation,
+        path = %path.display(),
+        kind = ?error.kind(),
+        error = %error,
+        "storage operation failed"
+    );
 }
 
 fn ensure_tool_cwd(root: &Path) -> PathBuf {
     let dir = root.join("sessions").join("cwd");
-    let _ = std::fs::create_dir_all(&dir);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        log_storage_io_error("create tool working directory", &dir, &error);
+    }
     dir
 }
 
@@ -1462,10 +2677,374 @@ fn line_delta(old: &str, new: &str) -> Option<(u32, u32)> {
 }
 
 #[cfg(test)]
+mod background_init_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn empty_selection_revision_prevents_sending_home_draft_into_a_new_project()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-context-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let captured = handle.context_generation();
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        handle.set_workspace_for_new_sessions(Some(AgentWorkspace {
+            project_id: "project-1".into(),
+            root: project,
+        }));
+        handle.set_origin_for_new_sessions(SessionOrigin::Project {
+            project_id: Some("project-1".into()),
+        });
+        assert_eq!(handle.active_session_id(), None);
+        assert_eq!(
+            handle.submit_chat_if_active(1, "Home draft", None, captured),
+            Err("notice.agent_busy")
+        );
+        assert!(handle.list_sessions().is_empty());
+        assert!(handle.lines().is_empty());
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retry_delivery_commits_the_durable_group_and_clears_failure() {
+        use crate::artifact_store::PrepareArtifact;
+
+        let root = std::env::temp_dir()
+            .join(format!("flowy-retry-delivery-{}", next_stamp()));
+        let config = LlmConfig::default();
+        let handle = AgentHandle::uninitialized(root.clone(), config.clone());
+        let state = Arc::clone(&handle.inner.state);
+        let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
+            state: Arc::clone(&state),
+        });
+        let engine = Arc::new(
+            Engine::open(root.clone(), engine_config(&config, &root), observer)
+                .unwrap(),
+        );
+        engine
+            .create_session_with_metadata(
+                "home".into(),
+                1,
+                SessionOrigin::Home,
+                Some(SessionWorkspace {
+                    root: root.join("workspace"),
+                }),
+            )
+            .unwrap();
+        let output = root.join("outputs").join("submission-1");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("report.md"), b"# report\n").unwrap();
+        let store = ArtifactStore::open(root.join("artifacts")).unwrap();
+        let receipt = store
+            .prepare(PrepareArtifact {
+                source_root: output,
+                relative_path: "report.md".into(),
+                session_id: "home".into(),
+                submission_id: "submission-1".into(),
+                tool_call_id: "call-1".into(),
+                delivery_key: "report".into(),
+                display_name: None,
+                origin: SessionOrigin::Home,
+            })
+            .unwrap();
+        let mut record = engine.session("home").unwrap();
+        record.delivery_commits.push(DeliveryCommit {
+            session_id: "home".into(),
+            submission_id: "submission-1".into(),
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: 1,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Home".into(),
+        });
+        engine.insert_session(record).unwrap();
+        *lock(&handle.inner.engine) = Some(engine);
+        let _ = state.artifact_store.set(store.clone());
+        *lock(&state.active) = Some("home".into());
+        lock(&state.live).insert(
+            "home".into(),
+            Live {
+                projection: ChatProjection::from_lines(vec![
+                    ChatLine::Status {
+                        text: "chat.status_delivery_failed".into(),
+                    },
+                ]),
+                title: "Home".into(),
+                titled: true,
+                auto_title_pending: false,
+                title_signal: CancelToken::new(),
+                status: TurnStatus::DeliveryFailed,
+                updated_at: 1,
+                turn_started_at: None,
+                workspace: None,
+                origin: SessionOrigin::Home,
+                session_workspace: None,
+            },
+        );
+
+        if let Some(live) = lock(&state.live).get_mut("home") {
+            live.status = TurnStatus::Running;
+        }
+        assert_eq!(
+            handle.retry_delivery(Some("home")),
+            Err("notice.agent_busy")
+        );
+        if let Some(live) = lock(&state.live).get_mut("home") {
+            live.status = TurnStatus::DeliveryFailed;
+        }
+        handle.retry_delivery(Some("home")).unwrap();
+        {
+            let live = lock(&state.live);
+            let live = live.get("home").unwrap();
+            assert_eq!(live.status, TurnStatus::Completed);
+            assert!(!live.projection.lines.iter().any(|line| {
+                matches!(line, ChatLine::Status { text } if text == "chat.status_delivery_failed")
+            }));
+            assert!(live.projection.lines.iter().any(|line| {
+                matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &receipt.artifact_id)
+            }));
+        }
+        assert_eq!(
+            store.read_payload(&receipt.artifact_id).unwrap(),
+            b"# report\n"
+        );
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_completes_a_prepared_session_deletion_after_crash() {
+        use crate::artifact_store::PrepareArtifact;
+
+        let root = std::env::temp_dir()
+            .join(format!("flowy-session-delete-recovery-{}", next_stamp()));
+        let config = LlmConfig::default();
+        let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
+            state: Arc::new(UiState::new(root.clone(), None)),
+        });
+        let engine =
+            Engine::open(root.clone(), engine_config(&config, &root), observer)
+                .unwrap();
+        engine
+            .create_session_with_metadata(
+                "home".into(),
+                1,
+                SessionOrigin::Home,
+                Some(SessionWorkspace {
+                    root: root.join("workspace"),
+                }),
+            )
+            .unwrap();
+        let output = root.join("outputs").join("submission-1");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(
+            output.join("report.md"),
+            b"# report
+",
+        )
+        .unwrap();
+        let store = ArtifactStore::open(root.join("artifacts")).unwrap();
+        let receipt = store
+            .prepare(PrepareArtifact {
+                source_root: output,
+                relative_path: "report.md".into(),
+                session_id: "home".into(),
+                submission_id: "submission-1".into(),
+                tool_call_id: "call-1".into(),
+                delivery_key: "report".into(),
+                display_name: None,
+                origin: SessionOrigin::Home,
+            })
+            .unwrap();
+        let delivery = DeliveryCommit {
+            session_id: "home".into(),
+            submission_id: "submission-1".into(),
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: 1,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Home".into(),
+        };
+        store
+            .recover_commits(std::slice::from_ref(&delivery))
+            .unwrap();
+        store
+            .prepare_session_deletion(
+                "home",
+                &delivery.artifact_ids,
+                std::slice::from_ref(&delivery.submission_id),
+            )
+            .unwrap();
+        engine.remove_session("home").unwrap();
+        crate::index::SessionIndex {
+            active: Some("home".into()),
+            sessions: vec![IndexRecord {
+                id: "home".into(),
+                title: "stale".into(),
+                updated_at: 1,
+                lines: vec![ChatLine::User {
+                    text: "stale row".into(),
+                }],
+                status: TurnStatus::Completed,
+                titled: true,
+                workspace: None,
+                origin: SessionOrigin::Home,
+                session_workspace: None,
+            }],
+        }
+        .save(&root)
+        .unwrap();
+        drop(store);
+        drop(engine);
+
+        let handle = AgentHandle::with_config(root.clone(), config);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.is_initializing() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!handle.is_initializing());
+        assert!(handle.list_sessions().is_empty());
+        assert!(
+            crate::index::SessionIndex::load(&root)
+                .unwrap()
+                .sessions
+                .is_empty()
+        );
+        let store = handle.artifact_store().unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.get(&receipt.artifact_id).unwrap().is_none());
+        assert!(store.session_deletions().unwrap().is_empty());
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_source_deletion_marker_is_migrated_to_cascade_cleanup() {
+        use crate::artifact_store::PrepareArtifact;
+
+        let root = std::env::temp_dir()
+            .join(format!("flowy-session-delete-legacy-{}", next_stamp()));
+        let config = LlmConfig::default();
+        let state = Arc::new(UiState::new(root.clone(), None));
+        let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
+            state: Arc::clone(&state),
+        });
+        let engine =
+            Engine::open(root.clone(), engine_config(&config, &root), observer)
+                .unwrap();
+        let output = root.join("outputs").join("submission-legacy");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(
+            output.join("report.md"),
+            b"# report
+",
+        )
+        .unwrap();
+        let store = ArtifactStore::open(root.join("artifacts")).unwrap();
+        let receipt = store
+            .prepare(PrepareArtifact {
+                source_root: output,
+                relative_path: "report.md".into(),
+                session_id: "legacy".into(),
+                submission_id: "submission-legacy".into(),
+                tool_call_id: "call-legacy".into(),
+                delivery_key: "report".into(),
+                display_name: None,
+                origin: SessionOrigin::Home,
+            })
+            .unwrap();
+        store
+            .recover_commits(std::slice::from_ref(&DeliveryCommit {
+                session_id: "legacy".into(),
+                submission_id: "submission-legacy".into(),
+                artifact_ids: vec![receipt.artifact_id.clone()],
+                completed_successfully: true,
+                committed_at_ms: 1,
+                origin: SessionOrigin::Home,
+                origin_title_snapshot: "Legacy".into(),
+            }))
+            .unwrap();
+        std::fs::write(
+            store.root().join("sources-deleted/legacy.json"),
+            br#"{"schema_version":1,"session_id":"legacy","deleted_at_ms":1}"#,
+        )
+        .unwrap();
+
+        let deleted = migrate_legacy_source_deletions(&store, &engine, &state);
+        assert!(deleted.contains("legacy"));
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.get(&receipt.artifact_id).unwrap().is_none());
+        assert_eq!(store.session_deletions().unwrap().len(), 1);
+        store.complete_session_deletion("legacy").unwrap();
+        assert!(!store.root().join("sources-deleted/legacy.json").exists());
+        assert!(store.session_deletions().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_initialization_restores_sessions_and_announces_readiness() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-background-{}", next_stamp()));
+        let config = LlmConfig {
+            api_key: None,
+            ..LlmConfig::default()
+        };
+        let seed = AgentHandle::with_config(root.clone(), config.clone());
+        let id = seed.create_home_session().unwrap();
+        drop(seed);
+        let handle = AgentHandle::with_config_background(root.clone(), config);
+        handle
+            .apply_config(LlmConfig {
+                api_key: None,
+                model: "latest-model".into(),
+                ..LlmConfig::default()
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.is_initializing() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            !handle.is_initializing(),
+            "storage initialization did not finish"
+        );
+        assert_eq!(handle.active_session_id().as_deref(), Some(id.as_str()));
+        assert!(handle.source_available(&id));
+        assert_eq!(lock(&handle.inner.config).model, "latest-model");
+        let updates = handle.drain_updates();
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| matches!(update, AgentUpdate::Initialized))
+                .count(),
+            1
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::StorageError))
+        );
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod guard_tests {
     use super::{
         AgentWorkspace, confined_to, path_guard, session_working_directory,
         take_file_change, tool_arg_key, tool_registry,
+        tool_result_display_text,
     };
     use crate::projection::FileChangeKind;
     use flowy_agent_core::types::ToolCallArgs;
@@ -1535,39 +3114,47 @@ mod guard_tests {
     }
 
     #[test]
+    fn publish_tool_result_uses_ui_key_without_changing_other_tools() {
+        let payload = r#"{"status":"staged","message":"File staged.","ui_key":"chat.publish.staged"}"#;
+        assert_eq!(
+            tool_result_display_text("publish_file", payload),
+            "chat.publish.staged"
+        );
+        assert_eq!(tool_result_display_text("write_file", payload), payload);
+    }
+
+    #[test]
     fn file_change_counts_changed_lines_for_edits() {
         let args = Mutex::new(HashMap::new());
-        args.lock()
-            .expect("lock")
-            .insert(
-                tool_arg_key("s", "c1"),
-                json!({
-                    "path": "src/a.rs",
-                    "old_string": "a\nb\nc",
-                    "new_string": "a\nB\nc",
-                }),
-            );
-        let edit =
-            take_file_change(&args, "s", "c1", Path::new("/work")).expect("edit change");
+        args.lock().expect("lock").insert(
+            tool_arg_key("s", "c1"),
+            json!({
+                "path": "src/a.rs",
+                "old_string": "a\nb\nc",
+                "new_string": "a\nB\nc",
+            }),
+        );
+        let edit = take_file_change(&args, "s", "c1", Path::new("/work"))
+            .expect("edit change");
         assert!(edit.path.ends_with("a.rs"), "path={}", edit.path);
         assert_eq!(edit.kind, FileChangeKind::Update);
         assert_eq!((edit.added, edit.removed), (1, 1));
         assert!(!edit.binary);
         // The cached arguments are dropped once the row is built.
-        assert!(take_file_change(&args, "s", "c1", Path::new("/work")).is_none());
+        assert!(
+            take_file_change(&args, "s", "c1", Path::new("/work")).is_none()
+        );
     }
 
     #[test]
     fn file_change_reports_only_additions_for_whole_file_writes() {
         let args = Mutex::new(HashMap::new());
-        args.lock()
-            .expect("lock")
-            .insert(
-                tool_arg_key("s", "c2"),
-                json!({ "path": "new.md", "content": "one\ntwo\n" }),
-            );
-        let write =
-            take_file_change(&args, "s", "c2", Path::new("/work")).expect("write change");
+        args.lock().expect("lock").insert(
+            tool_arg_key("s", "c2"),
+            json!({ "path": "new.md", "content": "one\ntwo\n" }),
+        );
+        let write = take_file_change(&args, "s", "c2", Path::new("/work"))
+            .expect("write change");
         assert_eq!(write.kind, FileChangeKind::Add);
         assert_eq!((write.added, write.removed), (2, 0));
     }
@@ -1575,14 +3162,12 @@ mod guard_tests {
     #[test]
     fn relative_tool_paths_resolve_against_the_session_directory() {
         let args = Mutex::new(HashMap::new());
-        args.lock()
-            .expect("lock")
-            .insert(
-                tool_arg_key("s", "c3"),
-                json!({ "path": "notes/a.md", "content": "x\n" }),
-            );
-        let change =
-            take_file_change(&args, "s", "c3", Path::new("/work")).expect("change");
+        args.lock().expect("lock").insert(
+            tool_arg_key("s", "c3"),
+            json!({ "path": "notes/a.md", "content": "x\n" }),
+        );
+        let change = take_file_change(&args, "s", "c3", Path::new("/work"))
+            .expect("change");
         assert!(change.path.contains("notes"), "path={}", change.path);
         assert!(change.path.ends_with("a.md"));
     }
@@ -1590,12 +3175,12 @@ mod guard_tests {
     #[test]
     fn blank_tool_paths_produce_no_row() {
         let args = Mutex::new(HashMap::new());
-        args.lock()
-            .expect("lock")
-            .insert(
-                tool_arg_key("s", "c4"),
-                json!({ "path": "   ", "content": "x" }),
-            );
-        assert!(take_file_change(&args, "s", "c4", Path::new("/work")).is_none());
+        args.lock().expect("lock").insert(
+            tool_arg_key("s", "c4"),
+            json!({ "path": "   ", "content": "x" }),
+        );
+        assert!(
+            take_file_change(&args, "s", "c4", Path::new("/work")).is_none()
+        );
     }
 }

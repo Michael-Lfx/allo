@@ -604,6 +604,10 @@ mod tests {
             agent_id: Some("agent-1".into()),
             cwd: Some(cwd.display().to_string()),
             todos: None,
+            submission_id: None,
+            session_origin: crate::session::SessionOrigin::Unknown,
+            output_root: None,
+            artifact_delivery_available: false,
         }
     }
 

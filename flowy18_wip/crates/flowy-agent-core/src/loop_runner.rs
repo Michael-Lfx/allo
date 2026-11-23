@@ -242,19 +242,18 @@ fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
 }
 
 fn failure_detail(new_messages: &[AgentMessage]) -> Option<String> {
-    let last = new_messages.iter().rev().find_map(|message| match message {
-        AgentMessage::Assistant(assistant) => Some(assistant),
-        _ => None,
-    })?;
+    let last = new_messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::Assistant(assistant) => Some(assistant),
+            _ => None,
+        })?;
     if last.stop_reason != StopReason::Error {
         return None;
     }
     let text = assistant_plain_text(last);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn assistant_plain_text(assistant: &AssistantMessage) -> String {
@@ -282,6 +281,7 @@ pub fn to_agent_message(
                 tool_call_id,
                 content,
                 is_error,
+                ..
             } => Some((tool_call_id, content, is_error)),
             _ => None,
         })
@@ -526,6 +526,9 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                         tool_call_id: result.tool_call_id.clone(),
                         content,
                         is_error: Some(result.is_error),
+                        // Only Engine's private RegistryTool receipt channel
+                        // can attach host-verified artifact metadata.
+                        artifact: None,
                     }],
                     source: MessageSource::Tool {
                         tool: result.tool_name.clone(),
@@ -711,6 +714,7 @@ mod tests {
                 tool_call_id: "call-9".into(),
                 content: vec![ContentBlock::text("data")],
                 is_error: Some(false),
+                artifact: None,
             }],
             source: MessageSource::User,
         };
@@ -746,6 +750,7 @@ mod tests {
                     tool_call_id: "call-1".into(),
                     content: vec![ContentBlock::text("data")],
                     is_error: Some(false),
+                    artifact: None,
                 }],
                 source: MessageSource::Tool {
                     tool: "read_file".into(),
@@ -880,6 +885,7 @@ mod tests {
                 tool_call_id: "call-1".into(),
                 content: vec![ContentBlock::text("data")],
                 is_error: Some(false),
+                artifact: None,
             }],
             source: MessageSource::User,
         };

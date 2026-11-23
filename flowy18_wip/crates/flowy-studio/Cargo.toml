@@ -9,6 +9,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+hayro = { workspace = true }
+oxml-opc = { workspace = true }
+rpptx = { workspace = true }
+image = { workspace = true }
+fontdb = { workspace = true }
 flowy-agent = { workspace = true }
 flowy-core = { workspace = true }
 flowy-i18n = { workspace = true }

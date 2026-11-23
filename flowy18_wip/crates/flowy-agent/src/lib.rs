@@ -5,6 +5,8 @@
 //! `FLOWY_LLM_MODEL`), Flex BYOK prefs, or local echo when no key is set.
 //! Loop events are projected into chat lines for Studio.
 
+mod artifact_source;
+mod artifact_store;
 mod catalog;
 mod config;
 mod flex;
@@ -13,11 +15,19 @@ mod index;
 mod model;
 mod model_directory;
 mod projection;
+mod publish_tool;
 mod title;
 
+pub use artifact_store::{
+    ArtifactManifest, ArtifactPreference, ArtifactRecord, ArtifactStore,
+    ArtifactUsage, MAX_ARTIFACT_BYTES, MAX_DELIVERY_BYTES, MAX_DELIVERY_FILES,
+    MAX_STORE_BYTES, MAX_STORED_ITEMS, PrepareArtifact, PublicationState,
+    ViewCopy, can_open_with_default_app,
+};
 pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
+pub use flowy_agent_core::{DeliveryCommit, SessionOrigin, SessionWorkspace};
 pub use handle::{AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary};
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -31,6 +41,9 @@ pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
 
 #[cfg(test)]
 mod perf_tests;
+
+#[cfg(test)]
+mod artifact_integration_tests;
 
 #[cfg(test)]
 mod tests {
@@ -183,6 +196,61 @@ mod tests {
     }
 
     #[test]
+    fn failed_source_deletion_restores_full_core_history() {
+        let root = ScratchRoot::new("delete-source-index-failure");
+        let handle = mock_handle(&root.0);
+        let id = handle.create_home_session().unwrap();
+        handle.send("keep the full history").unwrap();
+        for _ in 0..100 {
+            if !handle.turn_status().is_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!handle.turn_status().is_busy());
+        let before = flowy_agent_core::SessionIndex::load(&root.0)
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .clone();
+        let index_path = crate::index::SessionIndex::path(&root.0);
+        std::fs::remove_file(&index_path).unwrap();
+        std::fs::create_dir(&index_path).unwrap();
+        assert_eq!(handle.delete_session(&id), Err("notice.storage_error"));
+        let restored = flowy_agent_core::SessionIndex::load(&root.0).unwrap();
+        assert_eq!(restored.get(&id), Some(&before));
+        assert!(!handle.source_deleted(&id));
+        assert!(
+            handle
+                .list_sessions()
+                .iter()
+                .any(|session| session.id == id)
+        );
+    }
+
+    #[test]
+    fn new_home_origin_and_workspace_survive_ui_index_rebuild() {
+        let root = ScratchRoot::new("home-source-rebuild");
+        let handle = mock_handle(&root.0);
+        let id = handle.create_home_session().unwrap();
+        let original = flowy_agent_core::SessionIndex::load(&root.0)
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .clone();
+        assert_eq!(original.origin, SessionOrigin::Home);
+        assert!(original.workspace.as_ref().unwrap().root.ends_with(&id));
+        drop(handle);
+        std::fs::write(crate::index::SessionIndex::path(&root.0), b"{broken")
+            .unwrap();
+        let restored = mock_handle(&root.0);
+        let history = flowy_agent_core::SessionIndex::load(&root.0).unwrap();
+        assert_eq!(history.get(&id).unwrap().origin, SessionOrigin::Home);
+        assert_eq!(history.get(&id).unwrap().workspace, original.workspace);
+        assert!(restored.source_available(&id));
+    }
+
+    #[test]
     fn title_fallback_used_without_live_key() {
         let root = temp_root("title");
         let handle = mock_handle(&root);
@@ -238,6 +306,8 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
+                origin: Default::default(),
+                session_workspace: None,
             }],
         }
         .save(&root.0)
@@ -285,6 +355,8 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
+                origin: Default::default(),
+                session_workspace: None,
             }],
         }
         .save(&root.0)
@@ -336,6 +408,8 @@ mod tests {
                 status: TurnStatus::Running,
                 titled: true,
                 workspace: None,
+                origin: Default::default(),
+                session_workspace: None,
             }],
         };
         index.save(&root.0).unwrap();
@@ -438,6 +512,8 @@ mod tests {
                 status: TurnStatus::Running,
                 titled: true,
                 workspace: None,
+                origin: Default::default(),
+                session_workspace: None,
             }],
         };
         std::fs::create_dir_all(root.0.join("sessions")).unwrap();
@@ -530,6 +606,7 @@ mod tests {
                     },
                 ],
                 todos: Vec::new(),
+                ..flowy_agent_core::SessionRecord::default()
             }],
         };
         history.save(&root.0).unwrap();
@@ -553,21 +630,26 @@ mod tests {
     }
 
     #[test]
-    fn failed_index_save_emits_a_storage_error() {
+    fn failed_session_storage_rejects_new_sessions_and_submissions() {
         let root = ScratchRoot::new("save-failure");
         let handle = mock_handle(&root.0);
-        handle.create_session().unwrap();
+        let active = handle.create_session().unwrap();
         handle.drain_updates();
         std::fs::remove_dir_all(root.0.join("sessions")).unwrap();
         std::fs::write(root.0.join("sessions"), b"not a directory").unwrap();
 
-        handle.create_session().unwrap();
-        assert!(
-            handle
-                .drain_updates()
-                .iter()
-                .any(|update| matches!(update, AgentUpdate::StorageError))
+        assert_eq!(handle.create_session(), Err("notice.storage_error"));
+        assert_eq!(
+            handle.send("cannot durably submit"),
+            Err("notice.storage_error")
         );
+        assert_eq!(
+            handle.active_session_id().as_deref(),
+            Some(active.as_str())
+        );
+        assert_eq!(handle.list_sessions().len(), 1);
+        assert!(handle.lines().is_empty());
+        assert!(!handle.turn_status().is_busy());
     }
 
     #[test]
@@ -591,6 +673,8 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
+                origin: Default::default(),
+                session_workspace: None,
             }],
         }
         .save(&root.0)

@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
 directories = { workspace = true }
 flowy-agent = { workspace = true }
 flowy-auth = { workspace = true }

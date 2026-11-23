@@ -1,9 +1,14 @@
-//! Resource browsing with injected data. Demo fixtures belong to examples.
+//! Conversation artifact browsing. Demo fixtures belong to examples.
 
 pub mod model;
+mod preview;
+mod preview_view;
 pub(crate) mod view;
 
 pub use model::{
-    Category, LibraryItem, LibraryModel, LibrarySort, LibraryView,
+    ArtifactAvailability, Category, LibraryItem, LibraryModel, LibrarySort,
+    LibraryUsage, LibraryView,
 };
-pub use view::LibraryPanel;
+pub use preview_view::{PreviewEvent, PreviewPanel};
+pub(crate) use view::artifact_file_icon;
+pub use view::{LibraryEvent, LibraryPanel};
