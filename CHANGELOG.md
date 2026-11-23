@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.7.4 - 2026-11-23
+
+- An Ultra plan name unlocks Pro models when the numeric plan tier is missing.
+
 ## v1.7.3 - 2026-11-20
 
 - Ultra members keep their plan tier when models are locked. Branded builds keep their own product channel and main-window title.
