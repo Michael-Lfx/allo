@@ -32,7 +32,7 @@ cd "$WS" || { echo "找不到 flowy18_wip 工作区：$WS"; exit 2; }
 head "1/4 存储契约：受理后可被新句柄读到"
 # ---------------------------------------------------------------------------
 if cargo test -q -p flowy-agent-core --lib acceptance 2>&1 | grep -q "0 failed"; then
-    ok "acceptance 队列 4 条测试全过（含「新句柄重开仍可查」）"
+    ok "acceptance 日志测试全过（含「只增不改」「尾部截断容忍」）"
 else
     bad "acceptance 队列测试失败"
     cargo test -p flowy-agent-core --lib acceptance 2>&1 | tail -20
@@ -77,7 +77,7 @@ if [[ "${WITH_APP:-0}" == "1" ]]; then
         else
             bad "进程未存活，见 /tmp/flowy-accept.log"
         fi
-        printf '  回执落盘位置：%s\n' "$HOME/AppData/Roaming/Flowy/acceptance/pending.json"
+        printf '  回执落盘位置：%s\n' "$HOME/AppData/Roaming/Flowy/acceptance/journal.jsonl"
         taskkill /F /IM flowy-app.exe >/dev/null 2>&1
     fi
 else

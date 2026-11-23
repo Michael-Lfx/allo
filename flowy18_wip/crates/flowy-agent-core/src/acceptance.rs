@@ -1,19 +1,28 @@
-//! Local acceptance receipts.
+//! Local acceptance receipts, kept as an append-only journal.
 //!
 //! A turn that is already running cannot take another prompt today: the host
 //! rejects the submission and the draft is lost. This module gives the host a
 //! place to put an accepted message **before** any scheduling decision is made,
 //! so "accepted" and "answered" stop being the same event.
 //!
-//! The store is deliberately separate from [`crate::session::SessionIndex`]:
-//! the queue is written while a turn is running, and the session index is
-//! rewritten at turn boundaries. Sharing one file would make those two writers
-//! race for no gain.
+//! # Why a journal and not a snapshot
+//!
+//! An acceptance is a **fact**: a message was taken in at a moment and that
+//! cannot be changed afterwards. A snapshot file answered "what is still
+//! pending" but overwrote the previous answer on every write, so it could never
+//! answer "what happened earlier". Tracing needs the second question.
+//!
+//! The log is also the simpler write: appending never reads the file first, so
+//! two processes accepting at the same time cannot clobber each other. Pending
+//! state is derived by replaying the journal.
+//!
+//! The journal is deliberately separate from [`crate::session::SessionIndex`]:
+//! it is written while a turn is running, and the index is rewritten at turn
+//! boundaries.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -25,22 +34,32 @@ pub struct AcceptedMessage {
     pub session_id: String,
     pub text: String,
     pub created_at_ms: u64,
-    /// Set once a turn has picked this message up. Kept (not deleted) so a
-    /// restart can still explain what happened to an early submission.
+    /// Set once a turn has picked this message up. Kept so a restart can still
+    /// explain what happened to an early submission.
     #[serde(default)]
     pub taken_at_ms: Option<u64>,
 }
 
-/// File-backed acceptance queue rooted at one storage directory.
+/// One line of the journal. Append-only; nothing is ever rewritten.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum JournalEntry {
+    Accepted {
+        id: String,
+        session_id: String,
+        text: String,
+        at_ms: u64,
+    },
+    Taken {
+        id: String,
+        at_ms: u64,
+    },
+}
+
+/// File-backed acceptance journal rooted at one storage directory.
 #[derive(Clone, Debug)]
 pub struct AcceptanceQueue {
     root: PathBuf,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct QueueFile {
-    #[serde(default)]
-    messages: Vec<AcceptedMessage>,
 }
 
 impl AcceptanceQueue {
@@ -49,13 +68,20 @@ impl AcceptanceQueue {
         Self { root: root.into() }
     }
 
-    /// Stored apart from `sessions/history.json` on purpose; see module docs.
+    /// One journal for the whole store. Stored apart from `sessions/history.json`
+    /// on purpose; see module docs.
     #[must_use]
     pub fn path(root: &Path) -> PathBuf {
-        root.join("acceptance").join("pending.json")
+        root.join("acceptance").join("journal.jsonl")
     }
 
-    pub fn load(&self) -> io::Result<Vec<AcceptedMessage>> {
+    /// Replay the journal into the current set of receipts, oldest first.
+    ///
+    /// A truncated final line is tolerated: an append that was interrupted by a
+    /// crash leaves a partial record, and dropping it is better than refusing to
+    /// start. Anything malformed **before** the final line is also ignored, but
+    /// that is a corruption we do not try to repair here.
+    pub fn replay(&self) -> io::Result<Vec<AcceptedMessage>> {
         let path = Self::path(&self.root);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -64,106 +90,134 @@ impl AcceptanceQueue {
             }
             Err(error) => return Err(error),
         };
-        let file: QueueFile = serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        Ok(file.messages)
+        let text = String::from_utf8_lossy(&bytes);
+        let mut receipts: Vec<AcceptedMessage> = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+                break;
+            };
+            match entry {
+                JournalEntry::Accepted {
+                    id,
+                    session_id,
+                    text,
+                    at_ms,
+                } => receipts.push(AcceptedMessage {
+                    id,
+                    session_id,
+                    text,
+                    created_at_ms: at_ms,
+                    taken_at_ms: None,
+                }),
+                JournalEntry::Taken { id, at_ms } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                    {
+                        receipt.taken_at_ms = Some(at_ms);
+                    }
+                }
+            }
+        }
+        Ok(receipts)
+    }
+
+    /// Every receipt ever accepted, oldest first, claimed or not.
+    pub fn all(&self) -> io::Result<Vec<AcceptedMessage>> {
+        self.replay()
     }
 
     /// Accept `text` for `session_id` and return the receipt.
     ///
-    /// This is the only write the busy path performs: one file, one atomic
-    /// rename, no session state touched.
+    /// This is the only write the busy path performs: one append, no read, no
+    /// session state touched.
     pub fn accept(
         &self,
         session_id: &str,
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
-        let mut messages = self.load()?;
-        let message = AcceptedMessage {
-            id: new_receipt_id(now_ms, messages.len()),
+        let id = new_receipt_id(now_ms, self.next_ordinal(now_ms)?);
+        let entry = JournalEntry::Accepted {
+            id: id.clone(),
+            session_id: session_id.to_owned(),
+            text: text.to_owned(),
+            at_ms: now_ms,
+        };
+        self.append(&entry)?;
+        Ok(AcceptedMessage {
+            id,
             session_id: session_id.to_owned(),
             text: text.to_owned(),
             created_at_ms: now_ms,
             taken_at_ms: None,
-        };
-        messages.push(message.clone());
-        self.save(&messages)?;
-        Ok(message)
+        })
     }
 
-    /// Messages accepted but never picked up, oldest first.
+    /// Receipts accepted but never picked up, oldest first.
     pub fn pending(&self) -> io::Result<Vec<AcceptedMessage>> {
-        let mut messages: Vec<_> = self
-            .load()?
+        let mut pending: Vec<_> = self
+            .replay()?
             .into_iter()
-            .filter(|message| message.taken_at_ms.is_none())
+            .filter(|receipt| receipt.taken_at_ms.is_none())
             .collect();
-        messages.sort_by_key(|message| message.created_at_ms);
-        Ok(messages)
+        pending.sort_by_key(|receipt| receipt.created_at_ms);
+        Ok(pending)
     }
 
-    /// Mark `id` as picked up. Returns the message it just claimed, so two
-    /// concurrent callers cannot both run the same text.
-    pub fn take(&self, id: &str, now_ms: u64) -> io::Result<Option<AcceptedMessage>> {
-        let mut messages = self.load()?;
-        let claimed = messages
+    /// Mark `id` as picked up. Returns the receipt it just claimed, so two
+    /// callers cannot both run the same text.
+    pub fn take(
+        &self,
+        id: &str,
+        now_ms: u64,
+    ) -> io::Result<Option<AcceptedMessage>> {
+        let mut receipts = self.replay()?;
+        let Some(receipt) = receipts
             .iter_mut()
-            .find(|message| message.id == id && message.taken_at_ms.is_none());
-        let Some(message) = claimed else {
+            .find(|receipt| receipt.id == id && receipt.taken_at_ms.is_none())
+        else {
             return Ok(None);
         };
-        message.taken_at_ms = Some(now_ms);
-        let snapshot = message.clone();
-        self.save(&messages)?;
-        Ok(Some(snapshot))
+        receipt.taken_at_ms = Some(now_ms);
+        let claimed = receipt.clone();
+        self.append(&JournalEntry::Taken {
+            id: id.to_owned(),
+            at_ms: now_ms,
+        })?;
+        Ok(Some(claimed))
     }
 
-    fn save(&self, messages: &[AcceptedMessage]) -> io::Result<()> {
+    /// Ordinal used to keep ids unique inside the same millisecond. Replays the
+    /// journal, which is cheap at first-version sizes.
+    fn next_ordinal(&self, now_ms: u64) -> io::Result<usize> {
+        Ok(self
+            .replay()?
+            .iter()
+            .filter(|receipt| receipt.created_at_ms == now_ms)
+            .count())
+    }
+
+    fn append(&self, entry: &JournalEntry) -> io::Result<()> {
         let path = Self::path(&self.root);
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::other("missing acceptance directory"))?;
         fs::create_dir_all(dir)?;
-        let file = QueueFile {
-            messages: messages.to_vec(),
-        };
-        let bytes = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
-        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-        let (tmp, mut handle) = loop {
-            let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let tmp = dir.join(format!(
-                ".pending.json.{}.{}.tmp",
-                std::process::id(),
-                number
-            ));
-            match fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&tmp)
-            {
-                Ok(handle) => break (tmp, handle),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        };
-        if let Err(error) = handle.write_all(&bytes).and_then(|()| handle.flush()) {
-            let _ = fs::remove_file(&tmp);
-            return Err(error);
-        }
-        drop(handle);
-        match fs::rename(&tmp, &path) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let _ = fs::remove_file(&tmp);
-                Err(error)
-            }
-        }
+        let mut line = serde_json::to_vec(entry).map_err(io::Error::other)?;
+        line.push(b'\n');
+        let mut handle =
+            fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        handle.write_all(&line)?;
+        handle.flush()
     }
 }
 
-fn new_receipt_id(now_ms: u64, index: usize) -> String {
-    format!("accepted-{now_ms:x}-{index:x}")
+fn new_receipt_id(now_ms: u64, ordinal: usize) -> String {
+    format!("accepted-{now_ms:x}-{ordinal:x}")
 }
 
 #[cfg(test)]
@@ -216,7 +270,7 @@ mod tests {
         assert!(second.is_none(), "a receipt must not be run twice");
 
         assert!(queue.pending().expect("pending").is_empty());
-        assert_eq!(queue.load().expect("load").len(), 1);
+        assert_eq!(queue.all().expect("all").len(), 1);
 
         fs::remove_dir_all(&root).expect("cleanup");
     }
@@ -238,6 +292,53 @@ mod tests {
         let b = queue.accept("home", "b", 1_000).expect("b");
         assert_ne!(a.id, b.id);
         assert_eq!(queue.pending().expect("pending").len(), 2);
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn the_journal_only_ever_grows_and_keeps_earlier_lines() {
+        let root = temp_root("append");
+        let queue = AcceptanceQueue::new(&root);
+        queue.accept("home", "first", 1_000).expect("first");
+        let after_first =
+            fs::read_to_string(AcceptanceQueue::path(&root)).expect("read");
+
+        queue.accept("home", "second", 2_000).expect("second");
+        let after_second =
+            fs::read_to_string(AcceptanceQueue::path(&root)).expect("read");
+
+        // The earlier bytes are still there, unchanged, as a prefix. A snapshot
+        // file could not make this promise.
+        assert!(
+            after_second.starts_with(&after_first),
+            "appending must not rewrite history"
+        );
+        assert_eq!(after_second.lines().count(), 2);
+        assert_eq!(queue.all().expect("all").len(), 2);
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_truncated_final_line_is_tolerated() {
+        let root = temp_root("truncated");
+        let queue = AcceptanceQueue::new(&root);
+        queue.accept("home", "complete", 1_000).expect("accept");
+        let path = AcceptanceQueue::path(&root);
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        handle
+            .write_all(br#"{"event":"accepted","id":"acc"#)
+            .expect("partial write");
+        drop(handle);
+
+        // The torn tail is dropped; the complete record survives.
+        let pending = queue.pending().expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "complete");
+
         fs::remove_dir_all(&root).expect("cleanup");
     }
 }
