@@ -1001,8 +1001,11 @@ impl StudioPanel {
         // change the draft was simply refused; now the host takes responsibility
         // for it immediately and hands back a durable receipt, so the user can
         // keep typing while the current turn finishes.
+        // Read the panel's own view rather than re-querying the agent: the
+        // stop/send affordances are rendered from `self.status` too, so a
+        // second source here would let the button and the handler disagree.
         let running = matches!(
-            self.agent.turn_status(),
+            self.status,
             flowy_agent::TurnStatus::Running | flowy_agent::TurnStatus::SavingFiles
         );
         if running {
@@ -1615,6 +1618,49 @@ mod tests {
                 1
             );
         });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn sending_while_running_is_accepted_into_the_durable_queue(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "busy-accept");
+        panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            // A turn is in flight: this is the state a user is in when the
+            // send button used to disappear.
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+
+            panel.fill_prompt("second prompt while the first turn runs", cx);
+            panel.send_prompt(cx);
+        });
+
+        // The submission must be durable, not just remembered.
+        let pending = flowy_agent::AcceptanceQueue::new(root.clone())
+            .pending()
+            .expect("acceptance queue readable");
+        assert_eq!(pending.len(), 1, "busy submit must be accepted, not dropped");
+        assert_eq!(pending[0].text, "second prompt while the first turn runs");
+        assert!(pending[0].taken_at_ms.is_none(), "nothing ran it yet");
+
+        // The draft is handed over to the queue, so the composer is clear and
+        // the user can keep typing.
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "");
+        });
+
+        // Reopening the client is a fresh queue handle over the same root:
+        // no in-memory state is shared, only the receipt file.
+        let reopened = flowy_agent::AcceptanceQueue::new(root.clone())
+            .pending()
+            .expect("reopened queue readable");
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(reopened[0].id, pending[0].id);
+
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }

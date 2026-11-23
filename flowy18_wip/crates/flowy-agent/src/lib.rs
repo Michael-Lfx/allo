@@ -28,7 +28,10 @@ pub use artifact_store::{
 pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
-pub use flowy_agent_core::{DeliveryCommit, SessionOrigin, SessionWorkspace};
+pub use flowy_agent_core::{
+    AcceptanceQueue, AcceptedMessage, DeliveryCommit, SessionOrigin,
+    SessionWorkspace,
+};
 pub use handle::{AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary};
 pub use model::{Model, Plan};
 pub use model_directory::{
