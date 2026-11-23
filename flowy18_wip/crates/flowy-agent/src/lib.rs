@@ -9,6 +9,7 @@ mod artifact_source;
 mod artifact_store;
 mod catalog;
 mod config;
+mod conversation_artifacts;
 mod flex;
 mod handle;
 mod index;

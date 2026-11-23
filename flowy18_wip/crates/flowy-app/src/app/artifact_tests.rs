@@ -52,6 +52,8 @@ impl Fixture {
             .prepare(PrepareArtifact {
                 source_root: output,
                 relative_path: "report.csv".into(),
+                source_relative_path: "report.csv".into(),
+                conversation_import: false,
                 session_id: "picker-session".into(),
                 submission_id: "picker-submission".into(),
                 tool_call_id: "picker-call".into(),

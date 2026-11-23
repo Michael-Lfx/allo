@@ -45,6 +45,20 @@ pub struct ArtifactManifest {
     /// Source basename captured before an optional display name is applied.
     #[serde(default)]
     pub original_basename: String,
+    /// Source path relative to the owning session workspace. Older manifests
+    /// do not carry this field and are treated as having no reusable source.
+    #[serde(default)]
+    pub source_relative_path: String,
+    /// True when the snapshot was inferred from a successful conversation
+    /// write instead of an explicit host delivery. Superseded imports are safe
+    /// to reclaim because they never own a chat artifact card.
+    #[serde(default)]
+    pub conversation_import: bool,
+    /// True when a newer conversation import superseded this payload. Unlike a
+    /// user tombstone, a superseded version may be captured again if its bytes
+    /// return in a later turn.
+    #[serde(default)]
+    pub superseded: bool,
     pub origin: SessionOrigin,
     #[serde(default)]
     pub origin_title_snapshot: String,
@@ -89,6 +103,12 @@ pub struct ArtifactUsage {
 pub struct PrepareArtifact {
     pub source_root: PathBuf,
     pub relative_path: String,
+    /// Stable source identity used to reuse and supersede conversation
+    /// snapshots. For `publish_file`, this is relative to the session
+    /// workspace rather than the per-turn output directory.
+    pub source_relative_path: String,
+    /// See [`ArtifactManifest::conversation_import`].
+    pub conversation_import: bool,
     pub session_id: String,
     pub submission_id: String,
     pub tool_call_id: String,
@@ -162,6 +182,9 @@ impl ArtifactStore {
         };
         if let Err(error) = store.retry_pending_deletions() {
             tracing::warn!(%error, "pending artifact deletion retained for retry");
+        }
+        if let Err(error) = store.prune_superseded_conversation_imports() {
+            tracing::warn!(%error, "superseded conversation artifacts retained for retry");
         }
         Ok(store)
     }
@@ -271,6 +294,113 @@ impl ArtifactStore {
         failure.map_or(Ok(()), Err)
     }
 
+    fn prune_superseded_conversation_imports(&self) -> io::Result<()> {
+        let _guard = self.lock();
+        self.prune_superseded_conversation_imports_locked()
+    }
+
+    fn prune_superseded_conversation_imports_locked(&self) -> io::Result<()> {
+        let scan = self.scan_locked()?;
+        let committed = self.committed_ids_locked()?;
+        let mut latest = BTreeMap::new();
+        for manifest in &scan.manifests {
+            if manifest.source_relative_path.is_empty()
+                || !committed.contains(&manifest.receipt.artifact_id)
+                || !matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                        | PublicationState::Deleted
+                )
+            {
+                continue;
+            }
+            let key = (
+                manifest.receipt.session_id.clone(),
+                manifest.source_relative_path.clone(),
+            );
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            latest
+                .entry(key)
+                .and_modify(|current: &mut (u64, String)| {
+                    if rank > *current {
+                        current.clone_from(&rank);
+                    }
+                })
+                .or_insert(rank);
+        }
+
+        let mut failure = None;
+        for manifest in scan.manifests {
+            if !manifest.conversation_import
+                || !committed.contains(&manifest.receipt.artifact_id)
+                || !matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                )
+            {
+                continue;
+            }
+            let key = (
+                manifest.receipt.session_id.clone(),
+                manifest.source_relative_path.clone(),
+            );
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            if latest.get(&key).is_some_and(|current| *current == rank) {
+                continue;
+            }
+            if let Err(error) =
+                self.retire_conversation_import_locked(&manifest)
+            {
+                failure = Some(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    fn retire_conversation_import_locked(
+        &self,
+        manifest: &ArtifactManifest,
+    ) -> io::Result<()> {
+        let path = self
+            .item_dir(&manifest.receipt.artifact_id)
+            .join("manifest.json");
+        let mut current = read_manifest(&path)?;
+        if !current.conversation_import
+            || current.receipt.artifact_id != manifest.receipt.artifact_id
+        {
+            return Ok(());
+        }
+        match current.publication_state {
+            PublicationState::Deleted => return Ok(()),
+            PublicationState::Prepared => {
+                return Err(invalid(
+                    "a prepared conversation import cannot be superseded",
+                ));
+            }
+            PublicationState::Committed => {
+                current.publication_state = PublicationState::DeletePending;
+                current.superseded = true;
+                self.write_metadata_locked(&path, &current)?;
+            }
+            PublicationState::DeletePending => {}
+        }
+        match fs::remove_file(self.payload_path(&current.receipt.artifact_id)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        current.publication_state = PublicationState::Deleted;
+        self.write_metadata_locked(&path, &current)
+    }
+
     /// Reconcile only successful durable per-turn commits. Prepared files
     /// without such a proof remain hidden and are never guessed into a result.
     pub fn recover_commits(
@@ -283,6 +413,29 @@ impl ArtifactStore {
             }
         }
         Ok(())
+    }
+
+    /// Commit one host-derived conversation snapshot synchronously. The
+    /// caller must persist the matching history commit first.
+    pub(crate) fn commit_prepared(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
+        self.commit_delivery(commit)
+    }
+
+    /// Keep a bounded, UI-visible diagnosis for a file that could not be
+    /// imported without failing the rest of the conversation backfill.
+    pub(crate) fn record_import_diagnostic(&self, message: String) {
+        tracing::warn!(target: "flowy.storage", %message, "artifact import skipped");
+        let mut diagnostics = self
+            .inner
+            .cleanup_diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if diagnostics.len() < 64 {
+            diagnostics.push(message);
+        }
     }
 
     /// Run only during host startup after all successful history commits have
@@ -809,6 +962,8 @@ impl ArtifactStore {
         }
         validate_delivery_key(&request.delivery_key)?;
         let relative = validate_relative_path(&request.relative_path)?;
+        let source_relative_path = request.source_relative_path.clone();
+        let conversation_import = request.conversation_import;
         let source = request.source_root.join(&relative);
         let mut pinned =
             crate::artifact_source::open(&request.source_root, &relative)?;
@@ -840,6 +995,69 @@ impl ArtifactStore {
             ));
         }
         validate_known_header(&request.relative_path, &snapshot.prefix)?;
+
+        // A conversation file has one stable source identity. Reuse an
+        // already committed snapshot when both the source identity and bytes
+        // match, regardless of which submission originally captured it.
+        if !source_relative_path.is_empty() {
+            let committed = self.committed_ids_locked()?;
+            let mut latest_source = BTreeMap::new();
+            for manifest in initial.manifests.iter().filter(|manifest| {
+                manifest.receipt.session_id == request.session_id
+                    && manifest.source_relative_path == source_relative_path
+                    && committed.contains(&manifest.receipt.artifact_id)
+                    && matches!(
+                        manifest.publication_state,
+                        PublicationState::Committed
+                            | PublicationState::DeletePending
+                            | PublicationState::Deleted
+                    )
+            }) {
+                let rank = (
+                    manifest.receipt.created_at_ms,
+                    manifest.receipt.artifact_id.clone(),
+                );
+                latest_source
+                    .entry((
+                        manifest.receipt.session_id.clone(),
+                        manifest.source_relative_path.clone(),
+                    ))
+                    .and_modify(|current: &mut (u64, String)| {
+                        if rank > *current {
+                            current.clone_from(&rank);
+                        }
+                    })
+                    .or_insert(rank);
+            }
+            if let Some(existing) = initial.manifests.iter().find(|manifest| {
+                let rank = (
+                    manifest.receipt.created_at_ms,
+                    manifest.receipt.artifact_id.clone(),
+                );
+                manifest.receipt.session_id == request.session_id
+                    && manifest.origin == request.origin
+                    && manifest.source_relative_path == source_relative_path
+                    && manifest.receipt.sha256 == snapshot.digest
+                    && manifest.receipt.size_bytes == snapshot.size
+                    && matches!(
+                        manifest.publication_state,
+                        PublicationState::Committed
+                            | PublicationState::DeletePending
+                            | PublicationState::Deleted
+                    )
+                    && (!manifest.conversation_import || conversation_import)
+                    && !manifest.superseded
+                    && committed.contains(&manifest.receipt.artifact_id)
+                    && latest_source
+                        .get(&(
+                            manifest.receipt.session_id.clone(),
+                            manifest.source_relative_path.clone(),
+                        ))
+                        .is_some_and(|current| *current == rank)
+            }) {
+                return Ok(existing.receipt.clone());
+            }
+        }
 
         if let Some(existing) = initial.manifests.iter().find(|manifest| {
             manifest.receipt.session_id == request.session_id
@@ -911,6 +1129,19 @@ impl ArtifactStore {
             request.display_name.as_deref(),
             &original_basename,
         )?;
+        let created_at_ms = initial
+            .manifests
+            .iter()
+            .filter(|manifest| {
+                manifest.receipt.session_id == request.session_id
+                    && !source_relative_path.is_empty()
+                    && manifest.source_relative_path == source_relative_path
+            })
+            .map(|manifest| manifest.receipt.created_at_ms)
+            .max()
+            .map_or_else(now_ms, |previous| {
+                now_ms().max(previous.saturating_add(1))
+            });
         let receipt = ArtifactReceipt {
             artifact_id: artifact_id.clone(),
             delivery_key: request.delivery_key,
@@ -921,7 +1152,7 @@ impl ArtifactStore {
             media_type: media_type(&source),
             size_bytes: snapshot.size,
             sha256: snapshot.digest,
-            created_at_ms: now_ms(),
+            created_at_ms,
             origin_title_snapshot: String::new(),
         };
         let staging = self.staging_dir(
@@ -957,6 +1188,9 @@ impl ArtifactStore {
             schema_version: 1,
             receipt: receipt.clone(),
             original_basename,
+            source_relative_path,
+            conversation_import,
+            superseded: false,
             origin: request.origin,
             origin_title_snapshot: String::new(),
             payload_relative_path: format!("items/{artifact_id}/payload"),
@@ -991,6 +1225,37 @@ impl ArtifactStore {
         let committed = self.committed_ids_locked()?;
         let deleting = self.session_deletion_ids_locked()?;
         let preferences = self.preferences_locked()?;
+        let mut latest_sources = BTreeMap::new();
+        if !include_deleted {
+            for manifest in scan.manifests.iter().filter(|manifest| {
+                !manifest.source_relative_path.is_empty()
+                    && !deleting.contains(&manifest.receipt.session_id)
+                    && committed.contains(&manifest.receipt.artifact_id)
+                    && matches!(
+                        manifest.publication_state,
+                        PublicationState::Committed
+                            | PublicationState::DeletePending
+                            | PublicationState::Deleted
+                    )
+            }) {
+                let key = (
+                    manifest.receipt.session_id.clone(),
+                    manifest.source_relative_path.clone(),
+                );
+                let rank = (
+                    manifest.receipt.created_at_ms,
+                    manifest.receipt.artifact_id.clone(),
+                );
+                latest_sources
+                    .entry(key)
+                    .and_modify(|current| {
+                        if rank > *current {
+                            *current = rank.clone();
+                        }
+                    })
+                    .or_insert(rank);
+            }
+        }
         Ok(scan
             .manifests
             .into_iter()
@@ -1006,6 +1271,20 @@ impl ArtifactStore {
                             PublicationState::Deleted
                         )))
                     && committed.contains(&manifest.receipt.artifact_id)
+                    && (include_deleted
+                        || manifest.source_relative_path.is_empty()
+                        || latest_sources
+                            .get(&(
+                                manifest.receipt.session_id.clone(),
+                                manifest.source_relative_path.clone(),
+                            ))
+                            .is_some_and(|latest| {
+                                *latest
+                                    == (
+                                        manifest.receipt.created_at_ms,
+                                        manifest.receipt.artifact_id.clone(),
+                                    )
+                            }))
             })
             .map(|manifest| {
                 let artifact_id = manifest.receipt.artifact_id.clone();
@@ -1276,9 +1555,9 @@ impl ArtifactStore {
         if !commit.completed_successfully {
             return Err(invalid("cannot commit an unsuccessful delivery"));
         }
-        if commit.origin != SessionOrigin::Home {
+        if !origin_may_own_artifacts(&commit.origin) {
             return Err(invalid(
-                "only explicitly marked Home sessions may publish artifacts",
+                "only explicit Home or Project sessions may own artifacts",
             ));
         }
         let expected =
@@ -1316,6 +1595,11 @@ impl ArtifactStore {
                         },
                     )?;
                 }
+                if let Err(error) =
+                    self.prune_superseded_conversation_imports_locked()
+                {
+                    tracing::warn!(%error, "superseded conversation artifacts retained for retry");
+                }
                 return Ok(());
             }
             return Err(invalid(
@@ -1337,14 +1621,15 @@ impl ArtifactStore {
             ));
         }
         if candidates.values().any(|manifest| {
-            manifest.origin != SessionOrigin::Home
+            manifest.origin != commit.origin
+                || !origin_may_own_artifacts(&manifest.origin)
                 || matches!(
                     manifest.publication_state,
                     PublicationState::Deleted | PublicationState::DeletePending
                 )
         }) {
             return Err(invalid(
-                "delivery contains a non-Home or deleted artifact",
+                "delivery contains a mismatched or deleted artifact",
             ));
         }
         if candidates.len() > MAX_DELIVERY_FILES
@@ -1435,6 +1720,10 @@ impl ArtifactStore {
             commit: commit.clone(),
         };
         self.write_metadata_locked(&marker_path, &marker)?;
+        if let Err(error) = self.prune_superseded_conversation_imports_locked()
+        {
+            tracing::warn!(%error, "superseded conversation artifacts retained for retry");
+        }
         Ok(())
     }
 
@@ -1527,7 +1816,7 @@ impl ArtifactStore {
             read_limited_json(path, MAX_MANIFEST_BYTES)?;
         if marker.schema_version != 1
             || !marker.commit.completed_successfully
-            || marker.commit.origin != SessionOrigin::Home
+            || !origin_may_own_artifacts(&marker.commit.origin)
             || marker.commit.artifact_ids.is_empty()
             || marker.commit.artifact_ids.len() > MAX_DELIVERY_FILES
         {
@@ -1935,6 +2224,10 @@ fn copy_and_hash(
     })
 }
 
+const fn origin_may_own_artifacts(origin: &SessionOrigin) -> bool {
+    matches!(origin, SessionOrigin::Home | SessionOrigin::Project { .. })
+}
+
 fn validate_relative_path(raw: &str) -> io::Result<PathBuf> {
     if raw.trim().is_empty() || raw.chars().any(char::is_control) {
         return Err(invalid("path must be a non-empty relative file path"));
@@ -2289,6 +2582,8 @@ mod tests {
         PrepareArtifact {
             source_root: root.join("workspace"),
             relative_path: relative_path.into(),
+            source_relative_path: relative_path.into(),
+            conversation_import: false,
             session_id: "session-1".into(),
             submission_id: "submission-1".into(),
             tool_call_id: format!("call-{key}"),
@@ -2311,6 +2606,33 @@ mod tests {
             origin_title_snapshot: "Home task".into(),
             committed_at_ms: 42,
         }
+    }
+
+    #[test]
+    fn legacy_manifest_without_source_relative_path_deserializes_empty() {
+        let manifest: super::ArtifactManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "receipt": {
+                    "artifact_id": "artifact-1",
+                    "delivery_key": "report",
+                    "session_id": "session-1",
+                    "submission_id": "submission-1",
+                    "tool_call_id": "call-1",
+                    "display_name": "report.md",
+                    "size_bytes": 1,
+                    "sha256": "digest",
+                    "created_at_ms": 1
+                },
+                "original_basename": "report.md",
+                "origin": { "kind": "home" },
+                "payload_relative_path": "items/artifact-1/payload",
+                "publication_state": "committed"
+            }))
+            .unwrap();
+        assert!(manifest.source_relative_path.is_empty());
+        assert!(!manifest.conversation_import);
+        assert!(!manifest.superseded);
     }
 
     fn create_sparse_file(path: &std::path::Path, length: u64) {
@@ -2426,8 +2748,154 @@ mod tests {
     }
 
     #[test]
-    fn same_named_files_in_other_submissions_and_sessions_keep_independent_versions()
-     {
+    fn superseded_conversation_import_releases_hidden_payload() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let source = scratch.0.join("workspace/outputs/notes.md");
+        fs::write(&source, b"old").unwrap();
+        let mut first_request =
+            request(&scratch.0, "outputs/notes.md", "old-import");
+        first_request.conversation_import = true;
+        let first = store.prepare(first_request).unwrap();
+        store.commit_delivery(&commit(&first)).unwrap();
+
+        fs::write(&source, b"new").unwrap();
+        let mut second_request =
+            request(&scratch.0, "outputs/notes.md", "new-import");
+        second_request.conversation_import = true;
+        second_request.submission_id = "submission-2".into();
+        let second = store.prepare(second_request).unwrap();
+        store.commit_delivery(&commit(&second)).unwrap();
+
+        let visible = store.list().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].manifest.receipt.artifact_id, second.artifact_id);
+        let retired = store.get(&first.artifact_id).unwrap().unwrap();
+        assert_eq!(
+            retired.manifest.publication_state,
+            PublicationState::Deleted
+        );
+        assert!(store.read_payload(&first.artifact_id).is_err());
+        assert_eq!(store.usage().unwrap().stored_items, 1);
+    }
+
+    #[test]
+    fn returning_to_a_superseded_content_version_creates_a_new_snapshot() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let source = scratch.0.join("workspace/outputs/notes.md");
+
+        fs::write(&source, b"version-a").unwrap();
+        let mut first_request =
+            request(&scratch.0, "outputs/notes.md", "first-a");
+        first_request.conversation_import = true;
+        let first = store.prepare(first_request).unwrap();
+        store.commit_delivery(&commit(&first)).unwrap();
+
+        fs::write(&source, b"version-b").unwrap();
+        let mut second_request =
+            request(&scratch.0, "outputs/notes.md", "version-b");
+        second_request.conversation_import = true;
+        second_request.submission_id = "submission-2".into();
+        let second = store.prepare(second_request).unwrap();
+        store.commit_delivery(&commit(&second)).unwrap();
+        assert!(
+            store
+                .get(&first.artifact_id)
+                .unwrap()
+                .unwrap()
+                .manifest
+                .superseded
+        );
+
+        fs::write(&source, b"version-a").unwrap();
+        let mut third_request =
+            request(&scratch.0, "outputs/notes.md", "return-a");
+        third_request.conversation_import = true;
+        third_request.submission_id = "submission-3".into();
+        let third = store.prepare(third_request).unwrap();
+        assert_ne!(third.artifact_id, first.artifact_id);
+        store.commit_delivery(&commit(&third)).unwrap();
+
+        let visible = store.list().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].manifest.receipt.artifact_id, third.artifact_id);
+        assert_eq!(
+            store.read_payload(&third.artifact_id).unwrap(),
+            b"version-a"
+        );
+        assert!(store.read_payload(&second.artifact_id).is_err());
+    }
+
+    #[test]
+    fn deleted_content_can_return_after_a_newer_source_version() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let source = scratch.0.join("workspace/outputs/notes.md");
+
+        fs::write(&source, b"version-a").unwrap();
+        let mut first_request =
+            request(&scratch.0, "outputs/notes.md", "first-a");
+        first_request.conversation_import = true;
+        let first = store.prepare(first_request).unwrap();
+        store.commit_delivery(&commit(&first)).unwrap();
+        store.trash(&first.artifact_id).unwrap();
+        store.permanently_delete(&first.artifact_id).unwrap();
+
+        fs::write(&source, b"version-b").unwrap();
+        let mut second_request =
+            request(&scratch.0, "outputs/notes.md", "version-b");
+        second_request.conversation_import = true;
+        second_request.submission_id = "submission-2".into();
+        let second = store.prepare(second_request).unwrap();
+        store.commit_delivery(&commit(&second)).unwrap();
+
+        fs::write(&source, b"version-a").unwrap();
+        let mut third_request =
+            request(&scratch.0, "outputs/notes.md", "return-a");
+        third_request.conversation_import = true;
+        third_request.submission_id = "submission-3".into();
+        let third = store.prepare(third_request).unwrap();
+        assert_ne!(third.artifact_id, first.artifact_id);
+        store.commit_delivery(&commit(&third)).unwrap();
+
+        let visible = store.list().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].manifest.receipt.artifact_id, third.artifact_id);
+    }
+
+    #[test]
+    fn superseded_explicit_delivery_is_retained_for_chat_cards() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let source = scratch.0.join("workspace/outputs/notes.md");
+        fs::write(&source, b"explicit").unwrap();
+        let first = store
+            .prepare(request(&scratch.0, "outputs/notes.md", "explicit"))
+            .unwrap();
+        store.commit_delivery(&commit(&first)).unwrap();
+
+        fs::write(&source, b"imported").unwrap();
+        let mut imported_request =
+            request(&scratch.0, "outputs/notes.md", "imported");
+        imported_request.conversation_import = true;
+        imported_request.submission_id = "submission-2".into();
+        let imported = store.prepare(imported_request).unwrap();
+        store.commit_delivery(&commit(&imported)).unwrap();
+
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(
+            store.read_payload(&first.artifact_id).unwrap(),
+            b"explicit"
+        );
+        assert_eq!(
+            store.read_payload(&imported.artifact_id).unwrap(),
+            b"imported"
+        );
+    }
+
+    #[test]
+    fn same_named_files_in_other_sessions_keep_independent_versions() {
         let scratch = Scratch::new();
         let store = store(&scratch.0);
         let source = scratch.0.join("workspace/outputs/report.csv");
@@ -2473,7 +2941,15 @@ mod tests {
             store.read_payload(&third.artifact_id).unwrap(),
             b"version,value\n1,old\n"
         );
-        assert_eq!(store.list().unwrap().len(), 3);
+        let visible = store.list().unwrap();
+        assert_eq!(visible.len(), 2);
+        let visible_ids = visible
+            .iter()
+            .map(|record| record.manifest.receipt.artifact_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!visible_ids.contains(first.artifact_id.as_str()));
+        assert!(visible_ids.contains(second.artifact_id.as_str()));
+        assert!(visible_ids.contains(third.artifact_id.as_str()));
     }
 
     #[test]
@@ -3016,6 +3492,29 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_current_source_version_does_not_resurrect_an_old_one() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let source = scratch.0.join("workspace/outputs/report.md");
+        fs::write(&source, b"old").unwrap();
+        let first = store
+            .prepare(request(&scratch.0, "outputs/report.md", "first"))
+            .unwrap();
+        store.commit_delivery(&commit(&first)).unwrap();
+        fs::write(&source, b"new").unwrap();
+        let mut next = request(&scratch.0, "outputs/report.md", "second");
+        next.submission_id = "submission-2".into();
+        let second = store.prepare(next).unwrap();
+        store.commit_delivery(&commit(&second)).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
+
+        store.trash(&second.artifact_id).unwrap();
+        store.permanently_delete(&second.artifact_id).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.read_payload(&first.artifact_id).unwrap(), b"old");
+    }
+
+    #[test]
     fn corrupt_marker_isolates_its_group_but_blocks_cleanup_and_new_metadata() {
         let scratch = Scratch::new();
         let store = store(&scratch.0);
@@ -3028,6 +3527,9 @@ mod tests {
         let mut second_request =
             request(&scratch.0, "outputs/report.md", "second");
         second_request.submission_id = "submission-2".into();
+        // Deliberately use a distinct source identity so this fixture still
+        // exercises one healthy artifact alongside a corrupt marker.
+        second_request.source_relative_path = "outputs/healthy.md".into();
         let healthy = store.prepare(second_request).unwrap();
         store.commit_delivery(&commit(&healthy)).unwrap();
         let raw =

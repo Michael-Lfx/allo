@@ -292,6 +292,53 @@ impl Engine {
         inner.index.save(&self.root)
     }
 
+    /// Persist one host-derived delivery commit. Repeated calls with the same
+    /// commit are idempotent; a different commit for the same submission
+    /// replaces the previous receipt set.
+    pub fn record_delivery_commit(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let previous = inner
+            .index
+            .get(&commit.session_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session {} not found", commit.session_id),
+                )
+            })?
+            .delivery_commits
+            .clone();
+        let saved = {
+            let record = inner
+                .index
+                .get_mut(&commit.session_id)
+                .expect("session still exists under the engine lock");
+            if record
+                .delivery_commits
+                .iter()
+                .any(|existing| existing == commit)
+            {
+                return Ok(());
+            }
+            record.delivery_commits.retain(|existing| {
+                existing.submission_id != commit.submission_id
+            });
+            record.delivery_commits.push(commit.clone());
+            inner.index.save(&self.root)
+        };
+        if let Err(error) = saved {
+            if let Some(record) = inner.index.get_mut(&commit.session_id) {
+                record.delivery_commits = previous;
+            }
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
+    }
+
     pub fn remove_session(&self, id: &str) -> std::io::Result<bool> {
         let mut inner = self.inner.lock().unwrap();
         if inner.finalizing.contains(id) {
