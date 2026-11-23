@@ -19,8 +19,8 @@ import type { GenMode, ModelOption } from './genTypes';
 import { useGeneratorModels } from './useGeneratorModels';
 import Floating from './Floating';
 import type { ProviderId } from '@/common/types/ids';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isCatalogPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 
 export interface ModelPickerProps {
   mode: GenMode;
@@ -34,6 +34,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
   const navigate = useNavigate();
   const { groups, flat, hasProviders } = useGeneratorModels(mode);
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -64,7 +65,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
   };
 
   const pick = (opt: ModelOption): void => {
-    if (isPlanLocked(opt.minTierLevel ?? 0, effectiveModelTier)) return;
+    if (isCatalogPlanLocked(opt, effectiveModelTier, memberPlan)) return;
     onChange(opt);
     setOpen(false);
   };
@@ -163,7 +164,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
                     </div>
                     {g.models.map((m) => {
                       const active = selected?.providerId === m.providerId && selected?.model === m.model;
-                      const locked = isPlanLocked(m.minTierLevel ?? 0, effectiveModelTier);
+                      const locked = isCatalogPlanLocked(m, effectiveModelTier, memberPlan);
                       const planName = requiredPlanBadgeLabel(
                         m.minTierLevel,
                         m.requiredPlanName,

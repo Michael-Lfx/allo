@@ -71,7 +71,7 @@ describe('mergeAlloCatalogIntoConfig TTS (category=8)', () => {
   test('keeps the catalog plan requirement on video models', () => {
     const merged = mergeAlloCatalogIntoConfig(defaultConfig, {
       image: [],
-      video: [{ id: 'AIPC-wan3', name: 'Wan 3.0', min_tier_level: 1, required_plan_name: 'Pro' }],
+      video: [{ id: 'AIPC-wan3', name: 'Wan 3.0', min_tier_level: 1, required_plan_name: 'Pro', required_plan_code: 'ProPlan' }],
       audio: [],
       chat: [],
     });
@@ -79,6 +79,7 @@ describe('mergeAlloCatalogIntoConfig TTS (category=8)', () => {
     const video = media?.modelCosts?.find((item) => item.model === 'AIPC-wan3');
     expect(video?.minTierLevel).toBe(1);
     expect(video?.requiredPlanName).toBe('Pro');
+    expect(video?.requiredPlanCode).toBe('ProPlan');
   });
 
   test('does not let TTS models leak into image or video pickers', () => {

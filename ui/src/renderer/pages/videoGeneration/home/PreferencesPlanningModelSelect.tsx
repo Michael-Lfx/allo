@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { Select } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isCatalogPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { pickDefaultLlmModel } from '../components/modelPreferenceDefaults';
 import type { GenerationPreferences } from './types';
@@ -27,6 +27,7 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
 }) => {
   const { t } = useTranslation();
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const llmModels = useGeneratorModels('text', { enabled: true });
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -38,7 +39,7 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
     for (const model of llmModels.flat) {
       if (seen.has(model.model)) continue;
       seen.add(model.model);
-      const locked = isPlanLocked(model.minTierLevel ?? 0, effectiveModelTier);
+      const locked = isCatalogPlanLocked(model, effectiveModelTier, memberPlan);
       const planName = requiredPlanBadgeLabel(model.minTierLevel, model.requiredPlanName, memberLabel);
       opts.push({
         value: model.model,
@@ -53,7 +54,7 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
       });
     }
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveModelTier, llmModels.flat, t]);
+  }, [effectiveModelTier, llmModels.flat, memberPlan, t]);
 
   const safeLlmValue = llmOptions.some((option) => option.value === value.models.llm_model)
     ? value.models.llm_model

@@ -9,7 +9,7 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import {
   buildChatModelPickerViewModel,
   findChatModelOption,
@@ -91,9 +91,10 @@ export const useNomiModelSelection = ({
   );
 
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const modelPicker = useMemo(
-    () => buildChatModelPickerViewModel(visibleGroups, effectiveModelTier),
-    [visibleGroups, effectiveModelTier]
+    () => buildChatModelPickerViewModel(visibleGroups, effectiveModelTier, memberPlan),
+    [visibleGroups, effectiveModelTier, memberPlan]
   );
 
   const modelsByProvider = useMemo(
@@ -109,9 +110,9 @@ export const useNomiModelSelection = ({
   const currentModelPlanLabel = useMemo(() => {
     if (!current_model?.id || !current_model.use_model) return undefined;
     const option = findChatModelOption(modelPicker, current_model.id, current_model.use_model);
-    if (!option || !isChatModelPlanLocked(option, effectiveModelTier)) return undefined;
+    if (!option || !isChatModelPlanLocked(option, effectiveModelTier, memberPlan)) return undefined;
     return option.requiredPlanName?.trim() || '';
-  }, [current_model?.id, current_model?.use_model, effectiveModelTier, modelPicker]);
+  }, [current_model?.id, current_model?.use_model, effectiveModelTier, memberPlan, modelPicker]);
 
   const isCurrentModelAvailable = useMemo(() => {
     if (!current_model?.id || !current_model.use_model) return false;

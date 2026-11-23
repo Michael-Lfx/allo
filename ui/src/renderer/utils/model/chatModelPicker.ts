@@ -11,7 +11,7 @@ import { compositeKey } from '@/common/utils/compositeKey';
 import { modelHealthOf } from '@/common/utils/providerModels';
 import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { catalogCreditRateForModel } from './creditRate';
-import { isPlanLocked, parseCatalogPlanGate } from './planGate';
+import { isPlanLocked, parseCatalogPlanGate, type MemberPlan } from './planGate';
 import { formatModelLabelForProvider } from './cloudModelLabel';
 import { catalogReasoningEffortForModel } from './reasoningEffort';
 import { resolveModelShowcase, warnMissingShowcaseEntry, type ModelShowcase } from './modelShowcase';
@@ -148,17 +148,27 @@ const modelOption = (provider: IProvider, model: string): ChatModelOption => {
   };
 };
 
-export function isChatModelPlanLocked(option: Pick<ChatModelOption, 'minTierLevel'>, effectiveTier: number): boolean {
-  return isPlanLocked(option.minTierLevel, effectiveTier);
+export function isChatModelPlanLocked(
+  option: Pick<ChatModelOption, 'minTierLevel' | 'requiredPlanName' | 'requiredPlanCode'>,
+  effectiveTier: number,
+  member?: MemberPlan
+): boolean {
+  return isPlanLocked(option.minTierLevel, effectiveTier, {
+    plan: member?.plan,
+    planCode: member?.planCode,
+    requiredPlanName: option.requiredPlanName,
+    requiredPlanCode: option.requiredPlanCode,
+  });
 }
 
 /** Usable models stay in catalog order, with recommended ones first. Locked rows sink to the bottom. */
 export function orderCloudModelsForPlan(
   cloudModels: readonly ChatModelOption[],
-  effectiveTier: number
+  effectiveTier: number,
+  member?: MemberPlan
 ): ChatModelOption[] {
-  const usable = cloudModels.filter((option) => !isChatModelPlanLocked(option, effectiveTier));
-  const locked = cloudModels.filter((option) => isChatModelPlanLocked(option, effectiveTier));
+  const usable = cloudModels.filter((option) => !isChatModelPlanLocked(option, effectiveTier, member));
+  const locked = cloudModels.filter((option) => isChatModelPlanLocked(option, effectiveTier, member));
   const recommended = usable.filter((option) => option.showcase.recommended);
   const rest = usable.filter((option) => !option.showcase.recommended);
   const orderedUsable = recommended.length > 0 ? [...recommended, ...rest] : usable;
@@ -167,7 +177,8 @@ export function orderCloudModelsForPlan(
 
 export const buildChatModelPickerViewModel = (
   groups: readonly TaskModelGroup[],
-  effectiveTier = Number.POSITIVE_INFINITY
+  effectiveTier = Number.POSITIVE_INFINITY,
+  member?: MemberPlan
 ): ChatModelPickerViewModel => {
   const autoModels: ChatModelOption[] = [];
   const cloudModels: ChatModelOption[] = [];
@@ -196,7 +207,7 @@ export const buildChatModelPickerViewModel = (
     return leftIndex - rightIndex || left.label.localeCompare(right.label);
   });
 
-  return { autoModels, cloudModels: orderCloudModelsForPlan(cloudModels, effectiveTier), otherProviderGroups };
+  return { autoModels, cloudModels: orderCloudModelsForPlan(cloudModels, effectiveTier, member), otherProviderGroups };
 };
 
 export const allChatModelOptions = (

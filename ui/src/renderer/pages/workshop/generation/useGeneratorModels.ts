@@ -62,6 +62,7 @@ function flattenTaskGroups(
         model,
         minTierLevel: gate.minTierLevel,
         requiredPlanName: gate.requiredPlanName,
+        requiredPlanCode: gate.requiredPlanCode,
       });
     }
   }
@@ -111,6 +112,7 @@ export function useGeneratorModels(
         model: e.model,
         minTierLevel: gate.minTierLevel,
         requiredPlanName: gate.requiredPlanName,
+        requiredPlanCode: gate.requiredPlanCode,
       };
     });
     return { groups: group(flat), flat, hasProviders };

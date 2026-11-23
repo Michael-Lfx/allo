@@ -12,7 +12,7 @@ import { configService } from '@/common/config/configService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import ChatModelPickerMenu from '@/renderer/components/model/ChatModelPickerMenu';
@@ -44,9 +44,10 @@ export function useKnowledgeAutogenModel() {
   const { groups, isLoading, error, refresh } = useModelsForTask('chat');
 
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const modelPicker = useMemo(
-    () => buildChatModelPickerViewModel(groups, effectiveModelTier),
-    [groups, effectiveModelTier]
+    () => buildChatModelPickerViewModel(groups, effectiveModelTier, memberPlan),
+    [groups, effectiveModelTier, memberPlan]
   );
 
   // `isLoading` also covers the failed state (SWR clears data on error), so an
@@ -90,9 +91,10 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   const { groups, isLoading, error: catalogError, refresh: refreshCatalog } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const modelPicker = useMemo(
-    () => buildChatModelPickerViewModel(groups, effectiveModelTier),
-    [groups, effectiveModelTier]
+    () => buildChatModelPickerViewModel(groups, effectiveModelTier, memberPlan),
+    [groups, effectiveModelTier, memberPlan]
   );
 
   const selectedOption = useMemo(() => {

@@ -129,7 +129,7 @@ import {
   isChatModelPlanLocked,
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import { requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
@@ -279,6 +279,7 @@ const NomiSendBox: React.FC<{
 }) => {
   const navigate = useNavigate();
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const [workspacePath, setWorkspacePath] = useState('');
   const [voiceConversation, setVoiceConversation] = useState<{
     id: string;
@@ -1787,7 +1788,7 @@ const NomiSendBox: React.FC<{
         value === 'flowy-auto-family'
           ? defaultAutoOption(modelSelection.modelPicker.autoModels, findChatModelOption(modelSelection.modelPicker, modelSelection.current_model?.id, modelSelection.current_model?.use_model))
           : catalogOptions.find((option) => option.key === value);
-      if (!selected || isChatModelPlanLocked(selected, effectiveModelTier)) {
+      if (!selected || isChatModelPlanLocked(selected, effectiveModelTier, memberPlan)) {
         if (value === 'flowy-auto-family') Message.warning(t('billing.autoEconomyUnavailable'));
         return;
       }
@@ -1800,6 +1801,7 @@ const NomiSendBox: React.FC<{
       modelSelection.modelPicker,
       modelSelectionDisabled,
       effectiveModelTier,
+      memberPlan,
       t,
     ]
   );
@@ -1855,7 +1857,7 @@ const NomiSendBox: React.FC<{
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
       const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
-      const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
+      const planLocked = isChatModelPlanLocked(option, effectiveModelTier, memberPlan);
       const planBadge = requiredPlanBadgeLabel(
         option.minTierLevel,
         option.requiredPlanName,
@@ -2074,6 +2076,7 @@ const NomiSendBox: React.FC<{
     reasoningEffortLevels,
     effectiveReasoningEffort,
     effectiveModelTier,
+    memberPlan,
     providerLabel,
     setContent,
     t,

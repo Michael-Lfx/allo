@@ -8,8 +8,8 @@ import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
 import { useQuietChromeTheme } from '../quietChrome';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { fetchMediaModels, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isMediaPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {
@@ -184,6 +184,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   // already-persisted preference ids / labels. Planning LLM catalog lives in a
   // nested chunk so video-generate first open does not parse the model hub.
   const profileTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const { imageModels, videoModels, effectiveModelTier: mediaTier, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
@@ -254,7 +255,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   const memberLabel = t('conversation.modelPicker.member', { defaultValue: '会员' });
   const imageOptions = useMemo(() => {
     const opts = filterAllowedImageModels(imageModels).map((model) => {
-      const locked = isPlanLocked(model.min_tier_level ?? 0, effectiveTier);
+      const locked = isMediaPlanLocked(model, effectiveTier, memberPlan);
       const name = model.name.trim() || formatCloudModelLabel(model.id);
       const plan = requiredPlanBadgeLabel(model.min_tier_level, model.required_plan_name, memberLabel);
       return {
@@ -270,17 +271,17 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
       };
     });
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveTier, imageModels, memberLabel]);
+  }, [effectiveTier, imageModels, memberLabel, memberPlan]);
 
   const videoOptions = useMemo(
     () =>
       videoModels.map((model) => ({
         value: model.id,
         label: model.name.trim() || formatCloudModelLabel(model.id),
-        locked: isPlanLocked(model.min_tier_level ?? 0, effectiveTier),
+        locked: isMediaPlanLocked(model, effectiveTier, memberPlan),
         plan: requiredPlanBadgeLabel(model.min_tier_level, model.required_plan_name, memberLabel),
       })),
-    [effectiveTier, memberLabel, videoModels]
+    [effectiveTier, memberLabel, memberPlan, videoModels]
   );
 
   const videoSelectOptions = useMemo(
@@ -465,7 +466,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     ) {
       if (openImage[0]) patch.image_model = openImage[0].value;
     }
-    const openVideo = videoModels.filter((model) => !isPlanLocked(model.min_tier_level ?? 0, effectiveTier));
+    const openVideo = videoModels.filter((model) => !isMediaPlanLocked(model, effectiveTier, memberPlan));
     const preferredVideo = pickDefaultVideoModel(openVideo);
     if (!current.models.video_model) {
       if (preferredVideo) patch.video_model = preferredVideo;
@@ -485,6 +486,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     videoOptions,
     videoModels,
     effectiveTier,
+    memberPlan,
     value.models.image_model,
     value.models.video_model,
     isAction,

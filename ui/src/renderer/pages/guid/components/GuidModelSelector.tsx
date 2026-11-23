@@ -17,7 +17,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useProvidersQuery } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask, type TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { mergeRefs } from '@/renderer/components/notifications';
 import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
@@ -161,7 +161,8 @@ const GuidModelSelector: React.FC<GuidModelSelectorProps> = ({
   // catalog request there; cron and other legacy callers still get the hook.
   const { groups: chatGroups } = useModelsForTask('chat', undefined, { enabled: !modelPicker });
   const effectiveModelTier = useEffectiveModelTier();
-  const effectiveModelPicker = modelPicker ?? buildChatModelPickerViewModel(chatGroups, effectiveModelTier);
+  const memberPlan = useMemberPlan();
+  const effectiveModelPicker = modelPicker ?? buildChatModelPickerViewModel(chatGroups, effectiveModelTier, memberPlan);
 
   const pickerGroups = React.useMemo<TaskModelGroup[]>(() => {
     const byProvider = new Map<string, TaskModelGroup>();

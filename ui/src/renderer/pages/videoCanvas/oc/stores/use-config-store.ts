@@ -45,6 +45,8 @@ export type ModelChannel = {
         minTierLevel?: number;
         /** Published plan name at `minTierLevel`, when the catalog has one. */
         requiredPlanName?: string;
+        /** Plan code paired with `requiredPlanName`, such as ProPlan. */
+        requiredPlanCode?: string;
     }>;
 };
 
@@ -420,12 +422,16 @@ export function modelIconUrl(config: AiConfig, value: string) {
     return channel.modelCosts?.find((item) => item.model === model)?.icon?.trim() || "";
 }
 
-export function modelPlanRequirement(config: AiConfig, value: string): { minTierLevel: number; requiredPlanName: string } {
+export function modelPlanRequirement(config: AiConfig, value: string): { minTierLevel: number; requiredPlanName: string; requiredPlanCode: string } {
     const model = modelOptionName(value);
     const channel = resolveModelChannel(config, value);
     const cost = channel.modelCosts?.find((item) => item.model === model);
     const minTierLevel = typeof cost?.minTierLevel === "number" && cost.minTierLevel > 0 ? Math.trunc(cost.minTierLevel) : 0;
-    return { minTierLevel, requiredPlanName: cost?.requiredPlanName?.trim() || "" };
+    return {
+        minTierLevel,
+        requiredPlanName: cost?.requiredPlanName?.trim() || "",
+        requiredPlanCode: cost?.requiredPlanCode?.trim() || "",
+    };
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {
