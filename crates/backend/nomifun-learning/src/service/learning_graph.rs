@@ -1570,7 +1570,7 @@ impl LearningService {
         Ok(crate::models::GrowthVerdictView {
             verdict: verdict.as_str().to_owned(),
             ready_count,
-            trigger: crate::learning_graph::READY_TRIGGER,
+            trigger: crate::learning_graph::ready_trigger(),
             enabled,
             stalled,
         })
@@ -1716,8 +1716,9 @@ impl LearningService {
     // ── Growth（就绪 < 3 触发 / 手动显式，共用一条管道）────────────────────
 
     /// 触发一次生长。`force = false` 时（节点完成自动触发）就绪存量不低于
-    /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动显式触发）总是
-    /// 补到 [`READY_TARGET`]。返回是否真的启动了后台生长。
+    /// [`crate::learning_graph::ready_trigger`] 就什么都不做；`force = true`
+    ///（手动显式触发）总是补到 [`crate::learning_graph::ready_target`]。
+    /// 返回是否真的启动了后台生长。
     ///
     /// y04：默认 manual 触发包装（显式命令）；结算钩子走
     /// [`Self::kick_growth_with_trigger`] 传 `settlement`，自动补批端点传
@@ -4062,8 +4063,8 @@ impl LearningService {
             recommended,
             blocked,
             ready_count,
-            ready_target: crate::learning_graph::READY_TARGET,
-            ready_trigger: crate::learning_graph::READY_TRIGGER,
+            ready_target: crate::learning_graph::ready_target(),
+            ready_trigger: crate::learning_graph::ready_trigger(),
             growth_running: self.growth_running(course_id),
         })
     }

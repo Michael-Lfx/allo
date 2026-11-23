@@ -2504,7 +2504,8 @@ pub struct LearningGraphView {
     pub recommended: Vec<LearningLessonId>,
     /// R 软闸建议（≤3 条，按供给节点回忆率升序）。
     pub blocked: Vec<GraphBlockedView>,
-    /// 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3）。
+    /// 当前就绪存量与水位契约（目标/水位随 `NOMI_LEARNING_READY_TARGET`
+    /// 单旋钮联动，rs7；未设 = 5/3 历史常数）。
     pub ready_count: usize,
     pub ready_target: usize,
     pub ready_trigger: usize,
@@ -3446,7 +3447,7 @@ pub struct GrowthVerdictView {
     pub verdict: String,
     /// 就绪存量（水位口径，裁决输入原样回显）。
     pub ready_count: usize,
-    /// 触发水位（READY_TRIGGER，与门同源的唯一数字）。
+    /// 触发水位（`ready_trigger`，与门同源的唯一数字；rs7 随单旋钮联动）。
     pub trigger: usize,
     /// 开关合力（环境闸 ∧ 设置开关）。
     pub enabled: bool,

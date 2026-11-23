@@ -54,12 +54,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::completer::LearningCompleter;
 
-/// 就绪节点的补货目标：每次生长把就绪存量补到这个数（learnhub 的「7」——
-/// 门与提示词同源的唯一数字，ADR-0009）。
-pub(crate) const READY_TARGET: usize = 5;
-
-/// 自动触发的水位线：节点完成时检查，就绪存量低于该值才触发生长。
-pub(crate) const READY_TRIGGER: usize = 3;
+// rs7 单旋钮（就绪目标/触发水位可配）：三件套住 `crate::switches`（u 系
+// 开关收拢面同款），此处再导出保持 `crate::learning_graph::*` 旧路径——
+// `NOMI_LEARNING_READY_TARGET`：未设 = 5/3 历史常数（零变化）；设 N
+//（2-5 合法域）→ target=N、trigger=max(N-2, 1)（保持 trigger = target − 2
+// 的既有水位关系，单开关不双调）；越界/非法回退缺省并 warn 一次留痕。
+// 就绪目标语义（learnhub 的「7」→ allo 吸收时降至 5，门与提示词同源的
+// 唯一数字，ADR-0009）与水位线语义（节点完成时检查，就绪存量低于该值才
+// 触发生长）的完整注记随实现住 switches.rs。
+pub(crate) use crate::switches::{ready_target, ready_trigger};
 
 /// 单批新增节点上限（提示词与门同源，超过整批拒收）。
 pub(crate) const MAX_BATCH_NODES: usize = 5;
@@ -67,7 +70,7 @@ pub(crate) const MAX_BATCH_NODES: usize = 5;
 // ── Auto Refill（自动补批判定，m10）────────────────────────────────────────
 
 /// 自动补批判定三态（learnhub 同名域中立化，m6 定案）：阈值仍是
-/// [`READY_TRIGGER`]（无新量纲）、无暂停线。
+/// [`ready_trigger`]（无新量纲；rs7 随单旋钮联动）、无暂停线。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoRefillVerdict {
     /// 面不够：就绪存量低于触发水位，补一批。
@@ -94,7 +97,7 @@ impl AutoRefillVerdict {
 pub fn auto_refill_verdict(ready_count: usize, enabled: bool) -> AutoRefillVerdict {
     let verdict = if !enabled {
         AutoRefillVerdict::Disabled
-    } else if ready_count < READY_TRIGGER {
+    } else if ready_count < ready_trigger() {
         AutoRefillVerdict::Due
     } else {
         AutoRefillVerdict::BelowThreshold
@@ -518,7 +521,7 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
 // ── Coach draft ────────────────────────────────────────────────────────────
 
 /// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
-/// [`READY_TARGET`] 个；每批上限 [`MAX_BATCH_NODES`] 个。
+/// [`ready_target`] 个；每批上限 [`MAX_BATCH_NODES`] 个。
 pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不会预先铺好大纲，你按批次让课程「生长」——每次补充少量新节点，让学习者永远有一小批当下就能学的节点。
 只回复一个 JSON 对象，形状如下：
 {
@@ -595,11 +598,12 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。note、purpose、intent 与 scope 用中文。"#;
 
 /// [`COACH_SYSTEM`] 的装配面（t7）：数量契约段的 `{READY_TARGET}`/
-/// `{MAX_BATCH_NODES}` 占位符以常量单源注入——改批容量只改常量，提示词
-/// 不再手写数字。
+/// `{MAX_BATCH_NODES}` 占位符以单源注入——就绪目标随 rs7 开关读数
+///（[`ready_target`]，模板已参数化自然跟随），批容量仍是常量（改批容量
+/// 只改常量），提示词不再手写数字。
 pub(crate) fn coach_system() -> String {
     let mut text = COACH_SYSTEM
-        .replace("{READY_TARGET}", &READY_TARGET.to_string())
+        .replace("{READY_TARGET}", &ready_target().to_string())
         .replace("{MAX_BATCH_NODES}", &MAX_BATCH_NODES.to_string());
     // u04 边界去重（on 臂）：声明面条款补「边界只写一次」——intent/scope
     // 不再两字段各写一遍同一条边界（真机 5 节点 4 个重复，每轮重发多付
@@ -640,7 +644,7 @@ pub struct CoachContext {
     pub coverage_gauge: String,
     /// 块 8：行为摘要（近窗趋势/卡点/保留率；空窗为空串，整块省略）。
     pub behavior_digest: String,
-    /// 块 4：当前就绪节点数（缺口 = READY_TARGET − ready）。
+    /// 块 4：当前就绪节点数（缺口 = 就绪目标 [`ready_target`] − ready）。
     pub ready_count: usize,
     /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
@@ -655,7 +659,7 @@ impl CoachContext {
     /// 结构参考材料 → 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
     /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
     pub(crate) fn render(&self) -> String {
-        let gap = READY_TARGET.saturating_sub(self.ready_count);
+        let gap = ready_target().saturating_sub(self.ready_count);
         let mut text = String::new();
         // 块 1：学习目标（+程度/基础声明附注）。
         text.push_str(&format!("【学习目标】\n{}\n", self.goal));
@@ -707,10 +711,11 @@ impl CoachContext {
         // 仅首批可见，非首批教练不知豁免面）。评审 user 经同一单源携带
         // （[`course_context_words_block`]），评审面不再补注。
         text.push_str(&course_context_words_block(&self.course_context_words));
-        // 块 4：当前就绪。
+        // 块 4：当前就绪（目标随 rs7 单旋钮，模板数字不再 const 捕获）。
         text.push_str(&format!(
-            "\n【当前就绪】{ready} 个（目标 {READY_TARGET} 个，缺口 {gap} 个）\n",
-            ready = self.ready_count
+            "\n【当前就绪】{ready} 个（目标 {target} 个，缺口 {gap} 个）\n",
+            ready = self.ready_count,
+            target = ready_target()
         ));
         // 块 5：花名册。
         let roster_note = if self.roster.is_empty() {
@@ -2745,27 +2750,27 @@ mod tests {
 
     // ── Auto Refill（m10）────────────────────────────────────────────────────
 
-    /// 裁决三态（m6 定案阈值不动：READY_TRIGGER=3）：就绪 ≥ 触发水位 =
-    /// BelowThreshold（水位以上，无需补批）；就绪 < 水位 = Due（面不够，
-    /// 补一批）；开关合力 false = Disabled（恒，水位以下也不再补）。
+    /// 裁决三态（m6 定案阈值语义不动；未设 rs7 开关时水位 3）：就绪 ≥ 触发
+    /// 水位 = BelowThreshold（水位以上，无需补批）；就绪 < 水位 = Due（面
+    /// 不够，补一批）；开关合力 false = Disabled（恒，水位以下也不再补）。
     #[test]
     fn auto_refill_verdict_three_states() {
         assert_eq!(
-            auto_refill_verdict(READY_TRIGGER, true),
+            auto_refill_verdict(ready_trigger(), true),
             AutoRefillVerdict::BelowThreshold
         );
         assert_eq!(
-            auto_refill_verdict(READY_TRIGGER + 2, true),
+            auto_refill_verdict(ready_trigger() + 2, true),
             AutoRefillVerdict::BelowThreshold
         );
         assert_eq!(
-            auto_refill_verdict(READY_TRIGGER - 1, true),
+            auto_refill_verdict(ready_trigger() - 1, true),
             AutoRefillVerdict::Due
         );
         assert_eq!(auto_refill_verdict(0, true), AutoRefillVerdict::Due);
         assert_eq!(auto_refill_verdict(0, false), AutoRefillVerdict::Disabled);
         assert_eq!(
-            auto_refill_verdict(READY_TRIGGER - 1, false),
+            auto_refill_verdict(ready_trigger() - 1, false),
             AutoRefillVerdict::Disabled
         );
         // 读数面机器名（端点/smoke 读数行同源）。
@@ -2775,6 +2780,26 @@ mod tests {
             "below_threshold"
         );
         assert_eq!(AutoRefillVerdict::Disabled.as_str(), "disabled");
+    }
+
+    /// rs7 单旋钮（设 3）联动水位：trigger = max(3−2, 1) = 1——ready=1 在
+    /// 水位上（BelowThreshold），ready=0 才 Due；开关合力 false 恒 Disabled。
+    /// 对照缺省臂（未设，水位 3）见 [`auto_refill_verdict_three_states`]。
+    /// env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+    #[test]
+    #[serial_test::serial]
+    fn ready_target_switch_moves_the_auto_refill_waterline() {
+        let _guard = crate::switches::switch_env_guard(
+            crate::switches::READY_TARGET_SWITCH_ENV,
+            Some("3"),
+        );
+        assert_eq!(
+            auto_refill_verdict(1, true),
+            AutoRefillVerdict::BelowThreshold,
+            "ready=1 ≥ trigger=1 = 水位以上"
+        );
+        assert_eq!(auto_refill_verdict(0, true), AutoRefillVerdict::Due);
+        assert_eq!(auto_refill_verdict(0, false), AutoRefillVerdict::Disabled);
     }
 
     #[test]
@@ -5911,6 +5936,29 @@ mod tests {
         assert!(rendered.contains("把就绪节点补到 5 个") == false, "the number contract lives in the system prompt");
         assert!(coach_system().contains("把就绪节点补到 5 个"));
         assert!(coach_system().contains("至多 5 个"));
+    }
+
+    /// rs7 单旋钮（设 3）随动面（R-b：prompt/verdict 值随开关，结构不改）：
+    /// 数量契约段渲染「补到 3 个」「缺口 3-X」，块 4 就绪行渲染目标 3
+    ///（缺口 = 3 − 1 = 2）；批容量红线不联动（仍 5——rs7 不碰批上限）。
+    /// env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+    #[test]
+    #[serial_test::serial]
+    fn ready_target_switch_drives_the_prompt_number_contract() {
+        let _guard = crate::switches::switch_env_guard(
+            crate::switches::READY_TARGET_SWITCH_ENV,
+            Some("3"),
+        );
+        let system = coach_system();
+        assert!(system.contains("把就绪节点补到 3 个"), "{system}");
+        assert!(system.contains("缺口 3-X 个"), "{system}");
+        assert!(
+            system.contains("至多 5 个"),
+            "批容量红线不联动（rs7 不碰批上限）: {system}"
+        );
+        let context = CoachContext { ready_count: 1, ..Default::default() };
+        let rendered = context.render();
+        assert!(rendered.contains("目标 3 个，缺口 2 个"), "{rendered}");
     }
 
     /// k06（learnhub a39d36a 深度本位修订）：档位自省以教学深度本身为准、

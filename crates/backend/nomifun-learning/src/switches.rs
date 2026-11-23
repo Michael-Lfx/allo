@@ -329,6 +329,65 @@ pub fn variant_v2_enabled() -> bool {
     variant_v2_enabled_value(std::env::var(VARIANT_V2_SWITCH_ENV).ok().as_deref())
 }
 
+// ── rs7 就绪目标单旋钮（learning-review-subtraction 波）────────────────────
+
+/// rs7 就绪目标开关环境变量（`NOMI_LEARNING_READY_TARGET`）：单旋钮联动调
+/// 学习图的节奏常数——未设 = 5/3 现行为（零变化）；设 N（合法域 2-5）→
+/// 就绪目标 = N、触发水位 = max(N-2, 1)（保持 trigger = target − 2 的既有
+/// 水位关系，单开关不双调）；越界/非法 → 回退缺省并 warn 一次留痕。批上限
+/// MAX_BATCH_NODES 不联动（rs7 不碰批上限：批大小由缺口决定，目标小了批
+/// 自然小）。
+pub const READY_TARGET_SWITCH_ENV: &str = "NOMI_LEARNING_READY_TARGET";
+
+/// 就绪节点补货目标的缺省值（learnhub 的「7」→ allo 吸收时降至 5，门与
+/// 提示词同源的唯一数字，ADR-0009；rs7 真机 A/B 若 3 档胜出按 R-c 改此处
+/// 并续写调参史）。
+pub const DEFAULT_READY_TARGET: usize = 5;
+
+/// 水位联动规则单源（rs7）：trigger = max(target − 2, 1)——target=5 得
+/// 历史常数 3；target=2 时下限 1 兜底（0 水位 = 永不自动补批，禁之）。
+pub fn ready_trigger_for_target(target: usize) -> usize {
+    target.saturating_sub(2).max(1)
+}
+
+/// 非法/越界取值的 warn 一次性留痕（进程级一次——逐次 warn 会在每次读数
+/// 刷日志；多份不同非法值只记首份，运维面足够定位）。
+fn warn_invalid_ready_target_once(raw: &str) {
+    static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+    WARN_ONCE.call_once(|| {
+        tracing::warn!(
+            raw,
+            "NOMI_LEARNING_READY_TARGET 非法/越界（合法域：2-5 的整数），回退缺省 5/3"
+        );
+    });
+}
+
+/// 就绪目标开关判定（取值注入面，纯函数——测试不触进程 env）：未设 =
+/// [`DEFAULT_READY_TARGET`]；合法域 2-5（首尾空白宽容）照设；越界/非法
+/// 回退缺省（留痕见 [`warn_invalid_ready_target_once`]）。
+pub fn ready_target_value(value: Option<&str>) -> usize {
+    let Some(raw) = value else {
+        return DEFAULT_READY_TARGET;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(target) if (2..=5).contains(&target) => target,
+        _ => {
+            warn_invalid_ready_target_once(raw);
+            DEFAULT_READY_TARGET
+        }
+    }
+}
+
+/// 就绪目标的进程读数（[`ready_target_value`] 同款语义）。
+pub fn ready_target() -> usize {
+    ready_target_value(std::env::var(READY_TARGET_SWITCH_ENV).ok().as_deref())
+}
+
+/// 触发水位的进程读数（联动 [`ready_trigger_for_target`]——单旋钮不双调）。
+pub fn ready_trigger() -> usize {
+    ready_trigger_for_target(ready_target())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,5 +613,70 @@ mod tests {
         for value in ["on", "1", "true", "yes", ""] {
             assert!(variant_v2_enabled_value(Some(value)), "{value:?} = 变式 V2");
         }
+    }
+
+    /// rs7 就绪目标开关（纯函数面——不触进程 env）：未设 = 缺省 5；合法域
+    /// 2-5 照设（首尾空白宽容）；越界（0/1/6/7/大数）与非法（"abc"/空串/
+    /// 负数）一律回退缺省 5 并 warn 一次留痕。
+    #[test]
+    fn ready_target_switch_value_domain_and_fallback() {
+        // 未设 = 缺省 5（零变化臂）。
+        assert_eq!(ready_target_value(None), 5, "未设 = 缺省 5/3 现行为");
+        // 合法域 2-5 照设。
+        for (raw, want) in [("2", 2), ("3", 3), ("4", 4), ("5", 5), (" 3 ", 3)] {
+            assert_eq!(ready_target_value(Some(raw)), want, "{raw:?} = 合法域照设");
+        }
+        // 越界/非法 → 回退缺省 5。
+        for raw in ["0", "1", "6", "7", "-1", "abc", "", "  ", "5.5", "٣"] {
+            assert_eq!(
+                ready_target_value(Some(raw)),
+                5,
+                "{raw:?} = 越界/非法回退缺省"
+            );
+        }
+    }
+
+    /// rs7 水位联动规则单源：trigger = max(target − 2, 1)——5 → 3（历史
+    /// 常数逐字节）、4 → 2、3 → 1、2 → 1（下限兜底：0 水位 = 永不自动补批，
+    /// 禁之）；缺省目标铸出的水位必须等于历史常数 3。
+    #[test]
+    fn ready_trigger_linkage_is_target_minus_two_floored_at_one() {
+        for (target, want) in [(2, 1), (3, 1), (4, 2), (5, 3)] {
+            assert_eq!(
+                ready_trigger_for_target(target),
+                want,
+                "target={target} → trigger=max(target−2, 1)"
+            );
+        }
+        assert_eq!(
+            ready_trigger_for_target(DEFAULT_READY_TARGET),
+            3,
+            "缺省目标 5 → 历史水位常数 3（未设开关 = 零变化）"
+        );
+    }
+
+    /// rs7 进程读数三件套（env 是进程全局态：`#[serial]` + Drop 恢复守卫
+    /// ——写 env 的测试必须串行，仓库铁律）：未设 = 5/3；设 3 → 3/1；设
+    /// 2 → 2/1；设 4 → 4/2；越界 7 / 非法 "abc" → 回退 5/3。
+    #[test]
+    #[serial_test::serial]
+    fn ready_target_env_reader_follows_switch_with_fallback() {
+        let cases: &[(&str, usize, usize)] = &[
+            ("3", 3, 1),
+            ("2", 2, 1),
+            ("4", 4, 2),
+            ("5", 5, 3),
+            ("7", 5, 3),
+            ("abc", 5, 3),
+        ];
+        for (raw, want_target, want_trigger) in cases {
+            let _guard = switch_env_guard(READY_TARGET_SWITCH_ENV, Some(raw));
+            assert_eq!(ready_target(), *want_target, "{raw:?} → target");
+            assert_eq!(ready_trigger(), *want_trigger, "{raw:?} → trigger 联动");
+        }
+        // 未设臂：5/3 历史常数（零变化）。
+        let _guard = switch_env_guard(READY_TARGET_SWITCH_ENV, None);
+        assert_eq!(ready_target(), 5, "未设 → 缺省 target 5");
+        assert_eq!(ready_trigger(), 3, "未设 → 缺省 trigger 3");
     }
 }
