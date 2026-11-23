@@ -458,3 +458,94 @@ flowy-studio     : 75 passed, 0 failed
 cargo check      : 0 error
 accept.sh        : 4/4 通过
 ```
+
+---
+
+## 任务 7 · 日志化改造 + 真实 UI 点击验收（2026-11-23 晚）
+
+### 一、存储从快照改成追加日志
+
+改之前的 `pending.json` 每次 `accept()` **整份重写**，只能答「现在还有什么」，
+答不了「早先发生过什么」—— 恰恰不能做日志追溯。
+
+现在的 `acceptance/journal.jsonl`：
+
+```
+{"event":"accepted","id":"accepted-1a208af809e-0","session_id":"...","text":"...","at_ms":1795442049182}
+{"event":"taken","id":"accepted-1a208af809e-0","at_ms":...}
+```
+
+- 每行一个事件，**永不改写**
+- `pending` 由重放派生
+- 追加不读文件，两个进程同时受理不会互相覆盖
+- 尾部半行截断容忍（崩溃中断不会让下次启动失败）
+
+**新增两条测试**：`the_journal_only_ever_grows_and_keeps_earlier_lines`、`a_truncated_final_line_is_tolerated`。
+
+### 二、真实 UI 点击：跑通了
+
+之前卡在「工具点不到 GPUI 输入框」。换成 `agent-desktop`（UIA）后打通，
+但**关键是那次物理点击，不是任何语义动作**。
+
+**最终跑通的完整链路（全部真实操作，无模拟）：**
+
+```
+第 1 次：
+  1. 点模板卡片 → 草稿填入
+  2. 点发送 → turn 开始跑（界面显示「工作中 · 40 秒」）
+  3. 运行中：物理点击输入框 → ctrl+v 粘贴 → 发送按钮变为可用
+  4. 运行中：物理点击发送
+  5. 顶部出现「已加入本次会话的任务列表」提示，草稿清空
+  6. 落盘 {"event":"accepted","id":"accepted-1a208af809e-0",...}
+
+第 2 次（杀进程重开后）：
+  同样流程 → 追加 {"event":"accepted","id":"accepted-1a208b4cbfc-0",...}
+  第一行未变
+```
+
+证据：`evidence/07-real-journal-two-receipts.jsonl`（两条，第一条未动）、
+`evidence/05-accepted-notice.png`（「已加入本次会话的任务列表」）、
+`evidence/06-running-with-draft.png`（运行中，停止＋发送并排，草稿有字）。
+
+### 三、这一路踩的坑（重要，下次直接用）
+
+**① `target/debug/flowy-app.exe` 会被旧构建占着**
+
+我 21:2x 启动的二进制是 19:24 的，**早于 21:20 的日志化改造**，
+所以它写的是 `pending.json` 而不是 `journal.jsonl` —— 一度以为改造没生效。
+
+**判据**：`ls -la target/debug/flowy-app.exe` 对比改动时间；
+或直接 `grep -c "accepted-deferred" target/debug/flowy-app.exe` 看代码在不在。
+
+**② 应用的数据根是嵌套的**
+
+不是 `AppData/Roaming/Flowy`，是 **`AppData/Roaming/Flowy/Flowy/data`**。
+找错目录会以为文件没生成。
+
+**③ `SetValue` 报成功但 GPUI 不接收**
+
+UIA 上 `ValuePattern.SetValue` 返回 `succeeded`，但回读 `value` 仍是空，
+发送按钮依旧 `disabled`。**GPUI 只广告了 SetValue，却没有真正实现。**
+
+`focus` 也不行 —— textfield 的 `available_actions` 只有 `SetValue`，没有 `SetFocus`。
+
+**唯一可行路径**：`mouse-click --xy <绝对坐标> --headed`（物理点击）拿焦点，
+再 `press ctrl+v` 粘贴。剪贴板用 `clipboard-set`。
+
+**④ 坐标会随布局变，必须每次重取**
+
+输入框 y 坐标在「首页」是 1048，在「有内容的聊天页」是 1449。
+我第一次用 1048 点空，白折腾一轮。
+
+**正确做法**：`get --property bounds <ref>` 取当前 bounds，
+再换算绝对坐标 = 窗口原点 + 窗口内坐标。
+
+**⑤ 项目日志是 INFO 级别，`tracing::debug!` 不会落盘**
+
+我的探针全是 `debug!`，所以日志里「什么都没有」不能证明「没执行」。
+**别用日志缺失反推代码没跑。**
+
+### 四、仍然存在的偏差（已知，非缺陷）
+
+- 受理队列**只写不读**：回执落盘、能重开查到，但「空闲后自动取出处理」没做（目标未要求）
+- `pending_acceptances()` 还没有 UI 出口，现在只能从文件里看
