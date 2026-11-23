@@ -245,9 +245,28 @@ fn batch_taught_names(batch: &ProposedBatch) -> Vec<&str> {
     names
 }
 
+/// 裁决行消解（rs6 机器读法）：**精确行优先于子串行**——先找 term 与片段
+/// 逐字相等的裁决行，没有再退回首条 relates 行（旧行为兜底）。11-23 误伤
+/// 病历（calls.jsonl #2）：机械清单里「临界区」（名词行）先于「识别临界区」
+/// （噪声行），`find` 按回包数组顺序取首条 relates 行把长片段读成短名词行
+/// 的裁决——模型的精确行被子串行抢读，实质正确的 reject 被整份作废（烧
+/// 393s + 97s 死因重试）。精确行优先 = 模型对片段的逐字裁决永不被相关行
+/// 抢读；消解只改"机器怎么读模型的答案"，处置档位与词表零改动。
+fn resolve_verdict_row<'a>(
+    verdicts: &'a [FragmentVerdict],
+    frag: &NameFragment,
+) -> Option<&'a FragmentVerdict> {
+    verdicts
+        .iter()
+        .find(|fv| fv.term == frag.term)
+        .or_else(|| verdicts.iter().find(|fv| relates(&fv.term, &frag.term)))
+}
+
 /// 点名处置机械核对（纯函数）：**每个片段必须有显式决定**——
 /// - `噪声` 裁决行（note 依据）→ 放行；
-/// - `名词` 裁决行 → 必须 pass=false 且 problems 指名该片段（子串命中），
+/// - `名词` 裁决行 → 必须 pass=false 且 problems 指名该片段（子串命中；
+///   rs6 等价类：治理名词行 term 命中同算指名——模型在 problems 写内核
+///   名词「临界区」、片段是长碎片「识别临界区」时逐字核会核伪实质指名），
 ///   否则 = 判名词却放行，自相矛盾 → 结论不可用（`Err`，恰一次带死因重试；
 ///   enforce 与 report-only 两档都不容）；
 /// - `范围外` 裁决行 → [`check_out_of_scope_row`] 机械核（rs3 正向快路
@@ -268,14 +287,21 @@ pub(crate) fn validate_fragments(
     // Vec——快路对照域在批级不变，提升到循环外算一次传入。
     let taught_names = batch_taught_names(batch);
     for frag in naming {
-        let verdict = verdicts.iter().find(|fv| relates(&fv.term, &frag.term));
+        let verdict = resolve_verdict_row(verdicts, frag);
         let problem_named = problems.iter().any(|p| p.issue.contains(&frag.term));
         match verdict {
             Some(fv) if fv.verdict == FragmentRuling::OutOfScope => {
                 check_out_of_scope_row(fv, naming, &taught_names, batch)?;
             }
             Some(fv) if fv.verdict == FragmentRuling::Noun => {
-                if pass || !problems.iter().any(|p| relates(&p.issue, &frag.term)) {
+                // 指名等价类（rs6）：闭包 = {片段 term} ∪ 治理名词行 term，
+                // 任一命中即算指名。pass=true 第一臂分毫不动：判名词却放行
+                // 仍是自相矛盾（方向守恒——等价类不放行无指名的签字）。
+                if pass
+                    || !problems
+                        .iter()
+                        .any(|p| relates(&p.issue, &frag.term) || relates(&p.issue, &fv.term))
+                {
                     return Err(format!(
                         "片段「{}」判「名词」却放行或未在 problems 指名（自相矛盾）",
                         frag.term
@@ -1210,5 +1236,110 @@ mod tests {
         );
         let error = validate_fragments(&verdicts, true, &[], &naming, &batch).unwrap_err();
         assert!(error.contains("判「名词」却放行"), "{error}");
+    }
+
+    // ── rs6 指名等价类 + 治理行消解（11-23 真机病历回放） ────────────────
+
+    /// call2 真机 problems（observation/learning-live/2026-11-23/calls.jsonl
+    /// #2 逐字誊录）：problems[0] 指名内核名词「临界区」（全文不含五字
+    /// 「识别临界区」）——等价类两臂的共同夹具。
+    fn call2_problems() -> Vec<ReviewProblem> {
+        vec![ReviewProblem {
+            node: "互斥锁：识别临界区并以独占锁消除竞态".into(),
+            field: "teaches".into(),
+            issue: "「临界区」在互斥锁铸名定义及本节点内容中均被实际依赖，但已教账、本节点teaches、assumes均无此词；同批兄弟节点不供给，也不能作为课程内常识放行。".into(),
+            advice: "将「临界区」加入本节点 teaches（与互斥锁一并自教），使定义中的该词有自教出处；或改写铸名定义与 scope，用已教的共享状态/执行单元描述同一段访问代码以绕开该名词。".into(),
+        }]
+    }
+
+    /// call2 回包 fragments 数组的临界区族逐字誊录（term/verdict/source/note
+    /// 与数组顺序全保真——「临界区」名词行（数组位 7）在「识别临界区」噪声
+    /// 行（数组位 71）之前：旧 `find` 按数组顺序取首条 relates 行的病历触发序）。
+    fn call2_family_verdicts() -> Vec<FragmentVerdict> {
+        vec![
+            verdict_with_source("进入临界区前", "噪声", "definition", "短语碎片，名词成分临界区已单列裁决。"),
+            verdict_with_source("须持", "噪声", "definition", "虚词/切词残留。"),
+            verdict_with_source("独占", "噪声", "definition", "形容词，非独立概念。"),
+            verdict_with_source(
+                "临界区",
+                "名词",
+                "definition",
+                "领域名词，已教账/本节点teaches/assumes均无出处；scope中的教学声明不算teaches供给。",
+            ),
+            verdict_with_source("识别临界区", "噪声", "node_title", "标题动宾短语；临界区已单列裁决为名词。"),
+            verdict_with_source("读写划成临界区", "噪声", "scope", "教学内容短语；临界区已单列裁决。"),
+        ]
+    }
+
+    /// golden ①（R-d ①病历回放）：11-23 真机 call2（393s 误伤调用）——
+    /// verdict=reject、problems 指名内核名词「临界区」、「识别临界区」判噪声，
+    /// 两级裁决语义自洽。旧机器读法：`find` 首条 relates 行把「识别临界区」
+    /// 读成「临界区」名词行的裁决，指名核又要求五字逐字命中 → Err 整份作废
+    /// （烧 393s + 97s 死因重试实质原样重发）。机械点名清单 = 真机 97 行
+    /// 清单的临界区族 + 两条无关噪声行（行序保真：「临界区」清单行 8 在
+    /// 「识别临界区」清单行 72 之前——触发条件）。新读法（精确行优先 +
+    /// 指名等价类）下校验通过：reject 方向不变，不再作废。
+    #[test]
+    fn call2_critical_section_family_replay_accepts_reject() {
+        let naming = vec![
+            frag("进入临界区前", FragmentSource::Definition), // 清单行 2
+            frag("须持", FragmentSource::Definition),         // 清单行 3
+            frag("独占", FragmentSource::Definition),         // 清单行 4
+            frag("临界区", FragmentSource::Definition),       // 清单行 8
+            frag("识别临界区", FragmentSource::NodeTitle),    // 清单行 72
+            frag("读写划成临界区", FragmentSource::Scope),    // 清单行 85
+        ];
+        // 族内无「范围外」行：batch 不进核（只喂范围外三件核与教出名集）。
+        let unhandled = validate_fragments(
+            &call2_family_verdicts(),
+            false, // verdict = reject（真机回包）
+            &call2_problems(),
+            &naming,
+            &ProposedBatch::default(),
+        )
+        .expect("实质正确的 reject 不被机器读法作废");
+        assert!(unhandled.is_empty(), "族内每行都有显式裁决：{unhandled:?}");
+    }
+
+    /// golden 等价类臂（R-a）：片段「识别临界区」无逐字裁决行、消解到治理
+    /// 名词行「临界区」（relates 兜底），problems 指名内核名词「临界区」——
+    /// 旧逐字核把实质指名核伪（Err）；等价类 {片段 term} ∪ 治理名词行 term
+    /// 任一命中 = 已指名，不作废（等价类独立于精确行消解的根治面）。
+    #[test]
+    fn governance_noun_row_term_satisfies_naming_check_for_related_fragment() {
+        let naming = vec![frag("识别临界区", FragmentSource::NodeTitle)];
+        let verdicts = vec![verdict(
+            "临界区",
+            "名词",
+            "领域名词，已教账/本节点teaches/assumes均无出处；scope中的教学声明不算teaches供给。",
+        )];
+        assert_eq!(
+            validate_fragments(&verdicts, false, &call2_problems(), &naming, &ProposedBatch::default()),
+            Ok(vec![]),
+            "problems 指名词行 term = 等价类命中"
+        );
+    }
+
+    /// 对照臂②（R-d ②）：call2 形态 + pass=true——判名词却签字放行仍自相
+    /// 矛盾，等价类不开这扇门（pass=true 第一臂分毫不动）。
+    #[test]
+    fn noun_verdict_with_pass_still_contradictory_in_call2_shape() {
+        let naming = vec![frag("识别临界区", FragmentSource::NodeTitle)];
+        let verdicts = vec![verdict("临界区", "名词", "领域名词，查无出处")];
+        let error =
+            validate_fragments(&verdicts, true, &[], &naming, &ProposedBatch::default()).unwrap_err();
+        assert!(error.contains("判「名词」却放行"), "{error}");
+    }
+
+    /// 对照臂③（R-d ③）：problems 与闭包（{片段 term} ∪ 治理名词行 term）
+    /// 全无 relate——真未指名仍 Err，等价类不放行静默缺口（方向守恒）。
+    #[test]
+    fn noun_verdict_with_problems_outside_closure_still_contradictory() {
+        let naming = vec![frag("识别临界区", FragmentSource::NodeTitle)];
+        let verdicts = vec![verdict("临界区", "名词", "领域名词，查无出处")];
+        let problems = vec![problem("别的节点难度不实")];
+        let error = validate_fragments(&verdicts, false, &problems, &naming, &ProposedBatch::default())
+            .unwrap_err();
+        assert!(error.contains("未在 problems 指名"), "{error}");
     }
 }
