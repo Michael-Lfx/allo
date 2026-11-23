@@ -5704,8 +5704,8 @@ async fn ready_set_follows_cross_course_tier_coverage() {
         .expect("graph course detail carries the graph view");
     assert_eq!(graph.ready_count, 2);
     assert_eq!(graph.recommended.len(), 2);
-    assert_eq!(graph.ready_target, crate::learning_graph::READY_TARGET);
-    assert_eq!(graph.ready_trigger, crate::learning_graph::READY_TRIGGER);
+    assert_eq!(graph.ready_target, crate::learning_graph::ready_target());
+    assert_eq!(graph.ready_trigger, crate::learning_graph::ready_trigger());
 
     // 教学降档到「会用」：假定「能教」的节点不再就绪。
     sqlx::query(
@@ -7491,13 +7491,40 @@ async fn auto_arm_consumes_verdict_and_setting_off_disables() {
     assert!(view.enabled, "缺省开");
     assert!(!view.stalled, "夹具课非空图");
     assert_eq!(view.ready_count, 2);
-    assert_eq!(view.trigger, crate::learning_graph::READY_TRIGGER);
+    assert_eq!(view.trigger, crate::learning_graph::ready_trigger());
     // 默认开关组合：自动臂触发（Ok(true) 即已进入生长管道）。
     let kicked = service
         .kick_growth(&user_id, &course, false, None)
         .await
         .unwrap();
     assert!(kicked, "水位以下 + 缺省开 = Due，自动臂触发");
+}
+
+/// rs7 单旋钮（设 3）经 verdict 端点随动（R-b：verdict 视图值随开关，
+/// 结构不改）：trigger 视图字段 = max(3−2, 1) = 1，同水位 ready=2 落在
+/// 水位上 → below_threshold、自动臂不再触发（对照缺省臂见
+/// `auto_arm_consumes_verdict_and_setting_off_disables` 的同夹具 due 臂）。
+/// env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+#[tokio::test]
+#[serial_test::serial]
+async fn ready_target_switch_flows_through_verdict_view_and_auto_arm() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let user_id = owner;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let _guard = crate::switches::switch_env_guard(
+        crate::switches::READY_TARGET_SWITCH_ENV,
+        Some("3"),
+    );
+    let view = service.growth_verdict(&user_id, &course).await.unwrap();
+    assert_eq!(view.ready_count, 2);
+    assert_eq!(view.trigger, 1, "trigger = max(3−2, 1) = 1");
+    assert_eq!(view.verdict, "below_threshold", "ready=2 ≥ trigger=1 = 水位以上");
+    let kicked = service
+        .kick_growth(&user_id, &course, false, None)
+        .await
+        .unwrap();
+    assert!(!kicked, "水位以上：自动臂不触发（同水位缺省臂是 due/触发）");
 }
 
 /// 设置关 = Disabled：同水位（ready=2 < 3）自动臂不再触发；手动 force
