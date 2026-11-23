@@ -31,7 +31,14 @@ use serde::{Deserialize, Serialize};
 pub struct AcceptedMessage {
     /// Stable receipt id handed back to the caller. Never reused.
     pub id: String,
-    pub session_id: String,
+    /// The session the user was looking at when they submitted this.
+    ///
+    /// Deliberately **optional and non-binding**: at accept time we do not know
+    /// which work this belongs to, and pinning it to a freshly created empty
+    /// session would attach the receipt to a conversation the user never had.
+    /// Deciding ownership is the router's job, later.
+    #[serde(default)]
+    pub session_hint: Option<String>,
     pub text: String,
     pub created_at_ms: u64,
     /// Set once a turn has picked this message up. Kept so a restart can still
@@ -46,7 +53,8 @@ pub struct AcceptedMessage {
 enum JournalEntry {
     Accepted {
         id: String,
-        session_id: String,
+        #[serde(default)]
+        session_hint: Option<String>,
         text: String,
         at_ms: u64,
     },
@@ -103,12 +111,12 @@ impl AcceptanceQueue {
             match entry {
                 JournalEntry::Accepted {
                     id,
-                    session_id,
+                    session_hint,
                     text,
                     at_ms,
                 } => receipts.push(AcceptedMessage {
                     id,
-                    session_id,
+                    session_hint,
                     text,
                     created_at_ms: at_ms,
                     taken_at_ms: None,
@@ -136,21 +144,21 @@ impl AcceptanceQueue {
     /// session state touched.
     pub fn accept(
         &self,
-        session_id: &str,
+        session_hint: Option<&str>,
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
         let id = new_receipt_id(now_ms, self.next_ordinal(now_ms)?);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
-            session_id: session_id.to_owned(),
+            session_hint: session_hint.map(str::to_owned),
             text: text.to_owned(),
             at_ms: now_ms,
         };
         self.append(&entry)?;
         Ok(AcceptedMessage {
             id,
-            session_id: session_id.to_owned(),
+            session_hint: session_hint.map(str::to_owned),
             text: text.to_owned(),
             created_at_ms: now_ms,
             taken_at_ms: None,
@@ -241,7 +249,9 @@ mod tests {
     fn accept_survives_a_fresh_queue_handle() {
         let root = temp_root("durable");
         let queue = AcceptanceQueue::new(&root);
-        let accepted = queue.accept("home", "second prompt", 1_000).expect("accept");
+        let accepted = queue
+            .accept(Some("home"), "second prompt", 1_000)
+            .expect("accept");
 
         // A new handle sees the same receipt: this is the "restart and still
         // find it" contract, exercised without the UI.
@@ -250,7 +260,7 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, accepted.id);
         assert_eq!(pending[0].text, "second prompt");
-        assert_eq!(pending[0].session_id, "home");
+        assert_eq!(pending[0].session_hint.as_deref(), Some("home"));
         assert!(pending[0].taken_at_ms.is_none());
 
         fs::remove_dir_all(&root).expect("cleanup");
@@ -260,7 +270,7 @@ mod tests {
     fn taking_once_removes_it_from_pending_but_keeps_the_record() {
         let root = temp_root("take");
         let queue = AcceptanceQueue::new(&root);
-        let accepted = queue.accept("home", "only once", 1_000).expect("accept");
+        let accepted = queue.accept(None, "only once", 1_000).expect("accept");
 
         let first = queue.take(&accepted.id, 2_000).expect("take");
         assert!(first.is_some());
@@ -288,8 +298,8 @@ mod tests {
     fn receipts_are_unique_across_accepts_in_the_same_millisecond() {
         let root = temp_root("unique");
         let queue = AcceptanceQueue::new(&root);
-        let a = queue.accept("home", "a", 1_000).expect("a");
-        let b = queue.accept("home", "b", 1_000).expect("b");
+        let a = queue.accept(None, "a", 1_000).expect("a");
+        let b = queue.accept(None, "b", 1_000).expect("b");
         assert_ne!(a.id, b.id);
         assert_eq!(queue.pending().expect("pending").len(), 2);
         fs::remove_dir_all(&root).expect("cleanup");
@@ -299,11 +309,11 @@ mod tests {
     fn the_journal_only_ever_grows_and_keeps_earlier_lines() {
         let root = temp_root("append");
         let queue = AcceptanceQueue::new(&root);
-        queue.accept("home", "first", 1_000).expect("first");
+        queue.accept(Some("home"), "first", 1_000).expect("first");
         let after_first =
             fs::read_to_string(AcceptanceQueue::path(&root)).expect("read");
 
-        queue.accept("home", "second", 2_000).expect("second");
+        queue.accept(Some("home"), "second", 2_000).expect("second");
         let after_second =
             fs::read_to_string(AcceptanceQueue::path(&root)).expect("read");
 
@@ -323,7 +333,7 @@ mod tests {
     fn a_truncated_final_line_is_tolerated() {
         let root = temp_root("truncated");
         let queue = AcceptanceQueue::new(&root);
-        queue.accept("home", "complete", 1_000).expect("accept");
+        queue.accept(None, "complete", 1_000).expect("accept");
         let path = AcceptanceQueue::path(&root);
         let mut handle = fs::OpenOptions::new()
             .append(true)

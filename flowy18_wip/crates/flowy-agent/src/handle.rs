@@ -1229,9 +1229,15 @@ impl AgentHandle {
         if self.is_initializing() {
             return Err("library.loading");
         }
-        let session = self.ensure_active_session()?;
+        // Accepting must never create a session. `ensure_active_session()`
+        // does exactly that when nothing is live, which would pin the receipt
+        // to an empty conversation the user never had. The session is a hint
+        // here, not a binding (see `AcceptedMessage::session_hint`).
+        let hint = lock(&self.inner.state.active)
+            .clone()
+            .filter(|id| lock(&self.inner.state.live).contains_key(id));
         AcceptanceQueue::new(self.inner.state.root.clone())
-            .accept(&session, text, now_ms())
+            .accept(hint.as_deref(), text, now_ms())
             .map_err(|_| "notice.storage_error")
     }
 
@@ -2830,6 +2836,71 @@ fn line_delta(old: &str, new: &str) -> Option<(u32, u32)> {
 mod background_init_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn accepting_with_no_live_session_creates_none_and_leaves_no_hint() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-accept-nosession-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        assert_eq!(handle.active_session_id(), None);
+
+        let receipt = handle.accept_deferred("orphan prompt").expect("accepted");
+
+        // The receipt must not claim a session it never had. Before this fix
+        // `accept_deferred` called `ensure_active_session()`, which creates one,
+        // so the receipt was pinned to an empty conversation the user never had.
+        assert!(
+            receipt.session_hint.is_none(),
+            "no session was live, so there is nothing to hint at"
+        );
+        assert_eq!(
+            handle.active_session_id(),
+            None,
+            "accepting must not switch the active session"
+        );
+        assert!(
+            handle.list_sessions().is_empty(),
+            "accepting must not create a session"
+        );
+
+        // Still durable, still readable.
+        let pending = handle.pending_acceptances();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "orphan prompt");
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepting_while_a_session_is_live_keeps_it_only_as_a_hint() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-accept-hint-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let id = handle.create_session().expect("session");
+
+        let receipt = handle.accept_deferred("hinted prompt").expect("accepted");
+        assert_eq!(receipt.session_hint.as_deref(), Some(id.as_str()));
+        // The hint did not change which session is active.
+        assert_eq!(handle.active_session_id().as_deref(), Some(id.as_str()));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn accept_deferred_hands_back_a_receipt_a_fresh_handle_still_finds() {
