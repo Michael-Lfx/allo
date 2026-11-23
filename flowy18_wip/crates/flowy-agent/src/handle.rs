@@ -244,9 +244,15 @@ impl AgentHandle {
         }
         let config = lock(&self.inner.config).clone();
         self.boot(config);
+        // History is fully loaded and recovered before this point. Keep the
+        // library in its existing loading state until the backfill finishes so
+        // the UI never flashes an empty catalog first.
+        let engine = lock(&self.inner.engine).clone();
+        if let Some(engine) = &engine {
+            backfill_conversation_artifacts(&self.inner.state, engine);
+        }
         // A catalog refresh may have arrived while history was being read.
         // Apply its latest route before making initialization observable.
-        let engine = lock(&self.inner.engine).clone();
         let cwd = ensure_tool_cwd(&self.inner.state.root);
         {
             let mut initializing = lock(&self.inner.state.initializing);
@@ -1379,6 +1385,7 @@ impl AgentHandle {
         state.push_update(AgentUpdate::Sessions);
         let state = Arc::clone(state);
         let receipt = id.clone();
+        let completed_submission = submission;
         self.inner.runtime.spawn(async move {
             let outcome = turn.await;
             match &outcome {
@@ -1414,6 +1421,7 @@ impl AgentHandle {
                     );
                 }
             }
+            capture_turn_artifacts(&engine, &state, &id, completed_submission);
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {
@@ -1888,6 +1896,123 @@ fn migrate_legacy_source_deletions(
         }
     }
     deleted
+}
+
+fn backfill_conversation_artifacts(state: &UiState, engine: &Engine) {
+    let Some(store) = state.artifact_store.get().cloned() else {
+        return;
+    };
+    for session in engine.sessions() {
+        if !crate::conversation_artifacts::session_supports_import(&session) {
+            continue;
+        }
+        match store.source_deleted(&session.id) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                log_storage_io_error(
+                    "read source deletion marker before artifact backfill",
+                    &state.root.join("artifacts"),
+                    &error,
+                );
+                state.report_storage_error();
+                continue;
+            }
+        }
+        let writes = crate::conversation_artifacts::parse_successful_writes(
+            &session.messages,
+        );
+        if writes.is_empty() {
+            continue;
+        }
+        let commits =
+            crate::conversation_artifacts::prepare_conversation_artifacts(
+                &store, &session, &writes,
+            );
+        persist_conversation_commits(engine, &store, state, commits);
+    }
+}
+
+fn capture_turn_artifacts(
+    engine: &Engine,
+    state: &UiState,
+    session_id: &str,
+    submission: Option<u128>,
+) {
+    let Some(submission) = submission else {
+        return;
+    };
+    let Some(session) = engine.session(session_id) else {
+        return;
+    };
+    let turn_id =
+        crate::conversation_artifacts::turn_id_for_submission(submission);
+    if !session.messages.iter().any(|message| message.id == turn_id) {
+        tracing::warn!(
+            target: "flowy.storage",
+            session = %session_id,
+            turn = %turn_id,
+            "conversation artifact import could not locate the finished turn"
+        );
+        return;
+    }
+    let writes =
+        crate::conversation_artifacts::parse_successful_writes_for_turn(
+            &session.messages,
+            &turn_id,
+        );
+    if writes.is_empty() {
+        return;
+    }
+    let Some(store) = state.artifact_store.get().cloned() else {
+        state.report_storage_error();
+        return;
+    };
+    let commits = crate::conversation_artifacts::prepare_conversation_artifacts(
+        &store, &session, &writes,
+    );
+    if persist_conversation_commits(engine, &store, state, commits) {
+        state.push_update(AgentUpdate::Artifacts);
+    }
+}
+
+fn persist_conversation_commits(
+    engine: &Engine,
+    store: &ArtifactStore,
+    state: &UiState,
+    commits: Vec<DeliveryCommit>,
+) -> bool {
+    let mut imported = false;
+    for commit in commits {
+        if let Err(error) = engine.record_delivery_commit(&commit) {
+            log_storage_io_error(
+                "persist conversation artifact commit",
+                &flowy_agent_core::SessionIndex::path(&state.root),
+                &error,
+            );
+            store.record_import_diagnostic(format!(
+                "Could not persist artifact commit for {}: {error}",
+                commit.session_id
+            ));
+            state.report_storage_error();
+            continue;
+        }
+        if let Err(error) = store.commit_prepared(&commit) {
+            log_storage_io_error(
+                "commit conversation artifact",
+                &state.root.join("artifacts"),
+                &error,
+            );
+            store.record_import_diagnostic(format!(
+                "Could not commit conversation artifact for {}: {error}",
+                commit.session_id
+            ));
+            state.report_storage_error();
+            continue;
+        }
+        imported = true;
+    }
+    imported
 }
 
 fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
@@ -2749,6 +2874,8 @@ mod background_init_tests {
             .prepare(PrepareArtifact {
                 source_root: output,
                 relative_path: "report.md".into(),
+                source_relative_path: "report.md".into(),
+                conversation_import: false,
                 session_id: "home".into(),
                 submission_id: "submission-1".into(),
                 tool_call_id: "call-1".into(),
@@ -2858,6 +2985,8 @@ mod background_init_tests {
             .prepare(PrepareArtifact {
                 source_root: output,
                 relative_path: "report.md".into(),
+                source_relative_path: "report.md".into(),
+                conversation_import: false,
                 session_id: "home".into(),
                 submission_id: "submission-1".into(),
                 tool_call_id: "call-1".into(),
@@ -2955,6 +3084,8 @@ mod background_init_tests {
             .prepare(PrepareArtifact {
                 source_root: output,
                 relative_path: "report.md".into(),
+                source_relative_path: "report.md".into(),
+                conversation_import: false,
                 session_id: "legacy".into(),
                 submission_id: "submission-legacy".into(),
                 tool_call_id: "call-legacy".into(),

@@ -1,5 +1,6 @@
 //! Explicit, host-owned artifact publishing tool.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use flowy_agent_core::tools::ToolDefinition;
@@ -86,9 +87,27 @@ pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
                     }
+                    // The parsed-write importer identifies sources relative to
+                    // the session workspace, while publish_file resolves them
+                    // inside this turn's output directory.
+                    let source_relative_path = output_root
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(|workspace_root| {
+                            output_root.strip_prefix(workspace_root).ok()
+                        })
+                        .map(|relative| {
+                            relative
+                                .join(Path::new(&parsed.path))
+                                .to_string_lossy()
+                                .replace('\\', "/")
+                        })
+                        .unwrap_or_else(|| parsed.path.replace('\\', "/"));
                     let receipt = match store.prepare(PrepareArtifact {
                         source_root: output_root,
                         relative_path: parsed.path,
+                        source_relative_path,
+                        conversation_import: false,
                         session_id,
                         submission_id,
                         tool_call_id: args.call_id,

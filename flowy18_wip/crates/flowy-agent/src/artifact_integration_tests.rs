@@ -15,7 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use crate::{AgentHandle, ChatLine, LlmConfig, SessionOrigin, TurnStatus};
+use crate::{
+    AgentHandle, AgentWorkspace, ChatLine, LlmConfig, SessionOrigin, TurnStatus,
+};
 
 const CSV: &str = "region,sales\nNorth,120\nSouth,80\n";
 const SUBMISSION: u128 = 0x1234;
@@ -52,8 +54,24 @@ struct ProviderFixture {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+enum ProviderMode {
+    Delivery,
+    ProjectWrite { path: String, content: String },
+}
+
 impl ProviderFixture {
     fn start() -> Self {
+        Self::start_with(ProviderMode::Delivery)
+    }
+
+    fn start_project_write(path: &str, content: &str) -> Self {
+        Self::start_with(ProviderMode::ProjectWrite {
+            path: path.into(),
+            content: content.into(),
+        })
+    }
+
+    fn start_with(mode: ProviderMode) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -88,45 +106,64 @@ impl ProviderFixture {
                         state.3.lock().unwrap().push(request);
                         let (delta, finish_reason) = if has_tools {
                             let index = state.1.fetch_add(1, Ordering::SeqCst);
-                            let root = state
-                                .2
-                                .lock()
-                                .unwrap()
-                                .clone()
-                                .expect("host assigned output root");
-                            match index {
-                                0 => tool_delta(
-                                    "fixture-write-csv",
-                                    "write_file",
-                                    json!({
-                                        "path": root.join("sales.csv").display().to_string(), "content": CSV
-                                    }),
-                                ),
-                                1 => tool_delta(
-                                    "fixture-publish-csv",
-                                    "publish_file",
-                                    json!({
-                                        "path": "sales.csv", "delivery_key": "sales", "display_name": "Sales report.csv"
-                                    }),
-                                ),
-                                2 => tool_delta(
-                                    "fixture-publish-pdf",
-                                    "publish_file",
-                                    json!({
-                                        "path": "sample.pdf", "delivery_key": "pdf-fixture"
-                                    }),
-                                ),
-                                3 => tool_delta(
-                                    "fixture-publish-pptx",
-                                    "publish_file",
-                                    json!({
-                                        "path": "sample.pptx", "delivery_key": "pptx-fixture"
-                                    }),
-                                ),
-                                _ => (
-                                    json!({"role":"assistant","content":"Fixture delivery complete."}),
-                                    "stop",
-                                ),
+                            match &mode {
+                                ProviderMode::Delivery => {
+                                    let root =
+                                        state.2.lock().unwrap().clone().expect(
+                                            "host assigned output root",
+                                        );
+                                    match index {
+                                        0 => tool_delta(
+                                            "fixture-write-csv",
+                                            "write_file",
+                                            json!({
+                                                "path": root.join("sales.csv").display().to_string(), "content": CSV
+                                            }),
+                                        ),
+                                        1 => tool_delta(
+                                            "fixture-publish-csv",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sales.csv", "delivery_key": "sales", "display_name": "Sales report.csv"
+                                            }),
+                                        ),
+                                        2 => tool_delta(
+                                            "fixture-publish-pdf",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sample.pdf", "delivery_key": "pdf-fixture"
+                                            }),
+                                        ),
+                                        3 => tool_delta(
+                                            "fixture-publish-pptx",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sample.pptx", "delivery_key": "pptx-fixture"
+                                            }),
+                                        ),
+                                        _ => (
+                                            json!({"role":"assistant","content":"Fixture delivery complete."}),
+                                            "stop",
+                                        ),
+                                    }
+                                }
+                                ProviderMode::ProjectWrite {
+                                    path,
+                                    content,
+                                } => {
+                                    if index == 0 {
+                                        tool_delta(
+                                            "fixture-project-write",
+                                            "write_file",
+                                            json!({ "path": path, "content": content }),
+                                        )
+                                    } else {
+                                        (
+                                            json!({"role":"assistant","content":"Project file written."}),
+                                            "stop",
+                                        )
+                                    }
+                                }
                             }
                         } else {
                             // Automatic conversation-title requests are
@@ -414,4 +451,55 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     let store = reopened.artifact_store().unwrap();
     assert!(store.list().unwrap().is_empty());
     assert!(store.read_payload(&csv_id).is_err());
+}
+
+#[test]
+fn completed_project_turn_imports_successful_write_file() {
+    const MARKDOWN: &str = "# 锂电池\n\nProject note.\n";
+    let scratch = Scratch::new();
+    let project = scratch.0.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = fs::canonicalize(project).unwrap();
+    let provider = ProviderFixture::start_project_write("notes.md", MARKDOWN);
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    handle.set_workspace_for_new_sessions(Some(AgentWorkspace {
+        project_id: "project-1".into(),
+        root: project.clone(),
+    }));
+    handle.set_origin_for_new_sessions(SessionOrigin::Project {
+        project_id: Some("project-1".into()),
+    });
+    let session = handle.create_session().unwrap();
+    handle
+        .submit_chat(0x2345, "Write the project note.")
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.turn_status().is_busy() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(handle.turn_status(), TurnStatus::Completed);
+    while handle.artifacts().unwrap().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        fs::read(project.join("notes.md")).unwrap(),
+        MARKDOWN.as_bytes()
+    );
+    let records = handle.artifacts().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].manifest.receipt.session_id, session);
+    assert_eq!(
+        records[0].manifest.origin,
+        SessionOrigin::Project {
+            project_id: Some("project-1".into())
+        }
+    );
+    assert_eq!(records[0].manifest.source_relative_path, "notes.md");
+    assert_eq!(
+        handle
+            .read_artifact(&records[0].manifest.receipt.artifact_id)
+            .unwrap(),
+        MARKDOWN.as_bytes()
+    );
 }
