@@ -384,32 +384,34 @@ $ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
 
 | # | 需求 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| A | 忙时不再禁用提交 | ✅ 结构性验证 | 运行中无障碍树同时有「停止」「发送」； |
-| B | 提交后立即落盘并分配编号 | ⚠️ **部分** | agent 层  已测返回 receipt；**UI 点击产出一份真实回执，没验成** |
-| C | 重开可查 | ✅ | 、 |
-| D | 文档迁移 + 索引 | ✅ |  11 份 |
-| E | 只用 bash 后台启动 | ✅ |  第 3 步实测；全程无 PowerShell、无签名弹窗 |
+| A | 忙时不再禁用提交 | ✅ 结构性验证 | 运行中无障碍树同时有「停止」「发送」；`evidence/03-running-both-buttons.png` |
+| B | 提交后立即落盘并分配编号 | ⚠️ **部分** | agent 层 `accept_deferred` 已测返回 receipt；**UI 点击产出一份真实回执，没验成** |
+| C | 重开可查 | ✅ | `accept_survives_a_fresh_queue_handle`、`accept_deferred_..._a_fresh_handle_still_finds` |
+| D | 文档迁移 + 索引 | ✅ | `docs/architecture/flowy-v0/` 11 份 |
+| E | 只用 bash 后台启动 | ✅ | `accept.sh` 第 3 步实测；全程无 PowerShell、无签名弹窗 |
 | F | 踩坑即时更新 | ✅ | PROGRESS 记了 6 个坑，BLOCKED 记了 3 条 |
 | G | 只 commit 不推送 | ✅ | 7 个 commit，全部本地 |
-| H | 可重跑验收 | ✅ |  3/3 通过 |
+| H | 可重跑验收 | ✅ | `accept.sh` 3/3 通过 |
 
 ### B 为什么只算「部分」—— 说清楚，不粉饰
 
 **已经证明的**：
-1.  在  时调 （代码 + 编译）
-2.  返回持久化 receipt（单元测试）
+
+1. `send_prompt` 在 `running` 时调 `accept_deferred`（代码 + 编译）
+2. `accept_deferred` 返回持久化 receipt（单元测试）
 3. 运行中发送按钮确实在（无障碍树）
 
 **没证明的**：
+
 **在运行中真的点下去，磁盘上多出一条回执。**
 
-卡在哪： 对 GPUI 输入框不生效（应用重渲染覆盖），
- 对 textfield 返回 （不广告 click 动作），
- 需要输入框先有焦点，而焦点拿不到。
+卡在哪：`desktop_set_value` 对 GPUI 输入框不生效（应用重渲染覆盖），
+`desktop_click` 对 textfield 返回 `POLICY_DENIED`（不广告 click 动作），
+`ctrl+v` 需要输入框先有焦点，而焦点拿不到。
 
 **这不是「差不多了」，是三条证据链缺最后一环。** 需要一次人工点击，或给 GPUI 输入框补上可编程写入。
 
 ### 下一步要做的
 
-- 人工在运行中点一次发送，然后看  是否多一条
-- 若通了，把 B 补成 ✅，并把这次操作写进  的注释里
+- 人工在运行中点一次发送，然后看 `AppData/Roaming/Flowy/acceptance/pending.json` 是否多一条
+- 若通了，把 B 补成 ✅，并把这次操作写进 `accept.sh` 的注释里
