@@ -4,151 +4,147 @@
 
 ---
 
-## 任务 0 · 基线核对（2026-11-23）
+## ⚠️ 第一轮调研对象错了，已重做
+
+第一轮我在**根 workspace**（Tauri + React + `nomifun-*`）里查受理链路，写了半天的 `allowSendWhileLoading`、`executeSteer`、`NomiSendBox`。
+
+**那些跟本方案无关。** 方案描述的是 `flowy18_wip/`（GPUI + pi-rust）。
+
+详见 `BLOCKED.md` 第 1 条。第一轮那节结论已作废，本文件已重写。
+
+---
+
+## 任务 0 · 基线（2026-11-23）
 
 ### 环境
 
 | 项 | 实测 |
 | --- | --- |
-| bun | `1.3.14` |
-| cargo | `1.100.0 (3acc79c0c 2026-11-05)` |
-| `target/`（worktree 内） | 不存在 —— 首次冷构建 |
-| `node_modules/`（worktree 内） | **不存在** —— 新 worktree 必跑 `bun install` |
-| `ui/dist/index.html` | 存在 |
-
-### 二进制名更正
-
-任务书写 `./target/debug/flowy-app.exe`。**实际上游产物是 `Flowy.exe`**（另有 `Flowy.d`、`Flowy.pdb`）。
-
-→ 启动命令更正为：
-
-```bash
-(./target/debug/Flowy.exe >/dev/null 2>&1 &)
-```
+| 工具链 | bun `1.3.14`、cargo `1.100.0` |
+| `flowy18_wip/target/`（worktree 内） | 空 —— 冷构建 |
+| 主工作区已有二进制 | `flowy18_wip/target/debug/flowy-app.exe` |
+| `node_modules/`（worktree 内） | 无 → `bun install` 后仍需从主工作区补 2 个包 |
 
 ### 命令基线
 
-| 命令 | 结果 | 耗时 |
-| --- | --- | --- |
-| `cargo check -p nomifun-ai-agent` | **通过，0 error**，全部是既有 warning（`nomi-agent` 1 条、`nomifun-learning` 44 条） | 4m57s（冷） |
-| `bun run typecheck`（未装依赖时） | **失败**：`Script not found "node_modules/typescript/bin/tsc"` | — |
-| `bun run typecheck`（`bun install` 后） | **仍然失败** —— 有 2 个包没装上（见下） | — |
-| `bun run typecheck`（补齐 2 个包后） | **通过，exit 0** | — |
+| 命令 | 结果 |
+| --- | --- |
+| `cargo check -p nomifun-ai-agent`（根 workspace） | 通过，0 error，4m57s —— **但属错对象，留作对照** |
+| `bun run typecheck` | 通过，exit 0（补包后） |
+| `cargo build -p flowy-app`（`flowy18_wip`） | **进行中，耗时未知** |
 
-### 环境坑：新 worktree 要补 3 步
-
-1. worktree 内**没有** `node_modules` → 必须 `bun install`
-2. `bun install` 在 Windows 上对两个包报 `ENOENT: failed to link package (copyfile)`：
-   `@tanstack/react-query`、`@excalidraw/excalidraw`
-3. 修法：从主工作区 `ui/node_modules/` 直接复制这三个目录过去
+### 启动命令的正确形态
 
 ```bash
-W=<worktree>/ui/node_modules ; M=<主工作区>/ui/node_modules
-mkdir -p "$W/@tanstack" "$W/@excalidraw"
-cp -r "$M/@tanstack/react-query" "$M/@tanstack/react-virtual" "$W/@tanstack/"
-cp -r "$M/@excalidraw/excalidraw" "$W/@excalidraw/"
+cd flowy18_wip
+(./target/debug/flowy-app.exe >/dev/null 2>&1 &)
 ```
 
-补齐后 typecheck 干净通过。**这条不写下来，下一个人还会卡一遍。**
-
-**这两个数字是后面所有改动的对照基线。任何改动引入的 `cargo check` error 或 typecheck 失败，都算我引入的。**
+**`flowy-app.exe` 是对的。** 我第一轮说「应为 `Flowy.exe`」是错的，已撤回 —— `Flowy.exe` 属于根 workspace 那个 Tauri 产品。
 
 ---
 
-## 受理链路：与审查报告不一致
+## 受理链路：三层拦截，全部定位
 
-**审查报告说**：「当前输入框在执行繁忙或云未就绪时拦截提交，pi 的 steering 回调尚未接线。」
+目标文件：`flowy18_wip/crates/flowy-studio/src/composer.rs`、`panel.rs`、`flowy18_wip/crates/flowy-agent/src/handle.rs`。
 
-**代码读下来只对了一半。**
+### 第一层 · UI 直接不给按钮
 
-### 两种拦截不是一回事
-
-| 位置 | 事实 |
-| --- | --- |
-| `ui/src/renderer/components/chat/SendBox/index.tsx:370` | `allowSendWhileLoading = false`（默认值） |
-| 同文件 `:2296` | 忙时拦截条件 **`!allowSendWhileLoading && (isLoading \|\| loading)`** |
-| `platforms/nomi/NomiSendBox.tsx:2532` | **传了 `allowSendWhileLoading`（= true）** |
-| 同文件 `:2523-2524` | `onSteer={onSteerHandler}`、`steerAvailable` **都已接** |
-| 同文件 `:2355` | `disabled={requiresConversationReset \|\| !current_model?.use_model \|\| !modelSelection.isCurrentModelAvailable}` |
-
-结论：
-
-| 情形 | 拦不拦 |
-| --- | --- |
-| **执行繁忙**（正在跑） | **不拦** —— 走 steer 通道 |
-| **云未就绪**（模型不可用 / 需重置） | **拦** |
-
-### steer 通道已经完整
-
-`executeSteer`（`NomiSendBox.tsx:1645-1704`）做了这些事：
-
-1. `ipcBridge.conversation.steer.invoke({ input, conversation_id, files, idempotency_key: uuidv7() })`
-2. 拿到 `res.msg_id` —— **编号**
-3. `fresh` 时立刻 `addOrUpdateMessage(...)` —— **本地立刻上屏**
-4. `replayed_in_flight` / `completed` 各有分支处理
-5. 失败时 `removeMessageByMsgId(msg_id)` —— **回滚**
-
-### 后端 steer 要求「有活跃 turn」
-
-`crates/backend/nomifun-conversation/src/service.rs:14005`：
+`crates/flowy-studio/src/composer.rs:221` `composer_submit`：
 
 ```rust
-match runtime.steer(req.content.clone()) {
-    Ok(true) => {}
-    Ok(false) => return Err(AppError::Conflict(
-        "the Agent turn ended before the steer was delivered")),
-    Err(error) => return Err(error),
+// A missing cloud model means no live routing is configured; keep the
+// send affordance disabled instead of failing after the click.
+let has_draft = has_draft && self.cloud_ready;
+if running {
+    // 渲染「停止」按钮 —— 根本没有发送按钮
+    theme::IconButton::new("chat-stop", ...)
+} else {
+    theme::IconButton::new("chat-send", ...).disabled(!has_draft)
 }
 ```
 
-三条路各管一段：
+**忙时用户连点都点不到。**
 
-| 状态 | 走哪条 | 能否落盘拿到编号 |
-| --- | --- | --- |
-| 有活跃 turn（忙） | `conversation.steer.invoke` | **能** |
-| 空闲 + 模型可用 | 普通 `send` | 能 |
-| **空闲 + 模型不可用** | **无路可走** —— `disabled` 直接拦住 | **不能** |
+### 第二层 · `send_prompt` 拒绝
+
+`crates/flowy-studio/src/panel.rs:934`：
+
+```rust
+if self.submission_pending { return; }                       // ① 静默丢
+if self.agent.is_initializing() { notice; return; }          // ②
+...
+if !self.cloud_ready || model.is_none() { notice; return; }  // ③ 云未就绪
+let text = ...; if text.is_empty() { return; }               // ④
+let id = *self.submission.get_or_insert_with(new_submission_id);  // ⑤ 分配提交 id
+```
+
+### 第三层 · agent 层明确拒绝「忙」
+
+`crates/flowy-agent/src/handle.rs:1210` `submit_message`：
+
+```rust
+if selection.is_some_and(|selection| {
+    self.context_generation() != selection.generation
+        || lock(&state.active).as_deref() != selection.active
+}) {
+    return Err("notice.agent_busy");          // ← ①
+}
+let id = self.ensure_active_session()?;
+if lock(&state.live)
+    .get(&id)
+    .is_some_and(|session| session.status.is_busy())
+{
+    return Err("notice.agent_busy");          // ← ②
+}
+```
+
+**② 是决定性的：`session.status.is_busy()` 直接返回 `notice.agent_busy`。**
+
+### 三层合起来
+
+| 层 | 忙时会发生什么 |
+| --- | --- |
+| UI (`composer.rs:221`) | 只渲染「停止」，**没有发送按钮** |
+| `panel.rs:934` | `submission_pending` 静默丢；`!cloud_ready` 拒绝 |
+| `handle.rs:1210` | `session.status.is_busy()` → `notice.agent_busy` |
+
+**要打通「本地受理回执」，三层都要动，且第三层是新逻辑（现在根本没有落盘路径）。**
+
+---
+
+## 这一单的真正形状
+
+审查要的验收：**「A 还在跑慢工具时，我能提交 B、拿到编号、重开客户端还能找到 B」**
+
+对照三层拦截，需要：
+
+1. **UI**：`running` 时同时渲染「停止」和「发送」，不再二选一
+2. **`send_prompt`**：忙时不丢、不拒，走一条「受理」分支
+3. **agent**：新增一条**纯落盘**路径 —— 写入持久化、返回编号、**不进 loop**；等 turn 空闲后再取出处理
+
+**关键设计问题**：落盘之后的「待处理队列」放哪？`flowy-agent` 里有没有现成的 pending 概念，下一轮要查。
 
 ---
 
 ## 理解的目标 / 顺序 / 最大风险
 
-1. **目标**：证明「忙时也能提交、拿到编号、重开还能找到」
-2. **顺序**：文档落地 → 跑起来实测三条未验证点 → 只补真正缺的那一段 → 端到端脚本
-3. **最大风险（已发生）**：**第一张开发单的验收场景可能已经通过。**
-   审查要的是「A 还在跑慢工具时提交 B」——那正是「有活跃 turn」，走 steer，代码已完整实现。
-   若实测确认，本轮价值不在写代码，而在：①给出可重跑的证明 ②文档落地 ③指出审查与代码的偏差
-4. **真缺口（推断）**：无可用模型时消息无处可落。这正是「本地受理回执」的字面含义
-5. **约束**：只在本分支 commit、不推送；不动既有 migration / `package.json` / CI / 既有测试断言
+1. **目标**：忙时也能受理，拿编号，重开可查
+2. **顺序**：先做**落盘 + 编号**（不碰调度）→ 再让 UI 放行 → 最后接「空闲后自动处理」
+3. **最大风险**：`handle.rs` 的 `submit_message` 是 hot path，改它要保证不破坏既有的 `agent_busy` 语义（别的地方可能依赖它做防重）
+4. **约束**：只在本分支 commit、不推送；不动既有测试断言
 
 ---
 
 ## 任务 1 · 文档落地 ✅
 
-`docs/architecture/flowy-v0/` 现有 11 个文件：
-
-```
-最终方案.md  实现对照.md  证据.md  一页纸.md
-参照.md      先记.md      审查交接.md  V0-执行计划.md
-README.md（索引）  PROGRESS.md  BLOCKED.md
-```
-
-验收：`ls docs/architecture/flowy-v0/ | wc -l` → 11
-
----
-
-## 未验证的三条（跑起来才能答）
-
-1. `steerAvailable` 运行时是否恒为 true
-2. 有活跃 turn 时点提交，UI 上出现的是「发送」还是「插话」按钮
-3. 拿到 `msg_id` 后重开客户端，该消息是否真在列表里
+`docs/architecture/flowy-v0/` 共 11 个文件，已 commit `10fedc0a6`。
 
 ---
 
 ## 下一步
 
-- [ ] `bun install` 完成后补 `bun run typecheck` 基线
-- [ ] 构建并启动应用（bash 后台，`Flowy.exe`），实测上述三条
-- [ ] 按实测结果决定：验证已有通道，还是补「无模型时也能受理」
-- [ ] 写端到端脚本 `accept.sh`
-- [ ] commit（不推送）
+- [ ] 等 `cargo build -p flowy-app` 完成，实测确认三层拦截
+- [ ] 查 `flowy-agent` 有没有现成的 pending / 待处理概念
+- [ ] 设计「落盘受理」的最小改动面
+- [ ] 端到端脚本（忙时提交 → 拿编号 → 重启后能查到）
