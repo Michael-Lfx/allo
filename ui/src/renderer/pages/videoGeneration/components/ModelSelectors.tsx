@@ -9,8 +9,8 @@ import { useTranslation } from 'react-i18next';
 import { Select, Spin } from '@arco-design/web-react';
 import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isCatalogPlanLocked, isMediaPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import {
@@ -58,6 +58,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
 }) => {
   const { t } = useTranslation();
   const profileTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const llmModels = useGeneratorModels('text');
   const { imageModels, videoModels, effectiveModelTier: mediaTier, isLoading: mediaLoading } = useMediaModels();
   const effectiveTier = Math.max(profileTier, mediaTier ?? 0);
@@ -85,7 +86,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     for (const m of llmModels.flat) {
       if (seen.has(m.model)) continue;
       seen.add(m.model);
-      const locked = isPlanLocked(m.minTierLevel ?? 0, effectiveTier);
+      const locked = isCatalogPlanLocked(m, effectiveTier, memberPlan);
       opts.push({
         value: m.model,
         disabled: locked,
@@ -99,11 +100,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
       });
     }
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveTier, llmModels.flat, memberLabel]);
+  }, [effectiveTier, llmModels.flat, memberLabel, memberPlan]);
 
   const imageOptions = useMemo(() => {
     const opts = filterAllowedImageModels(imageModels).map((m) => {
-      const locked = isPlanLocked(m.min_tier_level ?? 0, effectiveTier);
+      const locked = isMediaPlanLocked(m, effectiveTier, memberPlan);
       return {
         value: m.id,
         disabled: locked,
@@ -117,11 +118,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
       };
     });
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveTier, imageModels, memberLabel]);
+  }, [effectiveTier, imageModels, memberLabel, memberPlan]);
 
   const videoOptions = useMemo(() => {
     const opts = videoModels.map((m) => {
-      const locked = isPlanLocked(m.min_tier_level ?? 0, effectiveTier);
+      const locked = isMediaPlanLocked(m, effectiveTier, memberPlan);
       return {
         value: m.id,
         label: mediaModelLabel(m),
@@ -130,7 +131,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
       };
     });
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveTier, memberLabel, videoModels]);
+  }, [effectiveTier, memberLabel, memberPlan, videoModels]);
 
   const videoSelectOptions = useMemo(
     () =>
@@ -153,7 +154,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     const patch: Partial<VimaxModelSelection> = {};
     const openLlm = llmOptions.filter((option) => !option.locked);
     const openImage = imageOptions.filter((option) => !option.locked);
-    const openVideo = videoModels.filter((model) => !isPlanLocked(model.min_tier_level ?? 0, effectiveTier));
+    const openVideo = videoModels.filter((model) => !isMediaPlanLocked(model, effectiveTier, memberPlan));
     if (mode !== 'action' && mode !== 'video' && mode !== 'image') {
       if (!value.llm_model && openLlm[0]) {
         patch.llm_model = pickDefaultLlmModel(openLlm.map((o) => o.value)) ?? openLlm[0].value;
@@ -184,7 +185,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     }
     // Only seed once catalogs load / when empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveTier, llmOptions, imageOptions, videoModels, videoOptions, mode]);
+  }, [effectiveTier, llmOptions, imageOptions, memberPlan, videoModels, videoOptions, mode]);
 
   const showLlm = mode === 'all' || mode === 'agent' || mode === 'llm';
   const showImage = mode === 'all' || mode === 'agent' || mode === 'image';

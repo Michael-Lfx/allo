@@ -12,7 +12,7 @@ import { autoTierTaglineKey } from '@/renderer/utils/model/modelShowcase';
 import { useTranslation } from 'react-i18next';
 import { Menu } from '@arco-design/web-react';
 import React, { type CSSProperties } from 'react';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import {
   allChatModelOptions,
   defaultAutoOption,
@@ -69,12 +69,14 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
 }) => {
   const { t } = useTranslation();
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const options = allChatModelOptions(viewModel);
   const optionsByKey = new Map(options.map((option) => [option.key, option]));
   const autoOptions = options.filter((option) => option.family === 'auto');
   const cloudOptions = orderCloudModelsForPlan(
     options.filter((option) => option.family === 'cloud'),
     effectiveModelTier,
+    memberPlan,
   );
   const hasModels = options.length > 0;
   const currentAutoOption = defaultAutoOption(autoOptions, selectedOption);
@@ -87,7 +89,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   const handleMenuItemClick = (key: string) => {
     const option =
       key === FLOWY_AUTO_FAMILY_MENU_KEY ? currentAutoOption : optionsByKey.get(key);
-    if (!option || isChatModelPlanLocked(option, effectiveModelTier)) return;
+    if (!option || isChatModelPlanLocked(option, effectiveModelTier, memberPlan)) return;
     onSelect(option);
   };
 
@@ -97,7 +99,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
     const recommendedLabel = option.showcase.recommended
       ? t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })
       : undefined;
-    const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
+    const planLocked = isChatModelPlanLocked(option, effectiveModelTier, memberPlan);
     const planBadge = requiredPlanBadgeLabel(
       option.minTierLevel,
       option.requiredPlanName,

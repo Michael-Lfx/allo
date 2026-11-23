@@ -40,6 +40,7 @@ function costEntries(
     supportsVision?: boolean;
     minTierLevel?: number;
     requiredPlanName?: string;
+    requiredPlanCode?: string;
   }>,
   capability: ModelCapability,
   serverBaseUrl?: string
@@ -52,6 +53,7 @@ function costEntries(
       const minTierLevel =
         typeof m.minTierLevel === 'number' && m.minTierLevel > 0 ? Math.trunc(m.minTierLevel) : 0;
       const requiredPlanName = m.requiredPlanName?.trim();
+      const requiredPlanCode = m.requiredPlanCode?.trim();
       return {
         model,
         displayName: (m.name || m.id || model).trim(),
@@ -64,6 +66,7 @@ function costEntries(
         ...(m.supportsVision ? { supportsVision: true } : {}),
         ...(minTierLevel > 0 ? { minTierLevel } : {}),
         ...(minTierLevel > 0 && requiredPlanName ? { requiredPlanName } : {}),
+        ...(minTierLevel > 0 && requiredPlanCode ? { requiredPlanCode } : {}),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -187,6 +190,7 @@ export function mergeAlloCatalogIntoConfig(
         icon: m.icon,
         minTierLevel: m.min_tier_level,
         requiredPlanName: m.required_plan_name,
+        requiredPlanCode: m.required_plan_code,
       })),
       'image',
       serverBaseUrl
@@ -198,6 +202,7 @@ export function mergeAlloCatalogIntoConfig(
         icon: m.icon,
         minTierLevel: m.min_tier_level,
         requiredPlanName: m.required_plan_name,
+        requiredPlanCode: m.required_plan_code,
       })),
       'video',
       serverBaseUrl
@@ -209,6 +214,7 @@ export function mergeAlloCatalogIntoConfig(
         icon: m.icon,
         minTierLevel: m.min_tier_level,
         requiredPlanName: m.required_plan_name,
+        requiredPlanCode: m.required_plan_code,
       })),
       'audio',
       serverBaseUrl

@@ -14,7 +14,7 @@ import { modelDisplayName, modelIconUrl, modelOptionName, modelPlanRequirement, 
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
 import { VideoModelOptionLabel } from "@renderer/components/model/VideoModelOptionLabel";
-import { useEffectiveModelTier } from "@renderer/hooks/cloud/useEffectiveModelTier";
+import { useEffectiveModelTier, useMemberPlan } from "@renderer/hooks/cloud/useEffectiveModelTier";
 import { isPlanLocked, requiredPlanBadgeLabel } from "@/renderer/utils/model/planGate";
 import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/utils/model/modelLogos";
 
@@ -34,6 +34,7 @@ type ModelPickerProps = {
 export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig, showSelectedPrice = true, variant = "default" }: ModelPickerProps) {
     const { t } = useTranslation();
     const effectiveModelTier = useEffectiveModelTier();
+    const memberPlan = useMemberPlan();
     const memberLabel = t("conversation.modelPicker.member", { defaultValue: "会员" });
     const resolvedPlaceholder = placeholder ?? canvasT("videoCanvas.model.placeholder", "选择模型");
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
@@ -139,7 +140,11 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                             {group.models.map((model) => {
                                 const selected = model === current;
                                 const plan = modelPlanRequirement(config, model);
-                                const locked = isPlanLocked(plan.minTierLevel, effectiveModelTier);
+                                const locked = isPlanLocked(plan.minTierLevel, effectiveModelTier, {
+                                    ...memberPlan,
+                                    requiredPlanName: plan.requiredPlanName,
+                                    requiredPlanCode: plan.requiredPlanCode,
+                                });
                                 const planLabel = requiredPlanBadgeLabel(plan.minTierLevel, plan.requiredPlanName, memberLabel);
                                 return (
                                     <button

@@ -8,7 +8,7 @@ import type { IProvider, TProviderWithModel } from '@/common/config/storage';
 import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { useEffectiveModelTier, useMemberPlan } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import {
   defaultChatModelOption,
   buildChatModelPickerViewModel,
@@ -79,9 +79,10 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
   } = useModelsForTask('chat');
 
   const effectiveModelTier = useEffectiveModelTier();
+  const memberPlan = useMemberPlan();
   const modelPicker = useMemo(
-    () => buildChatModelPickerViewModel(groups, effectiveModelTier),
-    [groups, effectiveModelTier]
+    () => buildChatModelPickerViewModel(groups, effectiveModelTier, memberPlan),
+    [groups, effectiveModelTier, memberPlan]
   );
 
   const modelList = useMemo(() => groups.map((group) => group.provider), [groups]);

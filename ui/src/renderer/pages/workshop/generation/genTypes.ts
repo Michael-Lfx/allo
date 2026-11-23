@@ -21,6 +21,7 @@ export interface ModelOption {
   model: string;
   minTierLevel?: number;
   requiredPlanName?: string;
+  requiredPlanCode?: string;
 }
 
 /** Models grouped under one provider, for the picker's grouped list. */
