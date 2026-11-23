@@ -340,3 +340,40 @@ Windows 下必须先 `taskkill /F /IM flowy-app.exe` 再构建，否则
 `flowy18_wip/crates/flowy-desktop/Cargo.toml` → `[[bin]] name = "flowy-app"`（**二进制**）
 
 **启动命令不变**（`./target/debug/flowy-app.exe`），变的是**构建命令**。
+
+---
+
+## 任务 6 · 可重跑验收脚本（已完成）
+
+`docs/architecture/flowy-v0/accept.sh`
+
+```
+$ bash docs/architecture/flowy-v0/accept.sh
+== 1/3 存储契约：受理后可被新句柄读到 ==
+  [PASS] acceptance 队列 4 条测试全过（含「新句柄重开仍可查」）
+== 2/3 agent 契约：忙时受理返回回执，另一个 handle 读得回 ==
+  [PASS] accept_deferred：受理拿到 receipt，独立 handle 重新读到同一条
+== 结果 ==
+  通过 2，失败 0
+  ✔ 受理纵线契约成立
+```
+
+带真实启动：
+
+```
+$ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
+  [PASS] bash 后台启动成功，进程存活（无人工点击）
+  回执落盘位置：C:/Users/38788/AppData/Roaming/Flowy/acceptance/pending.json
+  通过 3，失败 0
+```
+
+**这个脚本只做 bash 后台启动，全程没有 PowerShell `Start-Process`、没有签名确认、没有人工点击。**
+
+### 又踩一个坑：这个环境没有 `pgrep`
+
+脚本第一版用 `pgrep -f flowy-app` 判进程存活，结果误报 FAIL ——
+**MSYS 里没有 `pgrep`**，命令本身不存在，条件永远为假。
+
+改用 `ps aux | grep -c "[f]lowy-app"`（`[f]` 防止 grep 匹配到自己的命令行）。
+
+**教训：写跨环境脚本时，判断「命令不存在」和「条件为假」要分开 —— 前者的表现就是后者。**
