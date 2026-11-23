@@ -148,3 +148,47 @@ if lock(&state.live)
 - [ ] 查 `flowy-agent` 有没有现成的 pending / 待处理概念
 - [ ] 设计「落盘受理」的最小改动面
 - [ ] 端到端脚本（忙时提交 → 拿编号 → 重启后能查到）
+
+---
+
+## 任务 2 · 受理队列（已实现、已测）
+
+### 先记三个环境事实
+
+1. **构建产物在 `build.noindex/debug`，不在 `target/debug`。** 我第一轮看 `target` 只有 4K 以为卡住了，其实货在别处 —— 这个仓库改了 Cargo 输出目录。
+2. **主工作区 `flowy18_wip/target` 只有 182M**，复制过来后增量构建 7m44s 完成。
+3. **`flowy18_wip` 用 JSON 文件持久化**（`sessions/history.json`，临时文件 + rename 原子写），**没有 SQLite**。
+   → 目标里说的 `messages.status='pending'` / `conversation_delivery_receipts` 属于根 workspace 的表，这边不存在。
+
+### 做了什么
+
+新增 `crates/flowy-agent-core/src/acceptance.rs`：
+
+- `AcceptedMessage { id, session_id, text, created_at_ms, taken_at_ms }`
+- `AcceptanceQueue::accept()` —— 忙时唯一的一次写：一个文件、一次原子 rename，**不碰 session 状态**
+- `pending()` —— 取未处理的，按时间排序
+- `take(id)` —— 标记已领取，**两个并发调用者不会跑同一段文本**
+- 落盘位置 `root/acceptance/pending.json`，**故意与 `sessions/history.json` 分开** —— 队列在 turn 运行中写，索引在 turn 边界写，共用一个文件就是白送的写竞争
+
+### 测试（4/4 通过）
+
+```
+$ cargo test -p flowy-agent-core --lib acceptance
+running 4 tests
+test acceptance::tests::empty_queue_reads_as_empty_not_missing ... ok
+test acceptance::tests::accept_survives_a_fresh_queue_handle ... ok
+test acceptance::tests::taking_once_removes_it_from_pending_but_keeps_the_record ... ok
+test acceptance::tests::receipts_are_unique_across_accepts_in_the_same_millisecond ... ok
+test result: ok. 4 passed; 0 failed
+```
+
+**`accept_survives_a_fresh_queue_handle` 这一条就是「重开可查」在存储层的证明** ——
+用新的队列句柄重新读，receipt 还在、内容一致、未被领取。
+
+### 还没接的
+
+- `handle.rs:1254` 的 `is_busy() → agent_busy` 还没改成走队列
+- `composer.rs:221` 的 `if running { 只渲染停止 }` 还没改
+- 空闲时自动取出处理还没做
+
+**下一步就是接这三处。**

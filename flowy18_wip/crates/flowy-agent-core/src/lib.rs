@@ -4,6 +4,7 @@
 //! dependency. The loop and HTTP provider are added separately so the tool and
 //! session layer can be tested without a running model.
 
+pub mod acceptance;
 pub mod engine;
 pub mod loop_runner;
 pub mod run_fence;
@@ -12,6 +13,7 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
+pub use acceptance::{AcceptanceQueue, AcceptedMessage};
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
 pub use loop_runner::{
     LoopOutcome, ModelRoute, TurnRequest, TurnResult, complete_text,
