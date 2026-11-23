@@ -5,6 +5,7 @@ mod brand;
 #[cfg(test)]
 mod brand_manifest;
 mod disk;
+mod library;
 mod persona;
 pub mod prefs;
 pub mod session;

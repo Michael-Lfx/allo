@@ -1,12 +1,13 @@
 use crate::composer::{ChatComposer, ComposerEvent};
 use crate::deliverables::PreviewBody;
 use crate::feed::{
-    ChatFeed, OpenDeliverables, OpenTask, RevealFile, WorkingIndicator,
+    ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, RevealFile,
+    WorkingIndicator,
 };
 use crate::starter::catalog::Category;
 use flowy_agent::{
     AgentHandle, AgentWorkspace, FileEntry, LlmConfig, Model, Plan,
-    ProviderCatalog,
+    ProviderCatalog, SessionOrigin,
 };
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
@@ -18,6 +19,10 @@ use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
 };
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 fn new_submission_id() -> u128 {
@@ -73,6 +78,13 @@ pub enum StudioEvent {
     SessionsChanged,
     /// A turn reached a terminal state; credit balance may have changed.
     TurnFinished,
+    ArtifactsChanged,
+    PreviewArtifact(String),
+    SaveArtifact(String),
+    LocateArtifactSource {
+        session_id: String,
+        artifact_id: String,
+    },
     Rated {
         stars: u32,
     },
@@ -115,7 +127,11 @@ pub struct StudioPanel {
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
     _deliverables_sub: gpui::Subscription,
+    _artifact_sub: gpui::Subscription,
     submission: Option<u128>,
+    submission_pending: bool,
+    submission_generation: u64,
+    submission_stop: Option<Arc<AtomicBool>>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
     last_elapsed: Option<u64>,
@@ -183,6 +199,23 @@ impl StudioPanel {
         ui: UiContext,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        Self::new_with_mode(config, ui, false, cx)
+    }
+
+    pub fn new_background(
+        config: StudioConfig,
+        ui: UiContext,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        Self::new_with_mode(config, ui, true, cx)
+    }
+
+    fn new_with_mode(
+        config: StudioConfig,
+        ui: UiContext,
+        background: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
         tracing::debug!(
             target: "flowy.boot",
             stage = "StudioPanel::new",
@@ -205,7 +238,9 @@ impl StudioPanel {
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let prompt_sub =
             cx.subscribe(&prompt, |panel, _, _: &TextChanged, cx| {
-                panel.submission = None;
+                if !panel.submission_pending {
+                    panel.submission = None;
+                }
                 if panel.surface != StudioSurface::Chat {
                     cx.notify();
                 }
@@ -215,7 +250,15 @@ impl StudioPanel {
             stage = "StudioPanel::new",
             "→ AgentHandle::with_config"
         );
-        let agent = AgentHandle::with_config(store_root.clone(), llm);
+        let agent = if background {
+            AgentHandle::with_config_background(store_root.clone(), llm)
+        } else {
+            AgentHandle::with_config(store_root.clone(), llm)
+        };
+        if !agent.is_initializing() && agent.active_session_id().is_none() {
+            agent.set_workspace_for_new_sessions(None);
+            agent.set_origin_for_new_sessions(SessionOrigin::Home);
+        }
         // Startup always lands on a fresh task. The previous conversation stays
         // in the sidebar and is reopened on purpose, not by launching.
         let surface = StudioSurface::Home;
@@ -256,13 +299,32 @@ impl StudioPanel {
         let feed_sub = cx.subscribe(&feed, |panel, _, event: &OpenTask, cx| {
             panel.open_session(&event.0, cx);
         });
-        let reveal_sub = cx.subscribe(&feed, |panel, _, event: &RevealFile, cx| {
-            panel.reveal_file(&event.0, cx);
-        });
+        let reveal_sub =
+            cx.subscribe(&feed, |panel, _, event: &RevealFile, cx| {
+                panel.reveal_file(&event.0, cx);
+            });
         let deliverables_sub =
             cx.subscribe(&feed, |panel, _, event: &OpenDeliverables, cx| {
                 panel.open_deliverables(event.0.clone(), cx);
             });
+        let artifact_sub = cx.subscribe(
+            &feed,
+            |_, _, event: &ArtifactAction, cx| match event {
+                ArtifactAction::Preview(id) => {
+                    cx.emit(StudioEvent::PreviewArtifact(id.clone()));
+                }
+                ArtifactAction::SaveAs(id) => {
+                    cx.emit(StudioEvent::SaveArtifact(id.clone()));
+                }
+                ArtifactAction::LocateSource {
+                    session_id,
+                    artifact_id,
+                } => cx.emit(StudioEvent::LocateArtifactSource {
+                    session_id: session_id.clone(),
+                    artifact_id: artifact_id.clone(),
+                }),
+            },
+        );
         let composer = cx.new(|cx| {
             ChatComposer::new(
                 ui.clone(),
@@ -320,7 +382,11 @@ impl StudioPanel {
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
             _deliverables_sub: deliverables_sub,
+            _artifact_sub: artifact_sub,
             submission: None,
+            submission_pending: false,
+            submission_generation: 0,
+            submission_stop: None,
             working,
             status,
             last_elapsed: None,
@@ -398,16 +464,49 @@ impl StudioPanel {
         if updates.is_empty() {
             return;
         }
+        let initialized = updates.iter().any(|update| {
+            matches!(update, flowy_agent::AgentUpdate::Initialized)
+        });
+        if initialized {
+            self.active_project_id = self
+                .agent
+                .active_workspace()
+                .map(|workspace| workspace.project_id);
+            if matches!(self.surface, StudioSurface::Home | StudioSurface::Chat)
+            {
+                self.surface = if self.agent.has_messages() {
+                    StudioSurface::Chat
+                } else {
+                    StudioSurface::Home
+                };
+            }
+            if self.agent.active_session_id().is_none() {
+                self.agent.set_workspace_for_new_sessions(None);
+                self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+            }
+            if self.notice == Some("library.loading") {
+                self.emit_notice(None, cx);
+            }
+        }
         // Background activity updates session contents, not the selected surface.
-        if updates
-            .iter()
-            .any(|update| matches!(update, flowy_agent::AgentUpdate::Sessions))
+        if initialized
+            || updates.iter().any(|update| {
+                matches!(update, flowy_agent::AgentUpdate::Sessions)
+            })
         {
             cx.emit(StudioEvent::SessionsChanged);
         }
-        if updates.iter().any(|update| {
-            matches!(update, flowy_agent::AgentUpdate::StorageError)
-        }) {
+        if updates
+            .iter()
+            .any(|update| matches!(update, flowy_agent::AgentUpdate::Artifacts))
+        {
+            cx.emit(StudioEvent::ArtifactsChanged);
+        }
+        if initialized
+            || updates.iter().any(|update| {
+                matches!(update, flowy_agent::AgentUpdate::StorageError)
+            })
+        {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         self.refresh_chat(cx);
@@ -431,13 +530,26 @@ impl StudioPanel {
     }
 
     fn refresh_working(&self, cx: &mut Context<'_, Self>) {
-        let label = self.working_label(&self.status);
-        let error =
-            matches!(self.status, flowy_agent::TurnStatus::Error { .. });
-        let visible = working_line_visible(&self.status);
+        let label = if self.submission_pending {
+            self.t("chat.status_running")
+        } else {
+            self.working_label(&self.status)
+        };
+        let error = !self.submission_pending
+            && matches!(self.status, flowy_agent::TurnStatus::Error { .. });
+        let visible =
+            self.submission_pending || working_line_visible(&self.status);
         self.working.update(cx, |working, cx| {
             working.set_label(label, visible, error, cx);
         });
+    }
+
+    fn invalidate_submission(&mut self, cx: &mut Context<'_, Self>) {
+        self.submission_generation = self.submission_generation.wrapping_add(1);
+        self.submission_pending = false;
+        self.submission_stop = None;
+        self.submission = None;
+        self.refresh_working(cx);
     }
 
     pub fn set_surface(
@@ -446,6 +558,7 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         if self.surface != surface {
+            self.invalidate_submission(cx);
             self.surface = surface;
             cx.notify();
         }
@@ -554,12 +667,14 @@ impl StudioPanel {
     }
 
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
+        self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
         self.agent.set_workspace_for_new_sessions(None);
+        self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.emit_notice(None, cx);
@@ -572,6 +687,10 @@ impl StudioPanel {
     pub fn new_task(&mut self, cx: &mut Context<'_, Self>) {
         match self.agent.clear_active() {
             Ok(()) => {
+                self.invalidate_submission(cx);
+                self.active_project_id = None;
+                self.agent.set_workspace_for_new_sessions(None);
+                self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
                 self.surface = StudioSurface::Home;
                 // A fresh task starts at the first card, not wherever the last
                 // row happened to be scrolled to.
@@ -586,12 +705,38 @@ impl StudioPanel {
         }
     }
 
+    /// Present a global-home state after the host has cleared the active
+    /// session and prepared its origin on a background worker.
+    pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
+        self.invalidate_submission(cx);
+        self.model_info_open = false;
+        self.model_menu_open = false;
+        self.active_project_id = None;
+        self.document = DocumentSession::new(self.product);
+        self.submission = None;
+        self.surface = StudioSurface::Home;
+        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        self.refresh_chat(cx);
+        self.emit_notice(None, cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+    }
+
     /// Creates an empty session in the workspace `open_project` just prepared.
     pub fn create_task(
         &mut self,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), &'static str> {
+        self.agent.set_origin_for_new_sessions(
+            match self.active_project_id.as_ref() {
+                Some(project_id) => SessionOrigin::Project {
+                    project_id: Some(project_id.clone()),
+                },
+                None => SessionOrigin::Home,
+            },
+        );
         self.agent.create_session()?;
+        self.invalidate_submission(cx);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.prompt.update(cx, |state, cx| state.emplace("", cx));
@@ -611,9 +756,11 @@ impl StudioPanel {
             Ok(()) => {
                 if !same {
                     // Restore whatever this session had typed before.
-                    let draft = self.drafts.get(id).cloned().unwrap_or_default();
+                    let draft =
+                        self.drafts.get(id).cloned().unwrap_or_default();
                     self.fill_prompt(&draft, cx);
                 }
+                self.invalidate_submission(cx);
                 let workspace = self.agent.active_workspace();
                 self.active_project_id =
                     workspace.as_ref().map(|value| value.project_id.clone());
@@ -639,7 +786,125 @@ impl StudioPanel {
         }
     }
 
+    /// Replace the file metadata projection without duplicating managed paths
+    /// or reading disk on the UI thread.
+    pub fn set_artifacts(
+        &mut self,
+        artifacts: Vec<crate::library::LibraryItem>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.feed
+            .update(cx, |feed, cx| feed.set_artifacts(artifacts, cx));
+    }
+
+    /// Resolve a durable artifact anchor only after the session projection is
+    /// ready. The feed translates it to the visible virtual-list row.
+    pub fn focus_artifact(
+        &mut self,
+        artifact_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        self.feed
+            .update(cx, |feed, cx| feed.focus_artifact(artifact_id, cx))
+    }
+
+    pub fn artifact_focus(
+        &self,
+        artifact_id: &str,
+        cx: &gpui::App,
+    ) -> Option<gpui::FocusHandle> {
+        self.feed.read(cx).artifact_focus(artifact_id)
+    }
+
+    /// Refresh the projection after the host has deleted a conversation on a
+    /// background worker. This method never mutates durable history itself.
+    pub fn refresh_sessions_after_delete(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.agent.active_session_id().is_none() {
+            self.invalidate_submission(cx);
+            self.surface = StudioSurface::Home;
+            self.document = DocumentSession::new(self.product);
+            self.active_project_id = None;
+            self.agent.set_workspace_for_new_sessions(None);
+            self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+            self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        }
+        self.refresh_chat(cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+    }
+
+    pub fn open_artifact_source(
+        &mut self,
+        session_id: &str,
+        artifact_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        if !self
+            .agent
+            .list_sessions()
+            .iter()
+            .any(|session| session.id == session_id)
+        {
+            return Err("library.source.unavailable");
+        }
+        let previous = self.agent.active_session_id();
+        self.agent.select_session(session_id)?;
+        self.invalidate_submission(cx);
+        self.refresh_chat(cx);
+        if !self.focus_artifact(artifact_id, cx) {
+            if let Some(previous) = previous {
+                let _ = self.agent.select_session(&previous);
+            } else {
+                let _ = self.agent.clear_active();
+            }
+            self.refresh_chat(cx);
+            return Err("library.source.unavailable");
+        }
+        self.active_project_id = self
+            .agent
+            .active_workspace()
+            .map(|workspace| workspace.project_id);
+        self.surface = StudioSurface::Chat;
+        self.emit_notice(None, cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Render and focus the session that the host has already selected and
+    /// verified on a worker. This method only reads the in-memory projection.
+    pub fn show_selected_artifact(
+        &mut self,
+        artifact_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        self.invalidate_submission(cx);
+        self.refresh_chat(cx);
+        if !self.focus_artifact(artifact_id, cx) {
+            return Err("library.source.unavailable");
+        }
+        self.active_project_id = self
+            .agent
+            .active_workspace()
+            .map(|workspace| workspace.project_id);
+        self.surface = StudioSurface::Chat;
+        self.emit_notice(None, cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
+    }
+
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
+        if self.submission_pending {
+            return;
+        }
+        if self.agent.is_initializing() {
+            self.emit_notice(Some("library.loading"), cx);
+            return;
+        }
         let model = self.catalog.selected_model().map(|m| m.id.clone());
         tracing::debug!(
             target: "flowy.prompt",
@@ -670,42 +935,119 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        if self.agent.active_workspace().is_some_and(|workspace| {
-            !crate::projects::root_available(&workspace.root)
-        }) {
-            self.emit_notice(Some("project.folder_unavailable"), cx);
-            return;
-        }
         let id = *self.submission.get_or_insert_with(new_submission_id);
-        let result = self.agent.submit_chat(id, &text).and_then(|session| {
-            if self.agent.active_session_id().as_deref() != Some(&session) {
-                self.agent.select_session(&session)?;
-            }
-            Ok(())
+        self.submission_generation = self.submission_generation.wrapping_add(1);
+        let generation = self.submission_generation;
+        self.submission_pending = true;
+        let stop = Arc::new(AtomicBool::new(false));
+        self.submission_stop = Some(stop.clone());
+        self.refresh_working(cx);
+        cx.notify();
+        let agent = self.agent.clone();
+        let expected_generation = agent.context_generation();
+        let expected_active = agent.active_session_id();
+        let workspace = agent.active_workspace();
+        let submitted_text = text.clone();
+        let expected = expected_active.clone();
+        let worker_stop = stop.clone();
+        let worker_agent = agent.clone();
+        let job = cx.background_executor().spawn(async move {
+            let result = if workspace.is_some_and(|workspace| {
+                !crate::projects::root_available(&workspace.root)
+            }) {
+                Err("project.folder_unavailable")
+            } else {
+                worker_agent.submit_chat_if_active(
+                    id,
+                    &submitted_text,
+                    expected.as_deref(),
+                    expected_generation,
+                )
+            };
+            let stopped = if let Ok(session_id) = &result
+                && worker_stop.load(Ordering::Acquire)
+            {
+                worker_agent.stop_if_active(Some(session_id));
+                true
+            } else {
+                false
+            };
+            (result, stopped)
         });
-        match result {
-            Ok(()) => {
-                self.prompt.update(cx, |state, cx| state.emplace("", cx));
-                self.surface = StudioSurface::Chat;
-                self.refresh_chat(cx);
-                self.emit_notice(None, cx);
-                cx.emit(StudioEvent::SessionsChanged);
+        cx.spawn(async move |weak, cx| {
+            let (result, stopped) = job.await;
+            // A Stop click can arrive after the worker returns its receipt but
+            // before this UI continuation runs. Keep it bound to that receipt.
+            if !stopped
+                && stop.load(Ordering::Acquire)
+                && let Ok(session_id) = &result
+            {
+                let session_id = session_id.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        agent.stop_if_active(Some(&session_id));
+                    })
+                    .detach();
+            }
+            let _ = weak.update(cx, |panel, cx| {
+                if generation != panel.submission_generation
+                    || !panel.submission_pending
+                    || panel.submission != Some(id)
+                {
+                    return;
+                }
+                panel.submission_pending = false;
+                panel.submission_stop = None;
+                let active = panel.agent.active_session_id();
+                let draft_matches =
+                    panel.prompt.read(cx).as_str().trim() == text;
+                match result {
+                    Ok(session_id)
+                        if active.as_deref() == Some(session_id.as_str()) =>
+                    {
+                        panel.submission = None;
+                        if draft_matches {
+                            panel
+                                .prompt
+                                .update(cx, |state, cx| state.emplace("", cx));
+                        }
+                        panel.surface = StudioSurface::Chat;
+                        panel.refresh_chat(cx);
+                        panel.emit_notice(None, cx);
+                        cx.emit(StudioEvent::SessionsChanged);
+                    }
+                    Err(key)
+                        if active == expected_active
+                            || expected_active.is_none() =>
+                    {
+                        if !draft_matches {
+                            panel.submission = None;
+                        }
+                        panel.emit_notice(Some(key), cx);
+                    }
+                    _ => panel.submission = None,
+                }
+                panel.refresh_working(cx);
                 cx.notify();
-            }
-            Err(key) => {
-                tracing::debug!(
-                    target: "flowy.prompt",
-                    stage = "StudioPanel::send_prompt",
-                    reason = key,
-                    "AgentHandle::send failed"
-                );
-                self.emit_notice(Some(key), cx);
-            }
-        }
+            });
+        })
+        .detach();
     }
 
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {
-        self.agent.stop();
+        if self.submission_pending {
+            if let Some(stop) = &self.submission_stop {
+                stop.store(true, Ordering::Release);
+            }
+        } else {
+            let agent = self.agent.clone();
+            let expected = agent.active_session_id();
+            cx.background_executor()
+                .spawn(async move {
+                    agent.stop_if_active(expected.as_deref());
+                })
+                .detach();
+        }
         cx.notify();
     }
 
@@ -789,9 +1131,8 @@ impl StudioPanel {
         path: Option<String>,
         cx: &mut Context<'_, Self>,
     ) {
-        self.preview_body = path
-            .as_deref()
-            .map(crate::deliverables::load_preview);
+        self.preview_body =
+            path.as_deref().map(crate::deliverables::load_preview);
         self.preview_file = path;
         cx.notify();
     }
@@ -921,7 +1262,12 @@ impl StudioPanel {
         };
         let project_id = project.id.clone();
         let clear_error = self.agent.clear_active().err();
+        self.invalidate_submission(cx);
         self.agent.set_workspace_for_new_sessions(Some(workspace));
+        self.agent
+            .set_origin_for_new_sessions(SessionOrigin::Project {
+                project_id: Some(project_id.clone()),
+            });
         self.active_project_id = Some(project_id);
         self.surface = StudioSurface::Home;
         self.prompt.update(cx, |state, cx| state.emplace("", cx));
@@ -958,7 +1304,6 @@ impl StudioPanel {
             _ => String::new(),
         }
     }
-
 }
 
 impl Render for StudioPanel {
@@ -973,7 +1318,7 @@ impl Render for StudioPanel {
             composer.sync_state(
                 self.model,
                 self.model_menu_open,
-                self.status.is_busy(),
+                self.submission_pending || self.status.is_busy(),
                 model_label,
                 cloud_ready,
                 cx,
@@ -988,6 +1333,223 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use std::{cell::RefCell, rc::Rc};
+
+    fn submission_panel(
+        cx: &mut TestAppContext,
+        tag: &str,
+    ) -> (Entity<StudioPanel>, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-submit-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let panel = cx.new(|cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            let mut panel = StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                cx,
+            );
+            panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                id: "test-model".into(),
+                name: "Test model".into(),
+                ..Default::default()
+            }]);
+            panel.cloud_ready = true;
+            panel
+        });
+        (panel, root)
+    }
+
+    #[gpui::test]
+    fn repeated_send_while_submitting_persists_one_user_message(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "duplicate");
+        panel.update(cx, |panel, cx| {
+            panel.fill_prompt("one request", cx);
+            panel.send_prompt(cx);
+            let id = panel.submission;
+            panel.send_prompt(cx);
+            assert_eq!(panel.submission, id);
+            assert!(panel.submission_pending);
+        });
+        cx.run_until_parked();
+        cx.read_entity(&panel, |panel, cx| {
+            assert!(!panel.submission_pending);
+            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            assert_eq!(
+                panel
+                    .agent
+                    .chat_history()
+                    .rows
+                    .iter()
+                    .filter(|row| matches!(
+                        row,
+                        flowy_agent::ChatLine::User { .. }
+                    ))
+                    .count(),
+                1
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn failed_background_submission_keeps_draft_and_retry_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "failure");
+        let id = panel.update(cx, |panel, cx| {
+            panel
+                .agent
+                .set_workspace_for_new_sessions(Some(AgentWorkspace {
+                    project_id: "unavailable".into(),
+                    root: root.join("missing-project"),
+                }));
+            panel.fill_prompt("keep for retry", cx);
+            panel.send_prompt(cx);
+            panel.submission.unwrap()
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "keep for retry");
+            assert_eq!(panel.submission, Some(id));
+            assert!(!panel.agent.has_messages());
+            assert_eq!(panel.notice, Some("project.folder_unavailable"));
+            panel.send_prompt(cx);
+            assert_eq!(panel.submission, Some(id));
+        });
+        cx.run_until_parked();
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "keep for retry");
+            assert_eq!(panel.submission, Some(id));
+            assert!(!panel.submission_pending);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn late_submission_does_not_clear_new_draft_or_change_selected_session(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "navigation");
+        let next = panel.update(cx, |panel, cx| {
+            let first = panel.agent.create_home_session().unwrap();
+            let next = panel.agent.create_home_session().unwrap();
+            panel.open_session(&first, cx);
+            panel.fill_prompt("request for first", cx);
+            panel.send_prompt(cx);
+            panel.open_session(&next, cx);
+            panel.fill_prompt("new session draft", cx);
+            next
+        });
+        cx.run_until_parked();
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(
+                panel.agent.active_session_id().as_deref(),
+                Some(next.as_str())
+            );
+            assert_eq!(panel.prompt.read(cx).as_str(), "new session draft");
+            assert!(!panel.agent.has_messages());
+            assert_eq!(panel.surface, StudioSurface::Home);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn background_initialized_event_restores_chat_and_preserves_unsent_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-init-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        std::fs::write(root.join("sessions/index.json"), r#"{"active":"restored","sessions":[{"id":"restored","title":"Saved conversation","updated_at":1,"lines":[{"kind":"user","text":"original request"},{"kind":"assistant","text":"Saved answer"}],"status":{"kind":"completed"},"origin":{"kind":"home"}}]}"#).unwrap();
+        let panel = cx.new(|cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new_background(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                cx,
+            )
+        });
+        let agent = cx.read_entity(&panel, |panel, _| panel.agent.clone());
+        // The loader is a real worker thread, so yielding the test thread lets
+        // it finish without advancing the GPUI timer pump or fabricating events.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut updates = Vec::new();
+        loop {
+            updates.extend(agent.drain_updates());
+            if !agent.is_initializing()
+                && updates.iter().any(|update| {
+                    matches!(update, flowy_agent::AgentUpdate::Initialized)
+                })
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background session initialization finished"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(updates.iter().any(|update| matches!(
+            update,
+            flowy_agent::AgentUpdate::Initialized
+        )));
+        panel.update(cx, |panel, cx| {
+            panel.surface = StudioSurface::Home;
+            panel.fill_prompt("keep this draft", cx);
+            panel.process_agent_updates(updates, cx);
+            assert_eq!(panel.surface, StudioSurface::Chat);
+            assert_eq!(panel.agent.active_session_id().as_deref(), Some("restored"));
+            assert_eq!(panel.prompt.read(cx).as_str(), "keep this draft");
+            let history = panel.agent.chat_history();
+            assert_eq!(history.rows.len(), 2);
+            assert!(matches!(&history.rows[0], flowy_agent::ChatLine::User { text } if text == "original request"));
+        });
+        drop(panel);
+        drop(agent);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[gpui::test]
     fn creating_a_project_persists_and_opens_its_workspace(
@@ -1201,6 +1763,7 @@ mod tests {
             window.focus(&handle, cx);
         });
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
             assert_eq!(panel.prompt.read(cx).as_str(), "");
             assert!(panel.agent.has_messages());
@@ -1279,6 +1842,7 @@ mod tests {
             assert_eq!(panel.prompt.read(cx).as_str(), "hello\n");
         });
         cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
             assert_eq!(panel.prompt.read(cx).as_str(), "");
             assert!(panel.agent.has_messages());
@@ -1364,13 +1928,14 @@ mod tests {
                 panel.cloud_ready = true;
                 panel.fill_prompt("hello", cx);
                 panel.send_prompt(cx);
-                assert_eq!(panel.surface, StudioSurface::Chat);
+                assert!(panel.submission_pending);
                 panel.set_surface(StudioSurface::Automation, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
                 let updates = panel.agent.drain_updates();
-                assert!(updates.iter().any(|update| matches!(
-                    update,
-                    flowy_agent::AgentUpdate::Session { .. }
-                )));
                 panel.process_agent_updates(updates, cx);
                 assert_eq!(panel.surface, StudioSurface::Automation);
                 panel.process_agent_updates(

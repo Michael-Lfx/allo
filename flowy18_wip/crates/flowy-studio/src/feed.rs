@@ -8,6 +8,7 @@ use gpui::{
 };
 use std::collections::{HashMap, HashSet};
 
+use crate::library::{ArtifactAvailability, LibraryItem};
 use crate::{history::Projection, markdown};
 
 pub struct ChatFeed {
@@ -17,6 +18,8 @@ pub struct ChatFeed {
     row_ids: Vec<u64>,
     next_row_id: u64,
     row_focus: HashMap<u64, gpui::FocusHandle>,
+    artifacts: HashMap<String, LibraryItem>,
+    pending_artifact_focus: Option<String>,
     list: ListState,
     expanded_rows: HashSet<u64>,
     history: ChatHistory,
@@ -32,8 +35,18 @@ pub struct ChatFeed {
 }
 
 pub struct OpenTask(pub String);
+#[derive(Clone, Debug)]
+pub enum ArtifactAction {
+    Preview(String),
+    SaveAs(String),
+    LocateSource {
+        session_id: String,
+        artifact_id: String,
+    },
+}
 
 impl gpui::EventEmitter<OpenTask> for ChatFeed {}
+impl gpui::EventEmitter<ArtifactAction> for ChatFeed {}
 
 /// Ask the panel to reveal a file's folder. The feed only emits: opening can
 /// fail, and the failure needs the panel's notice channel.
@@ -73,6 +86,10 @@ fn same_row_kind(old: &ChatLine, new: &ChatLine) -> bool {
         (
             ChatLine::ToolCall { call_id: old, .. },
             ChatLine::ToolCall { call_id: new, .. },
+        )
+        | (
+            ChatLine::Artifact { artifact_id: old },
+            ChatLine::Artifact { artifact_id: new },
         ) => old == new,
         _ => std::mem::discriminant(old) == std::mem::discriminant(new),
     }
@@ -101,6 +118,8 @@ impl ChatFeed {
             row_ids: Vec::new(),
             next_row_id: 0,
             row_focus: HashMap::new(),
+            artifacts: HashMap::new(),
+            pending_artifact_focus: None,
             session: session.unwrap_or_default(),
             states: HashMap::new(),
             list,
@@ -116,6 +135,54 @@ impl ChatFeed {
             #[cfg(test)]
             rendered_rows: HashSet::new(),
         }
+    }
+
+    pub(crate) fn set_artifacts(
+        &mut self,
+        artifacts: Vec<LibraryItem>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.artifacts = artifacts
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect();
+        self.list.remeasure_items(0..self.lines.len());
+        cx.notify();
+    }
+
+    pub(crate) fn focus_artifact(
+        &mut self,
+        artifact_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(source) = self.history.rows.iter().position(|line| {
+            matches!(line, ChatLine::Artifact { artifact_id: id } if id == artifact_id)
+        }) else { return false; };
+        let Some(row) = self
+            .projection
+            .source_rows
+            .iter()
+            .position(|&row| row == source)
+        else {
+            return false;
+        };
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.),
+        });
+        self.pending_artifact_focus = Some(artifact_id.to_owned());
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn artifact_focus(
+        &self,
+        artifact_id: &str,
+    ) -> Option<gpui::FocusHandle> {
+        let row = self.lines.iter().position(|line| {
+            matches!(line, ChatLine::Artifact { artifact_id: id } if id == artifact_id)
+        })?;
+        self.row_focus.get(self.row_ids.get(row)?).cloned()
     }
 
     pub(crate) fn sync_history(
@@ -353,7 +420,9 @@ impl ChatFeed {
 
     /// The most recent turn that changed files, for the drawer toggle.
     /// Old sessions only carry the single-file row, so both shapes count.
-    pub(crate) fn latest_deliverables(&self) -> Option<Vec<flowy_agent::FileEntry>> {
+    pub(crate) fn latest_deliverables(
+        &self,
+    ) -> Option<Vec<flowy_agent::FileEntry>> {
         self.lines.iter().rev().find_map(|line| match line {
             // An empty summary would open a drawer with nothing in it.
             ChatLine::FileChanges { files } if !files.is_empty() => {
@@ -560,14 +629,16 @@ impl ChatFeed {
                 removed,
                 binary,
             } => self
-                .file_change_row(index, path, change, *added, *removed, *binary, cx)
+                .file_change_row(
+                    index, path, change, *added, *removed, *binary, cx,
+                )
                 .into_any_element(),
-            ChatLine::FileChanges { files } => self
-                .file_changes_row(index, files, cx)
+            ChatLine::FileChanges { files } => {
+                self.file_changes_row(index, files, cx).into_any_element()
+            }
+            ChatLine::Artifact { artifact_id } => self
+                .artifact_card(index, artifact_id, cx)
                 .into_any_element(),
-            // The delivery card is drawn with the library surface. Until that
-            // lands, keep the row in the history without a second file summary.
-            ChatLine::Artifact { .. } => div().into_any_element(),
         }
     }
 
@@ -645,10 +716,8 @@ impl ChatFeed {
         let removed: u32 = files.iter().map(|file| file.removed).sum();
         // Every file unreadable as text means the totals say nothing.
         let all_binary = files.iter().all(|file| file.binary);
-        let label = self.tf(
-            "chat.file_changes",
-            &[("count", &count.to_string())],
-        );
+        let label =
+            self.tf("chat.file_changes", &[("count", &count.to_string())]);
         let delta = if all_binary {
             "\u{2014}".to_owned()
         } else if removed == 0 {
@@ -681,6 +750,154 @@ impl ChatFeed {
         }))
     }
 
+    fn artifact_card(
+        &self,
+        index: usize,
+        artifact_id: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let id = artifact_id.to_owned();
+        let save_id = id.clone();
+        let item = self.artifacts.get(artifact_id);
+        let icon = item
+            .and_then(crate::library::artifact_file_icon)
+            .map_or_else(
+                || theme::icons::file_fold().size(px(24.)).into_any_element(),
+                |icon| icon.size(px(24.)).into_any_element(),
+            );
+        let title = item
+            .map_or_else(|| self.t("chat.artifact"), |item| item.title.clone());
+        let unavailable = item.is_none_or(|item| {
+            item.availability != ArtifactAvailability::Available
+        });
+        let deleted = item.is_some_and(|item| {
+            item.availability == ArtifactAvailability::Deleted
+        });
+        let details = item.map_or_else(
+            || self.t("library.loading"),
+            |item| {
+                let size = item.size_bytes.unwrap_or_default();
+                let format = item.extension.to_uppercase();
+                let mut details = self.i18n.tf(
+                    "library.preview.file_info",
+                    &[
+                        ("format", &format),
+                        ("size", &format!("{:.1}", size as f64 / 1024.)),
+                    ],
+                );
+                if item.availability != ArtifactAvailability::Available {
+                    details.push_str(" · ");
+                    details.push_str(&self.t(match item.availability {
+                        ArtifactAvailability::Missing => {
+                            "library.availability.missing"
+                        }
+                        ArtifactAvailability::Corrupt => {
+                            "library.availability.corrupt"
+                        }
+                        ArtifactAvailability::Deleted => {
+                            "library.error.deleted"
+                        }
+                        ArtifactAvailability::Available => {
+                            "library.availability.available"
+                        }
+                    }));
+                }
+                details
+            },
+        );
+        let source = item
+            .filter(|item| {
+                !item.source_deleted
+                    && !item.source_unavailable
+                    && !item.source_session_id.is_empty()
+            })
+            .map(|item| item.source_session_id.clone());
+        div()
+            .id(("artifact-card", self.row_ids[index]))
+            .w_full()
+            .max_w(px(540.))
+            .min_w_0()
+            .rounded_xl()
+            .border_1()
+            .border_color(self.theme.line())
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .px(self.theme.space(12.))
+            .py(self.theme.space(10.))
+            .child(
+                theme::interactive(
+                    ("artifact-preview", self.row_ids[index]),
+                    title.clone(),
+                    &self.theme,
+                )
+                .track_focus(&self.row_focus[&self.row_ids[index]])
+                .aria_disabled(deleted)
+                .tab_stop(!deleted)
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(10.))
+                .child(icon)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(self.theme.space(3.))
+                        .child(
+                            theme::Title::new(theme::TitleLevel::Item, title)
+                                .truncate()
+                                .render(&self.theme),
+                        )
+                        .child(
+                            theme::Text::new(theme::TextRole::Meta, details)
+                                .truncate()
+                                .render(&self.theme),
+                        ),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    if !deleted {
+                        cx.emit(ArtifactAction::Preview(id.clone()));
+                    }
+                })),
+            )
+            .child(
+                theme::IconButton::new(
+                    ("artifact-save-as", self.row_ids[index]),
+                    self.t("library.save_as"),
+                    theme::icons::download(),
+                )
+                .disabled(unavailable)
+                .render(
+                    &self.theme,
+                    cx.listener(move |_, _, _, cx| {
+                        cx.emit(ArtifactAction::SaveAs(save_id.clone()));
+                    }),
+                ),
+            )
+            .when_some(source, |card, session_id| {
+                let artifact_id = artifact_id.to_owned();
+                card.child(
+                    theme::IconButton::new(
+                        ("artifact-locate-source", self.row_ids[index]),
+                        self.t("library.locate_task"),
+                        theme::icons::external_link(),
+                    )
+                    .render(
+                        &self.theme,
+                        cx.listener(move |_, _, _, cx| {
+                            cx.emit(ArtifactAction::LocateSource {
+                                session_id: session_id.clone(),
+                                artifact_id: artifact_id.clone(),
+                            });
+                        }),
+                    ),
+                )
+            })
+    }
     fn reasoning_block(
         &self,
         index: usize,
@@ -861,9 +1078,17 @@ impl ChatFeed {
 impl Render for ChatFeed {
     fn render(
         &mut self,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        if let Some(artifact_id) = self.pending_artifact_focus.take()
+            && let Some(row) = self.lines.iter().position(|line| {
+                matches!(line, ChatLine::Artifact { artifact_id: id } if id == &artifact_id)
+            })
+            && let Some(focus) = self.row_focus.get(&self.row_ids[row])
+        {
+            focus.focus(window, cx);
+        }
         let weak = cx.weak_entity();
         div()
             .id(SharedString::from(format!("chat-feed-{}", self.session)))
@@ -880,7 +1105,17 @@ impl Render for ChatFeed {
                         }
                         div()
                             .id(("chat-row", feed.row_ids[index]))
-                            .track_focus(&feed.row_focus[&feed.row_ids[index]])
+                            .when(
+                                !matches!(
+                                    feed.lines[index],
+                                    ChatLine::Artifact { .. }
+                                ),
+                                |row| {
+                                    row.track_focus(
+                                        &feed.row_focus[&feed.row_ids[index]],
+                                    )
+                                },
+                            )
                             .w_full()
                             .flex()
                             .justify_center()
@@ -1000,6 +1235,108 @@ impl Render for WorkingIndicator {
 mod tests {
     use super::*;
     use gpui::{ListOffset, TestAppContext};
+
+    #[gpui::test]
+    fn durable_artifact_anchor_resolves_the_projected_row_in_long_history(
+        cx: &mut TestAppContext,
+    ) {
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            ChatFeed::new(
+                ui,
+                I18n::embedded("Flowy"),
+                Some("source".into()),
+                cx,
+            )
+        });
+        let mut rows = Vec::new();
+        for index in 0..500 {
+            rows.push(ChatLine::User {
+                text: format!("request {index}"),
+            });
+            rows.push(ChatLine::Assistant {
+                text: format!("answer {index}"),
+            });
+        }
+        rows.extend([
+            ChatLine::User {
+                text: "make report".into(),
+            },
+            ChatLine::ToolResult {
+                text: "write".into(),
+                is_error: false,
+            },
+            ChatLine::ToolResult {
+                text: "publish".into(),
+                is_error: false,
+            },
+            ChatLine::Assistant {
+                text: "Report ready".into(),
+            },
+            ChatLine::Artifact {
+                artifact_id: "report-id".into(),
+            },
+        ]);
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(Some("source".into()), ChatHistory { rows, status: TurnStatus::Completed, streaming: None }, cx);
+            assert!(feed.focus_artifact("report-id", cx));
+            let projected = feed.list.logical_scroll_top().item_ix;
+            assert!(matches!(&feed.lines[projected], ChatLine::Artifact { artifact_id } if artifact_id == "report-id"));
+            assert_eq!(feed.projection.source_rows[projected], 1004);
+            assert!(feed.artifact_focus("report-id").is_some());
+            assert!(!feed.focus_artifact("absent-id", cx));
+        });
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = feed.update(cx, |_, cx| {
+            cx.subscribe(&feed, move |_, _, event: &ArtifactAction, _| {
+                captured.lock().unwrap().push(event.clone());
+            })
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.set_a11y_forced(true);
+                window.draw(cx).clear(cx);
+            });
+        }
+        let focus = cx.read_entity(&feed, |feed, _| {
+            feed.artifact_focus("report-id").unwrap()
+        });
+        let label = cx.read_entity(&feed, |feed, _| feed.t("chat.artifact"));
+        cx.update(|window, cx| {
+            assert_eq!(window.focused(cx), Some(focus));
+            let node_id = window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == gpui::accesskit::Role::Button
+                        && node.label() == Some(label.as_str())
+                })
+                .map(|(id, node)| {
+                    assert!(
+                        node.supports_action(gpui::accesskit::Action::Click)
+                    );
+                    *id
+                })
+                .expect(
+                    "focused artifact is exposed as a named actionable button",
+                );
+            assert!(window.a11y_node_bounds(node_id).is_some());
+            window.perform_a11y_action(
+                node_id,
+                gpui::accesskit::Action::Click,
+                None,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            matches!(events.lock().unwrap().as_slice(), [ArtifactAction::Preview(id)] if id == "report-id")
+        );
+    }
 
     #[gpui::test]
     fn folding_a_read_detail_returns_to_its_turn_control(

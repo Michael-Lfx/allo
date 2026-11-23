@@ -12,6 +12,9 @@ Agent 阅读顺序：本页 → 对应分类 `README.md` → 目标文档。
 | pi-loop 工作流 | 查 pi-rust loop 实验、证据与迁移结论 | [pi-loop/README.md](pi-loop/README.md) |
 | 云端模型目录工作流 | 查账号模型目录、验证与阻塞记录 | [cloud-model-catalog/README.md](cloud-model-catalog/README.md) |
 | 历史归档 | 查已被取代的早期记录 | [archive/README.md](archive/README.md) |
+| 依赖许可 | 查看预览引擎回退字体的分发声明 | [预览字体许可](licenses/preview-fonts/README.md) |
+
+当前资料库实施计划：[首页对话文件交付与资料库](plans/conversation-artifact-library.zh.md)。来源为首页对话的显式交付，删除原对话后文件独立保留。
 
 ## 维护规则
 

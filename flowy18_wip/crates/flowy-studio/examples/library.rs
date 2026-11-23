@@ -1,7 +1,9 @@
 //! Standalone Library demo; its fixture is never imported by the product.
 //! cargo run -p flowy-studio --example library
 use flowy_i18n::{I18n, Locale};
-use flowy_studio::library::{LibraryItem, LibraryPanel};
+use flowy_studio::library::{
+    ArtifactAvailability, Category, LibraryEvent, LibraryItem, LibraryPanel,
+};
 use flowy_ui::{ThemeMode, ThemeOptions, UiContext};
 use gpui::{
     Bounds, Context, Entity, KeyBinding, Render, Window, WindowBounds,
@@ -96,7 +98,12 @@ fn main() {
             )),
         );
         flowy_ui::install_initial_tab_focus(cx).detach();
-        let bounds = Bounds::centered(None, size(px(1584.), px(982.)), cx);
+        let dimensions = if std::env::var_os("FLOWY_LIBRARY_SMALL").is_some() {
+            size(px(800.), px(600.))
+        } else {
+            size(px(1584.), px(982.))
+        };
+        let bounds = Bounds::centered(None, dimensions, cx);
         let handle = cx
             .open_window(
                 WindowOptions {
@@ -110,9 +117,14 @@ fn main() {
                 },
                 |window, cx| {
                     window.set_rem_size(px(16.));
+                    let args: Vec<_> = std::env::args().collect();
                     let mut i18n = I18n::embedded("Flowy");
-                    i18n.set_locale(Locale::ZhCn);
-                    let mode = if std::env::args().any(|arg| arg == "--dark") {
+                    i18n.set_locale(if args.iter().any(|arg| arg == "--en") {
+                        Locale::En
+                    } else {
+                        Locale::ZhCn
+                    });
+                    let mode = if args.iter().any(|arg| arg == "--dark") {
                         ThemeMode::Dark
                     } else {
                         ThemeMode::Light
@@ -125,14 +137,128 @@ fn main() {
                         false,
                         cx,
                     );
-                    let items: Vec<LibraryItem> = serde_json::from_str(
+                    let mut items: Vec<LibraryItem> = serde_json::from_str(
                         include_str!("fixtures/library.json"),
                     )
                     .expect("valid demo fixture");
+                    let mut file_items = Vec::new();
+                    let mut file_payloads = std::collections::HashMap::new();
+                    for pair in
+                        args.windows(2).filter(|pair| pair[0] == "--file")
+                    {
+                        let path = std::path::PathBuf::from(&pair[1])
+                            .canonicalize()
+                            .expect("preview file exists");
+                        let id = format!("fixture-{}", file_items.len());
+                        let bytes = std::fs::read(&path)
+                            .expect("read explicit preview fixture");
+                        file_payloads.insert(id.clone(), bytes);
+                        file_items.push(LibraryItem {
+                            id,
+                            title: path
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned(),
+                            description: path.display().to_string(),
+                            category: Category::Document,
+                            date: "2026-11-20".into(),
+                            time: "12:00".into(),
+                            pending: false,
+                            preview: None,
+                            size_bytes: path.metadata().ok().map(|m| m.len()),
+                            extension: path
+                                .extension()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or_default()
+                                .into(),
+                            media_type: None,
+                            delivered_at_ms: 0,
+                            delivered_date: "2026-11-20".into(),
+                            delivered_time: "12:00".into(),
+                            source_session_id: String::new(),
+                            source_title: "Explicit preview fixture".into(),
+                            source_deleted: false,
+                            source_unavailable: false,
+                            favorite: false,
+                            trashed: false,
+                            availability: ArtifactAvailability::Available,
+                        });
+                    }
+                    if !file_items.is_empty() {
+                        items = file_items;
+                    }
+                    let empty = args.iter().any(|arg| arg == "--empty");
+                    let search_empty =
+                        args.iter().any(|arg| arg == "--search-empty");
+                    let error = args.iter().any(|arg| arg == "--error");
+                    let loading = args.iter().any(|arg| arg == "--loading");
+                    let trash = args.iter().any(|arg| arg == "--trash");
+                    if empty || search_empty || error || loading {
+                        items.clear();
+                    }
+                    if trash {
+                        for item in &mut items {
+                            item.trashed = true;
+                        }
+                    }
+                    let first = items.first().map(|item| item.id.clone());
+                    let preview = args.iter().any(|arg| arg == "--preview");
                     cx.new(|cx| {
                         let panel = cx.new(|cx| {
-                            LibraryPanel::new(items, i18n, ui.clone(), cx)
+                            let mut panel =
+                                LibraryPanel::new(items, i18n, ui.clone(), cx);
+                            panel.use_internal_previews();
+                            if search_empty {
+                                // An explicit filter with no source records exercises
+                                // the no-match branch without adding a production
+                                // query setter or fabricating an artifact.
+                                panel.model.category = Category::Image;
+                            }
+                            panel.model.showing_trash = trash;
+                            if error {
+                                panel.set_status(
+                                    Some("library.error.catalog"),
+                                    cx,
+                                );
+                            }
+                            panel.set_loading(loading, cx);
+                            panel
                         });
+                        cx.subscribe(
+                            &panel,
+                            move |this: &mut LibraryDemo,
+                                  _,
+                                  event: &LibraryEvent,
+                                  cx| {
+                                if let LibraryEvent::ReadPreviewRequested {
+                                    artifact_id,
+                                    request_id,
+                                } = event
+                                {
+                                    let result = file_payloads
+                                        .get(artifact_id)
+                                        .cloned()
+                                        .ok_or("library.preview.unavailable");
+                                    this.panel.update(cx, |panel, cx| {
+                                        panel.set_preview_bytes(
+                                            artifact_id,
+                                            *request_id,
+                                            result,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            },
+                        )
+                        .detach();
+                        if preview {
+                            if let Some(id) = first {
+                                panel.update(cx, |panel, cx| {
+                                    panel.preview_item(&id, window, cx)
+                                });
+                            }
+                        }
                         cx.observe(&panel, |_, _, cx| cx.notify()).detach();
                         LibraryDemo { panel, ui }
                     })
@@ -140,11 +266,28 @@ fn main() {
             )
             .expect("open isolated library demo");
         if let Some(path) = std::env::var_os("FLOWY_LIBRARY_CAPTURE") {
+            let capture_handle: gpui::AnyWindowHandle = handle.into();
             cx.spawn(async move |cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(800))
+                    .timer(std::time::Duration::from_millis(
+                        std::env::var("FLOWY_LIBRARY_CAPTURE_DELAY_MS")
+                            .ok()
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(800),
+                    ))
                     .await;
-                let _ = handle.update(cx, |_, window, _| {
+                // Occluded/headless native windows may not receive OS paint
+                // callbacks. Drive layout and async image upload before capture.
+                for _ in 0..3 {
+                    let _ = capture_handle.update(cx, |_, window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                    });
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(80))
+                        .await;
+                }
+                let _ = capture_handle.update(cx, |_, window, cx| {
                     if let Err(error) =
                         window.render_to_image().and_then(|image| {
                             image
@@ -153,6 +296,10 @@ fn main() {
                         })
                     {
                         eprintln!("Library startup capture failed: {error}");
+                    }
+                    if std::env::var_os("FLOWY_LIBRARY_CAPTURE_EXIT").is_some()
+                    {
+                        cx.quit();
                     }
                 });
             })

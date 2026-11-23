@@ -38,9 +38,12 @@ impl Projection {
         }
         for turn in starts.windows(2) {
             let (start, end) = (turn[0], turn[1]);
-            let last_turn_row = lines[start..end]
-                .iter()
-                .rfind(|line| !matches!(line, ChatLine::TaskReceipt { .. }));
+            let last_turn_row = lines[start..end].iter().rfind(|line| {
+                !matches!(
+                    line,
+                    ChatLine::TaskReceipt { .. } | ChatLine::Artifact { .. }
+                )
+            });
             let complete = (end < lines.len() || latest_completed)
                 && matches!(last_turn_row, Some(ChatLine::Assistant { .. }));
             let marker = complete
@@ -156,5 +159,32 @@ mod tests {
         let latest = Projection::build(&lines[..6], None, true, None);
         assert_eq!(latest.source_rows, [0, 1, 2, 4, 5]);
         assert_eq!(latest.hidden[&3], 1);
+    }
+
+    #[test]
+    fn artifacts_after_assistant_remain_visible_when_tools_fold() {
+        let lines = [
+            ChatLine::User {
+                text: "make a report".into(),
+            },
+            ChatLine::ToolResult {
+                text: "generated".into(),
+                is_error: false,
+            },
+            ChatLine::ToolResult {
+                text: "published".into(),
+                is_error: false,
+            },
+            ChatLine::Assistant {
+                text: "Here is the report.".into(),
+            },
+            ChatLine::Artifact {
+                artifact_id: "artifact-report".into(),
+            },
+        ];
+        let projection = Projection::build(&lines, None, true, None);
+        assert_eq!(projection.source_rows, [0, 1, 3, 4]);
+        assert_eq!(projection.hidden[&2], 1);
+        assert!(!projection.hidden.contains_key(&4));
     }
 }

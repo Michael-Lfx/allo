@@ -169,8 +169,7 @@ impl FlowyApp {
     ) {
         self.user_menu = false;
         if id == "new-task" {
-            self.studio.update(cx, flowy_studio::StudioPanel::new_task);
-            self.push_section(Section::Studio, cx);
+            self.start_library_conversation(cx);
             return;
         }
         self.push_section(section, cx);
@@ -421,6 +420,7 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .child(self.task_menu_button(&session_id, cx))
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.user_menu = false;
                 app.section = Section::Studio;
@@ -465,16 +465,34 @@ impl FlowyApp {
                 session.title
             };
             let selected = active.as_deref() == Some(session_id.as_str());
+            let menu = self.task_menu_button(&session_id, cx);
             rows = rows.child(
-                item_row(self.theme, id, title, selected, DockIcon::Task)
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
-                        app.user_menu = false;
-                        app.section = Section::Studio;
-                        app.studio.update(cx, |panel, cx| {
-                            panel.open_session(&session_id, cx);
-                        });
-                        cx.notify();
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .child(
+                        item_row(
+                            self.theme,
+                            id,
+                            title,
+                            selected,
+                            DockIcon::Task,
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .on_click(cx.listener(
+                            move |app, _event, _window, cx| {
+                                app.user_menu = false;
+                                app.section = Section::Studio;
+                                app.studio.update(cx, |panel, cx| {
+                                    panel.open_session(&session_id, cx);
+                                });
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(menu),
             );
         }
         rows

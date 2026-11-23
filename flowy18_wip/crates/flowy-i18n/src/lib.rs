@@ -302,6 +302,54 @@ mod tests {
     }
 
     #[test]
+    fn library_preview_controls_have_chinese_and_english_copy() {
+        let mut i18n = I18n::embedded("Flowy");
+        i18n.set_locale(Locale::ZhCn);
+        assert_eq!(i18n.t("library.add_files"), "添加文件");
+        assert_eq!(i18n.t("library.open_default"), "用默认应用打开");
+        assert_eq!(i18n.t("library.preview.next"), "下一页");
+        assert_eq!(
+            i18n.t("library.error.large"),
+            "文件超出预览限制，请用默认应用打开。"
+        );
+        i18n.set_locale(Locale::En);
+        assert_eq!(i18n.t("library.add_files"), "Add files");
+        assert_eq!(i18n.t("library.open_default"), "Open with default app");
+        assert_eq!(i18n.t("library.preview.next"), "Next page");
+        assert_eq!(
+            i18n.t("library.error.large"),
+            "File exceeds the preview limits. Open it with the default app."
+        );
+    }
+
+    #[test]
+    fn conversation_artifact_lifecycle_has_chinese_and_english_copy() {
+        let mut i18n = I18n::embedded("Flowy");
+        for (locale, save, source, undo) in [
+            (Locale::ZhCn, "另存为", "回到原对话", "撤销"),
+            (Locale::En, "Save as", "Return to conversation", "Undo"),
+        ] {
+            i18n.set_locale(locale);
+            assert_eq!(i18n.t("library.save_as"), save);
+            assert_eq!(i18n.t("library.locate_task"), source);
+            assert_eq!(i18n.t("library.undo"), undo);
+            for key in [
+                "library.empty.true.body",
+                "library.empty.search.body",
+                "library.delete_confirm.body",
+                "library.source.deleted",
+                "library.source.unavailable",
+                "chat.delete_confirm.body",
+                "chat.status_saving_files",
+            ] {
+                let message = i18n.t(key);
+                assert!(!message.is_empty());
+                assert_ne!(message, key, "{}: {key}", locale.code());
+            }
+        }
+    }
+
+    #[test]
     fn disk_reload_overrides_one_key_and_keeps_the_rest() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

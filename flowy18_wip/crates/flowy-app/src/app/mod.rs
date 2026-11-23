@@ -1,10 +1,16 @@
 #![allow(clippy::derive_partial_eq_without_eq)]
 
 mod appearance;
+mod artifact_cleanup;
+mod artifact_preview;
+#[cfg(test)]
+mod artifact_tests;
+mod conversation_actions;
 mod dock;
 mod flex;
 mod gallery;
 mod invite;
+mod library_actions;
 mod login;
 mod more;
 mod ota;
@@ -21,7 +27,7 @@ use flowy_auth::{
     AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
     normalize_otp,
 };
-use flowy_studio::library::{Category, LibraryItem, LibraryPanel};
+use flowy_studio::library::{LibraryEvent, LibraryPanel};
 use flowy_studio::{StudioEvent, StudioPanel, StudioSurface};
 use gpui::{
     App, Bounds, Context, Entity, KeyBinding, Subscription, Task, Window,
@@ -128,6 +134,12 @@ pub struct FlowyApp {
     auth: AuthState,
     pub studio: Entity<StudioPanel>,
     library: Entity<LibraryPanel>,
+    library_generation: u64,
+    artifact_navigation_generation: u64,
+    artifact_preview: artifact_preview::ArtifactPreviewState,
+    artifact_cleanup: artifact_cleanup::ArtifactCleanupState,
+    task_menu: Option<String>,
+    conversation_delete: conversation_actions::ConversationDeleteState,
     gallery: GalleryState,
     skills: SkillsState,
     pub ota: ota::OtaController,
@@ -177,6 +189,7 @@ impl FlowyApp {
         self.settings.picker = settings::Picker::None;
         self.flex.provider_menu = false;
         self.user_menu = false;
+        self.task_menu = None;
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
@@ -189,6 +202,9 @@ impl FlowyApp {
     }
 
     fn close_overlay(&mut self, scope: &str, cx: &mut Context<'_, Self>) {
+        if scope == "artifact-cleanup" && self.artifact_cleanup.busy {
+            return;
+        }
         match scope {
             "language-menu" | "send-menu" | "accent-menu" | "density-menu" => {
                 self.settings.picker = settings::Picker::None;
@@ -201,6 +217,9 @@ impl FlowyApp {
             }
             "project-menu" => {
                 self.project_menu = None;
+            }
+            "task-menu" => {
+                self.task_menu = None;
             }
             "model-list" | "model-info" | "credit-card" => {
                 self.studio.update(cx, |panel, cx| {
@@ -336,20 +355,23 @@ impl FlowyApp {
             let llm = Self::disconnected_config();
             let ui = ui.clone();
             cx.new(move |cx| {
-                StudioPanel::new(
-                    flowy_studio::StudioConfig {
-                        product,
-                        i18n,
-                        model,
-                        plan,
-                        model_info_version,
-                        model_info_open,
-                        store_root,
-                        llm,
-                    },
-                    ui,
-                    cx,
-                )
+                let config = flowy_studio::StudioConfig {
+                    product,
+                    i18n,
+                    model,
+                    plan,
+                    model_info_version,
+                    model_info_open,
+                    store_root,
+                    llm,
+                };
+                if cfg!(test) {
+                    // The deterministic GPUI harness uses the synchronous
+                    // constructor; production restores storage in the background.
+                    StudioPanel::new(config, ui, cx)
+                } else {
+                    StudioPanel::new_background(config, ui, cx)
+                }
             })
         };
         tracing::debug!(
@@ -358,12 +380,18 @@ impl FlowyApp {
             "→ LibraryPanel::new"
         );
         let library = {
-            let items = library_items();
             let i18n = i18n.clone();
             let ui = ui.clone();
-            cx.new(move |cx| LibraryPanel::new(items, i18n, ui, cx))
+            cx.new(move |cx| {
+                let mut panel = LibraryPanel::new(Vec::new(), i18n, ui, cx);
+                panel.set_loading(true, cx);
+                panel
+            })
         };
         let subscriptions = vec![
+            cx.subscribe(&library, |app, _, event: &LibraryEvent, cx| {
+                app.library_event(event, cx);
+            }),
             cx.subscribe(
                 &ui.overlays,
                 |app, _, event: &flowy_ui::OverlayEvent, cx| {
@@ -464,6 +492,13 @@ impl FlowyApp {
             },
             studio,
             library,
+            library_generation: 0,
+            artifact_navigation_generation: 0,
+            artifact_preview: artifact_preview::ArtifactPreviewState::default(),
+            artifact_cleanup: artifact_cleanup::ArtifactCleanupState::default(),
+            task_menu: None,
+            conversation_delete:
+                conversation_actions::ConversationDeleteState::default(),
             gallery: GalleryState {
                 page: 0,
                 idea_filter: gallery::Filter::All,
@@ -541,6 +576,7 @@ impl FlowyApp {
         app.refresh_models(cx);
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
+        app.load_library(cx);
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::new",
@@ -1435,12 +1471,31 @@ impl FlowyApp {
                 self.refresh_models(cx);
                 self.refresh_credits(cx);
             }
-            StudioEvent::TurnFinished => self.refresh_credits(cx),
+            StudioEvent::TurnFinished => {
+                self.refresh_credits(cx);
+                self.load_library(cx);
+            }
+            StudioEvent::PreviewArtifact(id) => {
+                self.open_artifact_preview(id, cx);
+            }
+            StudioEvent::SaveArtifact(id) => self.save_artifact_as(id, cx),
+            StudioEvent::LocateArtifactSource {
+                session_id,
+                artifact_id,
+            } => self.library_event(
+                &LibraryEvent::LocateSourceRequested {
+                    session_id: session_id.clone(),
+                    artifact_id: artifact_id.clone(),
+                },
+                cx,
+            ),
+            StudioEvent::ArtifactsChanged => self.load_library(cx),
             StudioEvent::OpenIdeas => {
                 self.activate_dialog(state::ActiveDialog::Ideas, cx);
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
+                self.load_library(cx);
                 cx.notify();
             }
             StudioEvent::Rated { stars } => {
@@ -1528,6 +1583,7 @@ impl FlowyApp {
                     app.library.update(cx, |panel, cx| {
                         panel.set_i18n(i18n, cx);
                     });
+                    app.sync_artifact_preview_locale(cx);
                     cx.notify();
                 });
                 if updated.is_err() {
@@ -1594,6 +1650,9 @@ impl Render for FlowyApp {
             settings::Picker::None if self.project_menu.is_some() => {
                 Some("project-menu")
             }
+            settings::Picker::None if self.task_menu.is_some() => {
+                Some("task-menu")
+            }
             settings::Picker::None
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
@@ -1640,6 +1699,7 @@ impl Render for FlowyApp {
             host.set_modal(modal, window, cx);
             host.set_popup(popup, window, cx);
         });
+        self.reconcile_artifact_preview(window, cx);
         window.set_rem_size(px(f32::from(self.prefs.font_size) / 0.875));
         if self.screen == Screen::Main && !self.ota.checked {
             self.ota.checked = true;
@@ -1736,6 +1796,15 @@ impl Render for FlowyApp {
                 root.child(self.more_layer(window, cx))
             }
             state::ActiveDialog::Legal(_) => root.child(self.legal_layer(cx)),
+            state::ActiveDialog::ArtifactPreview => {
+                root.child(self.artifact_preview_layer(cx))
+            }
+            state::ActiveDialog::ConversationDelete => {
+                root.child(self.conversation_delete_layer(window, cx))
+            }
+            state::ActiveDialog::ArtifactCleanup => {
+                root.child(self.artifact_cleanup_layer(window, cx))
+            }
         };
         let menu = match self.settings.picker {
             settings::Picker::Language => Some((
@@ -1800,6 +1869,17 @@ impl Render for FlowyApp {
                 "project-menu",
                 anchor,
                 self.project_menu_content(project_id, window, cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
+        }
+        if let Some(session_id) = &self.task_menu {
+            root = root.child(flowy_ui::popover(
+                "task-menu",
+                format!("task-menu-trigger-{session_id}"),
+                self.task_menu_content(session_id, cx),
                 &self.ui,
                 window,
                 cx,
@@ -1896,50 +1976,6 @@ impl FlowyApp {
 
 fn text_field(cx: &mut Context<'_, FlowyApp>) -> Entity<EditableTextState> {
     cx.new(|cx| EditableTextState::new(StringStorage::default(), cx))
-}
-
-/// An explicit host data source. `FLOWY_LIBRARY_DATA` replaces the two demo rows.
-fn library_items() -> Vec<LibraryItem> {
-    let Some(path) = std::env::var_os("FLOWY_LIBRARY_DATA") else {
-        return demo_library_items();
-    };
-    let result = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())
-        });
-    match result {
-        Ok(items) => items,
-        Err(error) => {
-            tracing::warn!(%error, "could not load library data source");
-            demo_library_items()
-        }
-    }
-}
-
-fn demo_library_items() -> Vec<LibraryItem> {
-    vec![
-        LibraryItem {
-            id: "demo-slides".into(),
-            title: "比亚迪海豹06 DM-i：开启工业奇迹新篇章".into(),
-            description: "搜集素材并介绍一款比亚迪车型".into(),
-            category: Category::Slides,
-            date: "2026-11-04".into(),
-            time: "17:22".into(),
-            pending: false,
-            preview: None,
-        },
-        LibraryItem {
-            id: "demo-image".into(),
-            title: "dew-stone-hero-river-stones.jpg".into(),
-            description: "制作Dew & Stone保湿精华上新照片".into(),
-            category: Category::Image,
-            date: "2026-11-04".into(),
-            time: "09:58".into(),
-            pending: false,
-            preview: None,
-        },
-    ]
 }
 
 fn place(
@@ -3195,6 +3231,7 @@ mod tests {
                 app.select_navigation("new-task", Section::Studio, cx);
             });
         });
+        cx.run_until_parked();
         cx.update(|cx| {
             let app = app.read(cx);
             assert_eq!(app.notice, None);

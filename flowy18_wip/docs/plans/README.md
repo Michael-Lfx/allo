@@ -4,6 +4,8 @@
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
+| [conversation-artifact-library-execution.zh.md](conversation-artifact-library-execution.zh.md) | 实施与验证中 | 代码链路、自动化证据、TC-01–35 与待完成原生/发行门禁 |
+| [conversation-artifact-library.zh.md](conversation-artifact-library.zh.md) | 计划（2026-11-21，产品范围已确认） | 首页对话文件交付、自动归集、独立存储、共享预览与来源定位的完整实施计划 |
 | [agent-core-migration-handoff.md](agent-core-migration-handoff.md) | 待启动 | agent 内核迁移后的收尾项、验收集与行为补齐项 |
 | [agent-observability-plan.md](agent-observability-plan.md) | 待确认 | 为每次 agent turn 增加本地可查询轨迹的最小方案 |
 | [cloud-provider-thin-plan.md](cloud-provider-thin-plan.md) | 可行性已验证，待实现 | 云端单一 provider 接入方案 |

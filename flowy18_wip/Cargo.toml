@@ -41,6 +41,12 @@ license = "MIT"
 repository = "https://github.com/flowy-app/flowy"
 
 [workspace.dependencies]
+hayro = "0.9"
+oxml-opc = "0.15"
+rpptx = "0.15"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fontdb = "0.23"
 open = "5"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 similar = "2"

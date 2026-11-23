@@ -129,6 +129,7 @@ impl FlowyApp {
         let i18n = self.i18n.clone();
         self.library
             .update(cx, |panel, cx| panel.set_i18n(i18n, cx));
+        self.sync_artifact_preview_locale(cx);
         self.settings.picker = Picker::None;
         self.prefs.save(self.store.root());
         cx.notify();
