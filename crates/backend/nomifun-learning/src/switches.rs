@@ -324,6 +324,39 @@ pub fn variant_v2_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
+/// 自动补批墙钟预算的秒数开关（rs8，learnhub #257
+/// `AUTO_REFILL_GROW_BUDGET_SECS` 同款语义）：从自动补批任务起算的墙钟
+/// 上界，到点后不再发起新的起草/评审/重裁——已过全部门的批本尝试照常
+/// 落位，未过门的批可见失败（缺口点名）。预算只注入自动补批臂
+/// （settlement / auto_refill 两个触发源）的 `run_growth`；手动 grow 不
+/// 注入——上游同款区分：自动触发的无界尾巴发生在用户不在场的后台，
+/// 可预测性比完成率重要。取值：未设 = 缺省 600；`0` = 关（预算不注入
+/// ——等效现行为，A/B 负优化时的回退档）；非法值（非数字/负数）回退
+/// 缺省。
+pub const AUTO_REFILL_BUDGET_SECS_ENV: &str = "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS";
+
+/// 预算缺省秒数（learnhub #257 同款 600 = 10 分钟墙钟）。
+pub const AUTO_REFILL_BUDGET_DEFAULT_SECS: u64 = 600;
+
+/// 预算秒数判定（取值注入面，纯函数——测试不触进程 env）：`None` = 关
+/// （预算不注入），`Some(secs)` = 预算窗口秒数。
+pub fn auto_refill_budget_secs_value(value: Option<&str>) -> Option<u64> {
+    match value {
+        None => Some(AUTO_REFILL_BUDGET_DEFAULT_SECS),
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(secs) => Some(secs),
+            // 非法值回退缺省（与「未设」同窗——配置坏了不静默改行为面）。
+            Err(_) => Some(AUTO_REFILL_BUDGET_DEFAULT_SECS),
+        },
+    }
+}
+
+/// 自动补批墙钟预算秒数（未设 = 600；`0` = 关；非法值回退缺省）。
+pub fn auto_refill_budget_secs() -> Option<u64> {
+    auto_refill_budget_secs_value(std::env::var(AUTO_REFILL_BUDGET_SECS_ENV).ok().as_deref())
+}
+
 /// 变式链 V2 是否开启（未设 = 开；显式非 off 取值 = 开）。
 pub fn variant_v2_enabled() -> bool {
     variant_v2_enabled_value(std::env::var(VARIANT_V2_SWITCH_ENV).ok().as_deref())
@@ -553,6 +586,34 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes", ""] {
             assert!(variant_v2_enabled_value(Some(value)), "{value:?} = 变式 V2");
+        }
+    }
+
+    /// 自动补批墙钟预算秒数（rs8）：未设 = 缺省 600；`0` = 关（None——
+    /// 等效现行为，A/B 负优化的回退档）；非法值回退缺省；合法值直通。
+    /// 纯函数面测试（不触进程 env——env 窗口会泄漏进并行生长测试）。
+    #[test]
+    fn auto_refill_budget_secs_defaults_to_600_and_zero_disables() {
+        assert_eq!(
+            auto_refill_budget_secs_value(None),
+            Some(600),
+            "未设 = 缺省 600（learnhub #257 同款）"
+        );
+        assert_eq!(auto_refill_budget_secs_value(Some("0")), None, "0 = 关（等效现行为）");
+        assert_eq!(auto_refill_budget_secs_value(Some(" 0 ")), None, "空白宽容的 0 同样 = 关");
+        for bad in ["abc", "-1", "1.5", "600s", ""] {
+            assert_eq!(
+                auto_refill_budget_secs_value(Some(bad)),
+                Some(600),
+                "{bad:?} 非法 = 回退缺省"
+            );
+        }
+        for good in ["1", "600", "1200", " 1800 "] {
+            assert_eq!(
+                auto_refill_budget_secs_value(Some(good)),
+                Some(good.trim().parse::<u64>().unwrap()),
+                "{good:?} 合法 = 直通"
+            );
         }
     }
 }

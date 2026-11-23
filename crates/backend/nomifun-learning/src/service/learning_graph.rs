@@ -85,6 +85,108 @@ fn parse_bool_pref(parsed: &serde_json::Value, default: bool) -> bool {
 /// 并非"两次即弃"的语义。
 const GROWTH_MAX_ATTEMPTS: usize = 3;
 
+/// 自动补批墙钟预算（rs8，learnhub #257 `GrowBudget` 同构）：从自动补批
+/// 任务起算的墙钟上界。注入决策在
+/// [`LearningService::kick_growth_with_trigger`]——`None`（整个 Option 缺
+/// 席）= 不限，手动 grow 缺省；只有自动补批臂（settlement / auto_refill
+/// 两个触发源）注入。
+///
+/// **不是落位闸门**：预算只在 LLM 调用边界判定（每次 attempt 前 / 评审前 /
+/// 重裁前），到点后不再发起新的起草/评审/重裁——已过全部门的批本尝试照常
+/// 落位（note 留痕），未过门的批可见失败（缺口点名，不静默）。不中断在途
+/// LLM 请求（同步接缝），判定本身纯内存零 IO。
+pub(crate) struct GrowthBudget {
+    /// 判定面：到点即超预算。字段私有——`GrowthBudget` 恒为「有限墙钟」，
+    /// 不存在「无 deadline 的预算」这一组合；不限预算 = 注入点传 `None`。
+    deadline: std::time::Instant,
+    /// 预算墙钟秒数（仅文案/日志读数，不参与判定）。
+    window_secs: u64,
+    /// 测试注入缝：确定性到点开关（单测强制边界时序，不依赖真实时钟；生
+    /// 产恒 None）。learnhub #257 `expired_override` 同款。
+    #[cfg(test)]
+    expired_override: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl GrowthBudget {
+    /// 从墙钟秒数起算（`now + secs`）：自动补批臂构造预算的唯一入口。
+    fn from_secs(secs: u64) -> Self {
+        Self {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(secs),
+            window_secs: secs,
+            #[cfg(test)]
+            expired_override: None,
+        }
+    }
+
+    /// 是否已到点（纯内存；判定点只设在 LLM 调用边界，在途调用不被打断
+    /// ——回包落定后的下一个判定点才生效）。
+    fn expired(&self) -> bool {
+        #[cfg(test)]
+        if let Some(flag) = &self.expired_override {
+            return flag.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        std::time::Instant::now() >= self.deadline
+    }
+
+    /// 文案读数：「墙钟 10 分钟」/「墙钟 30 秒」。
+    fn wall_label(&self) -> String {
+        if self.window_secs >= 60 && self.window_secs % 60 == 0 {
+            format!("墙钟 {} 分钟", self.window_secs / 60)
+        } else {
+            format!("墙钟 {} 秒", self.window_secs)
+        }
+    }
+}
+
+/// 超预算的可见失败文案（learnhub #257 `budget_failure` 同构）：
+/// `自动补批超时（墙钟 N 分钟）：<缺口点名>`。前缀是测试与账本的断言面
+/// （last 以「自动补批超时」开头），拼写单源防漂移。
+fn budget_failure_message(budget: &GrowthBudget, detail: &str) -> String {
+    format!("自动补批超时（{}）：{detail}", budget.wall_label())
+}
+
+/// 测试注入缝的进程内槽（rs8）：[`set_test_budget_expired_flag`] 装入的确
+/// 定性到点开关，随下一个自动补批臂的预算构造挂接（测试各自装各自清）。
+/// 进程全局态：测试必须 `#[serial]`，与写 env 的测试同律。测试辅助面：
+/// 产品代码不读写。
+#[cfg(test)]
+static TEST_BUDGET_EXPIRED_FLAG: std::sync::Mutex<
+    Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+> = std::sync::Mutex::new(None);
+
+/// 装入/清除（`None`）预算到点测试开关（rs8 测试辅助面）。
+#[cfg(test)]
+pub(crate) fn set_test_budget_expired_flag(
+    flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) {
+    *TEST_BUDGET_EXPIRED_FLAG.lock().expect("预算测试槽中毒") = flag;
+}
+
+/// 自动补批臂的预算构造（rs8）：`settlement` / `auto_refill` 两个自动触
+/// 发源注入墙钟预算（system_action 枚举注释同款「自动补批触发①/②」——
+/// 用户不在场的后台无界尾巴面）；manual 不注入（用户在场，上游同款不受
+/// 限）。开关 `0` = 关（预算不注入，等效现行为）。
+fn growth_budget_for_trigger(trigger: SystemActionTrigger) -> Option<GrowthBudget> {
+    if !matches!(
+        trigger,
+        SystemActionTrigger::Settlement | SystemActionTrigger::AutoRefill
+    ) {
+        return None;
+    }
+    let secs = crate::switches::auto_refill_budget_secs()?;
+    #[cfg(test)]
+    let budget = {
+        let mut budget = GrowthBudget::from_secs(secs);
+        if let Some(flag) = TEST_BUDGET_EXPIRED_FLAG.lock().expect("预算测试槽中毒").clone() {
+            budget.expired_override = Some(flag);
+        }
+        budget
+    };
+    #[cfg(not(test))]
+    let budget = GrowthBudget::from_secs(secs);
+    Some(budget)
+}
+
 impl LearningService {
 
     // ── Course creation（建课 = 学习目标 → 知识结构生成，完成即停）────────
@@ -1338,6 +1440,47 @@ impl LearningService {
         }
     }
 
+    /// 预算触发事件落 findings（rs8 R-c）：一行 `source = 'growth-budget'`
+    /// ——到点 / 停在哪 / 剩余缺口点名（issue = 同一条可见失败文案）。与
+    /// j09 同律：留痕是线索不是第二真相，坏行/落表失败只 warn 不阻断。
+    async fn record_budget_finding(&self, course_id: &LearningCourseId, issue: &str) {
+        let seq: i64 = match sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        {
+            Ok(seq) => seq,
+            Err(error) => {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    error = %error,
+                    "budget finding seq lookup failed — 留痕不阻断生长"
+                );
+                return;
+            }
+        };
+        let result = sqlx::query(
+            "INSERT INTO learning_structure_findings \
+             (ts, course_id, seq, source, node, field, issue, advice) \
+             VALUES (?, ?, ?, 'growth-budget', '', '', ?, '')",
+        )
+        .bind(now_ms())
+        .bind(course_id.as_str())
+        .bind(seq)
+        .bind(issue.trim())
+        .execute(&self.pool)
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(
+                course = course_id.as_str(),
+                error = %error,
+                "budget finding insert failed — 留痕不阻断生长"
+            );
+        }
+    }
+
     // ── 维护水位 + 自动维护回合（k02）────────────────────────────────────
 
     /// 当前消费水位（锚 findings 的每课程 seq；不再按 MAX(id) 钳制——seq
@@ -1786,9 +1929,13 @@ impl LearningService {
             ready_count,
         };
         let service = self.clone();
+        // rs8 预算注入点：自动补批臂（settlement / auto_refill 两个触发源
+        // ——system_action 枚举同款「自动补批触发①/②」）在此构造墙钟预算
+        // 随任务下传；manual 不注入（用户在场，上游 #257 同款不受限）。
+        let budget = growth_budget_for_trigger(trigger);
         tokio::spawn(async move {
             let _slot = slot; // RAII：任务结束（含 panic）即释放
-            if let Err(error) = service.run_growth(&engine).await {
+            if let Err(error) = service.run_growth(&engine, budget).await {
                 tracing::warn!(course = engine.course_id.as_str(), %error, "learning graph growth failed");
             }
         });
@@ -1848,11 +1995,13 @@ impl LearningService {
 
     /// 一轮生长：上下文组装 → 教练起草/重裁 → 结构门 →（打回重裁，≤3 轮）→
     /// AI 概念评审 →（打回同上）→ 事务落库（铸名/节点/概念网/批次）。
+    /// `budget` = 自动补批墙钟预算（rs8；`None` = 不限——手动 grow 缺省）。
     /// 全程登记 generation_tasks 长任务（token 真取消 + 快照可见）；结束发
     /// WS 终态帧（取消 = 中性 cancelled，不报错误）。
     async fn run_growth(
         &self,
         engine: &crate::learning_graph::GrowthRunner,
+        budget: Option<GrowthBudget>,
     ) -> Result<(), AppError> {
         let course_id = &engine.course_id;
         let mut task = self.begin_growth_task(course_id).await?;
@@ -1885,7 +2034,7 @@ impl LearningService {
         let pending = self.begin_pending_batch(course_id).await?;
         // 相位耗时读数（e1）：用量句柄随批体下传（计数包在取消包内层）。
         let usage = task.usage();
-        let result = self.growth_body(engine, &pending, token.clone(), &usage).await;
+        let result = self.growth_body(engine, &pending, token.clone(), &usage, budget.as_ref()).await;
         // y04 账本判据读数：触发时就绪存量（kick 时刻的裁决输入原样回显）。
         let ledger_basis = format!("ready={}", engine.ready_count);
         match &result {
@@ -2051,6 +2200,7 @@ impl LearningService {
         pending: &PendingBatch,
         token: tokio_util::sync::CancellationToken,
         usage: &crate::completer::LlmUsageMeter,
+        budget: Option<&GrowthBudget>,
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
@@ -2140,6 +2290,21 @@ impl LearningService {
         let mut naming_probe: Option<String> = None;
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
+            // rs8 预算判定点 1（learnhub #257 同点位）：每次 attempt 开始前
+            // （纯内存）。到点 = 不再发起新的起草/评审/重裁——后续尝试预判
+            // 预算不再白跑；本批尚未过门 → 可见失败（缺口点名，不静默）。
+            // 预算不是落位闸门：已过门的批在前序尝试内已照常落位。
+            if budget.is_some_and(GrowthBudget::expired) {
+                let budget = budget.expect("预算到点 ⇒ budget 存在");
+                let detail = if last == "(未执行)" {
+                    "本批未落位，不再发起起草/评审/重裁".to_owned()
+                } else {
+                    format!("本批未通过全部门，不再发起新一轮；最后一次打回：{last}")
+                };
+                last = budget_failure_message(&budget, &detail);
+                stop_reason = "budget_expired";
+                break 'budget;
+            }
             attempts_used = attempt;
             if token.is_cancelled() {
                 stop_reason = "cancelled";
@@ -2150,6 +2315,19 @@ impl LearningService {
             let mut candidate = 'drafting: loop {
                 if token.is_cancelled() {
                     // stop_reason 已由外层/本轮置位；无赋值必要。
+                    break 'budget;
+                }
+                // rs8 预算判定点 3（learnhub #257「下一轮点修前」同点位）：重
+                // 裁发起前（纯内存）。评审打回的重裁与守卫原地重试都从本口
+                // 发起新的教练调用——到点即不再重裁；缺口 = 最后一次打回报
+                // 告（feedback），可见失败不静默。
+                if previous.is_some() && budget.is_some_and(GrowthBudget::expired) {
+                    let budget = budget.expect("预算到点 ⇒ budget 存在");
+                    last = budget_failure_message(
+                        &budget,
+                        &format!("本批尚未落位，不再发起重裁；缺口：{}", feedback),
+                    );
+                    stop_reason = "budget_expired";
                     break 'budget;
                 }
                 let drafted = match previous.as_ref() {
@@ -2474,6 +2652,22 @@ impl LearningService {
             } else {
                 String::new()
             };
+            // rs8 预算判定点 2：评审调用前（纯内存）。起草/结构门耗掉的墙
+            // 钟若已到点，不再发起评审——本批尚未过评审门，可见失败（缺口
+            // 点名，不静默），评审在途期间到点则由本点之后的落位/重裁判定
+            // 面接手（在途调用不被打断）。
+            if budget.is_some_and(GrowthBudget::expired) {
+                let budget = budget.expect("预算到点 ⇒ budget 存在");
+                last = budget_failure_message(
+                    &budget,
+                    &format!(
+                        "本批尚未过评审门，不再发起评审（{} 个节点在途作废）",
+                        candidate.nodes.len()
+                    ),
+                );
+                stop_reason = "budget_expired";
+                break 'budget;
+            }
             let mut review = crate::learning_graph::concept_review(
                 completer,
                 model_override,
@@ -2783,6 +2977,19 @@ impl LearningService {
                     ));
                 }
             }
+            // rs8 预算到点落位：墙钟在评审在途期间到点，而本批已过全部门
+            // ——照常落库（预算不是落位闸门，learnhub #257 同款），note 留
+            // 痕可追溯（上游 Stopped 行同款读数面）。
+            if budget.is_some_and(GrowthBudget::expired) {
+                let budget = budget.expect("预算到点 ⇒ budget 存在");
+                if !candidate.note.trim().is_empty() {
+                    candidate.note.push('；');
+                }
+                candidate.note.push_str(&format!(
+                    "预算到点落位（{}已到，本批已过全部门照常落库）",
+                    budget.wall_label()
+                ));
+            }
             batch = Some(candidate);
             batch_rulings = Some(rulings);
             stop_reason = "success";
@@ -2810,6 +3017,12 @@ impl LearningService {
                 last = %last,
                 "growth failed: retry budget exhausted"
             );
+            // rs8 预算到点的可见失败：错误文案即缺口点名（自动补批超时：
+            // 停在哪 + 剩余缺口），沿既有失败留痕面流进账本/任务/WS。
+            if stop_reason == "budget_expired" {
+                self.record_budget_finding(course_id, &last).await;
+                return Err(AppError::UnprocessableEntity(last));
+            }
             return Err(AppError::UnprocessableEntity(format!(
                 "生长批次 {GROWTH_MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）：\n{last}"
             )));
