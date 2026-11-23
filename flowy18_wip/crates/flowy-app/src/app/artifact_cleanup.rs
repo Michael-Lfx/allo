@@ -179,7 +179,7 @@ impl FlowyApp {
                 let complete =
                     result.as_ref().is_ok_and(CleanupOutcome::complete);
                 app.artifact_cleanup.error =
-                    (!complete).then_some("library.error.trash_failed");
+                    (!complete).then_some("library.error.cleanup_views");
                 // Recompute actual usage after every attempt. A failed remove
                 // never subtracts promised bytes from the quota projection.
                 app.load_library(cx);

@@ -31,9 +31,6 @@ pub enum LibraryEvent {
         artifact_id: String,
         favorite: bool,
     },
-    TrashRequested(String),
-    RestoreRequested(String),
-    DeletePermanentlyRequested(String),
     StartConversationRequested,
     ClearFiltersRequested,
     CleanViewCopiesRequested,
@@ -157,12 +154,9 @@ pub struct LibraryPanel {
     loading: bool,
     internal_previews: bool,
     preview_request_id: u64,
-    pending_delete: Option<String>,
-    delete_return_focus: Option<FocusHandle>,
     focus: FocusHandle,
     scroll: gpui::ScrollHandle,
     usage: Option<LibraryUsage>,
-    last_trashed: Option<String>,
     category_focus: Vec<FocusHandle>,
     item_focus: std::collections::HashMap<String, FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -199,8 +193,6 @@ impl LibraryPanel {
                     if scope.starts_with("library-") {
                         if scope.as_ref() == "library-preview" {
                             panel.preview = None;
-                        } else if scope.as_ref() == "library-delete-confirm" {
-                            panel.pending_delete = None;
                         } else {
                             panel.popup = None;
                         }
@@ -228,12 +220,9 @@ impl LibraryPanel {
             loading: false,
             internal_previews: false,
             preview_request_id: 0,
-            pending_delete: None,
-            delete_return_focus: None,
             focus: cx.focus_handle(),
             scroll: gpui::ScrollHandle::new(),
             usage: None,
-            last_trashed: None,
             category_focus: Category::ALL
                 .iter()
                 .map(|_| cx.focus_handle())
@@ -264,15 +253,6 @@ impl LibraryPanel {
                 .or_insert_with(|| cx.focus_handle());
         }
         self.model.items = items;
-        if self.last_trashed.as_ref().is_some_and(|id| {
-            !self.model.items.iter().any(|item| {
-                &item.id == id
-                    && item.trashed
-                    && item.availability != ArtifactAvailability::Deleted
-            })
-        }) {
-            self.last_trashed = None;
-        }
         self.loading = false;
         cx.notify();
     }
@@ -288,21 +268,6 @@ impl LibraryPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.usage = Some(usage);
-        cx.notify();
-    }
-
-    /// Only call after the host has durably moved this item into the trash.
-    pub fn show_trashed(
-        &mut self,
-        artifact_id: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.last_trashed = Some(artifact_id.to_owned());
-        cx.notify();
-    }
-
-    pub fn clear_undo(&mut self, cx: &mut Context<'_, Self>) {
-        self.last_trashed = None;
         cx.notify();
     }
 
@@ -450,11 +415,7 @@ impl LibraryPanel {
     }
 
     pub fn modal_scope(&self) -> Option<SharedString> {
-        if self.pending_delete.is_some() {
-            Some("library-delete-confirm".into())
-        } else {
-            self.preview.as_ref().map(|_| "library-preview".into())
-        }
+        self.preview.as_ref().map(|_| "library-preview".into())
     }
 
     pub fn popup_scope(&self) -> Option<SharedString> {
@@ -530,43 +491,20 @@ impl LibraryPanel {
                 cx.notify();
             }),
         );
-        let trash = theme::Button::new(
-            "library-trash-toggle",
-            self.t(if self.model.showing_trash {
-                "dock.library"
-            } else {
-                "library.trash"
-            }),
-        )
-        .size(theme::ControlSize::Small)
-        .variant(if self.model.showing_trash {
-            theme::ControlVariant::Secondary
-        } else {
-            theme::ControlVariant::Ghost
-        })
-        .icon(theme::icons::trash())
-        .render(
-            &t,
-            cx.listener(|panel, _, _, cx| {
-                panel.model.showing_trash = !panel.model.showing_trash;
-                panel.model.favorites_only = false;
-                cx.notify();
-            }),
-        );
         div()
             .w_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
             .child(
-                theme::PageHeader::new(if self.model.showing_trash {
-                    self.t("library.trash")
-                } else {
-                    self.t("dock.library")
-                })
-                .trailing(theme::anchor_trigger(sort, "library-sort", &self.ui))
-                .trailing(self.view_switch(cx))
-                .render(&t, window),
+                theme::PageHeader::new(self.t("dock.library"))
+                    .trailing(theme::anchor_trigger(
+                        sort,
+                        "library-sort",
+                        &self.ui,
+                    ))
+                    .trailing(self.view_switch(cx))
+                    .render(&t, window),
             )
             .child(
                 div()
@@ -590,8 +528,7 @@ impl LibraryPanel {
                         .flex_1()
                         .max_w(px(440.)),
                     )
-                    .child(favorite)
-                    .child(trash),
+                    .child(favorite),
             )
     }
 
@@ -700,13 +637,10 @@ impl LibraryPanel {
                     ),
                 );
             }
-            let is_true_empty = !self.model.items.iter().any(|item| {
-                !item.trashed
-                    && item.availability != ArtifactAvailability::Deleted
-            }) && query.trim().is_empty()
+            let is_true_empty = self.model.items.is_empty()
+                && query.trim().is_empty()
                 && self.model.category == Category::All
-                && !self.model.favorites_only
-                && !self.model.showing_trash;
+                && !self.model.favorites_only;
             let mut empty = div()
                 .py(px(72.))
                 .flex()
@@ -762,7 +696,6 @@ impl LibraryPanel {
                                 .update(cx, |state, cx| state.emplace("", cx));
                             panel.model.category = Category::All;
                             panel.model.favorites_only = false;
-                            panel.model.showing_trash = false;
                             cx.emit(LibraryEvent::ClearFiltersRequested);
                             cx.notify();
                         }),
@@ -788,25 +721,14 @@ impl LibraryPanel {
 
     fn usage_status(&self, cx: &Context<'_, Self>) -> Option<gpui::AnyElement> {
         let usage = self.usage.as_ref()?;
+        if usage.staging_bytes == 0 && usage.view_bytes == 0 {
+            return None;
+        }
         let t = self.theme(cx);
-        let used = format_bytes(usage.charged_bytes());
-        let max = format_bytes(usage.max_bytes);
-        let count = usage.stored_items.to_string();
-        let limit = usage.max_items.to_string();
-        let text = self.i18n.tf(
-            "library.storage.usage",
-            &[
-                ("used", &used),
-                ("max", &max),
-                ("count", &count),
-                ("limit", &limit),
-            ],
-        );
         let mut details = Vec::new();
         for (bytes, key) in [
             (usage.staging_bytes, "library.storage.staging"),
             (usage.view_bytes, "library.storage.views"),
-            (usage.pending_delete_bytes, "library.storage.pending"),
         ] {
             if bytes > 0 {
                 details
@@ -823,11 +745,6 @@ impl LibraryPanel {
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .child(
-                    theme::Text::new(theme::TextRole::Meta, text)
-                        .render(&t)
-                        .whitespace_normal(),
-                )
                 .when(!details.is_empty(), |line| {
                     line.child(
                         theme::Text::new(
@@ -854,60 +771,6 @@ impl LibraryPanel {
                         ),
                     )
                 })
-                .into_any_element(),
-        )
-    }
-
-    fn undo_status(&self, cx: &Context<'_, Self>) -> Option<gpui::AnyElement> {
-        let artifact_id = self.last_trashed.as_ref()?.clone();
-        let t = self.theme(cx);
-        Some(
-            div()
-                .id("library-trash-undo-status")
-                .role(gpui::Role::Status)
-                .aria_live(gpui::accesskit::Live::Polite)
-                .w_full()
-                .px(px(24.))
-                .py(px(8.))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(10.))
-                .child(
-                    theme::Text::new(
-                        theme::TextRole::Body,
-                        self.t("library.trashed_notice"),
-                    )
-                    .render(&t),
-                )
-                .child(
-                    theme::Button::new(
-                        "library-trash-undo",
-                        self.t("library.undo"),
-                    )
-                    .size(theme::ControlSize::Small)
-                    .variant(theme::ControlVariant::Ghost)
-                    .render(
-                        &t,
-                        cx.listener(move |_, _, _, cx| {
-                            cx.emit(LibraryEvent::RestoreRequested(
-                                artifact_id.clone(),
-                            ));
-                        }),
-                    ),
-                )
-                .child(
-                    theme::IconButton::new(
-                        "library-trash-undo-dismiss",
-                        self.t("library.close"),
-                        theme::icons::x(),
-                    )
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &t,
-                        cx.listener(|panel, _, _, cx| panel.clear_undo(cx)),
-                    ),
-                )
                 .into_any_element(),
         )
     }
@@ -983,10 +846,6 @@ impl LibraryPanel {
             ArtifactAvailability::Corrupt => {
                 details.push_str(" · ");
                 details.push_str(&self.t("library.availability.corrupt"));
-            }
-            ArtifactAvailability::Deleted => {
-                details.push_str(" · ");
-                details.push_str(&self.t("library.error.deleted"));
             }
         }
         details
@@ -1339,122 +1198,72 @@ impl LibraryPanel {
                 };
                 let item =
                     self.model.items.iter().find(|item| &item.id == id)?;
-                let artifact_id = id.clone();
                 menu = menu.w(px(220.)).rounded(t.modal_radius());
-                if self.model.showing_trash {
-                    let restore_id = id.clone();
-                    let delete_id = id.clone();
+                let save_id = id.clone();
+                let open_id = id.clone();
+                let favorite_id = id.clone();
+                let next_favorite = !item.favorite;
+                menu = menu.child(Self::action_menu_row(
+                    "library-menu-save-as",
+                    self.t("library.save_as"),
+                    theme::icons::download().size(px(16.)),
+                    t,
+                    cx.listener(move |panel, _, _, cx| {
+                        cx.emit(LibraryEvent::SaveAsRequested(save_id.clone()));
+                        panel.popup = None;
+                        cx.notify();
+                    }),
+                ));
+                if item.default_open_supported() {
                     menu = menu.child(Self::action_menu_row(
-                        "library-menu-restore",
-                        self.t("library.restore"),
-                        theme::icons::refresh_cw().size(px(16.)),
+                        "library-menu-open-default",
+                        self.t("library.open_default"),
+                        theme::icons::external_link().size(px(16.)),
                         t,
                         cx.listener(move |panel, _, _, cx| {
-                            cx.emit(LibraryEvent::RestoreRequested(
-                                restore_id.clone(),
+                            cx.emit(LibraryEvent::OpenWithDefaultRequested(
+                                open_id.clone(),
                             ));
                             panel.popup = None;
                             cx.notify();
                         }),
                     ));
-                    menu = menu.child(Self::action_menu_row(
-                        "library-menu-delete-permanently",
-                        self.t("library.delete_permanently"),
-                        theme::icons::trash().size(px(16.)),
-                        t,
-                        cx.listener(move |panel, _, _, cx| {
-                            panel.delete_return_focus =
-                                panel.item_focus.get(&delete_id).cloned();
-                            panel.pending_delete = Some(delete_id.clone());
-                            panel.popup = None;
-                            cx.notify();
-                        }),
-                    ));
-                } else {
-                    let save_id = id.clone();
-                    let open_id = id.clone();
-                    let favorite_id = id.clone();
-                    let next_favorite = !item.favorite;
-                    menu = menu.child(Self::action_menu_row(
-                        "library-menu-save-as",
-                        self.t("library.save_as"),
-                        theme::icons::download().size(px(16.)),
-                        t,
-                        cx.listener(move |panel, _, _, cx| {
-                            cx.emit(LibraryEvent::SaveAsRequested(
-                                save_id.clone(),
-                            ));
-                            panel.popup = None;
-                            cx.notify();
-                        }),
-                    ));
-                    if item.default_open_supported() {
-                        menu = menu.child(Self::action_menu_row(
-                            "library-menu-open-default",
-                            self.t("library.open_default"),
-                            theme::icons::external_link().size(px(16.)),
-                            t,
-                            cx.listener(move |panel, _, _, cx| {
-                                cx.emit(
-                                    LibraryEvent::OpenWithDefaultRequested(
-                                        open_id.clone(),
-                                    ),
-                                );
-                                panel.popup = None;
-                                cx.notify();
-                            }),
-                        ));
-                    }
-                    if !item.source_deleted
-                        && !item.source_unavailable
-                        && !item.source_session_id.is_empty()
-                    {
-                        let session_id = item.source_session_id.clone();
-                        let artifact_id = id.clone();
-                        menu = menu.child(Self::action_menu_row(
-                            "library-menu-locate-source",
-                            self.t("library.locate_task"),
-                            theme::icons::external_link().size(px(16.)),
-                            t,
-                            cx.listener(move |panel, _, _, cx| {
-                                cx.emit(LibraryEvent::LocateSourceRequested {
-                                    session_id: session_id.clone(),
-                                    artifact_id: artifact_id.clone(),
-                                });
-                                panel.popup = None;
-                                cx.notify();
-                            }),
-                        ));
-                    }
-                    menu = menu
-                        .child(Self::action_menu_row(
-                            "library-menu-favorite",
-                            favorite_label,
-                            theme::icons::star().size(px(16.)),
-                            t,
-                            cx.listener(move |panel, _, _, cx| {
-                                cx.emit(LibraryEvent::SetFavoriteRequested {
-                                    artifact_id: favorite_id.clone(),
-                                    favorite: next_favorite,
-                                });
-                                panel.popup = None;
-                                cx.notify();
-                            }),
-                        ))
-                        .child(Self::action_menu_row(
-                            "library-menu-trash",
-                            self.t("library.move_to_trash"),
-                            theme::icons::trash().size(px(16.)),
-                            t,
-                            cx.listener(move |panel, _, _, cx| {
-                                cx.emit(LibraryEvent::TrashRequested(
-                                    artifact_id.clone(),
-                                ));
-                                panel.popup = None;
-                                cx.notify();
-                            }),
-                        ));
                 }
+                if !item.source_deleted
+                    && !item.source_unavailable
+                    && !item.source_session_id.is_empty()
+                {
+                    let session_id = item.source_session_id.clone();
+                    let artifact_id = id.clone();
+                    menu = menu.child(Self::action_menu_row(
+                        "library-menu-locate-source",
+                        self.t("library.locate_task"),
+                        theme::icons::external_link().size(px(16.)),
+                        t,
+                        cx.listener(move |panel, _, _, cx| {
+                            cx.emit(LibraryEvent::LocateSourceRequested {
+                                session_id: session_id.clone(),
+                                artifact_id: artifact_id.clone(),
+                            });
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ));
+                }
+                menu = menu.child(Self::action_menu_row(
+                    "library-menu-favorite",
+                    favorite_label,
+                    theme::icons::star().size(px(16.)),
+                    t,
+                    cx.listener(move |panel, _, _, cx| {
+                        cx.emit(LibraryEvent::SetFavoriteRequested {
+                            artifact_id: favorite_id.clone(),
+                            favorite: next_favorite,
+                        });
+                        panel.popup = None;
+                        cx.notify();
+                    }),
+                ));
                 (
                     "library-item-menu",
                     SharedString::from(format!("library-more-{id}")),
@@ -1488,87 +1297,6 @@ impl LibraryPanel {
             .into_any_element(),
         )
     }
-
-    fn delete_confirmation_layer(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> Option<gpui::AnyElement> {
-        let id = self.pending_delete.as_ref()?.clone();
-        let t = self.theme(cx);
-        let dialog = theme::dialog(
-            "library-delete-confirm-dialog",
-            self.t("library.delete_confirm.title"),
-            &t,
-            &self.ui,
-            cx,
-        )
-        .w(px(420.))
-        .max_w(gpui::relative(0.9))
-        .p(px(24.))
-        .flex()
-        .flex_col()
-        .gap(px(18.))
-        .child(
-            theme::Title::new(
-                theme::TitleLevel::Section,
-                self.t("library.delete_confirm.title"),
-            )
-            .render(&t),
-        )
-        .child(
-            theme::Text::new(
-                theme::TextRole::Body,
-                self.t("library.delete_confirm.body"),
-            )
-            .render(&t)
-            .whitespace_normal(),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(8.))
-                .child(
-                    theme::Button::new(
-                        "library-delete-cancel",
-                        self.t("library.cancel"),
-                    )
-                    .render(
-                        &t,
-                        cx.listener(|panel, _, _, cx| {
-                            panel.pending_delete = None;
-                            cx.notify();
-                        }),
-                    ),
-                )
-                .child(
-                    theme::Button::new(
-                        "library-delete-confirm",
-                        self.t("library.delete_permanently"),
-                    )
-                    .variant(theme::ControlVariant::Danger)
-                    .render(
-                        &t,
-                        cx.listener(move |panel, _, _, cx| {
-                            cx.emit(LibraryEvent::DeletePermanentlyRequested(
-                                id.clone(),
-                            ));
-                            panel.pending_delete = None;
-                            cx.notify();
-                        }),
-                    ),
-                ),
-        );
-        Some(
-            theme::modal_layer(
-                "library-delete-confirm-layer",
-                &t,
-                &self.ui,
-                dialog,
-            )
-            .into_any_element(),
-        )
-    }
 }
 
 impl Render for LibraryPanel {
@@ -1577,11 +1305,6 @@ impl Render for LibraryPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        if self.pending_delete.is_none()
-            && let Some(focus) = self.delete_return_focus.take()
-        {
-            focus.focus(window, cx);
-        }
         if self.preview.is_none()
             && let Some(view) = self.preview_view.take()
         {
@@ -1606,7 +1329,6 @@ impl Render for LibraryPanel {
             .flex_col()
             .child(self.toolbar(window, cx))
             .when_some(self.usage_status(cx), gpui::ParentElement::child)
-            .when_some(self.undo_status(cx), gpui::ParentElement::child)
             .when_some(self.status, |root, key| {
                 root.child(
                     div()
@@ -1643,9 +1365,6 @@ impl Render for LibraryPanel {
         }
         if let Some(preview) = self.preview_layer(cx) {
             root = root.child(preview);
-        }
-        if let Some(delete) = self.delete_confirmation_layer(cx) {
-            root = root.child(delete);
         }
         root
     }
@@ -1938,7 +1657,6 @@ mod tests {
             for label in [
                 "Search files",
                 "Favorites",
-                "Trash",
                 "Sort",
                 "Grid view",
                 "List view",
@@ -1963,8 +1681,6 @@ mod tests {
         });
         activate(cx, "Favorites", accesskit::Role::Button);
         cx.read_entity(&panel, |panel, _| assert!(panel.model.favorites_only));
-        activate(cx, "Trash", accesskit::Role::Button);
-        cx.read_entity(&panel, |panel, _| assert!(panel.model.showing_trash));
     }
 
     #[gpui::test]
@@ -2000,15 +1716,11 @@ mod tests {
     }
 
     #[gpui::test]
-    fn load_error_and_tombstone_only_library_have_distinct_empty_states(
+    fn load_error_and_empty_library_have_distinct_empty_states(
         cx: &mut TestAppContext,
     ) {
         let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
         let panel = cx.read_entity(&host, |host, _| host.panel.clone());
-        let mut deleted =
-            cx.read_entity(&panel, |panel, _| panel.model.items[0].clone());
-        deleted.availability = ArtifactAvailability::Deleted;
-        deleted.trashed = true;
         panel.update(cx, |panel, cx| {
             panel.set_items(Vec::new(), cx);
             panel.set_status(Some("library.error.catalog"), cx);
@@ -2025,10 +1737,7 @@ mod tests {
                         == Some("Start a conversation"))
             );
         });
-        panel.update(cx, |panel, cx| {
-            panel.set_items(vec![deleted], cx);
-            panel.set_status(None, cx);
-        });
+        panel.update(cx, |panel, cx| panel.set_status(None, cx));
         draw(cx);
         cx.update(|window, _| {
             assert!(
@@ -2057,40 +1766,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn undo_restores_the_host_confirmed_trashed_artifact(
-        cx: &mut TestAppContext,
-    ) {
-        let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
-        let panel = cx.read_entity(&host, |host, _| host.panel.clone());
-        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = events.clone();
-        let _subscription = host.update(cx, |_, cx| {
-            cx.subscribe(&panel, move |_, _, event: &LibraryEvent, _| {
-                captured.lock().unwrap().push(event.clone())
-            })
-        });
-        let id = panel.update(cx, |panel, cx| {
-            let item = &mut panel.model.items[0];
-            item.trashed = true;
-            let id = item.id.clone();
-            panel.show_trashed(&id, cx);
-            id
-        });
-        activate(cx, "Undo", accesskit::Role::Button);
-        assert_eq!(
-            events.lock().unwrap().as_slice(),
-            &[LibraryEvent::RestoreRequested(id.clone())]
-        );
-        panel.update(cx, |panel, cx| {
-            let mut items = panel.model.items.clone();
-            items.iter_mut().find(|item| item.id == id).unwrap().trashed =
-                false;
-            panel.set_items(items, cx);
-            assert!(panel.last_trashed.is_none());
-        });
-    }
-
-    #[gpui::test]
     fn viewing_copy_cleanup_is_requested_explicitly_without_touching_files(
         cx: &mut TestAppContext,
     ) {
@@ -2104,13 +1779,8 @@ mod tests {
             })
         });
         let mut usage = LibraryUsage {
-            stored_bytes: 8192,
             staging_bytes: 0,
             view_bytes: 4096,
-            pending_delete_bytes: 0,
-            stored_items: 1,
-            max_items: 1000,
-            max_bytes: 5 * 1024 * 1024 * 1024,
         };
         panel.update(cx, |panel, cx| panel.set_usage(usage.clone(), cx));
         activate(cx, "Clean viewing copies", accesskit::Role::Button);
@@ -2273,8 +1943,7 @@ mod tests {
                 "Save as",
                 "Open with default app",
                 "Return to conversation",
-                "Add to favorites",
-                "Move to trash"
+                "Add to favorites"
             ]
         );
         cx.read_entity(&panel, |panel, _| {
@@ -2316,6 +1985,7 @@ mod tests {
             let file = LibraryItem {
                 id: "existing".to_owned(),
                 title: "File without an extension".to_owned(),
+                original_name: "source-file".to_owned(),
                 description: "/private/folder".to_owned(),
                 category: Category::Image,
                 date: String::new(),
@@ -2333,7 +2003,6 @@ mod tests {
                 source_deleted: false,
                 source_unavailable: false,
                 favorite: false,
-                trashed: false,
                 availability: ArtifactAvailability::Available,
             };
             let mut english = I18n::embedded("Flowy");

@@ -630,7 +630,7 @@ impl FlowyApp {
         ))
     }
 
-    fn project_menu_row(
+    pub(super) fn project_menu_row(
         &self,
         id: &'static str,
         icon: theme::icons::Icon,
@@ -792,7 +792,7 @@ impl FlowyApp {
 /// Chrome is the menu border and padding, the row border and padding, the
 /// 16px icon, and the row gap. `border_1` / `border_2` are pixels; padding and
 /// gap are rems.
-fn project_menu_width(
+pub(super) fn project_menu_width(
     window: &Window,
     labels: &[&str],
     font_size: Pixels,

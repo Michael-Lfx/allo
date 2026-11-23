@@ -63,6 +63,9 @@ pub struct ArtifactRecord {
     pub manifest: ArtifactManifest,
     pub preference: ArtifactPreference,
     pub available: bool,
+    /// The payload metadata cannot match the receipt or points at a link.
+    /// Digest verification happens when the payload is read.
+    pub corrupt: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,7 +141,14 @@ impl ArtifactStore {
         fs::create_dir_all(&root)?;
         reject_link(&root)?;
         let root = fs::canonicalize(root)?;
-        for name in ["staging", "items", "deliveries", "views"] {
+        for name in [
+            "staging",
+            "items",
+            "deliveries",
+            "views",
+            "session-deletions",
+            "sources-deleted",
+        ] {
             let dir = root.join(name);
             fs::create_dir_all(&dir)?;
             reject_link(&dir)?;
@@ -477,34 +487,310 @@ impl ArtifactStore {
         Ok(marker.schema_version == 1 && marker.session_id == session_id)
     }
 
-    pub(crate) fn record_source_deleted(
+    pub(crate) fn source_deleted_sessions(&self) -> io::Result<Vec<String>> {
+        let _guard = self.lock();
+        let dir = self.inner.root.join("sources-deleted");
+        let mut sessions = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_symlink()
+                || !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                continue;
+            }
+            let session_id = entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| invalid("invalid source deletion marker name"))?
+                .to_owned();
+            validate_identifier(&session_id)?;
+            let marker = read_limited_json::<SourceDeletion>(
+                &entry.path(),
+                MAX_MANIFEST_BYTES,
+            )?;
+            if marker.schema_version == 1 && marker.session_id == session_id {
+                sessions.push(session_id);
+            }
+        }
+        sessions.sort();
+        Ok(sessions)
+    }
+
+    pub(crate) fn clear_source_deleted(
         &self,
         session_id: &str,
     ) -> io::Result<()> {
         validate_identifier(session_id)?;
         let _guard = self.lock();
-        let path = self
-            .inner
-            .root
-            .join("sources-deleted")
-            .join(format!("{session_id}.json"));
-        if path.exists() {
-            let existing =
-                read_limited_json::<SourceDeletion>(&path, MAX_MANIFEST_BYTES)?;
-            if existing.schema_version != 1 || existing.session_id != session_id
+        remove_file_if_exists(&self.source_deletion_path(session_id))
+    }
+
+    pub(crate) fn session_deletions(
+        &self,
+    ) -> io::Result<Vec<SessionDeletionPlan>> {
+        let _guard = self.lock();
+        let dir = self.inner.root.join("session-deletions");
+        let mut plans = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_symlink()
+                || entry.file_type()?.is_dir()
+                || path.extension().and_then(|value| value.to_str())
+                    != Some("json")
             {
-                return Err(invalid("unsupported source deletion marker"));
+                continue;
+            }
+            let session_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    invalid("invalid session deletion marker name")
+                })?;
+            plans.push(read_session_deletion_plan(&path, session_id)?);
+        }
+        plans.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        Ok(plans)
+    }
+
+    pub(crate) fn prepare_session_deletion(
+        &self,
+        session_id: &str,
+        artifact_ids: &[String],
+        submission_ids: &[String],
+    ) -> io::Result<()> {
+        validate_identifier(session_id)?;
+        let mut artifacts =
+            artifact_ids.iter().cloned().collect::<BTreeSet<String>>();
+        let mut submissions =
+            submission_ids.iter().cloned().collect::<BTreeSet<String>>();
+        for artifact_id in &artifacts {
+            validate_identifier(artifact_id)?;
+        }
+        for submission_id in &submissions {
+            validate_identifier(submission_id)?;
+        }
+
+        let _guard = self.lock();
+        let scan = self.scan_with_diagnostics_locked(false)?;
+        for manifest in scan.manifests {
+            if manifest.receipt.session_id == session_id {
+                artifacts.insert(manifest.receipt.artifact_id);
+            }
+        }
+        for entry in fs::read_dir(self.inner.root.join("deliveries"))? {
+            let entry = entry?;
+            if entry.file_type()?.is_symlink()
+                || !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                continue;
+            }
+            let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
+                continue;
+            };
+            if marker.commit.session_id == session_id {
+                submissions.insert(marker.commit.submission_id);
+                artifacts.extend(marker.commit.artifact_ids);
+            }
+        }
+
+        let path = self.session_deletion_path(session_id);
+        if path.exists() {
+            let mut plan = read_session_deletion_plan(&path, session_id)?;
+            if plan.state == SessionDeletionState::Committed {
+                return Ok(());
+            }
+            let before =
+                (plan.artifact_ids.clone(), plan.submission_ids.clone());
+            plan.artifact_ids.extend(artifacts);
+            plan.submission_ids.extend(submissions);
+            plan.artifact_ids.sort();
+            plan.artifact_ids.dedup();
+            plan.submission_ids.sort();
+            plan.submission_ids.dedup();
+            if before
+                != (plan.artifact_ids.clone(), plan.submission_ids.clone())
+            {
+                self.write_metadata_locked(&path, &plan)?;
             }
             return Ok(());
         }
-        self.write_metadata_locked(
-            &path,
-            &SourceDeletion {
-                schema_version: 1,
-                session_id: session_id.to_owned(),
-                deleted_at_ms: now_ms(),
-            },
-        )
+
+        let plan = SessionDeletionPlan {
+            schema_version: 1,
+            session_id: session_id.to_owned(),
+            state: SessionDeletionState::Prepared,
+            artifact_ids: artifacts.into_iter().collect(),
+            submission_ids: submissions.into_iter().collect(),
+            created_at_ms: now_ms(),
+        };
+        self.write_metadata_locked(&path, &plan)
+    }
+
+    pub(crate) fn cancel_session_deletion(
+        &self,
+        session_id: &str,
+    ) -> io::Result<()> {
+        validate_identifier(session_id)?;
+        let _guard = self.lock();
+        let path = self.session_deletion_path(session_id);
+        if !path.exists() {
+            return Ok(());
+        }
+        let plan = read_session_deletion_plan(&path, session_id)?;
+        if plan.state == SessionDeletionState::Committed {
+            return Err(invalid(
+                "a committed session deletion cannot be rolled back",
+            ));
+        }
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn commit_session_deletion(
+        &self,
+        session_id: &str,
+    ) -> io::Result<()> {
+        validate_identifier(session_id)?;
+        let _guard = self.lock();
+        let path = self.session_deletion_path(session_id);
+        let mut plan = read_session_deletion_plan(&path, session_id)?;
+        if plan.state == SessionDeletionState::Committed {
+            return Ok(());
+        }
+        plan.state = SessionDeletionState::Committed;
+        self.write_metadata_locked(&path, &plan)
+    }
+
+    pub(crate) fn cleanup_session_deletion(
+        &self,
+        session_id: &str,
+    ) -> io::Result<()> {
+        validate_identifier(session_id)?;
+        let _guard = self.lock();
+        let path = self.session_deletion_path(session_id);
+        let plan = read_session_deletion_plan(&path, session_id)?;
+        if plan.state != SessionDeletionState::Committed {
+            return Err(invalid("session deletion is not committed"));
+        }
+        let mut artifacts =
+            plan.artifact_ids.into_iter().collect::<BTreeSet<String>>();
+        let mut submissions = plan
+            .submission_ids
+            .into_iter()
+            .collect::<BTreeSet<String>>();
+        let scan = self.scan_with_diagnostics_locked(false)?;
+        for manifest in scan.manifests {
+            if manifest.receipt.session_id == session_id {
+                artifacts.insert(manifest.receipt.artifact_id);
+            }
+        }
+        for entry in fs::read_dir(self.inner.root.join("deliveries"))? {
+            let entry = entry?;
+            if entry.file_type()?.is_symlink()
+                || !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                continue;
+            }
+            let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
+                continue;
+            };
+            if marker.commit.session_id == session_id {
+                submissions.insert(marker.commit.submission_id);
+                artifacts.extend(marker.commit.artifact_ids);
+            }
+        }
+
+        for artifact_id in &artifacts {
+            validate_identifier(artifact_id)?;
+            Self::remove_managed_dir(&self.item_dir(artifact_id))?;
+        }
+        Self::remove_managed_dir(
+            &self.inner.root.join("staging").join(session_id),
+        )?;
+        for submission_id in &submissions {
+            validate_identifier(submission_id)?;
+            remove_file_if_exists(
+                &self.delivery_path(session_id, submission_id),
+            )?;
+        }
+
+        let mut preferences = self.preferences_locked()?;
+        let before = preferences.len();
+        preferences.retain(|artifact_id, _| !artifacts.contains(artifact_id));
+        if preferences.len() != before {
+            self.save_preferences_locked(&preferences)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_session_deletion(
+        &self,
+        session_id: &str,
+    ) -> io::Result<()> {
+        validate_identifier(session_id)?;
+        let _guard = self.lock();
+        let path = self.session_deletion_path(session_id);
+        if !path.exists() {
+            return Ok(());
+        }
+        let plan = read_session_deletion_plan(&path, session_id)?;
+        if plan.state != SessionDeletionState::Committed {
+            return Err(invalid("session deletion is not committed"));
+        }
+        remove_file_if_exists(&self.source_deletion_path(session_id))?;
+        remove_file_if_exists(&path)
+    }
+
+    fn session_deletion_ids_locked(&self) -> io::Result<BTreeSet<String>> {
+        let dir = self.inner.root.join("session-deletions");
+        let mut ids = BTreeSet::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_symlink()
+                || !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                continue;
+            }
+            let session_id = entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| invalid("invalid session deletion marker name"))?
+                .to_owned();
+            validate_identifier(&session_id)?;
+            ids.insert(session_id);
+        }
+        Ok(ids)
+    }
+
+    fn remove_managed_dir(path: &Path) -> io::Result<()> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        reject_link(path)?;
+        if !metadata.is_dir() {
+            return Err(invalid(
+                "managed artifact deletion target is not a directory",
+            ));
+        }
+        fs::remove_dir_all(path)
     }
 
     /// Validate and snapshot one model-selected file under a host-owned output root.
@@ -703,28 +989,27 @@ impl ArtifactStore {
     ) -> io::Result<Vec<ArtifactRecord>> {
         let scan = self.scan_with_diagnostics_locked(false)?;
         let committed = self.committed_ids_locked()?;
+        let deleting = self.session_deletion_ids_locked()?;
         let preferences = self.preferences_locked()?;
         Ok(scan
             .manifests
             .into_iter()
             .filter(|manifest| {
-                (matches!(
-                    manifest.publication_state,
-                    PublicationState::Committed
-                        | PublicationState::DeletePending
-                ) || (include_deleted
-                    && matches!(
+                !deleting.contains(&manifest.receipt.session_id)
+                    && (matches!(
                         manifest.publication_state,
-                        PublicationState::Deleted
-                    )))
+                        PublicationState::Committed
+                            | PublicationState::DeletePending
+                    ) || (include_deleted
+                        && matches!(
+                            manifest.publication_state,
+                            PublicationState::Deleted
+                        )))
                     && committed.contains(&manifest.receipt.artifact_id)
             })
             .map(|manifest| {
                 let artifact_id = manifest.receipt.artifact_id.clone();
-                let available = matches!(
-                    manifest.publication_state,
-                    PublicationState::Committed
-                ) && self.payload_path(&artifact_id).is_file();
+                let (available, corrupt) = self.payload_status(&manifest);
                 ArtifactRecord {
                     manifest,
                     preference: preferences
@@ -732,9 +1017,30 @@ impl ArtifactStore {
                         .cloned()
                         .unwrap_or_default(),
                     available,
+                    corrupt,
                 }
             })
             .collect())
+    }
+
+    /// Cheap list-time status. Listing must not read every payload; the full
+    /// digest is verified on demand by `read_payload` and preview requests.
+    fn payload_status(&self, manifest: &ArtifactManifest) -> (bool, bool) {
+        if !matches!(manifest.publication_state, PublicationState::Committed) {
+            return (false, false);
+        }
+        let path = self.payload_path(&manifest.receipt.artifact_id);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            return (false, false);
+        };
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || is_windows_reparse_point(&metadata)
+            || metadata.len() != manifest.receipt.size_bytes
+        {
+            return (false, true);
+        }
+        (true, false)
     }
 
     pub fn get(&self, artifact_id: &str) -> io::Result<Option<ArtifactRecord>> {
@@ -998,6 +1304,18 @@ impl ArtifactStore {
                 && marker.commit.artifact_ids == commit.artifact_ids
                 && marker.commit.completed_successfully
             {
+                self.refresh_delivery_title_locked(commit)?;
+                if marker.commit.origin_title_snapshot
+                    != commit.origin_title_snapshot
+                {
+                    self.write_metadata_locked(
+                        &marker_path,
+                        &DeliveryMarker {
+                            schema_version: 1,
+                            commit: commit.clone(),
+                        },
+                    )?;
+                }
                 return Ok(());
             }
             return Err(invalid(
@@ -1117,6 +1435,45 @@ impl ArtifactStore {
             commit: commit.clone(),
         };
         self.write_metadata_locked(&marker_path, &marker)?;
+        Ok(())
+    }
+
+    fn refresh_delivery_title_locked(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
+        for artifact_id in &commit.artifact_ids {
+            let manifest_path =
+                self.item_dir(artifact_id).join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let mut manifest = read_manifest(&manifest_path)?;
+            if manifest.receipt.artifact_id != *artifact_id
+                || manifest.receipt.session_id != commit.session_id
+                || manifest.receipt.submission_id != commit.submission_id
+            {
+                return Err(invalid(
+                    "artifact manifest does not match the delivery title update",
+                ));
+            }
+            if matches!(manifest.publication_state, PublicationState::Deleted)
+                || (manifest.origin_title_snapshot
+                    == commit.origin_title_snapshot
+                    && manifest.receipt.origin_title_snapshot
+                        == commit.origin_title_snapshot)
+            {
+                continue;
+            }
+            manifest
+                .origin_title_snapshot
+                .clone_from(&commit.origin_title_snapshot);
+            manifest
+                .receipt
+                .origin_title_snapshot
+                .clone_from(&commit.origin_title_snapshot);
+            self.write_metadata_locked(&manifest_path, &manifest)?;
+        }
         Ok(())
     }
 
@@ -1460,6 +1817,18 @@ impl ArtifactStore {
             .join("deliveries")
             .join(format!("{}.json", hex(&Sha256::digest(key.as_bytes()))))
     }
+    fn session_deletion_path(&self, session_id: &str) -> PathBuf {
+        self.inner
+            .root
+            .join("session-deletions")
+            .join(format!("{session_id}.json"))
+    }
+    fn source_deletion_path(&self, session_id: &str) -> PathBuf {
+        self.inner
+            .root
+            .join("sources-deleted")
+            .join(format!("{session_id}.json"))
+    }
 }
 
 #[derive(Default)]
@@ -1480,6 +1849,23 @@ struct SourceDeletion {
     schema_version: u32,
     session_id: String,
     deleted_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDeletionState {
+    Prepared,
+    Committed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionDeletionPlan {
+    schema_version: u32,
+    pub session_id: String,
+    pub state: SessionDeletionState,
+    artifact_ids: Vec<String>,
+    submission_ids: Vec<String>,
+    created_at_ms: u64,
 }
 
 #[async_trait::async_trait]
@@ -1706,6 +2092,26 @@ fn validate_known_header(path: &str, prefix: &[u8]) -> io::Result<()> {
         Ok(())
     } else {
         Err(invalid("file content does not match its extension"))
+    }
+}
+
+fn read_session_deletion_plan(
+    path: &Path,
+    expected_session_id: &str,
+) -> io::Result<SessionDeletionPlan> {
+    let plan =
+        read_limited_json::<SessionDeletionPlan>(path, MAX_MANIFEST_BYTES)?;
+    if plan.schema_version != 1 || plan.session_id != expected_session_id {
+        return Err(invalid("unsupported session deletion marker"));
+    }
+    Ok(plan)
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -2401,6 +2807,56 @@ mod tests {
         proof.origin_title_snapshot = "later source title".into();
         store.commit_delivery(&proof).unwrap();
         assert_eq!(store.list().unwrap().len(), 2);
+        let refreshed = store.get(&one.artifact_id).unwrap().unwrap();
+        assert_eq!(
+            refreshed.manifest.origin_title_snapshot,
+            "later source title"
+        );
+        assert_eq!(
+            refreshed.manifest.receipt.origin_title_snapshot,
+            "later source title"
+        );
+    }
+
+    #[test]
+    fn list_uses_metadata_while_read_verifies_the_digest() {
+        let scratch = Scratch::new();
+        let contents = b"# report
+";
+        fs::write(scratch.0.join("workspace/outputs/report.md"), contents)
+            .unwrap();
+        let store = store(&scratch.0);
+        let receipt = store
+            .prepare(request(&scratch.0, "outputs/report.md", "report"))
+            .unwrap();
+        store.commit_delivery(&commit(&receipt)).unwrap();
+        let record = store.get(&receipt.artifact_id).unwrap().unwrap();
+        assert!(record.available);
+        assert!(!record.corrupt);
+
+        // Same-sized tampering is intentionally not detected during listing;
+        // reading the payload still performs the full SHA-256 check.
+        fs::write(
+            store.payload_path(&receipt.artifact_id),
+            vec![b'x'; contents.len()],
+        )
+        .unwrap();
+        let listed = store.get(&receipt.artifact_id).unwrap().unwrap();
+        assert!(listed.available);
+        assert!(!listed.corrupt);
+        assert!(store.read_payload(&receipt.artifact_id).is_err());
+
+        // Metadata-level corruption remains distinguishable from a missing file.
+        fs::write(store.payload_path(&receipt.artifact_id), b"tampered")
+            .unwrap();
+        let corrupt = store.get(&receipt.artifact_id).unwrap().unwrap();
+        assert!(!corrupt.available);
+        assert!(corrupt.corrupt);
+
+        fs::remove_file(store.payload_path(&receipt.artifact_id)).unwrap();
+        let missing = store.get(&receipt.artifact_id).unwrap().unwrap();
+        assert!(!missing.available);
+        assert!(!missing.corrupt);
     }
 
     #[test]
@@ -2667,6 +3123,118 @@ mod tests {
         drop(occupied);
         super::atomic_write(&path, b"new bytes").unwrap();
         assert_eq!(fs::read(path).unwrap(), b"new bytes");
+    }
+
+    #[test]
+    fn session_deletion_hides_then_removes_all_managed_records() {
+        let scratch = Scratch::new();
+        fs::write(
+            scratch.0.join("workspace/outputs/report.csv"),
+            b"value\n1\n",
+        )
+        .unwrap();
+        let store = store(&scratch.0);
+        let receipt = store
+            .prepare(request(&scratch.0, "outputs/report.csv", "report"))
+            .unwrap();
+        let delivery = commit(&receipt);
+        store.commit_delivery(&delivery).unwrap();
+        store.set_favorite(&receipt.artifact_id, true).unwrap();
+        let staging = store.staging_dir(
+            &delivery.session_id,
+            &delivery.submission_id,
+            "orphan",
+        );
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("payload"), b"partial").unwrap();
+        fs::write(
+            store.source_deletion_path(&delivery.session_id),
+            br#"{"schema_version":1,"session_id":"session-1","deleted_at_ms":1}"#,
+        )
+        .unwrap();
+
+        store
+            .prepare_session_deletion(
+                &delivery.session_id,
+                &delivery.artifact_ids,
+                std::slice::from_ref(&delivery.submission_id),
+            )
+            .unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.get(&receipt.artifact_id).unwrap().is_none());
+
+        store.cancel_session_deletion(&delivery.session_id).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
+
+        store
+            .prepare_session_deletion(
+                &delivery.session_id,
+                &delivery.artifact_ids,
+                std::slice::from_ref(&delivery.submission_id),
+            )
+            .unwrap();
+        store.commit_session_deletion(&delivery.session_id).unwrap();
+        store
+            .cleanup_session_deletion(&delivery.session_id)
+            .unwrap();
+        store
+            .complete_session_deletion(&delivery.session_id)
+            .unwrap();
+
+        assert!(!store.item_dir(&receipt.artifact_id).exists());
+        assert!(
+            !store
+                .delivery_path(&delivery.session_id, &delivery.submission_id)
+                .exists()
+        );
+        assert!(!staging.exists());
+        assert!(!store.source_deletion_path(&delivery.session_id).exists());
+        assert!(!store.session_deletion_path(&delivery.session_id).exists());
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.preferences_locked().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_deletion_is_idempotent_and_survives_partial_cleanup() {
+        let scratch = Scratch::new();
+        fs::write(
+            scratch.0.join("workspace/outputs/report.csv"),
+            b"value\n1\n",
+        )
+        .unwrap();
+        let store = store(&scratch.0);
+        let receipt = store
+            .prepare(request(&scratch.0, "outputs/report.csv", "report"))
+            .unwrap();
+        let delivery = commit(&receipt);
+        store.commit_delivery(&delivery).unwrap();
+        store
+            .prepare_session_deletion(
+                &delivery.session_id,
+                &delivery.artifact_ids,
+                std::slice::from_ref(&delivery.submission_id),
+            )
+            .unwrap();
+        store.commit_session_deletion(&delivery.session_id).unwrap();
+
+        // Simulate a crash after part of the cleanup became durable.
+        fs::remove_file(store.payload_path(&receipt.artifact_id)).unwrap();
+        assert_eq!(store.session_deletions().unwrap().len(), 1);
+        assert!(store.list().unwrap().is_empty());
+        store
+            .cleanup_session_deletion(&delivery.session_id)
+            .unwrap();
+        assert_eq!(store.session_deletions().unwrap().len(), 1);
+        store
+            .complete_session_deletion(&delivery.session_id)
+            .unwrap();
+        assert!(!store.item_dir(&receipt.artifact_id).exists());
+        assert!(store.session_deletions().unwrap().is_empty());
+        assert!(
+            store
+                .cleanup_session_deletion(&delivery.session_id)
+                .is_err()
+        );
     }
 
     #[cfg(windows)]

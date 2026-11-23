@@ -113,6 +113,15 @@ fn main() {
             ChatLine::TaskReceipt { task_id, .. } => {
                 println!("[{index}] task receipt: {task_id}");
             }
+            ChatLine::FileChange { path, change, .. } => {
+                println!("[{index}] file change: {change:?} {path}");
+            }
+            ChatLine::FileChanges { files } => {
+                println!("[{index}] file changes: {}", files.len());
+            }
+            ChatLine::Artifact { artifact_id } => {
+                println!("[{index}] artifact: {artifact_id}");
+            }
         }
     }
     match status {

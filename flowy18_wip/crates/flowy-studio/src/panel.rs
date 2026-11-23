@@ -2,7 +2,7 @@ use crate::composer::{ChatComposer, ComposerEvent};
 use crate::deliverables::PreviewBody;
 use crate::feed::{
     ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, RevealFile,
-    WorkingIndicator,
+    WorkingIndicator, WorkingIndicatorEvent,
 };
 use crate::starter::catalog::Category;
 use flowy_agent::{
@@ -114,7 +114,12 @@ impl std::fmt::Debug for StudioConfig {
 
 /// A failed turn keeps its localized error line visible until the next turn.
 const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
-    status.is_busy() || matches!(status, flowy_agent::TurnStatus::Error { .. })
+    status.is_busy()
+        || matches!(
+            status,
+            flowy_agent::TurnStatus::Error { .. }
+                | flowy_agent::TurnStatus::DeliveryFailed
+        )
 }
 
 pub struct StudioPanel {
@@ -128,10 +133,13 @@ pub struct StudioPanel {
     _reveal_sub: gpui::Subscription,
     _deliverables_sub: gpui::Subscription,
     _artifact_sub: gpui::Subscription,
+    _working_sub: gpui::Subscription,
     submission: Option<u128>,
     submission_pending: bool,
     submission_generation: u64,
     submission_stop: Option<Arc<AtomicBool>>,
+    /// Session whose durable delivery marker is currently being retried.
+    retrying_delivery: Option<String>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
     last_elapsed: Option<u64>,
@@ -296,6 +304,14 @@ impl StudioPanel {
             )
         });
         let working = cx.new(|cx| WorkingIndicator::new(ui.clone(), cx));
+        let working_sub = cx.subscribe(
+            &working,
+            |panel, _, event: &WorkingIndicatorEvent, cx| match event {
+                WorkingIndicatorEvent::RetryDelivery => {
+                    panel.retry_delivery(cx);
+                }
+            },
+        );
         let feed_sub = cx.subscribe(&feed, |panel, _, event: &OpenTask, cx| {
             panel.open_session(&event.0, cx);
         });
@@ -383,10 +399,12 @@ impl StudioPanel {
             _reveal_sub: reveal_sub,
             _deliverables_sub: deliverables_sub,
             _artifact_sub: artifact_sub,
+            _working_sub: working_sub,
             submission: None,
             submission_pending: false,
             submission_generation: 0,
             submission_stop: None,
+            retrying_delivery: None,
             working,
             status,
             last_elapsed: None,
@@ -502,11 +520,9 @@ impl StudioPanel {
         {
             cx.emit(StudioEvent::ArtifactsChanged);
         }
-        if initialized
-            || updates.iter().any(|update| {
-                matches!(update, flowy_agent::AgentUpdate::StorageError)
-            })
-        {
+        if updates.iter().any(|update| {
+            matches!(update, flowy_agent::AgentUpdate::StorageError)
+        }) {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         self.refresh_chat(cx);
@@ -530,17 +546,35 @@ impl StudioPanel {
     }
 
     fn refresh_working(&self, cx: &mut Context<'_, Self>) {
+        let active_session = self.agent.active_session_id();
+        let retrying_current = self
+            .retrying_delivery
+            .as_deref()
+            .is_some_and(|session| active_session.as_deref() == Some(session));
         let label = if self.submission_pending {
             self.t("chat.status_running")
+        } else if retrying_current {
+            self.t("chat.status_saving_files")
         } else {
             self.working_label(&self.status)
         };
         let error = !self.submission_pending
-            && matches!(self.status, flowy_agent::TurnStatus::Error { .. });
-        let visible =
-            self.submission_pending || working_line_visible(&self.status);
+            && !retrying_current
+            && matches!(
+                self.status,
+                flowy_agent::TurnStatus::Error { .. }
+                    | flowy_agent::TurnStatus::DeliveryFailed
+            );
+        let visible = self.submission_pending
+            || retrying_current
+            || working_line_visible(&self.status);
+        let retry = !self.submission_pending
+            && self.retrying_delivery.is_none()
+            && matches!(self.status, flowy_agent::TurnStatus::DeliveryFailed);
+        let retry_label = self.t("chat.retry_delivery");
         self.working.update(cx, |working, cx| {
             working.set_label(label, visible, error, cx);
+            working.set_retry(retry, retry_label, cx);
         });
     }
 
@@ -1034,6 +1068,46 @@ impl StudioPanel {
         .detach();
     }
 
+    fn retry_delivery(&mut self, cx: &mut Context<'_, Self>) {
+        if self.retrying_delivery.is_some()
+            || !matches!(self.status, flowy_agent::TurnStatus::DeliveryFailed)
+        {
+            return;
+        }
+        let agent = self.agent.clone();
+        let Some(expected) = agent.active_session_id() else {
+            return;
+        };
+        self.retrying_delivery = Some(expected.clone());
+        self.refresh_working(cx);
+        cx.notify();
+        let job_expected = expected.clone();
+        let job = cx.background_executor().spawn(async move {
+            let result = agent.retry_delivery(Some(&job_expected));
+            let updates = agent.drain_updates();
+            (result, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (result, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                if panel.retrying_delivery.as_deref() == Some(expected.as_str())
+                {
+                    panel.retrying_delivery = None;
+                }
+                panel.process_agent_updates(updates, cx);
+                if let Err(error) = result
+                    && error != "chat.status_delivery_failed"
+                {
+                    panel.emit_notice(Some(error), cx);
+                }
+                panel.refresh_chat(cx);
+                panel.refresh_working(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {
         if self.submission_pending {
             if let Some(stop) = &self.submission_stop {
@@ -1413,6 +1487,31 @@ mod tests {
     }
 
     #[gpui::test]
+    fn retrying_delivery_shows_saving_state_and_blocks_reentry(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "retry-delivery");
+        panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::DeliveryFailed;
+            panel.retrying_delivery = Some(id.clone());
+            panel.refresh_working(cx);
+
+            let label = panel.working.read(cx).label_for_test().to_owned();
+            assert_eq!(label, panel.t("chat.status_saving_files"));
+            assert!(!panel.working.read(cx).retry_enabled());
+
+            // A second activation while the background retry is in flight is
+            // ignored instead of queueing another job behind the dispatcher.
+            panel.retry_delivery(cx);
+            assert_eq!(panel.retrying_delivery.as_deref(), Some(id.as_str()));
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
     fn failed_background_submission_keeps_draft_and_retry_identity(
         cx: &mut TestAppContext,
     ) {
@@ -1539,6 +1638,7 @@ mod tests {
             panel.surface = StudioSurface::Home;
             panel.fill_prompt("keep this draft", cx);
             panel.process_agent_updates(updates, cx);
+            assert_eq!(panel.notice, None);
             assert_eq!(panel.surface, StudioSurface::Chat);
             assert_eq!(panel.agent.active_session_id().as_deref(), Some("restored"));
             assert_eq!(panel.prompt.read(cx).as_str(), "keep this draft");
@@ -1860,6 +1960,7 @@ mod tests {
         assert!(working_line_visible(&TurnStatus::Error {
             message: "chat.status_error".into(),
         }));
+        assert!(working_line_visible(&TurnStatus::DeliveryFailed));
         assert!(!working_line_visible(&TurnStatus::Idle));
         assert!(!working_line_visible(&TurnStatus::Completed));
         assert!(!working_line_visible(&TurnStatus::Stopped));

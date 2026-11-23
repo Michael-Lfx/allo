@@ -65,46 +65,39 @@ impl ConversationDeleteState {
 }
 
 impl FlowyApp {
-    pub(super) fn task_menu_button(
-        &self,
+    pub(super) fn conversation_delete_busy(&self) -> bool {
+        self.conversation_delete.busy
+    }
+
+    pub(super) fn toggle_task_menu(
+        &mut self,
         session_id: &str,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement + use<> {
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.conversation_delete.busy {
+            return;
+        }
         let id = session_id.to_owned();
-        let button = ui::IconButton::new(
-            format!("task-options-{id}"),
-            self.t("library.more"),
-            ui::icons::ellipsis(),
-        )
-        .size(ui::ControlSize::Small)
-        .disabled(self.conversation_delete.busy)
-        .render(
-            &self.theme,
-            cx.listener(move |app, _, _, cx| {
-                cx.stop_propagation();
-                if app.conversation_delete.busy {
-                    return;
-                }
-                app.user_menu = false;
-                app.project_menu = None;
-                app.task_menu =
-                    (app.task_menu.as_deref() != Some(&id)).then(|| id.clone());
-                cx.notify();
-            }),
-        );
-        ui::anchor_trigger(
-            button,
-            format!("task-menu-trigger-{session_id}"),
-            &self.ui,
-        )
+        self.user_menu = false;
+        self.project_menu = None;
+        self.task_menu =
+            (self.task_menu.as_deref() != Some(id.as_str())).then_some(id);
+        cx.notify();
     }
 
     pub(super) fn task_menu_content(
         &self,
         session_id: &str,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let id = session_id.to_owned();
+        let label = self.t("chat.delete");
+        let width = super::projects::project_menu_width(
+            window,
+            &[label.as_str()],
+            self.theme.body_size(),
+        );
         ui::menu(
             "conversation-menu",
             self.t("library.more"),
@@ -112,25 +105,26 @@ impl FlowyApp {
             &self.ui,
             cx,
         )
+        .w(width)
         .p_1()
-        .child(
-            ui::Button::new("delete-conversation", self.t("chat.delete"))
-                .variant(ui::ControlVariant::Danger)
-                .full_width()
-                .disabled(self.conversation_delete.busy)
-                .render(
-                    &self.theme,
-                    cx.listener(move |app, _, _, cx| {
-                        if !app.conversation_delete.open(id.clone()) {
-                            return;
-                        }
-                        app.activate_dialog(
-                            ActiveDialog::ConversationDelete,
-                            cx,
-                        );
-                    }),
-                ),
+        .gap_1()
+        .on_click(
+            cx.listener(|_app, _event, _window, cx| cx.stop_propagation()),
         )
+        .child(self.project_menu_row(
+            "delete-conversation",
+            ui::icons::trash(),
+            label,
+            true,
+            cx,
+            move |app, cx| {
+                if !app.conversation_delete.open(id.clone()) {
+                    return;
+                }
+                app.task_menu = None;
+                app.activate_dialog(ActiveDialog::ConversationDelete, cx);
+            },
+        ))
     }
 
     pub(super) fn conversation_delete_layer(

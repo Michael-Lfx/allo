@@ -384,7 +384,7 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     );
     let export = scratch.0.join("saved-report.csv");
     store.copy_to(&csv_id, &export).unwrap();
-    assert_eq!(fs::read(export).unwrap(), CSV.as_bytes());
+    assert_eq!(fs::read(&export).unwrap(), CSV.as_bytes());
     drop(store);
     drop(handle);
     drop(provider);
@@ -400,17 +400,18 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     store.restore_from_trash(&csv_id).unwrap();
     assert_eq!(store.read_payload(&csv_id).unwrap(), CSV.as_bytes());
     restored.delete_session(&session).unwrap();
-    assert!(restored.source_deleted(&session));
+    assert!(!restored.source_deleted(&session));
     assert!(!restored.source_available(&session));
-    assert_eq!(store.list().unwrap().len(), 3);
-    assert_eq!(store.read_payload(&csv_id).unwrap(), CSV.as_bytes());
+    assert!(store.list().unwrap().is_empty());
+    assert!(store.read_payload(&csv_id).is_err());
+    assert_eq!(fs::read(&export).unwrap(), CSV.as_bytes());
     drop(restored);
 
     let reopened =
         AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
-    assert!(reopened.source_deleted(&session));
+    assert!(!reopened.source_deleted(&session));
     assert!(reopened.list_sessions().is_empty());
     let store = reopened.artifact_store().unwrap();
-    assert_eq!(store.list().unwrap().len(), 3);
-    assert_eq!(store.read_payload(&csv_id).unwrap(), CSV.as_bytes());
+    assert!(store.list().unwrap().is_empty());
+    assert!(store.read_payload(&csv_id).is_err());
 }

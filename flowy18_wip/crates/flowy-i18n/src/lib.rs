@@ -302,6 +302,28 @@ mod tests {
     }
 
     #[test]
+    fn delivery_failure_and_publish_copy_are_localized() {
+        let mut i18n = I18n::embedded("Flowy");
+        i18n.set_locale(Locale::ZhCn);
+        assert_eq!(i18n.t("chat.status_delivery_failed"), "交付文件保存失败");
+        assert_eq!(i18n.t("chat.retry_delivery"), "重试交付");
+        assert_eq!(
+            i18n.t("chat.publish.staged"),
+            "文件已暂存，本轮成功完成后将交付。"
+        );
+        i18n.set_locale(Locale::En);
+        assert_eq!(
+            i18n.t("chat.status_delivery_failed"),
+            "Couldn't save delivered files"
+        );
+        assert_eq!(i18n.t("chat.retry_delivery"), "Retry delivery");
+        assert_eq!(
+            i18n.t("chat.publish.staged"),
+            "File staged. It will be delivered when the turn completes."
+        );
+    }
+
+    #[test]
     fn library_preview_controls_have_chinese_and_english_copy() {
         let mut i18n = I18n::embedded("Flowy");
         i18n.set_locale(Locale::ZhCn);
@@ -323,20 +345,29 @@ mod tests {
     }
 
     #[test]
-    fn conversation_artifact_lifecycle_has_chinese_and_english_copy() {
+    fn conversation_artifact_actions_have_chinese_and_english_copy() {
         let mut i18n = I18n::embedded("Flowy");
-        for (locale, save, source, undo) in [
-            (Locale::ZhCn, "另存为", "回到原对话", "撤销"),
-            (Locale::En, "Save as", "Return to conversation", "Undo"),
+        for (locale, save, source, delete_body) in [
+            (
+                Locale::ZhCn,
+                "另存为",
+                "回到原对话",
+                "这会永久删除对话历史和资料库中的相关文件，且无法恢复。",
+            ),
+            (
+                Locale::En,
+                "Save as",
+                "Return to conversation",
+                "Conversation history and related files in the library will be permanently deleted. This cannot be undone.",
+            ),
         ] {
             i18n.set_locale(locale);
             assert_eq!(i18n.t("library.save_as"), save);
             assert_eq!(i18n.t("library.locate_task"), source);
-            assert_eq!(i18n.t("library.undo"), undo);
+            assert_eq!(i18n.t("chat.delete_confirm.body"), delete_body);
             for key in [
                 "library.empty.true.body",
                 "library.empty.search.body",
-                "library.delete_confirm.body",
                 "library.source.deleted",
                 "library.source.unavailable",
                 "chat.delete_confirm.body",
@@ -381,7 +412,8 @@ mod tests {
         let english = i18n.messages[&Locale::En]["home.title"]
             .replace("{product}", "Flowy");
         assert_ne!(
-            english, i18n.messages[&Locale::ZhCn]["home.title"],
+            english,
+            i18n.messages[&Locale::ZhCn]["home.title"],
             "test needs locales that differ for this key"
         );
         i18n.messages

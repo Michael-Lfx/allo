@@ -64,7 +64,6 @@ pub enum ArtifactAvailability {
     Available,
     Missing,
     Corrupt,
-    Deleted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +71,9 @@ pub struct LibraryItem {
     /// Stable host-issued artifact ID shared by chat, library, and preview.
     pub id: String,
     pub title: String,
+    /// Source basename before the model-selected display name is applied.
+    #[serde(default)]
+    pub original_name: String,
     /// The originating request, shown as secondary context and searched.
     #[serde(default)]
     pub description: String,
@@ -109,8 +111,6 @@ pub struct LibraryItem {
     pub source_unavailable: bool,
     #[serde(default)]
     pub favorite: bool,
-    #[serde(default)]
-    pub trashed: bool,
     #[serde(default)]
     pub availability: ArtifactAvailability,
 }
@@ -166,25 +166,12 @@ pub struct LibraryGroup {
     pub items: Vec<LibraryItem>,
 }
 
-/// Disk usage measured by the host. Pending cleanup bytes are already part
-/// of `stored_bytes` and must not be added to `charged_bytes` again.
+/// Extra disk use the library can still act on: staged deliveries and
+/// external viewing copies. Committed files are the library itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryUsage {
-    pub stored_bytes: u64,
     pub staging_bytes: u64,
     pub view_bytes: u64,
-    pub pending_delete_bytes: u64,
-    pub stored_items: usize,
-    pub max_items: usize,
-    pub max_bytes: u64,
-}
-
-impl LibraryUsage {
-    pub const fn charged_bytes(&self) -> u64 {
-        self.stored_bytes
-            .saturating_add(self.staging_bytes)
-            .saturating_add(self.view_bytes)
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -194,7 +181,6 @@ pub struct LibraryModel {
     pub sort: LibrarySort,
     pub view: LibraryView,
     pub favorites_only: bool,
-    pub showing_trash: bool,
 }
 
 impl LibraryModel {
@@ -237,15 +223,13 @@ impl LibraryModel {
         groups
     }
 
-    /// Search, category, favorite, and trash filters compose without changing
-    /// the host-owned source records.
+    /// Search, category, and favorite filters compose without changing the
+    /// host-owned source records.
     pub fn filtered(&self, query: &str) -> Vec<LibraryItem> {
         let query = query.trim().to_lowercase();
         let mut items: Vec<_> = self
             .items
             .iter()
-            .filter(|item| item.availability != ArtifactAvailability::Deleted)
-            .filter(|item| item.trashed == self.showing_trash)
             .filter(|item| !self.favorites_only || item.favorite)
             .filter(|item| {
                 self.category == Category::All || item.category == self.category
@@ -255,8 +239,11 @@ impl LibraryModel {
                     return true;
                 }
                 let searchable = format!(
-                    "{} {} {}",
-                    item.title, item.description, item.source_title
+                    "{} {} {} {}",
+                    item.title,
+                    item.original_name,
+                    item.description,
+                    item.source_title
                 )
                 .to_lowercase();
                 query
@@ -315,6 +302,7 @@ mod tests {
         LibraryItem {
             id: id.into(),
             title: title.into(),
+            original_name: format!("source-{title}"),
             description: "制作产品发布照片".into(),
             category,
             date: "2026-11-04".into(),
@@ -332,7 +320,6 @@ mod tests {
             source_deleted: false,
             source_unavailable: false,
             favorite: false,
-            trashed: false,
             availability: ArtifactAvailability::Available,
         }
     }
@@ -345,6 +332,7 @@ mod tests {
     fn category_search_and_source_title_filters_compose() {
         let mut hero =
             item("hero", "Dew & Stone Hero.jpg", Category::Image, "09:58");
+        hero.original_name = "hero-source.jpg".into();
         hero.source_title = "Product launch brief".into();
         let mut model = LibraryModel::new(vec![
             hero,
@@ -354,6 +342,7 @@ mod tests {
         model.category = Category::Image;
         assert_eq!(ids(&model.filtered("  DEW  ")), vec!["hero"]);
         assert_eq!(ids(&model.filtered("launch")), vec!["hero"]);
+        assert_eq!(ids(&model.filtered("hero-source.jpg")), vec!["hero"]);
         assert_eq!(model.filtered("missing").len(), 0);
         assert_eq!(model.items.len(), 3);
     }
@@ -381,34 +370,18 @@ mod tests {
     }
 
     #[test]
-    fn favorite_and_trash_filters_use_host_state() {
+    fn favorite_filter_uses_host_state() {
         let mut favorite = item("a", "first.jpg", Category::Image, "09:58");
         favorite.favorite = true;
-        let mut trashed = item("b", "second.jpg", Category::Image, "09:58");
-        trashed.trashed = true;
-        let mut model = LibraryModel::new(vec![favorite, trashed]);
+        let other = item("b", "second.jpg", Category::Image, "09:58");
+        let mut model = LibraryModel::new(vec![favorite, other]);
         model.favorites_only = true;
         assert_eq!(ids(&model.filtered("")), vec!["a"]);
-        model.showing_trash = true;
         model.favorites_only = false;
-        assert_eq!(ids(&model.filtered("")), vec!["b"]);
+        assert_eq!(ids(&model.filtered("")), vec!["a", "b"]);
         assert!(model.set_favorite("a", false));
         assert!(!model.is_favorite("a"));
         assert!(!model.set_favorite("missing", true));
-    }
-
-    #[test]
-    fn tombstones_remain_in_metadata_but_never_reappear_in_library() {
-        let mut deleted =
-            item("deleted", "report.csv", Category::Table, "12:00");
-        deleted.availability = ArtifactAvailability::Deleted;
-        deleted.favorite = true;
-        deleted.trashed = true;
-        let mut model = LibraryModel::new(vec![deleted]);
-        assert!(model.filtered("").is_empty());
-        model.showing_trash = true;
-        assert!(model.filtered("").is_empty());
-        assert_eq!(model.items.len(), 1);
     }
 
     #[test]

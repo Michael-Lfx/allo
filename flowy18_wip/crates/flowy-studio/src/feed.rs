@@ -566,30 +566,37 @@ impl ChatFeed {
                 .text_color(self.theme.muted())
                 .child(text.clone())
                 .into_any_element(),
-            ChatLine::ToolResult { text, is_error } => div()
-                .id(("chat-tool-result", self.row_ids[index]))
-                .when(*is_error, |row| {
-                    row.role(gpui::Role::Alert)
-                        .aria_live(gpui::accesskit::Live::Polite)
-                        .aria_live_atomic(true)
-                })
-                .ml(px(6.))
-                .pl(self.theme.space(12.))
-                .border_l(px(3.))
-                .border_color(if *is_error {
-                    self.theme.danger()
+            ChatLine::ToolResult { text, is_error } => {
+                let label = if text.starts_with("chat.publish.") {
+                    self.t(text)
                 } else {
-                    self.theme.line()
-                })
-                .text_xs()
-                .text_color(if *is_error {
-                    self.theme.danger()
-                } else {
-                    self.theme.muted()
-                })
-                .whitespace_normal()
-                .child(text.clone())
-                .into_any_element(),
+                    text.clone()
+                };
+                div()
+                    .id(("chat-tool-result", self.row_ids[index]))
+                    .when(*is_error, |row| {
+                        row.role(gpui::Role::Alert)
+                            .aria_live(gpui::accesskit::Live::Polite)
+                            .aria_live_atomic(true)
+                    })
+                    .ml(px(6.))
+                    .pl(self.theme.space(12.))
+                    .border_l(px(3.))
+                    .border_color(if *is_error {
+                        self.theme.danger()
+                    } else {
+                        self.theme.line()
+                    })
+                    .text_xs()
+                    .text_color(if *is_error {
+                        self.theme.danger()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .whitespace_normal()
+                    .child(label)
+                    .into_any_element()
+            }
             ChatLine::Status { text } => {
                 let label = if text.starts_with("chat.") {
                     self.t(text)
@@ -770,9 +777,6 @@ impl ChatFeed {
         let unavailable = item.is_none_or(|item| {
             item.availability != ArtifactAvailability::Available
         });
-        let deleted = item.is_some_and(|item| {
-            item.availability == ArtifactAvailability::Deleted
-        });
         let details = item.map_or_else(
             || self.t("library.loading"),
             |item| {
@@ -793,9 +797,6 @@ impl ChatFeed {
                         }
                         ArtifactAvailability::Corrupt => {
                             "library.availability.corrupt"
-                        }
-                        ArtifactAvailability::Deleted => {
-                            "library.error.deleted"
                         }
                         ArtifactAvailability::Available => {
                             "library.availability.available"
@@ -832,8 +833,6 @@ impl ChatFeed {
                     &self.theme,
                 )
                 .track_focus(&self.row_focus[&self.row_ids[index]])
-                .aria_disabled(deleted)
-                .tab_stop(!deleted)
                 .flex_1()
                 .min_w_0()
                 .flex()
@@ -859,9 +858,7 @@ impl ChatFeed {
                         ),
                 )
                 .on_click(cx.listener(move |_, _, _, cx| {
-                    if !deleted {
-                        cx.emit(ArtifactAction::Preview(id.clone()));
-                    }
+                    cx.emit(ArtifactAction::Preview(id.clone()));
                 })),
             )
             .child(
@@ -1137,10 +1134,19 @@ impl Render for ChatFeed {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum WorkingIndicatorEvent {
+    RetryDelivery,
+}
+
+impl gpui::EventEmitter<WorkingIndicatorEvent> for WorkingIndicator {}
+
 pub struct WorkingIndicator {
     label: String,
     visible: bool,
     error: bool,
+    retry: bool,
+    retry_label: String,
     theme: ResolvedTheme,
     _theme_sub: Subscription,
 }
@@ -1156,6 +1162,8 @@ impl WorkingIndicator {
             label: String::new(),
             visible: false,
             error: false,
+            retry: false,
+            retry_label: String::new(),
             theme,
             _theme_sub: theme_sub,
         }
@@ -1191,14 +1199,39 @@ impl WorkingIndicator {
             cx.notify();
         }
     }
+
+    pub(crate) fn set_retry(
+        &mut self,
+        retry: bool,
+        retry_label: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.retry != retry || self.retry_label != retry_label {
+            self.retry = retry;
+            self.retry_label = retry_label;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn label_for_test(&self) -> &str {
+        &self.label
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn retry_enabled(&self) -> bool {
+        self.retry
+    }
 }
 
 impl Render for WorkingIndicator {
     fn render(
         &mut self,
         _: &mut Window,
-        _: &mut Context<'_, Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let retry = self.retry;
+        let retry_label = self.retry_label.clone();
         div()
             .id("chat-working")
             .role(gpui::Role::Status)
@@ -1227,6 +1260,24 @@ impl Render for WorkingIndicator {
                         theme::icons::loader_circle()
                     })
                     .child(self.label.clone())
+                    .when(retry, |row| {
+                        row.child(
+                            theme::Button::new(
+                                "chat-retry-delivery",
+                                retry_label,
+                            )
+                            .size(theme::ControlSize::Small)
+                            .variant(theme::ControlVariant::Secondary)
+                            .render(
+                                &self.theme,
+                                cx.listener(|_, _, _, cx| {
+                                    cx.emit(
+                                        WorkingIndicatorEvent::RetryDelivery,
+                                    );
+                                }),
+                            ),
+                        )
+                    })
             })
     }
 }
@@ -1440,12 +1491,15 @@ mod tests {
         cx.update(|cx| {
             indicator.update(cx, |working, cx| {
                 working.set_label("working".into(), true, false, cx);
+                working.set_retry(true, "Retry delivery".into(), cx);
             });
         });
         cx.read_entity(&indicator, |working, _| {
             assert!(working.visible);
             assert!(!working.error);
             assert_eq!(working.label, "working");
+            assert!(working.retry);
+            assert_eq!(working.retry_label, "Retry delivery");
         });
     }
 

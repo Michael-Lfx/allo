@@ -160,6 +160,11 @@ fn main() {
                                 .unwrap()
                                 .to_string_lossy()
                                 .into_owned(),
+                            original_name: path
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned(),
                             description: path.display().to_string(),
                             category: Category::Document,
                             date: "2026-11-20".into(),
@@ -181,7 +186,6 @@ fn main() {
                             source_deleted: false,
                             source_unavailable: false,
                             favorite: false,
-                            trashed: false,
                             availability: ArtifactAvailability::Available,
                         });
                     }
@@ -193,14 +197,8 @@ fn main() {
                         args.iter().any(|arg| arg == "--search-empty");
                     let error = args.iter().any(|arg| arg == "--error");
                     let loading = args.iter().any(|arg| arg == "--loading");
-                    let trash = args.iter().any(|arg| arg == "--trash");
                     if empty || search_empty || error || loading {
                         items.clear();
-                    }
-                    if trash {
-                        for item in &mut items {
-                            item.trashed = true;
-                        }
                     }
                     let first = items.first().map(|item| item.id.clone());
                     let preview = args.iter().any(|arg| arg == "--preview");
@@ -215,7 +213,6 @@ fn main() {
                                 // query setter or fabricating an artifact.
                                 panel.model.category = Category::Image;
                             }
-                            panel.model.showing_trash = trash;
                             if error {
                                 panel.set_status(
                                     Some("library.error.catalog"),

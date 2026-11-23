@@ -2,7 +2,7 @@
 //! Legacy library.json records are intentionally neither loaded nor migrated.
 
 use chrono::{Local, TimeZone};
-use flowy_agent::{ArtifactRecord, PublicationState, SessionSummary};
+use flowy_agent::{ArtifactRecord, SessionSummary};
 use flowy_studio::library::{ArtifactAvailability, Category, LibraryItem};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,6 +19,7 @@ pub fn items(
     records
         .into_iter()
         .map(|record| {
+            let original_name = record.manifest.original_basename.clone();
             let receipt = record.manifest.receipt;
             let extension = Path::new(&receipt.display_name)
                 .extension()
@@ -44,6 +45,7 @@ pub fn items(
             LibraryItem {
                 id: receipt.artifact_id,
                 title: receipt.display_name,
+                original_name,
                 description: String::new(),
                 category: category(&extension),
                 date: delivered_date.clone(),
@@ -61,11 +63,8 @@ pub fn items(
                 source_deleted,
                 source_unavailable: !source_deleted && current_title.is_none(),
                 favorite: record.preference.favorite,
-                trashed: record.preference.trashed_at_ms.is_some(),
-                availability: if record.manifest.publication_state
-                    == PublicationState::Deleted
-                {
-                    ArtifactAvailability::Deleted
+                availability: if record.corrupt {
+                    ArtifactAvailability::Corrupt
                 } else if record.available {
                     ArtifactAvailability::Available
                 } else {
@@ -115,6 +114,7 @@ mod tests {
                     "created_at_ms": 1_795_219_200_000_u64,
                     "origin_title_snapshot": "Original title"
                 },
+                "original_basename": "source-report.csv",
                 "origin": { "kind": "home" },
                 "origin_title_snapshot": "Original title",
                 "payload_relative_path": "items/artifact-1/payload",
@@ -126,6 +126,7 @@ mod tests {
                 trashed_at_ms: None,
             },
             available: true,
+            corrupt: false,
         }
     }
 
@@ -152,14 +153,19 @@ mod tests {
     }
 
     #[test]
-    fn deleted_artifact_keeps_chat_metadata_but_has_no_library_row() {
+    fn corrupt_payload_is_not_reported_as_available() {
         let mut artifact = record();
-        artifact.manifest.publication_state = PublicationState::Deleted;
         artifact.available = false;
-        let projected = items(vec![artifact], &[], &HashSet::new());
-        assert_eq!(projected[0].title, "report.csv");
-        assert_eq!(projected[0].availability, ArtifactAvailability::Deleted);
+        artifact.corrupt = true;
+        let projected = items(vec![artifact], &[], &HashSet::new()).remove(0);
+        assert_eq!(projected.availability, ArtifactAvailability::Corrupt);
+    }
+
+    #[test]
+    fn original_basename_remains_searchable_after_display_rename() {
+        let projected = items(vec![record()], &[], &HashSet::new());
         let model = flowy_studio::library::LibraryModel::new(projected);
-        assert!(model.filtered("").is_empty());
+        assert_eq!(model.filtered("source-report").len(), 1);
+        assert_eq!(model.filtered("missing").len(), 0);
     }
 }

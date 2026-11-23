@@ -8,9 +8,6 @@ use std::path::Path;
 #[derive(Clone, Copy)]
 enum ArtifactAction {
     Favorite(bool),
-    Trash,
-    Restore,
-    Delete,
     Open,
 }
 
@@ -27,9 +24,7 @@ impl FlowyApp {
         let store = agent.artifact_store();
         let job = cx.background_executor().spawn(async move {
             let store = store.map_err(|_| "library.error.catalog")?;
-            let records = store
-                .list_with_tombstones()
-                .map_err(|_| "library.error.catalog")?;
+            let records = store.list().map_err(|_| "library.error.catalog")?;
             let sessions = agent.list_sessions();
             let source_ids = records
                 .iter()
@@ -53,13 +48,8 @@ impl FlowyApp {
                     unavailable.contains(&item.source_session_id);
             }
             let usage = store.usage().ok().map(|usage| LibraryUsage {
-                stored_bytes: usage.stored_bytes,
                 staging_bytes: usage.staging_bytes,
                 view_bytes: usage.view_bytes,
-                pending_delete_bytes: usage.pending_delete_bytes,
-                stored_items: usage.stored_items,
-                max_items: usage.max_items,
-                max_bytes: usage.max_bytes,
             });
             let has_diagnostics = store
                 .diagnostics()
@@ -145,15 +135,6 @@ impl FlowyApp {
                 ArtifactAction::Favorite(*favorite),
                 cx,
             ),
-            LibraryEvent::TrashRequested(id) => {
-                self.artifact_action(id, ArtifactAction::Trash, cx);
-            }
-            LibraryEvent::RestoreRequested(id) => {
-                self.artifact_action(id, ArtifactAction::Restore, cx);
-            }
-            LibraryEvent::DeletePermanentlyRequested(id) => {
-                self.artifact_action(id, ArtifactAction::Delete, cx);
-            }
             LibraryEvent::LocateSourceRequested {
                 session_id,
                 artifact_id,
@@ -184,9 +165,6 @@ impl FlowyApp {
                 ArtifactAction::Favorite(favorite) => {
                     store.set_favorite(&job_id, favorite)
                 }
-                ArtifactAction::Trash => store.trash(&job_id),
-                ArtifactAction::Restore => store.restore_from_trash(&job_id),
-                ArtifactAction::Delete => store.permanently_delete(&job_id),
                 ArtifactAction::Open => {
                     let copy = store.create_view_copy(&job_id)?;
                     // Launching an external app does not prove when it releases the
@@ -198,20 +176,12 @@ impl FlowyApp {
         cx.spawn(async move |weak, cx| {
             let result = job.await;
             let _ = weak.update(cx, |app, cx| match result {
-                Ok(()) => {
-                    app.library.update(cx, |panel, cx| match action {
-                        ArtifactAction::Trash => panel.show_trashed(&id, cx),
-                        ArtifactAction::Restore => panel.clear_undo(cx),
-                        _ => {}
-                    });
-                    app.load_library(cx);
-                }
+                Ok(()) => app.load_library(cx),
                 Err(_) => app.report_artifact_feedback(
                     &feedback,
                     Some(match action {
                         ArtifactAction::Open => "library.error.open",
                         ArtifactAction::Favorite(_) => "library.error.save",
-                        _ => "library.error.trash_failed",
                     }),
                     cx,
                 ),

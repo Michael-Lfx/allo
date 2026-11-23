@@ -53,15 +53,37 @@ impl SessionIndex {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Self::default());
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                log_storage_error("load session index", &path, &error);
+                return Err(error);
+            }
         };
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            let error = io::Error::new(io::ErrorKind::InvalidData, error);
+            log_storage_error("parse session index", &path, &error);
+            error
+        })
     }
 
     pub fn save(&self, root: &Path) -> io::Result<()> {
-        save_json(&Self::path(root), self)
+        let path = Self::path(root);
+        let result = save_json(&path, self);
+        if let Err(error) = &result {
+            log_storage_error("save session index", &path, error);
+        }
+        result
     }
+}
+
+fn log_storage_error(operation: &'static str, path: &Path, error: &io::Error) {
+    tracing::error!(
+        target: "flowy.storage",
+        operation,
+        path = %path.display(),
+        kind = ?error.kind(),
+        error = %error,
+        "storage operation failed"
+    );
 }
 
 pub fn save_json(path: &Path, value: &impl Serialize) -> io::Result<()> {

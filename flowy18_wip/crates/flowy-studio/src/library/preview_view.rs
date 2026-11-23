@@ -128,7 +128,6 @@ impl PreviewPanel {
                 self.pending_drops
                     .extend(std::mem::take(&mut self.cache).into_values());
                 self.error = Some(match item.availability {
-                    ArtifactAvailability::Deleted => "library.error.deleted",
                     ArtifactAvailability::Missing => {
                         "library.availability.missing"
                     }
@@ -165,11 +164,6 @@ impl PreviewPanel {
             .update(cx, |state, cx| state.emplace("1", cx));
         self.pending_drops
             .extend(std::mem::take(&mut self.cache).into_values());
-        if self.item.availability == ArtifactAvailability::Deleted {
-            self.error = Some("library.error.deleted");
-            cx.notify();
-            return;
-        }
         if !self.item.inline_preview_supported()
             && self.item.availability == ArtifactAvailability::Available
         {
@@ -661,9 +655,7 @@ impl Render for PreviewPanel {
                     .when(
                         !matches!(
                             error,
-                            "library.error.unsupported"
-                                | "library.error.large"
-                                | "library.error.deleted"
+                            "library.error.unsupported" | "library.error.large"
                         ),
                         |body| {
                             body.child(
@@ -807,6 +799,7 @@ mod tests {
                     LibraryItem {
                         id: "preview-test".into(),
                         title: "Preview test".into(),
+                        original_name: "preview-test.pdf".into(),
                         description: String::new(),
                         category: super::super::Category::Document,
                         date: String::new(),
@@ -824,7 +817,6 @@ mod tests {
                         source_deleted: false,
                         source_unavailable: false,
                         favorite: false,
-                        trashed: false,
                         availability: ArtifactAvailability::Available,
                     },
                     1,
@@ -872,12 +864,12 @@ mod tests {
         cx.run_until_parked();
         panel.update(cx, |panel, cx| {
             assert!(panel.document.is_some());
-            let mut deleted = panel.item.clone();
-            deleted.availability = ArtifactAvailability::Deleted;
-            panel.set_item(deleted, cx);
+            let mut missing = panel.item.clone();
+            missing.availability = ArtifactAvailability::Missing;
+            panel.set_item(missing, cx);
             assert!(panel.document.is_none());
             assert!(panel.cache.is_empty());
-            assert_eq!(panel.error, Some("library.error.deleted"));
+            assert_eq!(panel.error, Some("library.availability.missing"));
             panel.set_bytes(
                 1,
                 Ok(include_bytes!(

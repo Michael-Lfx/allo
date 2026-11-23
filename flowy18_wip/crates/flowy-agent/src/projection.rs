@@ -97,6 +97,7 @@ pub enum TurnStatus {
     Idle,
     Running,
     SavingFiles,
+    DeliveryFailed,
     Completed,
     Stopped,
     Error {
@@ -111,6 +112,7 @@ impl TurnStatus {
             Self::Idle => "chat.status_idle",
             Self::Running => "chat.status_running",
             Self::SavingFiles => "chat.status_saving_files",
+            Self::DeliveryFailed => "chat.status_delivery_failed",
             Self::Completed => "chat.status_completed",
             Self::Stopped => "chat.status_stopped",
             Self::Error { .. } => "chat.status_error",
@@ -299,9 +301,8 @@ impl ChatProjection {
             files.push(entry);
             return;
         }
-        self.lines.push(ChatLine::FileChanges {
-            files: vec![entry],
-        });
+        self.lines
+            .push(ChatLine::FileChanges { files: vec![entry] });
     }
 
     /// The current turn's summary row, if one already exists.
@@ -374,8 +375,20 @@ mod tests {
     fn rewriting_a_file_in_one_turn_accumulates() {
         let mut projection = ChatProjection::new();
         projection.push_user("edit");
-        projection.push_file_change("a.rs", FileChangeKind::Update, 2, 1, false);
-        projection.push_file_change("a.rs", FileChangeKind::Update, 4, 3, false);
+        projection.push_file_change(
+            "a.rs",
+            FileChangeKind::Update,
+            2,
+            1,
+            false,
+        );
+        projection.push_file_change(
+            "a.rs",
+            FileChangeKind::Update,
+            4,
+            3,
+            false,
+        );
 
         let rows = projection.visible_lines();
         let files = match rows

@@ -1879,7 +1879,7 @@ impl Render for FlowyApp {
             root = root.child(flowy_ui::popover(
                 "task-menu",
                 format!("task-menu-trigger-{session_id}"),
-                self.task_menu_content(session_id, cx),
+                self.task_menu_content(session_id, window, cx),
                 &self.ui,
                 window,
                 cx,
@@ -2535,6 +2535,186 @@ mod tests {
             drop(app);
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+
+    #[gpui::test]
+    fn conversation_more_button_appears_only_while_its_row_is_hovered(
+        cx: &mut TestAppContext,
+    ) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn button_id(
+            cx: &mut VisualTestContext,
+            label: &str,
+        ) -> Option<accesskit::NodeId> {
+            cx.update(|window, _| {
+                window
+                    .a11y_tree()
+                    .expect("app accessibility tree")
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .map(|(id, _)| *id)
+            })
+        }
+
+        fn contains_box(
+            outer: gpui::Bounds<gpui::Pixels>,
+            inner: gpui::Bounds<gpui::Pixels>,
+        ) -> bool {
+            let pad = px(1.);
+            inner.origin.x + pad >= outer.origin.x
+                && inner.origin.y + pad >= outer.origin.y
+                && inner.origin.x + inner.size.width
+                    <= outer.origin.x + outer.size.width + pad
+                && inner.origin.y + inner.size.height
+                    <= outer.origin.y + outer.size.height + pad
+        }
+
+        let root = test_root();
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                panel.create_project("Client", &folder, cx).unwrap();
+                panel.agent.create_session().unwrap();
+                panel.agent.set_workspace_for_new_sessions(None);
+                panel.agent.create_session().unwrap();
+            });
+            let id = app.studio.read(cx).projects[0].id.clone();
+            app.expanded_projects.insert(id);
+            cx.notify();
+        });
+        let more = cx.read_entity(&app, |app, _| app.t("library.more"));
+        draw(cx);
+
+        let outside = gpui::point(px(300.), px(80.));
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("task-actions").is_none(),
+            "conversation more button stays hidden until the row is hovered"
+        );
+        assert!(button_id(cx, &more).is_none());
+
+        let project = cx.debug_bounds("project-row").expect("project row");
+        cx.simulate_mouse_move(
+            project.center(),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        let project_actions = cx
+            .debug_bounds("project-actions")
+            .expect("project more button appears on hover");
+        let project_edit = cx
+            .debug_bounds("project-edit")
+            .expect("project edit button appears on hover");
+        assert!(
+            contains_box(project, project_actions),
+            "project hover fill must contain its more button: row={project:?} actions={project_actions:?}"
+        );
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+
+        let row = cx.debug_bounds("task-row").expect("conversation row");
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        let actions = cx
+            .debug_bounds("task-actions")
+            .expect("conversation more button appears on hover");
+        assert!(
+            contains_box(row, actions),
+            "conversation hover fill must contain its more button: row={row:?} actions={actions:?}"
+        );
+        assert!(
+            (actions.origin.x - project_edit.origin.x).abs() < px(1.)
+                && (actions.size.width - project_edit.size.width).abs()
+                    < px(1.),
+            "conversation more button must line up with the project edit button: conversation={actions:?} edit={project_edit:?}"
+        );
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("task-actions").is_none(),
+            "conversation more button hides when the pointer leaves the row"
+        );
+
+        let project_task = cx
+            .debug_bounds("project-task-row")
+            .expect("project conversation row");
+        cx.simulate_mouse_move(
+            project_task.center(),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        let nested_actions = cx
+            .debug_bounds("task-actions")
+            .expect("project conversation more button appears on hover");
+        assert!(
+            contains_box(project_task, nested_actions),
+            "project conversation hover fill must contain its more button"
+        );
+        assert!(
+            (nested_actions.origin.x - project_edit.origin.x).abs() < px(1.)
+                && (nested_actions.size.width - project_edit.size.width).abs()
+                    < px(1.),
+            "nested conversation more button must line up with the project edit button: nested={nested_actions:?} edit={project_edit:?}"
+        );
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("task-actions").is_none(),
+            "project conversation more button hides when the pointer leaves"
+        );
+
+        let row = cx.debug_bounds("task-row").expect("conversation row");
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        let more_id = button_id(cx, &more).expect("more button is reachable");
+
+        cx.update(|window, cx| {
+            window.perform_a11y_action(
+                more_id,
+                accesskit::Action::Click,
+                None,
+                cx,
+            );
+        });
+        draw(cx);
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("task-actions").is_some(),
+            "more button stays while its menu is open"
+        );
+        cx.read_entity(&app, |app, _| {
+            assert!(app.task_menu.is_some());
+        });
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[gpui::test]

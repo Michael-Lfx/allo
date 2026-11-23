@@ -57,6 +57,9 @@ pub trait TurnObserver: Send + Sync {
     /// The delivery crossed its history commit point and is completing its
     /// independent artifact-store marker. It can no longer be cancelled.
     fn saving_files(&self, _session: &str) {}
+    /// The history commit is durable, but the independent artifact-store marker
+    /// failed. The host may retry this same commit without rerunning the turn.
+    fn delivery_failed(&self, _commit: &DeliveryCommit, _error: &str) {}
 }
 
 /// Everything needed to run a turn in this engine.
@@ -281,6 +284,9 @@ impl Engine {
                 format!("session {id} not found"),
             )
         })?;
+        for commit in &mut record.delivery_commits {
+            commit.origin_title_snapshot.clone_from(&title);
+        }
         record.title = title;
         record.titled = titled;
         inner.index.save(&self.root)
@@ -677,7 +683,14 @@ impl Engine {
                         Ok(outcome)
                     }
                     Err(error) => {
-                        self.observer.storage_error(session_id);
+                        tracing::error!(
+                            target: "flowy.storage",
+                            operation = "commit delivered artifacts",
+                            session = %session_id,
+                            error = %error,
+                            "storage operation failed"
+                        );
+                        self.observer.delivery_failed(&commit, &error);
                         Err(RunError::Storage(std::io::Error::other(error)))
                     }
                 }
@@ -983,6 +996,7 @@ mod tests {
         storage_errors: Mutex<usize>,
         deliveries: Mutex<Vec<DeliveryCommit>>,
         saving_files: Mutex<usize>,
+        delivery_failures: Mutex<usize>,
     }
 
     impl TurnObserver for Recorder {
@@ -1003,6 +1017,9 @@ mod tests {
         }
         fn saving_files(&self, _session: &str) {
             *self.saving_files.lock().unwrap() += 1;
+        }
+        fn delivery_failed(&self, _commit: &DeliveryCommit, _error: &str) {
+            *self.delivery_failures.lock().unwrap() += 1;
         }
     }
 
@@ -1358,6 +1375,8 @@ mod tests {
         assert!(matches!(outcome, Err(RunError::Storage(_))));
         assert_eq!(committer.commits.lock().unwrap().len(), 1);
         assert!(observer.deliveries.lock().unwrap().is_empty());
+        assert_eq!(*observer.delivery_failures.lock().unwrap(), 1);
+        assert_eq!(*observer.storage_errors.lock().unwrap(), 0);
         assert_eq!(*observer.finished.lock().unwrap(), [LoopOutcome::Failed]);
         // A restart can retry exactly this complete durable group.
         assert_eq!(engine.session("home").unwrap().delivery_commits.len(), 1);
@@ -1635,6 +1654,17 @@ mod tests {
             Engine::open(scratch.0.clone(), config(), recorder.clone())
                 .unwrap();
         engine.create_session("s1".into(), 1).unwrap();
+        let mut record = engine.session("s1").unwrap();
+        record.delivery_commits.push(DeliveryCommit {
+            session_id: "s1".into(),
+            submission_id: "submission-1".into(),
+            artifact_ids: vec!["artifact-1".into()],
+            completed_successfully: true,
+            committed_at_ms: 1,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Fallback".into(),
+        });
+        engine.insert_session(record).unwrap();
         engine
             .set_session_title("s1", "Model title".into(), true)
             .unwrap();
@@ -1644,6 +1674,10 @@ mod tests {
         let record = reopened.session("s1").expect("session");
         assert_eq!(record.title, "Model title");
         assert!(record.titled);
+        assert_eq!(
+            record.delivery_commits[0].origin_title_snapshot,
+            "Model title"
+        );
     }
 
     #[test]

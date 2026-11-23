@@ -111,6 +111,17 @@ pub struct SessionIndex {
     pub sessions: Vec<SessionRecord>,
 }
 
+fn log_storage_error(operation: &'static str, path: &Path, error: &io::Error) {
+    tracing::error!(
+        target: "flowy.storage",
+        operation,
+        path = %path.display(),
+        kind = ?error.kind(),
+        error = %error,
+        "storage operation failed"
+    );
+}
+
 impl SessionIndex {
     /// Stored next to (not instead of) the legacy `index.json` until the switch.
     #[must_use]
@@ -125,17 +136,33 @@ impl SessionIndex {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Self::default());
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                log_storage_error("load structured history", &path, &error);
+                return Err(error);
+            }
         };
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            let error = io::Error::new(io::ErrorKind::InvalidData, error);
+            log_storage_error("parse structured history", &path, &error);
+            error
+        })
     }
 
     pub fn save(&self, root: &Path) -> io::Result<()> {
-        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-        let dir = root.join("sessions");
-        fs::create_dir_all(&dir)?;
         let path = Self::path(root);
+        let result = self.save_to(&path);
+        if let Err(error) = &result {
+            log_storage_error("save structured history", &path, error);
+        }
+        result
+    }
+
+    fn save_to(&self, path: &Path) -> io::Result<()> {
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        let dir = path
+            .parent()
+            .ok_or_else(|| io::Error::other("missing sessions directory"))?;
+        fs::create_dir_all(dir)?;
         let bytes =
             serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         let (tmp, mut file) = loop {
@@ -162,7 +189,7 @@ impl SessionIndex {
             file.write_all(&bytes)?;
             file.sync_all()?;
             drop(file);
-            fs::rename(&tmp, &path)
+            fs::rename(&tmp, path)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&tmp);
