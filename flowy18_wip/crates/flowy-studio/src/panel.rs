@@ -997,6 +997,30 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
+        // A turn that is already running cannot start another one. Before this
+        // change the draft was simply refused; now the host takes responsibility
+        // for it immediately and hands back a durable receipt, so the user can
+        // keep typing while the current turn finishes.
+        let running = matches!(
+            self.agent.turn_status(),
+            flowy_agent::TurnStatus::Running | flowy_agent::TurnStatus::SavingFiles
+        );
+        if running {
+            match self.agent.accept_deferred(&text) {
+                Ok(receipt) => {
+                    tracing::debug!(
+                        target: "flowy.prompt",
+                        stage = "StudioPanel::send_prompt",
+                        receipt = %receipt.id,
+                        "accepted-deferred"
+                    );
+                    self.prompt.update(cx, |state, cx| state.emplace("", cx));
+                    self.emit_notice(Some("notice.task_added"), cx);
+                }
+                Err(error) => self.emit_notice(Some(error), cx),
+            }
+            return;
+        }
         let id = *self.submission.get_or_insert_with(new_submission_id);
         self.submission_generation = self.submission_generation.wrapping_add(1);
         let generation = self.submission_generation;

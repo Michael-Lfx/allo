@@ -119,8 +119,13 @@ impl ChatComposer {
                     // Enter submits; Shift+Enter keeps inserting newlines via
                     // the editable-text binding. Empty/running drafts swallow
                     // Enter so it cannot leave a stray blank line.
+                    // gpui-pre reads the draft through `value()`, not
+                    // `as_str()`.
                     let draft = !this.prompt.read(cx).value().trim().is_empty();
-                    if running || !draft || !this.cloud_ready {
+                    // A running turn no longer blocks Enter: the host accepts
+                    // the message into its durable queue instead of rejecting
+                    // it, so "accepted" and "answered" are separate events.
+                    if !draft || !this.cloud_ready {
                         return;
                     }
                     tracing::debug!(
@@ -219,21 +224,28 @@ impl ChatComposer {
         // A missing cloud model means no live routing is configured; keep the
         // send affordance disabled instead of failing after the click.
         let has_draft = has_draft && self.cloud_ready;
+        // While a turn is running the stop affordance must stay reachable, and
+        // a new message must still be submittable: the host accepts it into its
+        // durable queue (`AgentHandle::accept_deferred`) instead of dropping it.
+        let mut row = div().flex().flex_row().items_center();
         if running {
-            theme::IconButton::new(
-                "chat-stop",
-                self.t("chat.stop"),
-                theme::icons::square(),
-            )
-            .size(theme::ControlSize::Small)
-            .variant(theme::ControlVariant::Ghost)
-            .render(
-                &self.theme,
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::Stop);
-                }),
-            )
-        } else {
+            row = row.child(
+                theme::IconButton::new(
+                    "chat-stop",
+                    self.t("chat.stop"),
+                    theme::icons::square(),
+                )
+                .size(theme::ControlSize::Small)
+                .variant(theme::ControlVariant::Ghost)
+                .render(
+                    &self.theme,
+                    cx.listener(|_, _, _, cx| {
+                        cx.emit(ComposerEvent::Stop);
+                    }),
+                ),
+            );
+        }
+        row.child(
             theme::IconButton::new(
                 "chat-send",
                 self.t("studio.send"),
@@ -252,8 +264,8 @@ impl ChatComposer {
                     );
                     cx.emit(ComposerEvent::Send);
                 }),
-            )
-        }
+            ),
+        )
     }
 }
 

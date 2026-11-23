@@ -238,3 +238,105 @@ flowy-agent      : 85 passed, 0 failed, 1 ignored
 
 - `composer.rs:221` 忙时仍只渲染「停止」 —— 用户还点不到
 - 空闲时自动取出 `pending` 并跑 —— 现在只存不取
+
+---
+
+## 任务 4 · UI 放行（已改，待实测）
+
+### 一共四处拦截，不是三处
+
+改之前又发现一处：
+
+| # | 位置 | 拦什么 |
+| --- | --- | --- |
+| 1 | `composer.rs` 回车处理 | **`running` 时回车被直接吞掉**（新发现） |
+| 2 | `composer.rs:221` `composer_submit` | 忙时只渲染「停止」，没有发送 |
+| 3 | `panel.rs:934` `send_prompt` | 云未就绪拒绝；`submission_pending` 静默丢 |
+| 4 | `handle.rs:1254` | `is_busy() → agent_busy` |
+
+### 改了什么
+
+**① 回车不再因 `running` 被吞** —— 只保留「空草稿」和「云未就绪」两条拦截。
+
+**② `composer_submit` 忙时同时渲染两个按钮** —— 左边「停止」，右边「发送」。
+发送按钮仍然只按 `has_draft && cloud_ready` 禁用，**不再跟 `running` 二选一**。
+
+**③ `send_prompt` 忙时走受理**：
+
+```rust
+let running = matches!(self.agent.turn_status(),
+    flowy_agent::TurnStatus::Running | flowy_agent::TurnStatus::SavingFiles);
+if running {
+    match self.agent.accept_deferred(&text) {
+        Ok(receipt) => { 清空草稿; emit_notice(Some("notice.task_added")); }
+        Err(error) => self.emit_notice(Some(error), cx),
+    }
+    return;
+}
+```
+
+**没有新增 i18n 键**：复用现成的 `notice.task_added`（文案「已加入本次会话的任务列表」），
+语义正好，不用去动 23 个语言文件。
+
+### 编译与测试
+
+```
+cargo check -p flowy-studio   → Finished, 0 error (1m59s)
+cargo test  -p flowy-studio   → 74 passed, 0 failed
+```
+
+### 还没做的
+
+- **重建应用并实测**：忙时是否真的出现两个按钮、点了之后 receipt 文件是否真的多一条
+- 端到端脚本
+
+---
+
+## 任务 5 · 实测：忙时双按钮成立（2026-11-23）
+
+### 结果
+
+启动真实应用、点模板卡片填草稿、点发送启动 turn，然后在**运行中**取无障碍树：
+
+```
+e50  button  停止    click
+e51  button  发送    click  disabled:true
+```
+
+**两个按钮同时在。** 发送那个 `disabled` 是因为草稿刚提交已清空 —— 这是正确行为，
+它现在只被 `has_draft && cloud_ready` 管，**不再被 `running` 管**。
+
+对照改动前（同一操作序列）：忙时只有 `停止`，`发送` 根本不在树里。
+截图存 `evidence/03-running-both-buttons.png`。
+
+### 这一路踩了三个坑，都写下来
+
+**① 构建的包选错**
+
+`cargo build -p flowy-app` 构建的是**库**。二进制在 `crates/flowy-desktop`，bin 名才叫 `flowy-app`。
+
+正确的是：
+
+```bash
+cargo build -p flowy-desktop --bin flowy-app
+```
+
+**② `target/debug/flowy-app.exe` 可能是旧副本**
+
+这个仓库的构建输出在 `build.noindex/`（测试产物在 `build.noindex/debug/build/...`），
+`target/debug/` 里的 exe 是别处放过来的旧副本。
+
+我第一次「重建后启动」，启动的其实是 16:01 的旧二进制，**白测一轮**。
+**判据：对比 exe 的 mtime 和源文件 mtime，别信「Finished」这句话。**
+
+**③ exe 被运行中的实例锁住**
+
+Windows 下必须先 `taskkill /F /IM flowy-app.exe` 再构建，否则
+`failed to remove file ... os error 5`。构建成功与否要看退出码，不看最后一行有没有 Compiling。
+
+### 更正：这是「库 vs 二进制」的判定
+
+`flowy18_wip/crates/flowy-app/Cargo.toml` → `name = "flowy-app"`（**库**）
+`flowy18_wip/crates/flowy-desktop/Cargo.toml` → `[[bin]] name = "flowy-app"`（**二进制**）
+
+**启动命令不变**（`./target/debug/flowy-app.exe`），变的是**构建命令**。
