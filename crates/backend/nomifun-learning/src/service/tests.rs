@@ -15361,3 +15361,404 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(other_rows, 1, "错位 404 不动邻课时题");
     }
 
+// ── rs8：自动补批墙钟预算（learnhub #257 同款语义移植）───────────────────────
+
+/// rs8 预算测试替身：按序出稿（SequencedCompleter 同构）+ 第 `flip_on_call`
+/// 次调用（1 起）返回前把预算到点开关翻真——确定性到点，零真实时钟依赖
+/// （learnhub #257 `expired_override` 同款手法）；`usize::MAX` = 永不翻转
+/// （预置到点臂自行 store(true)）。记录每次调用的 user 装配。
+struct BudgetFlipCompleter {
+    replies: std::sync::Mutex<Vec<String>>,
+    calls: AtomicUsize,
+    prompts: std::sync::Mutex<Vec<String>>,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    flip_on_call: usize,
+}
+
+impl BudgetFlipCompleter {
+    fn new(replies: Vec<String>, flip_on_call: usize) -> Arc<Self> {
+        Arc::new(Self {
+            replies: std::sync::Mutex::new(replies),
+            calls: AtomicUsize::new(0),
+            prompts: std::sync::Mutex::new(Vec::new()),
+            flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            flip_on_call,
+        })
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(AtomicOrdering::SeqCst)
+    }
+
+    fn flag_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.flag.clone()
+    }
+
+    fn record(&self, user: &str) -> Result<String, AppError> {
+        let nth = self.calls.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        self.prompts.lock().unwrap().push(user.to_owned());
+        if nth == self.flip_on_call {
+            self.flag.store(true, AtomicOrdering::SeqCst);
+        }
+        let mut replies = self.replies.lock().unwrap();
+        match replies.len() {
+            0 => Err(AppError::Internal("empty script".into())),
+            1 => Ok(replies[0].clone()),
+            _ => Ok(replies.remove(0)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LearningCompleter for BudgetFlipCompleter {
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, AppError> {
+        self.record(user)
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        user: &str,
+        _max_tokens: u32,
+        _temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        self.record(user)
+    }
+}
+
+/// rs8 测试面：把预算到点测试开关挂上进程槽，Drop 时清除（进程全局态不留
+/// 痕——与 set_learning_env 同款纪律，测试必须 `#[serial]`）。
+fn budget_expired_flag_guard(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> impl Drop {
+    crate::service::learning_graph::set_test_budget_expired_flag(Some(flag));
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            crate::service::learning_graph::set_test_budget_expired_flag(None);
+        }
+    }
+    Clear
+}
+
+/// rs8 测试面：等生长任务的失败 detail 落定再取（批行转 failed 与任务面
+/// finish_failed 是两个相邻的 await——先读到 failed 批行时任务 detail 可
+/// 能还是运行中的 step 文案；轮询避开中间帧）。
+async fn wait_for_growth_task_failure_detail(service: &LearningService) -> String {
+    for _ in 0..500 {
+        let snapshot = service.generation_task_snapshot();
+        if let Some(growth) = snapshot
+            .iter()
+            .find(|task| task.kind == crate::service::KIND_GROWTH)
+        {
+            if growth.state == "failed" {
+                if let Some(detail) = &growth.detail {
+                    return detail.clone();
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("growth task did not reach failed with detail in time");
+}
+
+/// rs8 预算注入臂区分：预置到点开关下，auto_refill 与 settlement 两个自动
+/// 触发源都注入预算（判定点 1 于 attempt 前预判——零 LLM 白跑，可见失败
+/// 留痕三面齐：批行 failed / 任务 detail 前缀点名 / findings 行）；manual
+/// 不注入（同一到点开关照常落库）。进程全局态：`#[serial]` 互斥。
+#[tokio::test]
+#[serial_test::serial]
+async fn auto_refill_budget_injects_only_for_auto_triggers() {
+    // ── auto_refill 臂：预算到点 = 零调用即中止 ──────────────────────────
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = BudgetFlipCompleter::new(vec![VALID_BATCH.to_owned()], usize::MAX);
+    completer.flag_handle().store(true, AtomicOrdering::SeqCst);
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "预算到点的批行以 failed 落定"
+    );
+    assert_eq!(
+        completer.call_count(),
+        0,
+        "预算判定点 1 于 attempt 前预判——零 LLM 白跑"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "budget_expired");
+    let detail = wait_for_growth_task_failure_detail(&service).await;
+    assert!(detail.contains("自动补批超时"), "任务失败面以前缀点名缺口：{detail}");
+    assert!(detail.contains("本批未落位，不再发起起草/评审/重裁"), "{detail}");
+    let findings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_findings \
+         WHERE course_id = ? AND source = 'growth-budget' AND issue LIKE '自动补批超时%'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(findings, 1, "预算触发事件落 findings 留痕");
+
+    // ── settlement 臂（自动补批触发①）：同样注入预算 ─────────────────────
+    let (service2, _knowledge2, owner2) = job_test_service().await;
+    let (course_id2, _a2, _b2) = seed_graph_course(&service2).await;
+    let course2 = nomifun_common::LearningCourseId::parse(&course_id2).unwrap();
+    let completer2 = BudgetFlipCompleter::new(vec![VALID_BATCH.to_owned()], usize::MAX);
+    completer2.flag_handle().store(true, AtomicOrdering::SeqCst);
+    let _flag2 = budget_expired_flag_guard(completer2.flag_handle());
+    *service2.course_completer.write().unwrap() = Some(completer2.clone());
+    service2
+        .kick_growth_with_trigger(&owner2, &course2, true, None, SystemActionTrigger::Settlement)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service2, &course_id2, "failed").await,
+        "settlement 臂同样受预算约束"
+    );
+    assert_eq!(completer2.call_count(), 0, "settlement 臂零白跑");
+
+    // ── manual 臂：不注入预算，同一到点开关零影响 ─────────────────────────
+    let (service3, _knowledge3, owner3) = job_test_service().await;
+    let (course_id3, _a3, _b3) = seed_graph_course(&service3).await;
+    let course3 = nomifun_common::LearningCourseId::parse(&course_id3).unwrap();
+    let completer3 = BudgetFlipCompleter::new(
+        vec![VALID_BATCH.to_owned(), review_pass_verdict()],
+        usize::MAX,
+    );
+    completer3.flag_handle().store(true, AtomicOrdering::SeqCst);
+    let _flag3 = budget_expired_flag_guard(completer3.flag_handle());
+    *service3.course_completer.write().unwrap() = Some(completer3.clone());
+    service3
+        .kick_growth(&owner3, &course3, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service3, &course_id3).await;
+    let stats3 = service3.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats3.stop_reason, "success", "手动 grow 不受预算约束");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id3)
+    .fetch_one(service3.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(!note.contains("预算到点落位"), "手动臂无预算读数：{note}");
+}
+
+/// rs8 判定点 2（评审前）：起草调用期间预算到点 → 门照常跑，评审不再发起
+/// ——可见失败带缺口点名（本批 N 个节点在途作废），findings 留痕。
+#[tokio::test]
+#[serial_test::serial]
+async fn budget_expiry_before_review_aborts_without_the_review_call() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 第 1 次调用（起草）返回前翻真 → 评审前的判定点拦下。
+    let completer = BudgetFlipCompleter::new(vec![VALID_BATCH.to_owned()], 1);
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "预算到点批行 failed"
+    );
+    assert_eq!(completer.call_count(), 1, "评审零调用（只有起草）");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "budget_expired");
+    let detail = wait_for_growth_task_failure_detail(&service).await;
+    assert!(detail.contains("自动补批超时"), "{detail}");
+    assert!(detail.contains("本批尚未过评审门"), "{detail}");
+    assert!(detail.contains("2 个节点在途作废"), "{detail}");
+    let findings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_findings \
+         WHERE course_id = ? AND source = 'growth-budget'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(findings, 1, "findings 留痕一行");
+}
+
+/// rs8 预算不是落位闸门：评审在途期间到点、评审放行 → 本批照常落库，
+/// note 留痕「预算到点落位」（learnhub #257 已过门批同尝试落位同款）。
+#[tokio::test]
+#[serial_test::serial]
+async fn budget_expiry_during_review_places_approved_batch_with_note() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 第 2 次调用（评审）返回前翻真 → 评审放行后落位带留痕。
+    let completer = BudgetFlipCompleter::new(
+        vec![VALID_BATCH.to_owned(), review_pass_verdict()],
+        2,
+    );
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success", "已过全门批照常落位");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(note.contains("预算到点落位"), "{note}");
+    assert!(note.contains("本批已过全部门照常落库"), "{note}");
+}
+
+/// rs8 判定点 1（后续尝试预判）：评审打回期间预算到点 → 第 2 轮 attempt
+/// 前预判拦下——重裁零白跑，缺口点名（最后一次打回的报告随失败面可见）。
+#[tokio::test]
+#[serial_test::serial]
+async fn budget_expiry_after_rejected_review_prejudges_the_next_attempt() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 第 2 次调用（评审）返回 reject 并翻真 → attempt 2 前预判拦下。
+    let completer = BudgetFlipCompleter::new(
+        vec![VALID_BATCH.to_owned(), review_reject_verdict()],
+        2,
+    );
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "预算到点批行 failed"
+    );
+    assert_eq!(completer.call_count(), 2, "重裁零白跑（起草+评审即止）");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "budget_expired");
+    let detail = wait_for_growth_task_failure_detail(&service).await;
+    assert!(detail.contains("自动补批超时"), "{detail}");
+    assert!(detail.contains("本批未通过全部门，不再发起新一轮"), "{detail}");
+    assert!(
+        detail.contains("「极限」的定义未给出可核查的逼近语境"),
+        "缺口点名 = 最后一次打回的报告原文：{detail}"
+    );
+    // 账本失败行的 reason 同面可见（y04 Failed 行随错误文案）。
+    let ledger_reason: String = sqlx::query_scalar(
+        "SELECT reason FROM learning_system_actions \
+         WHERE course_id = ? AND result = 'failed' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(ledger_reason.contains("自动补批超时"), "{ledger_reason}");
+}
+
+/// rs8 判定点 3（重裁前）：门打回后的重裁稿触发守卫越权 → 原地重试口上
+/// 预算到点拦下（本判定点唯一独占的路径），缺口 = 守卫文案。
+#[tokio::test]
+#[serial_test::serial]
+async fn budget_expiry_stops_the_in_place_guard_retry() {
+    let _splice_off =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 违约稿（甲引用幽灵 → 门点名甲），重裁稿偷改未点名的乙 → 守卫越权。
+    let draft = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [], "note": "违约稿"
+    }"#;
+    let redraft_editing_unnamed = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "被偷改的用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
+    }"#;
+    // 第 2 次调用（重裁）返回前翻真 → 守卫原址重试口被预算拦下。
+    let completer = BudgetFlipCompleter::new(
+        vec![draft.to_owned(), redraft_editing_unnamed.to_owned()],
+        2,
+    );
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "预算到点批行 failed"
+    );
+    assert_eq!(completer.call_count(), 2, "原地重试零发起");
+    let detail = wait_for_growth_task_failure_detail(&service).await;
+    assert!(detail.contains("自动补批超时"), "{detail}");
+    assert!(detail.contains("本批尚未落位，不再发起重裁"), "{detail}");
+    assert!(
+        detail.contains("乙节点"),
+        "缺口点名 = 守卫文案所指的越权节点：{detail}"
+    );
+}
+
+/// rs8 开关 `0` = 关（A/B 负优化回退档）：预算不注入——同一到点开关下
+/// auto_refill 臂照常落库，等效现行为。写 env：`#[serial]` 互斥。
+#[tokio::test]
+#[serial_test::serial]
+async fn auto_refill_budget_switch_zero_disables_the_budget() {
+    let _budget_off = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("0"),
+    );
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = BudgetFlipCompleter::new(
+        vec![VALID_BATCH.to_owned(), review_pass_verdict()],
+        usize::MAX,
+    );
+    completer.flag_handle().store(true, AtomicOrdering::SeqCst);
+    let _flag = budget_expired_flag_guard(completer.flag_handle());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth_with_trigger(&owner, &course, true, None, SystemActionTrigger::AutoRefill)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success", "0 = 关：等效现行为");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(!note.contains("预算到点落位"), "关臂零预算读数：{note}");
+}
