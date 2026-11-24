@@ -42,8 +42,9 @@
 - CI `Flowy 1.8 UI` 的 Windows 作业第 9–15 步全绿：格式、flowy-ui / flowy-i18n /
   flowy-studio / flowy-app 测试、desktop 编译、UI clippy。
 - 运行时实测（2026-11-24）：`cargo build -p flowy-desktop` 14 分 26 秒；启动后首页
-  渲染正常。系统托盘在运行时创建失败（`Shell_NotifyIconW operation 0 failed`），
-  所以关窗仍是直接退出，详见 `BLOCKED.md` 文末。
+  渲染正常。托盘在**从工作区直接启动**时不可用——进程落在 `S-1-16-4096`（Low），
+  Windows 拒绝低完整性进程添加托盘图标，于是关窗直接退出；同一份 exe 放到普通目录
+  运行就是 Medium，托盘出现、关窗最小化。正常安装不受影响。详见 `BLOCKED.md` 文末。
 - 测试合计 **157 passed / 0 failed / 0 ignored**（ui 30 + 集成 2、i18n 8、studio 74、app 43）。
   旧记录写的 155 漏掉了 `flowy-ui/tests/anchor_measurement.rs` 的 2 个用例。
 

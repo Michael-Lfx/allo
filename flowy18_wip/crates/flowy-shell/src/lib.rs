@@ -15,6 +15,23 @@ use std::sync::OnceLock;
 
 actions!(shell, [ShowMainWindow, QuitApp]);
 
+/// Printed when the tray cannot be created, so the next reader does not have to
+/// rediscover which condition is at play on each platform.
+///
+/// Windows reports only "access denied", and the usual cause is a process whose
+/// integrity level is below the shell's: Windows refuses a notification icon to
+/// a low-integrity process, which is what a binary executed from a labelled
+/// (sandboxed) tree becomes. The other backends need a host to show the icon in.
+#[cfg(target_os = "windows")]
+const TRAY_UNAVAILABLE_HINT: &str = "os error 5 means the shell refused the icon: a low-integrity process cannot add one. \
+     Launch the installed build, or copy the binary out of the labelled tree, and it appears.";
+#[cfg(target_os = "macos")]
+const TRAY_UNAVAILABLE_HINT: &str = "the icon lives in the menu bar; check that the app owns a normal activation policy \
+     (accessory apps still get an icon, background-only ones do not).";
+#[cfg(target_os = "linux")]
+const TRAY_UNAVAILABLE_HINT: &str = "the icon needs a StatusNotifier/AppIndicator host on the session bus; a bare window \
+     manager with no host has nowhere to put it.";
+
 thread_local! {
     static TRAY: RefCell<Option<gpui_tray::Tray>> =
         const { RefCell::new(None) };
@@ -115,6 +132,18 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
                 stage = "shell::tray::build",
                 %error,
                 "system tray unavailable"
+            );
+            // Windows rejects a notification icon with ACCESS_DENIED when the
+            // process runs at a lower integrity level than the shell. That is
+            // what happens when the executable is launched from a tree whose
+            // files carry a mandatory label - a sandboxed workspace, for
+            // instance. The native error says nothing about this, and it cost
+            // an afternoon to find once, so name the discriminator here.
+            tracing::warn!(
+                target: "flowy.boot",
+                stage = "shell::tray::build",
+                hint = TRAY_UNAVAILABLE_HINT,
+                "tray unavailable: see hint"
             );
         }
     }
