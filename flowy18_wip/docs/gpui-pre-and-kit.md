@@ -107,9 +107,12 @@ panel.set_prompt_text(..)  // 写（入队）
 | 文本替换 | `state.emplace(text, cx)` | `state.set_value(text, window, cx)` |
 | 字母间距 | `letter_spacing(px(..))` | 无 |
 | RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
-| 系统托盘 | `gpui-tray` | 依赖 ce，整体摘除 |
 | 输入框构造上下文 | `"EditableText"` | `"Input"` |
 | 修饰键 | `secondary-` | `ctrl-`（`gpui-pre` 的 `Keystroke::parse` 不认 `secondary`） |
+
+系统托盘**不在缺口里**：`gpui-tray 0.3.0` 用 `gpui-kit` feature 桥接类型图，其真包就是
+`gpui-pre`，图标 / 菜单类型一致，托盘已恢复。三个平台各有宿主：Windows 通知区域、
+macOS 菜单栏、Linux 的 StatusNotifier（需要 session bus 上有 AppIndicator 宿主）。
 
 ## 键上下文：按深度取最深匹配，祖先赢不了焦点元素
 

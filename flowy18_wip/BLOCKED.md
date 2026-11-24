@@ -35,8 +35,10 @@
 它的真包就是 `gpui-pre`，所以 `MenuItem` / `App` / `Action` 类型一致，托盘代码已接回：
 图标、Show / Quit 菜单，`flowy_shell::tray_available()` 报告是否可用。
 
-**但运行时建不出来**：启动时 `Shell_NotifyIconW operation 0 failed`，`tray_available()`
-为 false，所以本机实际仍是关窗即退出。见文末「运行时与遗留」。
+**从带标签的目录启动时建不出来**：`Shell_NotifyIconW` 返回 `os error 5`（拒绝访问）。
+根因是强制完整性标签——从 Low 标签的目录执行，进程是 `S-1-16-4096`（Low），Windows
+不允许低完整性进程添加托盘图标。同一份 exe 拷到普通目录（`S-1-16-8192`，Medium）
+即正常，关窗最小化到托盘。安装包与正常安装目录不受影响。
 
 ## 能力缺口（`gpui-pre` 没有）
 
@@ -51,7 +53,7 @@
 | `emplace` | `state.emplace(text, cx)` | 无；`set_value(text, window, cx)` 需要 window |
 | 字母间距 | `letter_spacing(px(..))` | 无 |
 | RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
-| 系统托盘 | `gpui-tray` | 代码已接回（`gpui-kit` → `gpui-pre`），运行时 `Shell_NotifyIconW` 失败 |
+| 系统托盘 | `gpui-tray` | 代码已接回（`gpui-kit` → `gpui-pre`）；从低完整性目录启动时 shell 拒绝 |
 
 ## 当前已知遗留（不影响编译，影响行为或体验）
 
@@ -77,11 +79,18 @@
 
 ## 2026-11-24 · 运行时与遗留（实测）
 
-- **托盘运行时不可用**：启动日志 `WARN flowy.boot: system tray unavailable
-  stage="shell::tray::build" error=native tray error: Shell_NotifyIconW operation 0 failed`。
-  代码路径已接回、编译通过，但本机建不出图标，`tray_available()` 为 false，于是关窗
-  直接退出，托盘菜单与最小化都走不到。原因未查，需单独排查（explorer 通知区域、
-  图标数据、会话权限都可能是因）。
+- **托盘在低完整性进程里不可用（已定位，非代码缺陷）**：从工作区直接运行
+  `target/debug/flowy-app.exe` 时，`Shell_NotifyIconW` 返回 `os error 5`（拒绝访问），
+  `tray_available()` 为 false，关窗直接退出。排查结论：
+  - 同一份 exe 在工作区里跑，令牌完整性是 `S-1-16-4096`（Low）；拷到
+    `%LOCALAPPDATA%\Temp` 再跑是 `S-1-16-8192`（Medium），托盘正常、关窗最小化。
+  - 最小 C# 探针用完全相同的参数（`cbSize=976`、`flags=0x8f`、`mask=0x1`、`state=0`、
+    有效 HWND）在 Medium 进程里返回成功，在低完整性进程里返回拒绝访问——参数无误，
+    是进程级的拒绝。
+  - 结论：exe 所在的目录带 Low 强制完整性标签，从那里启动的进程都拿不到托盘图标。
+    安装包、正常安装目录、把 exe 拷出去都能正常显示托盘。
+  - 启动失败时现在会额外打一条 hint 指路，见 `flowy-shell/src/lib.rs` 的
+    `TRAY_ACCESS_DENIED_HINT`。
 - **`flowy-agent` 测试目标 45 条 clippy**：`cargo clippy -p flowy-agent --all-targets
   --locked -- -D warnings` 退出 101，报 45 条，全部落在 lib test；`--lib` 已清零。
   CI 门禁命令不选 `flowy-agent`，所以这 45 条不进流水线。要清得先决定是否把
