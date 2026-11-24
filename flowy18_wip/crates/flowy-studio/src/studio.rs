@@ -16,6 +16,23 @@ use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use std::time::Duration;
 
 impl crate::panel::StudioPanel {
+    /// Where a queued receipt belongs, in the user's words.
+    pub(crate) fn receipt_owner(
+        &self,
+        receipt: &flowy_agent::AcceptedMessage,
+    ) -> String {
+        match receipt.session_hint.as_deref() {
+            None => self.t("chat.pending_unassigned"),
+            Some(hint)
+                if Some(hint) == self.agent.active_session_id().as_deref() =>
+            {
+                self.t("chat.pending_here")
+            }
+            Some(hint) => self
+                .tf("chat.pending_other", &[("id", &short_receipt_id(hint))]),
+        }
+    }
+
     pub(crate) fn workspace(
         &self,
         window: &Window,
@@ -55,18 +72,17 @@ impl crate::panel::StudioPanel {
         if !self.pending_receipts.is_empty() {
             let total = self.pending_receipts.len();
             let shown = total.min(PENDING_STRIP_LIMIT);
-            let rows = self.pending_receipts[..shown]
-                .iter()
-                .enumerate()
-                .map(|(index, receipt)| {
+            let rows = self.pending_receipts[..shown].iter().enumerate().map(
+                |(index, receipt)| {
                     let preview: String =
                         receipt.text.chars().take(40).collect();
                     let label = format!(
-                        "{} · {}",
+                        "{} · {} · {}",
                         self.tf(
                             "chat.pending_receipt",
                             &[("id", &short_receipt_id(&receipt.id))],
                         ),
+                        self.receipt_owner(receipt),
                         preview
                     );
                     div()
@@ -76,7 +92,8 @@ impl crate::panel::StudioPanel {
                         .text_sm()
                         .text_color(self.theme.muted())
                         .child(label)
-                });
+                },
+            );
             // The overflow row keeps the strip a fixed-height hint instead of a
             // wall: nothing drains the journal yet, so the list only grows.
             let overflow = (total > shown).then(|| {

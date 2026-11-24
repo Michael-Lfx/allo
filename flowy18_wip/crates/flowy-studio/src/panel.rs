@@ -1922,6 +1922,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_queued_receipt_names_the_session_it_belongs_to(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "pending-owner");
+        panel.update(cx, |panel, cx| {
+            let first = panel.agent.create_home_session().unwrap();
+            panel.open_session(&first, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            panel.fill_prompt("stay in this session", cx);
+            panel.send_prompt(cx);
+            let receipt = panel.pending_receipts[0].clone();
+            assert_eq!(
+                panel.receipt_owner(&receipt),
+                panel.t("chat.pending_here")
+            );
+
+            // A receipt from another session is labelled by that session, not
+            // by whichever one happens to be active now.
+            let mut foreign = receipt.clone();
+            foreign.session_hint = Some("elsewhere".to_owned());
+            let owner = panel.receipt_owner(&foreign);
+            assert_ne!(owner, panel.t("chat.pending_here"));
+            assert_ne!(owner, panel.t("chat.pending_unassigned"));
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
     fn sending_while_running_is_accepted_into_the_durable_queue(
         cx: &mut TestAppContext,
     ) {
