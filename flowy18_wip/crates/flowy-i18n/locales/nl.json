@@ -45,6 +45,8 @@
   "chat.do_anything": "Alles is mogelijk…",
   "chat.duration_secs": "{n}s",
   "chat.full_access": "Volledige toegang",
+  "chat.pending_receipt": "In wachtrij {id}",
+  "chat.pending_more": "Nog {n} in wachtrij",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standaard",

@@ -45,6 +45,8 @@
   "chat.do_anything": "Làm gì cũng được…",
   "chat.duration_secs": "{n} giây",
   "chat.full_access": "Toàn quyền truy cập",
+  "chat.pending_receipt": "Đang chờ {id}",
+  "chat.pending_more": "Còn {n} đang chờ",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

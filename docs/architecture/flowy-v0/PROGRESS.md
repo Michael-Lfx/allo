@@ -635,10 +635,33 @@ no session was live, so there is nothing to hint at
 `#[serde(default)]` + serde 默认忽略未知字段 → 旧记录解析成 `session_hint: None`。
 **没有丢历史，只是旧记录没有提示可给。**
 
-### 未提交
+### 实测复验（2026-11-23 23:0x）
 
-代码改动在 `flowy-agent-core/src/acceptance.rs` 和 `flowy-agent/src/handle.rs`，
-**尚未 commit**，等确认后一起提。
+三条全部成立，用的**不是推理，是真实 UI 点击**：
+
+| 要验什么 | 结果 | 证据 |
+| --- | --- | --- |
+| 旧格式 `session_id` 还能读 | ✅ 旧行原样保留，应用启动无 panic | `08-mixed-format-journal.jsonl` 第 1 行 |
+| 新提交写 `session_hint` | ✅ 第 2 行就是新字段 | 同上第 2 行 |
+| 忙时提交仍然成功 | ✅ 运行中真实点击，落盘一条 | 同上 |
+
+```
+{"event":"accepted","id":"accepted-1a208c0bc80-0","session_id":"s-1795443157263000","text":"重编译后复测：运行中提交","at_ms":1795443178624}
+{"event":"accepted","id":"accepted-1a208f4ef99-0","session_hint":"s-1795446576812000","text":"session_hint 实测","at_ms":1795446599577}
+```
+
+**两种格式共存于同一个文件**，这正是向后兼容最硬的证明 ——
+不是「我加了 serde(default) 所以应该没问题」，是同一份日志里新旧各一行、应用照常跑。
+
+再杀进程重开：**无 panic，文件字节一致**。
+
+### 一个反复咬人的坑
+
+**二进制时间戳会骗人。** 22:30 那个 exe 看着早于 22:35 的修复，
+但 `grep -c "session_hint" flowy18_wip/target/debug/flowy-app.exe` 返回 2 ——
+修复其实在里面。
+
+**判据：不看时间戳，看特征串在不在。** 这个坑我已经踩了三次。
 
 ---
 
@@ -703,3 +726,77 @@ no session was live, so there is nothing to hint at
 | 5 | `taken` 改租约 `{at_ms, lease_until_ms, exec_id}` | 待做 |
 | 6 | V2 队列消费 + 「排队中」可见 | 待做 |
 | 7 | 需求方确认改动目标（`flowy18_wip` 而非根 workspace） | 待确认 |
+
+---
+
+## 任务 9 · 把「谎报」换成真出口（2026-11-24 凌晨）
+
+### 老爷爷的原话
+
+> **把谎报换成出口**：删掉 `notice.task_added`，受理成功后渲染一行「排队中 #尾号 文本」；
+> panel 打开/刷新时读 `pending_acceptances()` 重建这行，重启后还在。
+
+### 改了什么
+
+**① 删掉 `notice.task_added`**
+
+那句话说「已加入本次会话的任务列表」，而仓库里没有这个列表 —— 空头支票。
+
+**② 加一个正经 i18n 键，不再挪用**
+
+原来借的是 `notice.task_added`（通知语义），现在新增 `chat.pending_receipt`：
+
+- `en`：`Queued {id}`
+- `zh-CN`：`排队中 {id}`
+- 其余 21 个 locale 也全部补齐
+
+**为什么必须全补**：`every_locale_has_the_same_keys` 这条测试要求 23 个 locale 键完全一致。
+源码里虽然有「缺键读英文」的回退，但测试不允许半边天。
+
+**③ panel 新增 `pending_receipts` 字段**
+
+- 构造时从日志读：`agent.pending_acceptances()`
+- 忙时受理成功后 `refresh_pending_receipts()`
+- **这是 `pending_acceptances()` 的第一个生产调用方** —— 死 API 活了
+
+**④ 聊天页顶部渲染常驻「排队中」栏**
+
+不是 notice（notice 是瞬时提示），是常驻条，带 `role(Status)` + `aria_live(Polite)`。
+
+### 测试
+
+新增两条 `#[gpui::test]`：
+
+- `a_busy_submission_shows_up_in_the_pending_strip`
+- `a_restarted_panel_rebuilds_the_pending_strip_from_the_journal`
+
+第二条用**同一个 store_root 造第二个面板**，断言构造完就有回执 ——
+这就是「重开客户端后用户还能找到」。
+
+### 真实 UI 实测
+
+```
+排队中 c0bc80-0 · 重编译后复测：运行中提交
+排队中 f4ef99-0 · session_hint 实测
+排队中 51def6-0 · 排队出口实测      ← 运行中提交后立刻出现
+```
+
+- 启动时就有前两条（从日志重建，其中第一条还是**旧格式** `session_id`）
+- 起一个长任务 → 运行中提交 → **第三条立刻出现**
+- 草稿清空、停止＋发送并排、turn 继续跑
+
+证据：`evidence/09-pending-strip.png`。
+
+### 又踩一个坑：`-i` 会隐藏 Status 元素
+
+第一次查无障碍树用的是 `-i --compact`，结果一条「排队中」都搜不到，我差点以为渲染没出。
+
+**`-i` 只保留可交互节点**，而「排队中」是 `role(Status)` 的静态文本 —— 被过滤掉了。
+
+去掉 `-i`、改用 `--surface window` 才看见。
+
+**判据：查按钮用 `-i`，查状态文本/文案不能用。** 这个坑会反复咬人。
+
+### 未提交
+
+代码改动尚未 commit，等确认。

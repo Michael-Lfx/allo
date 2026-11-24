@@ -45,6 +45,8 @@
   "chat.do_anything": "何でもできます…",
   "chat.duration_secs": "{n}秒",
   "chat.full_access": "フルアクセス",
+  "chat.pending_receipt": "待機中 {id}",
+  "chat.pending_more": "ほか {n} 件待機中",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

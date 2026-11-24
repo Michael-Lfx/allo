@@ -125,6 +125,11 @@ pub struct StudioPanel {
     pub prompt: Entity<gpui_kit::base::input::TextareaState>,
     pub(crate) feed: Entity<ChatFeed>,
     pub(crate) composer: Entity<ChatComposer>,
+    /// Messages the host took responsibility for but has not run yet.
+    ///
+    /// Backed by the acceptance journal, not by this field: it is re-read from
+    /// disk, so a restart still shows what was accepted.
+    pub(crate) pending_receipts: Vec<flowy_agent::AcceptedMessage>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -404,11 +409,15 @@ impl StudioPanel {
         } else {
             None
         };
+        // Read the journal up front: an accepted message outlives the process,
+        // so it must be visible again before anything is submitted this run.
+        let pending_receipts = agent.pending_acceptances();
         let mut panel = Self {
             ui,
             theme,
             feed,
             composer,
+            pending_receipts,
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -564,6 +573,10 @@ impl StudioPanel {
             self.refresh_working(cx);
             cx.notify();
             if was_busy && !self.status.is_busy() {
+                // A finished turn is the moment the queue could shrink once
+                // draining exists; refreshing here keeps the strip honest
+                // without waiting for the next submission.
+                self.refresh_pending_receipts(cx);
                 cx.emit(StudioEvent::TurnFinished);
             }
         }
@@ -803,6 +816,12 @@ impl StudioPanel {
         Ok(())
     }
 
+    /// Re-read the acceptance journal and repaint the queued strip.
+    fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
+        self.pending_receipts = self.agent.pending_acceptances();
+        cx.notify();
+    }
+
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
         self.session_opened_by_user = true;
         // Reopening the current session must not round-trip its own draft.
@@ -820,6 +839,10 @@ impl StudioPanel {
                     self.fill_prompt(&draft, cx);
                 }
                 self.invalidate_submission(cx);
+                // The journal is global, but re-read it on every open so the
+                // strip can never show a state older than the click that
+                // brought the user here.
+                self.pending_receipts = self.agent.pending_acceptances();
                 let workspace = self.agent.active_workspace();
                 self.active_project_id =
                     workspace.as_ref().map(|value| value.project_id.clone());
@@ -1018,7 +1041,10 @@ impl StudioPanel {
                         "accepted-deferred"
                     );
                     self.prompt.update(cx, |state, cx| state.emplace("", cx));
-                    self.emit_notice(Some("notice.task_added"), cx);
+                    // The receipt is the feedback now. Saying "added to this
+                    // session's task list" while no such list existed was a
+                    // lie; `pending_receipts` is rendered by `workspace()`.
+                    self.refresh_pending_receipts(cx);
                 }
                 Err(error) => self.emit_notice(Some(error), cx),
             }
@@ -1619,6 +1645,88 @@ mod tests {
             );
         });
         drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_busy_submission_shows_up_in_the_pending_strip(cx: &mut TestAppContext) {
+        let (panel, root) = submission_panel(cx, "pending-strip");
+        panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            assert!(panel.pending_receipts.is_empty());
+
+            panel.fill_prompt("queued while the turn runs", cx);
+            panel.send_prompt(cx);
+
+            // The strip is rendered from this field, so a non-empty field is
+            // what "the user can find it" means at the UI layer.
+            assert_eq!(panel.pending_receipts.len(), 1);
+            assert_eq!(
+                panel.pending_receipts[0].text,
+                "queued while the turn runs"
+            );
+            // The old lie is gone: no "added to this session's task list"
+            // notice is raised for a list that is now real.
+            assert_eq!(panel.notice, None);
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_restarted_panel_rebuilds_the_pending_strip_from_the_journal(
+        cx: &mut TestAppContext,
+    ) {
+        // First run: accept while busy.
+        let (panel, root) = submission_panel(cx, "pending-restart");
+        let first_id = panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            panel.fill_prompt("survive the restart", cx);
+            panel.send_prompt(cx);
+            panel.pending_receipts[0].id.clone()
+        });
+        drop(panel);
+
+        // Second run over the same store root: the constructor reads the
+        // journal, so the strip is populated before anything is submitted.
+        let reopened = cx.new(|cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                cx,
+            )
+        });
+        cx.read_entity(&reopened, |panel, _cx| {
+            assert_eq!(
+                panel.pending_receipts.len(),
+                1,
+                "a restart must still show what was accepted"
+            );
+            assert_eq!(panel.pending_receipts[0].id, first_id);
+        });
+
+        drop(reopened);
         let _ = std::fs::remove_dir_all(root);
     }
 

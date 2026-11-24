@@ -45,6 +45,8 @@
   "chat.do_anything": "Her şey yapılabilir…",
   "chat.duration_secs": "{n} sn",
   "chat.full_access": "Tam erişim",
+  "chat.pending_receipt": "Sırada {id}",
+  "chat.pending_more": "{n} tane daha sırada",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

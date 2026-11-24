@@ -45,6 +45,8 @@
   "chat.do_anything": "कुछ भी किया जा सकता है…",
   "chat.duration_secs": "{n} सेकंड",
   "chat.full_access": "पूरी पहुँच",
+  "chat.pending_receipt": "कतार में {id}",
+  "chat.pending_more": "{n} और कतार में",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

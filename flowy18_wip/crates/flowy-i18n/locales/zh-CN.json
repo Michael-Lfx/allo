@@ -45,6 +45,8 @@
   "chat.do_anything": "做什么都可以…",
   "chat.duration_secs": "{n} 秒",
   "chat.full_access": "完全访问",
+  "chat.pending_receipt": "排队中 {id}",
+  "chat.pending_more": "另有 {n} 条排队中",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

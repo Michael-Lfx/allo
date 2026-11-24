@@ -45,6 +45,8 @@
   "chat.do_anything": "Можна зробити будь-що…",
   "chat.duration_secs": "{n} с",
   "chat.full_access": "Повний доступ",
+  "chat.pending_receipt": "У черзі {id}",
+  "chat.pending_more": "Ще {n} у черзі",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

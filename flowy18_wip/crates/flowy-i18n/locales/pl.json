@@ -45,6 +45,8 @@
   "chat.do_anything": "Można zrobić wszystko…",
   "chat.duration_secs": "{n}s",
   "chat.full_access": "Pełny dostęp",
+  "chat.pending_receipt": "W kolejce {id}",
+  "chat.pending_more": "Jeszcze {n} w kolejce",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

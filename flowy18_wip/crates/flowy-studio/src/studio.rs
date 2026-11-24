@@ -1,4 +1,17 @@
 use flowy_ui as theme;
+
+/// How many receipts the strip spells out before collapsing into a count.
+const PENDING_STRIP_LIMIT: usize = 3;
+
+/// Last few characters of a receipt id, by **character**, never by byte.
+///
+/// `String::len()` counts bytes and `&id[i..]` panics when `i` lands inside a
+/// multi-byte character. Ids come from a human-readable journal on disk, so a
+/// hand-edited one must not be able to take the window down.
+fn short_receipt_id(id: &str) -> String {
+    let count = id.chars().count();
+    id.chars().skip(count.saturating_sub(8)).collect()
+}
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use std::time::Duration;
 
@@ -34,6 +47,65 @@ impl crate::panel::StudioPanel {
                     .text_sm()
                     .text_color(self.theme.muted())
                     .child(message),
+            );
+        }
+        // Accepted-but-not-yet-run messages. This strip is the receipt the user
+        // was promised: it is re-read from the journal, so it also reappears
+        // after a restart instead of dying with the process.
+        if !self.pending_receipts.is_empty() {
+            let total = self.pending_receipts.len();
+            let shown = total.min(PENDING_STRIP_LIMIT);
+            let rows = self.pending_receipts[..shown]
+                .iter()
+                .enumerate()
+                .map(|(index, receipt)| {
+                    let preview: String =
+                        receipt.text.chars().take(40).collect();
+                    let label = format!(
+                        "{} · {}",
+                        self.tf(
+                            "chat.pending_receipt",
+                            &[("id", &short_receipt_id(&receipt.id))],
+                        ),
+                        preview
+                    );
+                    div()
+                        .id(("pending-receipt", index))
+                        .role(gpui::Role::Status)
+                        .aria_label(label.clone())
+                        .text_sm()
+                        .text_color(self.theme.muted())
+                        .child(label)
+                });
+            // The overflow row keeps the strip a fixed-height hint instead of a
+            // wall: nothing drains the journal yet, so the list only grows.
+            let overflow = (total > shown).then(|| {
+                let label = self.tf(
+                    "chat.pending_more",
+                    &[("n", &(total - shown).to_string())],
+                );
+                // Same treatment as the rows above: without `role` and
+                // `aria_label` this line renders but never reaches assistive
+                // technology, so the count would be silent.
+                div()
+                    .id("pending-more")
+                    .role(gpui::Role::Status)
+                    .aria_label(label.clone())
+                    .text_sm()
+                    .text_color(self.theme.muted())
+                    .child(label)
+            });
+            column = column.child(
+                div()
+                    .id("studio-pending")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px(self.theme.space(32.))
+                    .py(self.theme.space(6.))
+                    .aria_live(gpui::accesskit::Live::Polite)
+                    .children(rows)
+                    .children(overflow),
             );
         }
         // The drawer sits beside whichever surface is showing, so it works in
@@ -622,5 +694,30 @@ const fn tier_key(tier: flowy_agent::Model) -> &'static str {
         flowy_agent::Model::Standard => "standard",
         flowy_agent::Model::Lite => "lite",
         flowy_agent::Model::Flex => "flex",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_receipt_id_never_splits_a_character() {
+        // The generated ids are ASCII, so the ordinary case just trims.
+        assert_eq!(short_receipt_id("accepted-1a208c0bc80-0"), "c0bc80-0");
+        assert_eq!(short_receipt_id("short"), "short");
+        assert_eq!(short_receipt_id(""), "");
+
+        // These are the ones that used to panic. `String::len()` counts bytes,
+        // so `&id[len - 8..]` landed inside a character and took the window
+        // down. The journal is a human-readable file on disk, so a hand-edited
+        // id is enough to reach this.
+        assert_eq!(short_receipt_id("中文中文"), "中文中文");
+        // Ten characters, so the last eight survive intact.
+        assert_eq!(
+            short_receipt_id("排队中排队中中文测试"),
+            "中排队中中文测试"
+        );
+        assert_eq!(short_receipt_id("短"), "短");
     }
 }

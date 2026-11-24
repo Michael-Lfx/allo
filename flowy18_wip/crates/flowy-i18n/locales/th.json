@@ -45,6 +45,8 @@
   "chat.do_anything": "ทำอะไรก็ได้…",
   "chat.duration_secs": "{n} วินาที",
   "chat.full_access": "เข้าถึงได้เต็มที่",
+  "chat.pending_receipt": "อยู่ในคิว {id}",
+  "chat.pending_more": "อีก {n} รายการในคิว",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",

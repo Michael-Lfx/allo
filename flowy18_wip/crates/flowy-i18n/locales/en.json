@@ -45,6 +45,8 @@
   "chat.do_anything": "Anything can be done…",
   "chat.duration_secs": "{n}s",
   "chat.full_access": "Full access",
+  "chat.pending_receipt": "Queued {id}",
+  "chat.pending_more": "{n} more queued",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
