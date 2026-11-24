@@ -344,6 +344,8 @@
   "more.skills": "Навички",
   "more.skills_body": "Навички не підключено. Ця сторінка не показує й не запускає навички.",
   "notice.accepted_ran": "A queued message started in another session",
+  "notice.receipt_retrying": "A queued message failed and will be retried",
+  "notice.receipt_gave_up": "A queued message failed repeatedly and was removed from the queue",
   "notice.account_change_later": "Changing account details comes in a later stage",
   "notice.account_delete_later": "Account deletion comes in a later stage",
   "notice.account_manage_later": "Account management comes in a later stage",

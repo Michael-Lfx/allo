@@ -62,6 +62,10 @@ pub struct AcceptedMessage {
     /// How many times the receipt has been claimed.
     #[serde(default)]
     pub attempts: u32,
+    /// Terminal: the host gave up after exhausting its retry budget. The
+    /// record stays for inspection; it is never claimed again.
+    #[serde(default)]
+    pub dead: bool,
 }
 
 /// A claim on one receipt. The attempt id lets only the owner complete or
@@ -74,7 +78,8 @@ pub struct Lease {
 
 impl AcceptedMessage {
     fn is_claimable(&self, now_ms: u64) -> bool {
-        self.completed_at_ms.is_none()
+        !self.dead
+            && self.completed_at_ms.is_none()
             && self
                 .available_at_ms
                 .is_none_or(|available| available <= now_ms)
@@ -118,6 +123,11 @@ enum JournalEntry {
         /// Backoff written by the releasing host; 0 on old lines.
         #[serde(default)]
         retry_after_ms: u64,
+        at_ms: u64,
+    },
+    Dead {
+        id: String,
+        attempt_id: String,
         at_ms: u64,
     },
 }
@@ -184,6 +194,7 @@ impl AcceptanceQueue {
                     completed_at_ms: None,
                     available_at_ms: None,
                     attempts: 0,
+                    dead: false,
                 }),
                 JournalEntry::Taken {
                     id,
@@ -224,6 +235,23 @@ impl AcceptanceQueue {
                             Some(at_ms.saturating_add(retry_after_ms));
                     }
                 }
+                JournalEntry::Dead { id, attempt_id, .. } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                    {
+                        // Only the attempt holding the current lease may kill
+                        // the receipt; a stale dead line from a crashed attempt
+                        // must not bury the retry that replaced it.
+                        let owned =
+                            receipt.lease.as_ref().is_some_and(|lease| {
+                                lease.attempt_id == attempt_id
+                            });
+                        if owned {
+                            receipt.dead = true;
+                            receipt.lease = None;
+                        }
+                    }
+                }
             }
         }
         Ok(receipts)
@@ -262,6 +290,7 @@ impl AcceptanceQueue {
             completed_at_ms: None,
             available_at_ms: None,
             attempts: 0,
+            dead: false,
         })
     }
 
@@ -329,7 +358,7 @@ impl AcceptanceQueue {
         attempt_id: &str,
         now_ms: u64,
     ) -> io::Result<bool> {
-        self.finish(id, attempt_id, now_ms, true, 0)
+        self.finish(id, attempt_id, now_ms, true, 0, false)
     }
 
     /// Drop the lease so the receipt can be claimed again after
@@ -341,7 +370,18 @@ impl AcceptanceQueue {
         now_ms: u64,
         retry_after_ms: u64,
     ) -> io::Result<bool> {
-        self.finish(id, attempt_id, now_ms, false, retry_after_ms)
+        self.finish(id, attempt_id, now_ms, false, retry_after_ms, false)
+    }
+
+    /// Bury the receipt after the retry budget ran out. The record stays in
+    /// the journal for inspection; it is never claimed again.
+    pub fn give_up(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        self.finish(id, attempt_id, now_ms, false, 0, true)
     }
 
     fn finish(
@@ -351,6 +391,7 @@ impl AcceptanceQueue {
         now_ms: u64,
         completed: bool,
         retry_after_ms: u64,
+        dead: bool,
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -359,7 +400,7 @@ impl AcceptanceQueue {
         else {
             return Ok(false);
         };
-        if receipt.completed_at_ms.is_some() {
+        if receipt.completed_at_ms.is_some() || receipt.dead {
             return Ok(false);
         }
         if receipt
@@ -372,6 +413,12 @@ impl AcceptanceQueue {
         }
         let entry = if completed {
             JournalEntry::Completed {
+                id: id.to_owned(),
+                attempt_id: attempt_id.to_owned(),
+                at_ms: now_ms,
+            }
+        } else if dead {
+            JournalEntry::Dead {
                 id: id.to_owned(),
                 attempt_id: attempt_id.to_owned(),
                 at_ms: now_ms,
@@ -746,6 +793,62 @@ mod tests {
                 .expect("take")
                 .is_some()
         );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_given_up_receipt_is_never_claimable_again() {
+        let root = temp_root("dead");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "poison", 1_000).expect("accept");
+        queue
+            .take(&accepted.id, "attempt-1", 1_000, 30_000)
+            .expect("take")
+            .expect("claimed");
+        assert!(
+            queue
+                .give_up(&accepted.id, "attempt-1", 2_000)
+                .expect("give up")
+        );
+
+        assert!(queue.pending_at(10_000_000).expect("pending").is_empty());
+        assert!(queue.all().expect("all")[0].dead);
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-2", 10_000_000, 30_000)
+                .expect("take")
+                .is_none()
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_stale_attempt_cannot_bury_a_live_retry() {
+        let root = temp_root("dead-stale");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "retry me", 1_000).expect("accept");
+        queue
+            .take(&accepted.id, "attempt-1", 1_000, 30_000)
+            .expect("take")
+            .expect("claimed");
+        queue
+            .release(&accepted.id, "attempt-1", 1_100, 0)
+            .expect("release");
+        queue
+            .take(&accepted.id, "attempt-2", 1_100, 30_000)
+            .expect("take")
+            .expect("claimed");
+
+        assert!(
+            !queue
+                .give_up(&accepted.id, "attempt-1", 1_200)
+                .expect("give up")
+        );
+        let receipt = &queue.all().expect("all")[0];
+        assert!(!receipt.dead);
+        assert!(receipt.lease.is_some(), "the live attempt keeps its lease");
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

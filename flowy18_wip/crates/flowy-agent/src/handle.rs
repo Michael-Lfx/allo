@@ -41,6 +41,10 @@ const ACCEPTED_LEASE_MS: u64 = 30_000;
 const ACCEPTED_RELEASE_BASE_MS: u64 = 5_000;
 const ACCEPTED_RELEASE_MAX_MS: u64 = 5 * 60_000;
 
+/// Attempts before a receipt is buried instead of retried. The third failure
+/// is surfaced to the user; the tenth is terminal.
+const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
+
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
     pub id: String,
@@ -1372,15 +1376,24 @@ impl AgentHandle {
     }
 
     /// Finish the receipt started by [`Self::run_accepted_once`].
-    pub fn finish_accepted(&self, completed: bool) -> Result<(), &'static str> {
+    ///
+    /// Returns `true` when the retry budget was exhausted and the receipt was
+    /// buried instead of released.
+    pub fn finish_accepted(
+        &self,
+        completed: bool,
+    ) -> Result<bool, &'static str> {
         let claim = lock(&self.inner.state.accepted_claim).clone();
         let Some(claim) = claim else {
-            return Ok(());
+            return Ok(false);
         };
         let queue = AcceptanceQueue::new(self.inner.state.root.clone());
         let now = now_ms();
+        let gave_up = !completed && claim.attempts >= ACCEPTED_MAX_ATTEMPTS;
         let result = if completed {
             queue.complete(&claim.receipt_id, &claim.attempt_id, now)
+        } else if gave_up {
+            queue.give_up(&claim.receipt_id, &claim.attempt_id, now)
         } else {
             queue.release(
                 &claim.receipt_id,
@@ -1394,12 +1407,20 @@ impl AgentHandle {
         if result.is_ok() {
             *lock(&self.inner.state.accepted_claim) = None;
         }
-        result.map(|_| ()).map_err(|_| "notice.storage_error")
+        result.map(|_| gave_up).map_err(|_| "notice.storage_error")
     }
 
     #[must_use]
     pub fn has_active_claim(&self) -> bool {
         lock(&self.inner.state.accepted_claim).is_some()
+    }
+
+    /// The attempt number of the receipt currently claimed, if any.
+    #[must_use]
+    pub fn accepted_attempts(&self) -> Option<u32> {
+        lock(&self.inner.state.accepted_claim)
+            .as_ref()
+            .map(|claim| claim.attempts)
     }
 
     /// Whether any live session is currently running a turn.

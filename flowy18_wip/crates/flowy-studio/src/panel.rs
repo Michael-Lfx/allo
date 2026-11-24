@@ -860,13 +860,21 @@ impl StudioPanel {
             // produced its artifacts and has its own retry surface, so it
             // must not rerun the whole turn. Only a plain error is retried,
             // with the journal's backoff.
+            let attempts = self.agent.accepted_attempts().unwrap_or(0);
             let completed = !matches!(
                 self.status,
                 flowy_agent::TurnStatus::Error { .. }
                     | flowy_agent::TurnStatus::Idle
             );
-            if let Err(error) = self.agent.finish_accepted(completed) {
-                self.emit_notice(Some(error), cx);
+            match self.agent.finish_accepted(completed) {
+                Ok(true) => {
+                    self.emit_notice(Some("notice.receipt_gave_up"), cx);
+                }
+                Ok(false) if !completed && attempts == 3 => {
+                    self.emit_notice(Some("notice.receipt_retrying"), cx);
+                }
+                Ok(false) => {}
+                Err(error) => self.emit_notice(Some(error), cx),
             }
         }
         if !self.agent.pending_acceptances().is_empty() {

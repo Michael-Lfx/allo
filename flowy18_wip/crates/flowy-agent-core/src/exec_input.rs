@@ -147,6 +147,7 @@ mod tests {
             completed_at_ms: None,
             available_at_ms: None,
             attempts: 0,
+            dead: false,
         }
     }
 

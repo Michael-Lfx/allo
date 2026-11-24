@@ -344,6 +344,8 @@
   "more.skills": "技能",
   "more.skills_body": "技能还没有接上。这里不会列出或运行技能。",
   "notice.accepted_ran": "排队中的消息已在另一个会话开始",
+  "notice.receipt_retrying": "排队中的消息执行失败，稍后自动重试",
+  "notice.receipt_gave_up": "排队中的消息连续失败，已停止自动重试",
   "notice.account_change_later": "更改账户信息将在后续阶段接入",
   "notice.account_delete_later": "删除账户将在后续阶段接入",
   "notice.account_manage_later": "账户管理将在后续阶段接入",
