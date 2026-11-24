@@ -21,8 +21,8 @@
 - [x] 任务 2：`editable_text` 移植 —— **判定不可行并删除该方向**
 - [x] 任务 3：适配剩余 API（ce 独有 API 全面清理）
 - [x] 任务 4：接 gpui-kit 的 `Input` / `Textarea`
-- [ ] 任务 5：首页重做（代码齐全，待运行时验证）
-- [ ] 任务 6：全量验收
+- [x] 任务 5：首页重做 —— 2026-11-24 实跑验证：四张卡片 + 右箭头、分类标签、composer 渲染正常
+- [x] 任务 6：全量验收 —— 157 passed / 0 failed / 0 ignored；CI `Flowy 1.8 UI` 第 9–15 步全绿
 
 ## 编译状态（2026-11-24）
 
@@ -41,6 +41,9 @@
 - 迁移 PR #479 已合并；lint 欠债 PR #480 已合并（合并提交 `d0852b004`）。
 - CI `Flowy 1.8 UI` 的 Windows 作业第 9–15 步全绿：格式、flowy-ui / flowy-i18n /
   flowy-studio / flowy-app 测试、desktop 编译、UI clippy。
+- 运行时实测（2026-11-24）：`cargo build -p flowy-desktop` 14 分 26 秒；启动后首页
+  渲染正常。系统托盘在运行时创建失败（`Shell_NotifyIconW operation 0 failed`），
+  所以关窗仍是直接退出，详见 `BLOCKED.md` 文末。
 - 测试合计 **157 passed / 0 failed / 0 ignored**（ui 30 + 集成 2、i18n 8、studio 74、app 43）。
   旧记录写的 155 漏掉了 `flowy-ui/tests/anchor_measurement.rs` 的 2 个用例。
 
