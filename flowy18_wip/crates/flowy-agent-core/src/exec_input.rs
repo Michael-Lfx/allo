@@ -143,6 +143,8 @@ mod tests {
             text: "ship the release notes".to_owned(),
             created_at_ms: 1_000,
             taken_at_ms: None,
+            lease: None,
+            completed_at_ms: None,
         }
     }
 

@@ -20,9 +20,12 @@
 //! it is written while a turn is running, and the index is rewritten at turn
 //! boundaries.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +48,32 @@ pub struct AcceptedMessage {
     /// explain what happened to an early submission.
     #[serde(default)]
     pub taken_at_ms: Option<u64>,
+    /// The current claim. `None` means claimable; an expired lease is
+    /// claimable again (at-least-once), an unexpired one is not.
+    #[serde(default)]
+    pub lease: Option<Lease>,
+    /// Set once the claimed attempt finished; a completed receipt never
+    /// returns to `pending`.
+    #[serde(default)]
+    pub completed_at_ms: Option<u64>,
+}
+
+/// A claim on one receipt. The attempt id lets only the owner complete or
+/// release it; the expiry lets a crashed attempt be retried.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    pub attempt_id: String,
+    pub expires_at_ms: u64,
+}
+
+impl AcceptedMessage {
+    fn is_claimable(&self, now_ms: u64) -> bool {
+        self.completed_at_ms.is_none()
+            && self
+                .lease
+                .as_ref()
+                .is_none_or(|lease| lease.expires_at_ms <= now_ms)
+    }
 }
 
 /// One line of the journal. Append-only; nothing is ever rewritten.
@@ -60,6 +89,23 @@ enum JournalEntry {
     },
     Taken {
         id: String,
+        /// Empty on journal lines written before leases existed.
+        #[serde(default)]
+        attempt_id: String,
+        /// Zero on journal lines written before leases existed; such a line
+        /// reads as an already-expired lease so the receipt can be retried.
+        #[serde(default)]
+        lease_until_ms: u64,
+        at_ms: u64,
+    },
+    Completed {
+        id: String,
+        attempt_id: String,
+        at_ms: u64,
+    },
+    Released {
+        id: String,
+        attempt_id: String,
         at_ms: u64,
     },
 }
@@ -122,12 +168,37 @@ impl AcceptanceQueue {
                     text,
                     created_at_ms: at_ms,
                     taken_at_ms: None,
+                    lease: None,
+                    completed_at_ms: None,
                 }),
-                JournalEntry::Taken { id, at_ms } => {
+                JournalEntry::Taken {
+                    id,
+                    attempt_id,
+                    lease_until_ms,
+                    at_ms,
+                } => {
                     if let Some(receipt) =
                         receipts.iter_mut().find(|receipt| receipt.id == id)
                     {
-                        receipt.taken_at_ms = Some(at_ms);
+                        receipt.taken_at_ms.get_or_insert(at_ms);
+                        receipt.lease = Some(Lease {
+                            attempt_id,
+                            expires_at_ms: lease_until_ms,
+                        });
+                    }
+                }
+                JournalEntry::Completed { id, at_ms, .. } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                    {
+                        receipt.completed_at_ms = Some(at_ms);
+                    }
+                }
+                JournalEntry::Released { id, .. } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                    {
+                        receipt.lease = None;
                     }
                 }
             }
@@ -164,41 +235,138 @@ impl AcceptanceQueue {
             text: text.to_owned(),
             created_at_ms: now_ms,
             taken_at_ms: None,
+            lease: None,
+            completed_at_ms: None,
         })
     }
 
-    /// Receipts accepted but never picked up, oldest first.
+    /// Receipts accepted but not completed and not under a live lease, oldest
+    /// first.
     pub fn pending(&self) -> io::Result<Vec<AcceptedMessage>> {
+        self.pending_at(now_ms())
+    }
+
+    /// `pending` at a caller-supplied clock, for retries and tests.
+    pub fn pending_at(&self, now_ms: u64) -> io::Result<Vec<AcceptedMessage>> {
         let mut pending: Vec<_> = self
             .replay()?
             .into_iter()
-            .filter(|receipt| receipt.taken_at_ms.is_none())
+            .filter(|receipt| receipt.is_claimable(now_ms))
             .collect();
         pending.sort_by_key(|receipt| receipt.created_at_ms);
         Ok(pending)
     }
 
-    /// Mark `id` as picked up. Returns the receipt it just claimed, so two
-    /// callers cannot both run the same text.
+    /// Claim `id` for `attempt_id` until `now_ms + lease_ms`.
+    ///
+    /// The in-process lock serialises replay and append, so two callers cannot
+    /// both claim the same receipt. The lease is the retry mechanism: an
+    /// expired lease is claimable again, and the `attempt_id` lets only the
+    /// owner complete or release it.
     pub fn take(
         &self,
         id: &str,
+        attempt_id: &str,
         now_ms: u64,
+        lease_ms: u64,
     ) -> io::Result<Option<AcceptedMessage>> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut receipts = self.replay()?;
         let Some(receipt) = receipts
             .iter_mut()
-            .find(|receipt| receipt.id == id && receipt.taken_at_ms.is_none())
+            .find(|receipt| receipt.id == id && receipt.is_claimable(now_ms))
         else {
             return Ok(None);
         };
-        receipt.taken_at_ms = Some(now_ms);
+        let lease = Lease {
+            attempt_id: attempt_id.to_owned(),
+            expires_at_ms: now_ms.saturating_add(lease_ms),
+        };
+        receipt.taken_at_ms.get_or_insert(now_ms);
+        receipt.lease = Some(lease.clone());
         let claimed = receipt.clone();
         self.append(&JournalEntry::Taken {
             id: id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            lease_until_ms: lease.expires_at_ms,
             at_ms: now_ms,
         })?;
         Ok(Some(claimed))
+    }
+
+    /// Mark the receipt complete. Only the current lease owner can complete it.
+    pub fn complete(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        self.finish(id, attempt_id, now_ms, true)
+    }
+
+    /// Drop the lease so the receipt can be claimed again. Only the current
+    /// lease owner can release it.
+    pub fn release(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        self.finish(id, attempt_id, now_ms, false)
+    }
+
+    fn finish(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+        completed: bool,
+    ) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
+        else {
+            return Ok(false);
+        };
+        if receipt.completed_at_ms.is_some() {
+            return Ok(false);
+        }
+        if receipt
+            .lease
+            .as_ref()
+            .map(|lease| lease.attempt_id.as_str())
+            != Some(attempt_id)
+        {
+            return Ok(false);
+        }
+        let entry = if completed {
+            JournalEntry::Completed {
+                id: id.to_owned(),
+                attempt_id: attempt_id.to_owned(),
+                at_ms: now_ms,
+            }
+        } else {
+            JournalEntry::Released {
+                id: id.to_owned(),
+                attempt_id: attempt_id.to_owned(),
+                at_ms: now_ms,
+            }
+        };
+        self.append(&entry)?;
+        Ok(true)
+    }
+
+    /// One mutex per journal path. The desktop is single-instance, so an
+    /// in-process lock is enough to serialise claims; it avoids a stale
+    /// on-disk lock without adding a dependency.
+    fn queue_lock(&self) -> Arc<Mutex<()>> {
+        static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+            OnceLock::new();
+        let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = registry.lock().unwrap_or_else(PoisonError::into_inner);
+        locks.entry(Self::path(&self.root)).or_default().clone()
     }
 
     /// Ordinal used to keep ids unique inside the same millisecond. Replays the
@@ -234,6 +402,14 @@ impl AcceptanceQueue {
 
 fn new_receipt_id(now_ms: u64, ordinal: usize) -> String {
     format!("accepted-{now_ms:x}-{ordinal:x}")
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Make sure the next append starts on its own line.
@@ -307,14 +483,30 @@ mod tests {
         let queue = AcceptanceQueue::new(&root);
         let accepted = queue.accept(None, "only once", 1_000).expect("accept");
 
-        let first = queue.take(&accepted.id, 2_000).expect("take");
+        let first = queue
+            .take(&accepted.id, "attempt-1", 2_000, 30_000)
+            .expect("take");
         assert!(first.is_some());
-        assert_eq!(first.expect("claimed").taken_at_ms, Some(2_000));
+        let claimed = first.expect("claimed");
+        assert_eq!(claimed.taken_at_ms, Some(2_000));
+        assert_eq!(
+            claimed
+                .lease
+                .as_ref()
+                .map(|lease| lease.attempt_id.as_str()),
+            Some("attempt-1")
+        );
 
-        let second = queue.take(&accepted.id, 3_000).expect("take twice");
+        let second = queue
+            .take(&accepted.id, "attempt-2", 3_000, 30_000)
+            .expect("take twice");
         assert!(second.is_none(), "a receipt must not be run twice");
 
-        assert!(queue.pending().expect("pending").is_empty());
+        assert_eq!(
+            queue.pending_at(3_000).expect("pending").len(),
+            0,
+            "an unexpired lease keeps the receipt out of pending"
+        );
         assert_eq!(queue.all().expect("all").len(), 1);
 
         fs::remove_dir_all(&root).expect("cleanup");
@@ -411,6 +603,179 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[1].id, second.id);
         assert_eq!(pending[1].text, "second");
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_expired_lease_can_be_claimed_again() {
+        let root = temp_root("lease-expiry");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "retry me", 1_000).expect("accept");
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-1", 1_000, 100)
+                .expect("first")
+                .is_some()
+        );
+        assert_eq!(
+            queue.pending_at(1_050).expect("pending").len(),
+            0,
+            "the live lease must keep the receipt out of pending"
+        );
+        let second = queue
+            .take(&accepted.id, "attempt-2", 1_101, 100)
+            .expect("second");
+        let second = second.expect("an expired lease is claimable");
+        assert_eq!(
+            second.lease.as_ref().map(|lease| lease.attempt_id.as_str()),
+            Some("attempt-2")
+        );
+        assert_eq!(queue.pending_at(1_101).expect("pending").len(), 0);
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_completed_receipt_never_returns_to_pending() {
+        let root = temp_root("lease-complete");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "done", 1_000).expect("accept");
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-1", 1_000, 30_000)
+                .expect("take")
+                .is_some()
+        );
+        assert!(
+            queue
+                .complete(&accepted.id, "attempt-1", 1_200)
+                .expect("complete")
+        );
+
+        assert_eq!(queue.pending_at(1_000_000).expect("pending").len(), 0);
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-3", 1_000_000, 100)
+                .expect("take")
+                .is_none()
+        );
+        let all = queue.all().expect("all");
+        assert_eq!(all[0].completed_at_ms, Some(1_200));
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_released_receipt_is_claimable_again() {
+        let root = temp_root("lease-release");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted =
+            queue.accept(None, "retry later", 1_000).expect("accept");
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-1", 1_000, 30_000)
+                .expect("take")
+                .is_some()
+        );
+        assert!(
+            queue
+                .release(&accepted.id, "attempt-1", 1_200)
+                .expect("release")
+        );
+        assert_eq!(queue.pending_at(1_200).expect("pending").len(), 1);
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-2", 1_200, 100)
+                .expect("take again")
+                .is_some()
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn only_the_lease_owner_can_complete_or_release() {
+        let root = temp_root("lease-owner");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "owned", 1_000).expect("accept");
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-1", 1_000, 30_000)
+                .expect("take")
+                .is_some()
+        );
+        assert!(
+            !queue
+                .complete(&accepted.id, "attempt-2", 1_200)
+                .expect("wrong owner")
+        );
+        assert!(
+            !queue
+                .release(&accepted.id, "attempt-2", 1_200)
+                .expect("wrong owner")
+        );
+        assert!(
+            queue
+                .complete(&accepted.id, "attempt-1", 1_200)
+                .expect("owner")
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn two_threads_cannot_claim_the_same_receipt() {
+        let root = temp_root("lease-race");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "one winner", 1_000).expect("accept");
+        let first_queue = queue.clone();
+        let first_id = accepted.id.clone();
+        let first = std::thread::spawn(move || {
+            first_queue.take(&first_id, "attempt-a", 1_000, 30_000)
+        });
+        let second_queue = queue;
+        let second_id = accepted.id;
+        let second = std::thread::spawn(move || {
+            second_queue.take(&second_id, "attempt-b", 1_000, 30_000)
+        });
+        let first = first.join().expect("thread").expect("io");
+        let second = second.join().expect("thread").expect("io");
+        assert_ne!(first.is_some(), second.is_some());
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_old_taken_line_is_read_as_an_expired_lease() {
+        let root = temp_root("lease-old-line");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "old line", 1_000).expect("accept");
+        let path = AcceptanceQueue::path(&root);
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        let old = serde_json::json!({
+            "event": "taken",
+            "id": &accepted.id,
+            "at_ms": 2_000
+        });
+        writeln!(handle, "{old}").expect("old line");
+        drop(handle);
+
+        assert_eq!(queue.pending_at(3_000).expect("pending").len(), 1);
+        let claimed = queue
+            .take(&accepted.id, "attempt-new", 3_000, 100)
+            .expect("take");
+        let claimed = claimed.expect("old taken line is retryable");
+        assert_eq!(
+            claimed
+                .lease
+                .as_ref()
+                .map(|lease| lease.attempt_id.as_str()),
+            Some("attempt-new")
+        );
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

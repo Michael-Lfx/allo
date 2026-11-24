@@ -14,7 +14,7 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
-pub use acceptance::{AcceptanceQueue, AcceptedMessage};
+pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease};
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
 pub use exec_input::{Decision, ExecAssignment, ExecContext, ExecInput};
 pub use loop_runner::{
