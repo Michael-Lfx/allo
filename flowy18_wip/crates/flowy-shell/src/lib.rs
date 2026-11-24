@@ -5,8 +5,8 @@
 mod autostart;
 mod deep_link;
 mod notify;
-// System tray is parked while `gpui-tray` targets the retired community fork; its
-// `MenuItem`/`App`/`Action` types do not unify with `gpui-pre`.
+// `gpui-tray` bridges several GPUI type graphs behind cargo features; the workspace
+// selects `gpui-kit`, whose real package is `gpui-pre`, so the tray types match.
 mod tray;
 
 use gpui::{App, actions};

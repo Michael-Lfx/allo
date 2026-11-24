@@ -60,7 +60,7 @@ jobs:
               if tracked:
                   summary.write('Patch source manifest is tracked. Windows build/tests may run; this inventory is not a build result.\n')
               else:
-                  summary.write('**BLOCKED — Windows build/tests skipped automatically.** The existing `gpui_ce_macos` path patch has no tracked source manifest. Source contracts still run. Resolve the dependency in a dedicated change; a green source/inventory job does not mean GPUI build/tests passed. A manual workflow run repeats the Windows preflight and fails explicitly while the source is missing. See `flowy18_wip/docs/ui-system.zh.md`.\n')
+                  summary.write('**BLOCKED — Windows build/tests skipped automatically.** The existing `gpui_ce_macos` path patch has no tracked source manifest. Source contracts still run. Resolve the dependency in a dedicated change; a green source/inventory job does not mean GPUI build/tests passed. A manual workflow run repeats the Windows preflight and fails explicitly while the source is missing. See `flowy18_wip/docs/gpui-pre-and-kit.md`.\n')
                   print('::warning::GPUI Windows build/tests are blocked by missing tracked patch source; dependency inventory is not a build check.')
 
   source-contracts:
@@ -102,7 +102,7 @@ jobs:
           if ($patch.Success) {
             $patchManifest = Join-Path $patch.Groups[1].Value 'Cargo.toml'
             if (-not (Test-Path -LiteralPath $patchManifest)) {
-              throw 'Clean checkout is missing the existing gpui_ce_macos patch source. Resolve its tracked, licensed dependency source in a dedicated change; do not delete or bypass the patch to make UI CI green. See flowy18_wip/docs/ui-system.zh.md.'
+              throw 'Clean checkout is missing the existing gpui_ce_macos patch source. Resolve its tracked, licensed dependency source in a dedicated change; do not delete or bypass the patch to make UI CI green. See flowy18_wip/docs/gpui-pre-and-kit.md.'
             }
             git ls-files --error-unmatch -- $patchManifest | Out-Null
             if ($LASTEXITCODE -ne 0) {
