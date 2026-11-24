@@ -238,7 +238,7 @@ impl FlowyApp {
         let result =
             if let Some(id) = self.project_create.editing_project_id.clone() {
                 self.studio.update(cx, |panel, cx| {
-                    panel.update_project(&id, &name, &folder, cx).map(|()| ())
+                    panel.update_project(&id, &name, &folder, cx)
                 })
             } else {
                 self.studio.update(cx, |panel, cx| {

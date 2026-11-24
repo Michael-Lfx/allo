@@ -909,7 +909,7 @@ mod tests {
     ) {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.request_render(scale, budget, window, cx)
+                panel.request_render(scale, budget, window, cx);
             });
         });
     }
@@ -970,7 +970,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, _| {
-            assert_eq!(panel.document.as_ref().unwrap().dims.len(), 3)
+            assert_eq!(panel.document.as_ref().unwrap().dims.len(), 3);
         });
     }
 

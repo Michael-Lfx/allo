@@ -157,7 +157,7 @@ pub struct LibraryPanel {
     usage: Option<LibraryUsage>,
     category_focus: Vec<FocusHandle>,
     item_focus: std::collections::HashMap<String, FocusHandle>,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl std::fmt::Debug for LibraryPanel {
@@ -226,7 +226,7 @@ impl LibraryPanel {
                 .map(|_| cx.focus_handle())
                 .collect(),
             item_focus,
-            _subscriptions: subscriptions,
+            subscriptions,
         }
     }
 
@@ -242,7 +242,7 @@ impl LibraryPanel {
         }
         let query =
             cx.new(|cx| gpui_kit::base::input::InputState::new(window, cx));
-        self._subscriptions.push(cx.subscribe(
+        self.subscriptions.push(cx.subscribe(
             &query,
             |_, _, _: &gpui_kit::base::input::InputEvent, cx| cx.notify(),
         ));
@@ -1662,7 +1662,7 @@ mod tests {
         let captured = events.clone();
         let _subscription = host.update(cx, |_, cx| {
             cx.subscribe(&panel, move |_, _, event: &LibraryEvent, _| {
-                captured.lock().unwrap().push(event.clone())
+                captured.lock().unwrap().push(event.clone());
             })
         });
         let (id, _title) = cx.read_entity(&panel, |panel, _| {
@@ -1684,17 +1684,19 @@ mod tests {
         cx.read_entity(&panel, |panel, _| assert!(panel.preview.is_none()));
         activate(cx, &format!("library-row-{id}"));
         activate(cx, "preview-open-default");
-        let captured = events.lock().unwrap();
-        let open_events: Vec<_> = captured
+        let open_events: Vec<_> = events
+            .lock()
+            .unwrap()
             .iter()
             .filter(|event| {
                 matches!(event, LibraryEvent::OpenWithDefaultRequested(_))
             })
+            .cloned()
             .collect();
         assert_eq!(open_events.len(), 2);
         for event in open_events {
             assert!(
-                matches!(event, LibraryEvent::OpenWithDefaultRequested(value) if value == &id)
+                matches!(event, LibraryEvent::OpenWithDefaultRequested(value) if value == id)
             );
         }
     }
@@ -1827,7 +1829,7 @@ mod tests {
         let captured = events.clone();
         let _subscription = host.update(cx, |_, cx| {
             cx.subscribe(&panel, move |_, _, event: &LibraryEvent, _| {
-                captured.lock().unwrap().push(event.clone())
+                captured.lock().unwrap().push(event.clone());
             })
         });
         let mut usage = LibraryUsage {
@@ -1863,7 +1865,7 @@ mod tests {
         activate(cx, &format!("library-row-{id}"));
         draw(cx);
         cx.read_entity(&panel, |panel, _| {
-            assert_eq!(panel.preview.as_ref(), Some(&id))
+            assert_eq!(panel.preview.as_ref(), Some(&id));
         });
         activate(cx, "preview-next");
         activate(cx, "preview-previous");
@@ -1878,7 +1880,7 @@ mod tests {
         let expected_focus =
             cx.read_entity(&panel, |panel, _| panel.item_focus[&id].clone());
         cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), Some(expected_focus))
+            assert_eq!(window.focused(cx), Some(expected_focus));
         });
     }
 
@@ -1893,7 +1895,7 @@ mod tests {
                 panel.preview_item(&id, window, cx);
                 panel.preview = None;
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         cx.read_entity(&panel, |panel, _| {

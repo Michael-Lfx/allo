@@ -651,6 +651,10 @@ impl ChatFeed {
 
     /// One changed file: type icon, file name, full path, and line delta.
     /// Clicking opens the containing folder, matching the project view action.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one row reads better than a struct built at each call site"
+    )]
     fn file_change_row(
         &self,
         index: usize,

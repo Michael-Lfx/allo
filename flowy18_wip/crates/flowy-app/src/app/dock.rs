@@ -504,7 +504,6 @@ impl FlowyApp {
                     .disabled(self.conversation_delete_busy()),
                     &self.theme,
                     cx.listener({
-                        let id = id;
                         move |app, _, _, cx| {
                             cx.stop_propagation();
                             app.toggle_task_menu(&id, cx);

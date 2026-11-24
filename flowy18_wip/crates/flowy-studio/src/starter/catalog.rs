@@ -230,7 +230,7 @@ mod tests {
                 !category.examples().is_empty(),
                 "{category:?} has no examples"
             );
-            assert!(!category.title_key().is_empty());
+            assert_ne!(category.title_key().len(), 0);
         }
     }
 
@@ -238,8 +238,8 @@ mod tests {
     fn every_example_has_both_keys() {
         for category in Category::ALL {
             for starter in category.examples() {
-                assert!(!starter.title_key.is_empty());
-                assert!(!starter.prompt_key.is_empty());
+                assert_ne!(starter.title_key.len(), 0);
+                assert_ne!(starter.prompt_key.len(), 0);
             }
         }
     }

@@ -83,18 +83,34 @@ impl FlowyApp {
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_paste(&self, cx: &mut Context<'_, Self>) {
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_name(&self, cx: &mut Context<'_, Self>) {
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_usage(&self, cx: &mut Context<'_, Self>) {
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_body(&self, cx: &mut Context<'_, Self>) {
         cx.notify();
     }

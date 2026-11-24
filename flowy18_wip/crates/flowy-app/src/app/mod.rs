@@ -3061,7 +3061,7 @@ mod tests {
             assert_eq!(app.active_dialog, state::ActiveDialog::None);
             assert_eq!(
                 app.studio.read(cx).projects,
-                [] as [flowy_studio::Project; 0]
+                []
             );
         });
         assert!(!root.join("projects.json").exists());
@@ -3205,7 +3205,7 @@ mod tests {
         cx.read_entity(&app, |app, cx| {
             assert_eq!(
                 app.studio.read(cx).projects,
-                [] as [flowy_studio::Project; 0]
+                []
             );
         });
         assert!(folder.is_dir(), "project removal must preserve local files");

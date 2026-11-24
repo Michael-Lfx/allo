@@ -1328,16 +1328,12 @@ impl AgentHandle {
                 submission,
             )
             .map_err(|error| {
-                match &error {
-                    RunError::Storage(storage_error) => {
-                        log_storage_io_error(
-                            "start agent turn",
-                            &flowy_agent_core::SessionIndex::path(&state.root),
-                            storage_error,
-                        );
-                    }
-                    RunError::Busy => {}
-                    _ => {}
+                if let RunError::Storage(storage_error) = &error {
+                    log_storage_io_error(
+                        "start agent turn",
+                        &flowy_agent_core::SessionIndex::path(&state.root),
+                        storage_error,
+                    );
                 }
                 match error {
                     RunError::Storage(_) => "notice.storage_error",

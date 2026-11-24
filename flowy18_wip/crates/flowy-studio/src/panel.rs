@@ -1483,7 +1483,7 @@ mod tests {
     /// Builds a panel inside its own window: `StudioPanel::new` needs the
     /// window that owns its deferred work, and the tests only ever read state.
     fn open_panel(
-        cx: &mut TestAppContext,
+        cx: &TestAppContext,
         build: impl FnOnce(
             &mut Window,
             &mut Context<'_, StudioPanel>,
@@ -1848,11 +1848,7 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
-    fn persisted_error_is_visible_on_the_first_frame(cx: &mut TestAppContext) {
+    fn persisted_error_is_visible_on_the_first_frame(cx: &TestAppContext) {
         let root = std::env::temp_dir().join(format!(
             "flowy-studio-working-{}-{}",
             std::process::id(),
@@ -2088,12 +2084,8 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
     fn background_session_updates_do_not_change_selected_surface(
-        cx: &mut TestAppContext,
+        cx: &TestAppContext,
     ) {
         let root = std::env::temp_dir().join(format!(
             "flowy-studio-navigation-{}-{}",
@@ -2174,12 +2166,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
     fn theme_changes_preserve_draft_and_do_not_leak_between_panels(
-        cx: &mut TestAppContext,
+        cx: &TestAppContext,
     ) {
         let root = std::env::temp_dir()
             .join(format!("flowy-studio-theme-{}", std::process::id()));
