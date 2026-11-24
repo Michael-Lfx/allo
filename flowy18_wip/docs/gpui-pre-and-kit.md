@@ -24,7 +24,8 @@ gpui-kit = "=0.11.0"
 | `gpui_kit::base::*` | `gpui-base` | 输入引擎、测试支持 |
 | `gpui_kit::component` | `gpui-component` | 60+ 现成组件 |
 
-输入相关类型的正确路径是 `gpui_kit::base::input`，**不是** `gpui_kit::base`：
+输入相关类型的**规范**路径是 `gpui_kit::base::input`。`Input` 和 `Textarea`
+在 `gpui_kit::base` 根也做了 re-export，但状态和事件类型只能从 `input` 取：
 
 ```rust
 use gpui_kit::base::input::{
@@ -110,7 +111,68 @@ panel.set_prompt_text(..)  // 写（入队）
 | 输入框构造上下文 | `"EditableText"` | `"Input"` |
 | 修饰键 | `secondary-` | `ctrl-`（`gpui-pre` 的 `Keystroke::parse` 不认 `secondary`） |
 
-## 布局陷阱（已在项目中踩过）
+## 键上下文：按深度取最深匹配，祖先赢不了焦点元素
+
+这条单独拎出来，因为它是本项目踩过最贵的一个坑，症状是「功能写完、编译过、测试过，但按键毫无反应」。
+
+`gpui-base` 给单行和多行编辑器都用同一个 context：
+
+```rust
+// gpui-base/src/input/base/state.rs
+pub(super) const CONTEXT: &str = "Input";
+```
+
+编辑器自己持有焦点，所以**焦点元素上的 context 是最深的**。你在外层容器上再加一个
+`.key_context("MyContext")`，得到的是 `[MyContext, Input]`：
+`MyContext` 在**祖先**上，深度更浅。
+
+keymap 的派发规则（`gpui-pre/src/keymap.rs` 按 depth 降序，第一个被消费就 return）：
+
+- `Some("Input")` → 深度 2
+- `Some("MyContext")` → 深度 1
+- `None`（无 context 限制）→ 按最深算，深度 2
+
+所以外层 context 的绑定**永远轮不到**。
+
+### 正确做法
+
+**同深度、后注册者优先**。要覆盖某个按键在输入框里的行为，就绑在同一个
+`"Input"` context 上，写在原有绑定**之后**：
+
+```rust
+KeyBinding::new("tab", FocusNext, Some("Input")),   // 先注册
+KeyBinding::new("tab", InsertIndent, Some("Input")), // 后注册 → 赢
+```
+
+handler 里自己判断当前焦点是不是多行框，**不是就兜底执行原本的行为**，否则单行框
+的那个键会被静默吞掉：
+
+```rust
+let focused = window.focused(cx);
+for field in [&about, &instructions, &import_paste, &knowledge_body] {
+    let presentation = field.read(cx).presentation();
+    if Some(presentation.focus_handle()) == focused.as_ref() {
+        field.update(cx, |state, cx| state.insert("    ", window, cx));
+        return;
+    }
+}
+window.focus_next(cx);   // 兜底
+```
+
+`InputPresentation` 上有 `focus_handle()`、`is_disabled()`、`is_readonly()`、
+`is_multi_line()`，够判断。
+
+### 另一个绕过方式
+
+`Enter` 用的是另一条路：不绑键位，而是把「从编辑器冒泡上来的 action」在根元素上
+`on_action` 接住再处理。注释里的原话：
+
+> The field's own key context sits on an ancestor, so it loses to the focused
+> element on keymap depth.
+
+同一个规则，两种正确写法。
+
+
 
 1. **`w_full()` 在 `justify_center` 的行里会塌成内容宽**。改用 `flex_1().min_w_0()`。
 2. **`scrollbar_width(px(0.))` 会让滚动彻底失效**，不是隐藏滚动条。

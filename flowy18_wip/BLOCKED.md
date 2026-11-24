@@ -51,13 +51,13 @@
 
 ## 当前已知遗留（不影响编译，影响行为或体验）
 
-1. popover / 菜单 / tooltip 的锚点测量在修复中
-2. 四个多行语义字段走单行引擎
+1. popover / 菜单 / tooltip 的锚点测量：**已修复**，见 `flowy-ui/src/overlays.rs`
+   的 `PrepaintBounds` 与 `tests/anchor_measurement.rs`（2 个回归测试）
 3. 逐键硬截断改为保存时截断
 4. RTL 未接线，阿语/希语下根方向与局部方向不一致
 5. a11y 播报与隐藏语义退化
 6. 关闭窗口 = 退出应用（托盘已移除）
-7. 输入框内 Tab 只移焦点
+7. 输入框内 Tab：**多行框已改为插入 4 个空格**，单行框仍移焦点。注意首页 composer 用的是裸 `text_area`，不在那四个字段里，Tab 仍移焦点
 8. 光标闪烁间隔、letter_spacing 回默认
 9. 启动固定落 Home，不再自动恢复上次会话
 10. `set_value` 不发 change 事件，所有「写值 → 等事件 → 落盘」的链路都需要

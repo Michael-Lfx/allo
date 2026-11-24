@@ -2627,7 +2627,7 @@ mod tests {
             let add_bounds = new_project_bounds(cx, &add_label).expect(
                 "new project button appears when the heading is hovered",
             );
-            // gpui-ce centered the add button exactly on the header row. Under
+            // The retired fork centered the add button exactly on the header row. Under
             // gpui-pre the row is 34.5px tall while the small icon button stays
             // 28px and sits ~3px below the centerline, so an exact equality no
             // longer holds. Keep the "same row" intent with a tolerance rather
@@ -3032,7 +3032,7 @@ mod tests {
             assert_eq!(app.active_dialog, state::ActiveDialog::ProjectCreate);
         });
         cx.update(|window, _| {
-            // gpui-ce exposed the text editor as an `accesskit::Role::TextInput`
+            // The retired fork exposed the text editor as an `accesskit::Role::TextInput`
             // node. The gpui-kit `Input` behind `theme::TextField` registers the
             // field frame with its accessible name but no role, and no
             // `TextInput` role exists anywhere in the tree, so the role half of

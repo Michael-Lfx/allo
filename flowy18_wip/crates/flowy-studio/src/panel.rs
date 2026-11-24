@@ -247,8 +247,16 @@ impl StudioPanel {
             store_root,
             llm,
         } = config;
-        let prompt =
-            cx.new(|cx| gpui_kit::base::input::TextareaState::new(window, cx));
+        // The placeholder has to be set through the generic setter: the
+        // builder form only exists on the single-line state. Without it the
+        // composer renders empty and screen readers get no name.
+        let prompt_placeholder = i18n.t("chat.do_anything");
+        let prompt = cx.new(|cx| {
+            let mut state =
+                gpui_kit::base::input::TextareaState::new(window, cx);
+            state.set_placeholder(prompt_placeholder, window, cx);
+            state
+        });
         let prompt_sub = cx.subscribe(
             &prompt,
             |panel, _, _: &gpui_kit::base::input::InputEvent, cx| {

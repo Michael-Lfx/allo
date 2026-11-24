@@ -152,8 +152,16 @@ impl ChatComposer {
                     .flex_col()
                     .gap(self.theme.space(8.))
                     .child(
-                        text_area("chat-prompt", &self.prompt)
-                            .into_any_element(),
+                        // The kit multi-line editor is `h_full` inside, so it
+                        // needs a bounded parent or it collapses to one row.
+                        div()
+                            .w_full()
+                            .min_h(px(44.))
+                            .max_h(px(160.))
+                            .child(
+                                text_area("chat-prompt", &self.prompt)
+                                    .into_any_element(),
+                            ),
                     )
                     .child(
                         div()
