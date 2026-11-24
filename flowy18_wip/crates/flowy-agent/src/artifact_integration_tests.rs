@@ -345,6 +345,46 @@ fn artifact_ids(handle: &AgentHandle) -> Vec<String> {
         .collect()
 }
 
+/// Windows can briefly report a sharing violation when another reader (the
+/// conversation-file import or the on-access scanner) still has the source
+/// open. The test edits files the turn just delivered, so retry the two
+/// user-simulation operations instead of making the suite timing-sensitive.
+fn write_with_retry(path: &std::path::Path, bytes: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::write(path, bytes) {
+            Ok(()) => return,
+            Err(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                panic!("write {} failed after retries: {error}", path.display())
+            }
+        }
+    }
+}
+
+fn remove_with_retry(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::remove_file(path) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return;
+            }
+            Err(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                panic!(
+                    "remove {} failed after retries: {error}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
 #[test]
 fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
 {
@@ -412,8 +452,8 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     store.set_favorite(&csv_id, true).unwrap();
     store.trash(&csv_id).unwrap();
 
-    fs::write(output.join("sales.csv"), b"later overwritten source").unwrap();
-    fs::remove_file(output.join("sample.pdf")).unwrap();
+    write_with_retry(&output.join("sales.csv"), b"later overwritten source");
+    remove_with_retry(&output.join("sample.pdf"));
     assert_eq!(store.read_payload(&csv_id).unwrap(), CSV.as_bytes());
     assert_eq!(
         store.get(&csv_id).unwrap().unwrap().manifest.receipt.sha256,
