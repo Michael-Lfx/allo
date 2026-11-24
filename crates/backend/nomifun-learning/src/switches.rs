@@ -330,13 +330,22 @@ pub fn variant_v2_enabled_value(value: Option<&str>) -> bool {
 /// 落位，未过门的批可见失败（缺口点名）。预算只注入自动补批臂
 /// （settlement / auto_refill 两个触发源）的 `run_growth`；手动 grow 不
 /// 注入——上游同款区分：自动触发的无界尾巴发生在用户不在场的后台，
-/// 可预测性比完成率重要。取值：未设 = 缺省 600；`0` = 关（预算不注入
-/// ——等效现行为，A/B 负优化时的回退档）；非法值（非数字/负数）回退
-/// 缺省并 warn 一次留痕（与 rs7 就绪目标开关同律）。
+/// 可预测性比完成率重要。取值：未设 = **关**（预算不注入——见下）；设正
+/// 整数秒 = 该预算窗口；`0` = 关；非法值（非数字/负数）回退「关」并 warn
+/// 一次留痕（与 rs7 就绪目标开关同律）。
+///
+/// **缺省关的依据（2026-11-24 真机 A/B，rs8 票 Resolution）**：600s 缺省在
+/// allo 上把一轮「慢但能成」的自动补批截成了失败（起草 252s + 评审 301s +
+/// 重裁 145s 即到点，3 个在途节点作废）。allo 单次评审思考 ~5 分钟，一次
+/// 返工就吃满 10 分钟——上游 #257 的 600 建立在他们批次更小、单次评审更快
+/// 的形态上。预算的收益（给无界尾巴设上界）尚无数据证明，故缺省不设；
+/// 开关保留为运维面，缺省值待 ADR-0018 落地后（评审输入减约三分之一）的
+/// 新数据再定。
 pub const AUTO_REFILL_BUDGET_SECS_ENV: &str = "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS";
 
-/// 预算缺省秒数（learnhub #257 同款 600 = 10 分钟墙钟）。
-pub const AUTO_REFILL_BUDGET_DEFAULT_SECS: u64 = 600;
+/// 预算缺省：关（`None`——预算不注入）。曾为 600（learnhub #257 同款），
+/// 2026-11-24 真机读数后改关，依据见环境变量常量文档。
+pub const AUTO_REFILL_BUDGET_DEFAULT_SECS: Option<u64> = None;
 
 /// 非法取值的 warn 一次性留痕（进程级一次——逐次 warn 会在每次读数刷日
 /// 志；多份不同非法值只记首份，运维面足够定位。与
@@ -346,17 +355,17 @@ fn warn_invalid_auto_refill_budget_secs_once(raw: &str) {
     WARN_ONCE.call_once(|| {
         tracing::warn!(
             raw,
-            "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS 非法（合法域：非负整数的秒数），回退缺省 600"
+            "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS 非法（合法域：非负整数的秒数），回退缺省（关）"
         );
     });
 }
 
 /// 预算秒数判定（取值注入面，纯函数——测试不触进程 env）：`None` = 关
-/// （预算不注入），`Some(secs)` = 预算窗口秒数；非法值回退缺省（留痕见
-/// [`warn_invalid_auto_refill_budget_secs_once`]）。
+/// （预算不注入），`Some(secs)` = 预算窗口秒数；未设与非法值同为缺省
+/// （关；非法值留痕见 [`warn_invalid_auto_refill_budget_secs_once`]）。
 pub fn auto_refill_budget_secs_value(value: Option<&str>) -> Option<u64> {
     match value {
-        None => Some(AUTO_REFILL_BUDGET_DEFAULT_SECS),
+        None => AUTO_REFILL_BUDGET_DEFAULT_SECS,
         Some(raw) => match raw.trim().parse::<u64>() {
             Ok(0) => None,
             Ok(secs) => Some(secs),
@@ -364,14 +373,14 @@ pub fn auto_refill_budget_secs_value(value: Option<&str>) -> Option<u64> {
             // 留痕：坏配置可定位，不静默。
             Err(_) => {
                 warn_invalid_auto_refill_budget_secs_once(raw);
-                Some(AUTO_REFILL_BUDGET_DEFAULT_SECS)
+                AUTO_REFILL_BUDGET_DEFAULT_SECS
             }
         },
     }
 }
 
-/// 自动补批墙钟预算秒数（未设 = 600；`0` = 关；非法值回退缺省并 warn
-/// 一次留痕）。
+/// 自动补批墙钟预算秒数（未设 = 关；设正整数秒 = 该窗口；`0` = 关；非法值
+/// 回退关并 warn 一次留痕）。
 pub fn auto_refill_budget_secs() -> Option<u64> {
     auto_refill_budget_secs_value(std::env::var(AUTO_REFILL_BUDGET_SECS_ENV).ok().as_deref())
 }
@@ -732,23 +741,24 @@ mod tests {
         assert_eq!(ready_trigger(), 3, "未设 → 缺省 trigger 3");
     }
 
-    /// 自动补批墙钟预算秒数（rs8）：未设 = 缺省 600；`0` = 关（None——
-    /// 等效现行为，A/B 负优化的回退档）；非法值回退缺省；合法值直通。
-    /// 纯函数面测试（不触进程 env——env 窗口会泄漏进并行生长测试）。
+    /// 自动补批墙钟预算秒数（rs8）：未设 = **关**（None——2026-11-24 真机
+    /// A/B 后缺省改关，依据见环境变量常量文档）；`0` = 关；非法值回退关；
+    /// 设正整数秒 = 直通。纯函数面测试（不触进程 env——env 窗口会泄漏进
+    /// 并行生长测试）。
     #[test]
-    fn auto_refill_budget_secs_defaults_to_600_and_zero_disables() {
+    fn auto_refill_budget_secs_defaults_to_off_and_positive_values_pass_through() {
         assert_eq!(
             auto_refill_budget_secs_value(None),
-            Some(600),
-            "未设 = 缺省 600（learnhub #257 同款）"
+            None,
+            "未设 = 关（预算不注入）——600 缺省曾把慢而能成的自动补批截成失败"
         );
-        assert_eq!(auto_refill_budget_secs_value(Some("0")), None, "0 = 关（等效现行为）");
+        assert_eq!(auto_refill_budget_secs_value(Some("0")), None, "0 = 关");
         assert_eq!(auto_refill_budget_secs_value(Some(" 0 ")), None, "空白宽容的 0 同样 = 关");
         for bad in ["abc", "-1", "1.5", "600s", ""] {
             assert_eq!(
                 auto_refill_budget_secs_value(Some(bad)),
-                Some(600),
-                "{bad:?} 非法 = 回退缺省"
+                None,
+                "{bad:?} 非法 = 回退关（与未设同窗）"
             );
         }
         for good in ["1", "600", "1200", " 1800 "] {

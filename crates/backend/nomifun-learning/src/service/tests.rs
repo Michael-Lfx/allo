@@ -15479,6 +15479,11 @@ async fn wait_for_growth_task_failure_detail(service: &LearningService) -> Strin
 #[tokio::test]
 #[serial_test::serial]
 async fn auto_refill_budget_injects_only_for_auto_triggers() {
+    // 预算缺省已改关（2026-11-24 真机读数）——预算臂测试显式声明窗口。
+    let _budget = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("600"),
+    );
     // ── auto_refill 臂：预算到点 = 零调用即中止 ──────────────────────────
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
@@ -15567,6 +15572,11 @@ async fn auto_refill_budget_injects_only_for_auto_triggers() {
 #[tokio::test]
 #[serial_test::serial]
 async fn budget_expiry_before_review_aborts_without_the_review_call() {
+    // 预算缺省已改关（2026-11-24 真机读数）——预算臂测试显式声明窗口。
+    let _budget = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("600"),
+    );
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -15605,6 +15615,11 @@ async fn budget_expiry_before_review_aborts_without_the_review_call() {
 #[tokio::test]
 #[serial_test::serial]
 async fn budget_expiry_during_review_places_approved_batch_with_note() {
+    // 预算缺省已改关（2026-11-24 真机读数）——预算臂测试显式声明窗口。
+    let _budget = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("600"),
+    );
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -15639,6 +15654,11 @@ async fn budget_expiry_during_review_places_approved_batch_with_note() {
 #[tokio::test]
 #[serial_test::serial]
 async fn budget_expiry_after_rejected_review_prejudges_the_next_attempt() {
+    // 预算缺省已改关（2026-11-24 真机读数）——预算臂测试显式声明窗口。
+    let _budget = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("600"),
+    );
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -15684,6 +15704,11 @@ async fn budget_expiry_after_rejected_review_prejudges_the_next_attempt() {
 #[tokio::test]
 #[serial_test::serial]
 async fn budget_expiry_stops_the_in_place_guard_retry() {
+    // 预算缺省已改关（2026-11-24 真机读数）——预算臂测试显式声明窗口。
+    let _budget = crate::switches::switch_env_guard(
+        crate::switches::AUTO_REFILL_BUDGET_SECS_ENV,
+        Some("600"),
+    );
     let _splice_off =
         set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
     let (service, _knowledge, owner) = job_test_service().await;
