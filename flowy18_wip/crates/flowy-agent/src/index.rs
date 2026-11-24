@@ -219,7 +219,7 @@ mod tests {
                 status: TurnStatus::Idle,
                 titled: false,
                 workspace: Some(workspace.clone()),
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         }

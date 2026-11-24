@@ -91,10 +91,20 @@
     安装包、正常安装目录、把 exe 拷出去都能正常显示托盘。
   - 启动失败时现在会额外打一条 hint 指路，见 `flowy-shell/src/lib.rs` 的
     `TRAY_ACCESS_DENIED_HINT`。
-- **`flowy-agent` 测试目标 45 条 clippy**：`cargo clippy -p flowy-agent --all-targets
-  --locked -- -D warnings` 退出 101，报 45 条，全部落在 lib test；`--lib` 已清零。
-  CI 门禁命令不选 `flowy-agent`，所以这 45 条不进流水线。要清得先决定是否把
-  `-p flowy-agent` 加进门禁，再另开一轮。
+- **`flowy-agent` 测试目标的 clippy（已清零，2026-11-24）**：45 条全部落在 lib test，
+  现已按 clippy 的建议改完，`cargo clippy -p flowy-agent --all-targets` 退出 0。
+  - 27 条是 `clippy::assert_is_empty`（1.100 新进 pedantic）：`assert!(x.is_empty())`
+    改成 `assert_eq!(x.as_slice(), [])`，非空改成 `assert_ne!(...)`；字符串用
+    `assert_eq!(x, "")`。`Vec<String>` 上的 `[]` 无法推断类型，改用显式
+    `let empty: [String; 0] = [];`，并在代码里留了注释说明。
+  - 7 条 `default_trait_access`：`origin: Default::default()` 改成
+    `SessionOrigin::default()`。
+  - 其余：2 条 `&PathBuf` 改 `&Path`、2 条多余 clone、1 条 `map_or`、
+    1 条 `let...else`、1 条先取值后释放锁、1 条文档反引号、1 条缺分号，
+    以及字段 `_ancestors` 的下划线绑定——最后这条用带 reason 的 `#[expect]`，
+    因为下划线前缀是有意的语义标记。
+  - 门禁已同步：`flowy18-ui.yml` 的 clippy 命令现在包含 `-p flowy-agent`，
+    跑完整五 crate 命令退出 0。代价是 Windows 作业多检查一个 crate 的测试目标。
 - **资料库导入被跳过（已修复）**：日志 `artifact import skipped ...
   publisher directory is a link or reparse point`。本机 `%APPDATA%\Flowy` 是指向
   `.absorb_tmp/flowy-appdata` 的 junction，于是整条导入被静默跳过。

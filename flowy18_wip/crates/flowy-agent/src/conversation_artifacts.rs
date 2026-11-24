@@ -647,7 +647,7 @@ mod tests {
             ],
         );
         assert_eq!(commit_writes(&store, &unknown_record), 0);
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
     }
 
     #[test]
@@ -661,7 +661,7 @@ mod tests {
         let store = ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
-                source_root: output.clone(),
+                source_root: output,
                 relative_path: "notes.md".into(),
                 source_relative_path: "outputs/submission-published/notes.md"
                     .into(),
@@ -729,8 +729,10 @@ mod tests {
                 result_message("backfill-write", "write_file", false),
             ],
         );
-        let mut index = SessionIndex::default();
-        index.active = Some(record.id.clone());
+        let mut index = SessionIndex {
+            active: Some(record.id.clone()),
+            ..SessionIndex::default()
+        };
         index.upsert(record);
         index.save(&scratch.0).unwrap();
 
@@ -771,7 +773,7 @@ mod tests {
         assert_eq!(records[0].manifest.receipt.artifact_id, artifact_id);
         reopened.trash_artifact(&artifact_id).unwrap();
         reopened.permanently_delete_artifact(&artifact_id).unwrap();
-        assert!(reopened.artifacts().unwrap().is_empty());
+        assert_eq!(reopened.artifacts().unwrap().as_slice(), []);
         drop(reopened);
 
         let after_delete = AgentHandle::with_config(
@@ -808,7 +810,7 @@ mod tests {
             ],
         );
         assert_eq!(commit_writes(&store, &record), 0);
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert!(
             store
                 .diagnostics()
@@ -863,10 +865,10 @@ mod tests {
             .clone();
         store.trash(&artifact_id).unwrap();
         store.permanently_delete(&artifact_id).unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
 
         assert_eq!(commit_writes(&store, &record), 0);
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
     }
 
     #[test]

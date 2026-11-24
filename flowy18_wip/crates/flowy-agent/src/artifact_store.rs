@@ -2547,12 +2547,16 @@ pub fn can_open_with_default_app(file_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Empty slice with an explicit element type: a bare `[]` cannot be
+    /// inferred against `[String]` in these assertions.
+    const NO_DIAGNOSTICS: [String; 0] = [];
+
     use super::{
         ArtifactStore, PREPARED_RETENTION_MS, PrepareArtifact, PublicationState,
     };
     use flowy_agent_core::{DeliveryCommit, SessionOrigin};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Scratch(PathBuf);
@@ -2574,11 +2578,7 @@ mod tests {
         }
     }
 
-    fn request(
-        root: &PathBuf,
-        relative_path: &str,
-        key: &str,
-    ) -> PrepareArtifact {
+    fn request(root: &Path, relative_path: &str, key: &str) -> PrepareArtifact {
         PrepareArtifact {
             source_root: root.join("workspace"),
             relative_path: relative_path.into(),
@@ -2592,7 +2592,7 @@ mod tests {
             origin: SessionOrigin::Home,
         }
     }
-    fn store(root: &PathBuf) -> ArtifactStore {
+    fn store(root: &Path) -> ArtifactStore {
         fs::create_dir_all(root.join("workspace/outputs")).unwrap();
         ArtifactStore::open(root.join("artifacts")).unwrap()
     }
@@ -2630,7 +2630,7 @@ mod tests {
                 "publication_state": "committed"
             }))
             .unwrap();
-        assert!(manifest.source_relative_path.is_empty());
+        assert_eq!(manifest.source_relative_path, "");
         assert!(!manifest.conversation_import);
         assert!(!manifest.superseded);
     }
@@ -2688,7 +2688,7 @@ mod tests {
         let usage = store.usage().unwrap();
         assert_eq!(usage.stored_items, 0);
         assert_eq!(usage.staging_bytes, 0);
-        assert!(store.scan_locked().unwrap().manifests.is_empty());
+        assert_eq!(store.scan_locked().unwrap().manifests.as_slice(), []);
     }
 
     #[test]
@@ -2990,7 +2990,7 @@ mod tests {
             fs::metadata(payload).unwrap().len(),
             super::MAX_STORE_BYTES
         );
-        assert!(store.scan_locked().unwrap().manifests.is_empty());
+        assert_eq!(store.scan_locked().unwrap().manifests.as_slice(), []);
     }
 
     #[test]
@@ -3017,10 +3017,10 @@ mod tests {
                 "invalid source {key} was accepted"
             );
         }
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert_eq!(store.usage().unwrap().staging_bytes, 0);
         assert_eq!(store.usage().unwrap().stored_items, 0);
-        assert!(store.scan_locked().unwrap().manifests.is_empty());
+        assert_eq!(store.scan_locked().unwrap().manifests.as_slice(), []);
     }
 
     #[test]
@@ -3035,7 +3035,7 @@ mod tests {
         let receipt = store
             .prepare(request(&scratch.0, "outputs/report.csv", "report"))
             .unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         store.commit_delivery(&commit(&receipt)).unwrap();
         let rows = store.list().unwrap();
         assert_eq!(rows.len(), 1);
@@ -3107,7 +3107,7 @@ mod tests {
         drop(store);
         let reopened =
             ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
-        assert!(reopened.list().unwrap().is_empty());
+        assert_eq!(reopened.list().unwrap().as_slice(), []);
         assert!(reopened.read_payload(&receipt.artifact_id).is_err());
     }
 
@@ -3274,9 +3274,9 @@ mod tests {
             store.item_dir(&one.artifact_id),
         )
         .unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         let mut proof = commit(&one);
-        proof.artifact_ids.push(two.artifact_id.clone());
+        proof.artifact_ids.push(two.artifact_id);
         store.commit_delivery(&proof).unwrap();
         assert_eq!(store.list().unwrap().len(), 2);
         proof.committed_at_ms += 1;
@@ -3354,7 +3354,7 @@ mod tests {
         let bytes = serde_json::to_vec(&future).unwrap();
         fs::write(bad.join("manifest.json"), &bytes).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
-        assert!(!store.diagnostics().unwrap().is_empty());
+        assert_ne!(store.diagnostics().unwrap().as_slice(), NO_DIAGNOSTICS);
         assert!(store.permanently_delete("future").is_err());
         assert_eq!(fs::read(bad.join("manifest.json")).unwrap(), bytes);
     }
@@ -3390,7 +3390,7 @@ mod tests {
         assert!(!deleted.available);
         assert_eq!(reopened.usage().unwrap().stored_bytes, 0);
         reopened.commit_delivery(&commit(&receipt)).unwrap();
-        assert!(reopened.list().unwrap().is_empty());
+        assert_eq!(reopened.list().unwrap().as_slice(), []);
     }
 
     fn age_prepared(
@@ -3510,7 +3510,7 @@ mod tests {
 
         store.trash(&second.artifact_id).unwrap();
         store.permanently_delete(&second.artifact_id).unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert_eq!(store.read_payload(&first.artifact_id).unwrap(), b"old");
     }
 
@@ -3550,7 +3550,7 @@ mod tests {
             b"real data"
         );
         assert!(store.read_payload(&bad.artifact_id).is_err());
-        assert!(!store.diagnostics().unwrap().is_empty());
+        assert_ne!(store.diagnostics().unwrap().as_slice(), NO_DIAGNOSTICS);
         assert!(store.cleanup_uncommitted(&[], true).is_err());
         assert!(raw.join("payload").is_file());
         assert!(store.set_favorite(&healthy.artifact_id, true).is_err());
@@ -3662,7 +3662,7 @@ mod tests {
                 std::slice::from_ref(&delivery.submission_id),
             )
             .unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert!(store.get(&receipt.artifact_id).unwrap().is_none());
 
         store.cancel_session_deletion(&delivery.session_id).unwrap();
@@ -3692,7 +3692,7 @@ mod tests {
         assert!(!staging.exists());
         assert!(!store.source_deletion_path(&delivery.session_id).exists());
         assert!(!store.session_deletion_path(&delivery.session_id).exists());
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert!(store.preferences_locked().unwrap().is_empty());
     }
 
@@ -3722,7 +3722,7 @@ mod tests {
         // Simulate a crash after part of the cleanup became durable.
         fs::remove_file(store.payload_path(&receipt.artifact_id)).unwrap();
         assert_eq!(store.session_deletions().unwrap().len(), 1);
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         store
             .cleanup_session_deletion(&delivery.session_id)
             .unwrap();
@@ -3757,7 +3757,7 @@ mod tests {
             .unwrap();
         assert!(store.cleanup_uncommitted(&[], true).is_err());
         assert_eq!(store.usage().unwrap().staging_bytes, 7);
-        assert!(!store.diagnostics().unwrap().is_empty());
+        assert_ne!(store.diagnostics().unwrap().as_slice(), NO_DIAGNOSTICS);
         assert_eq!(fs::read(&payload).unwrap(), b"partial");
         drop(occupied);
         store.cleanup_uncommitted(&[], true).unwrap();

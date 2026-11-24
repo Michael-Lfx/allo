@@ -391,12 +391,11 @@ mod tests {
         );
 
         let rows = projection.visible_lines();
-        let files = match rows
+        let Some(ChatLine::FileChanges { files }) = rows
             .iter()
             .find(|line| matches!(line, ChatLine::FileChanges { .. }))
-        {
-            Some(ChatLine::FileChanges { files }) => files,
-            _ => panic!("expected one summary row"),
+        else {
+            panic!("expected one summary row");
         };
         assert_eq!(files.len(), 1, "same path must not duplicate");
         assert_eq!((files[0].added, files[0].removed), (6, 4));

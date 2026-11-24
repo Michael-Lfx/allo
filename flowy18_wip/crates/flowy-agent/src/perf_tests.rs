@@ -102,7 +102,7 @@ fn offline_agent_baseline() {
                         status: TurnStatus::Completed,
                         titled: true,
                         workspace: None,
-                        origin: Default::default(),
+                        origin: flowy_agent_core::SessionOrigin::default(),
                         session_workspace: None,
                     }],
                 }
