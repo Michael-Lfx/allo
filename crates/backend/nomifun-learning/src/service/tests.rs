@@ -14444,8 +14444,11 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(!rows[0].reason.is_empty(), "失败原因如实落账");
     }
 
-    /// 结算触发的生长（自动臂）落 trigger=settlement、无操作者。
+    /// 结算触发的生长（自动臂）落 trigger=settlement、无操作者。自动臂带
+    /// 墙钟预算、判定时读进程级测试槽（rs8）——与强制到点的预算测试共用
+    /// 全局态，须串行（仓库铁律：读写进程全局态的测试必须 `#[serial]`）。
     #[tokio::test]
+    #[serial_test::serial]
     async fn settlement_growth_ledger_has_no_actor() {
         let (service, _knowledge, owner) = job_test_service().await;
         let (course_id, _a, _b) = seed_graph_course(&service).await;
@@ -14516,7 +14519,9 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         /// 透传：成对选择到达生长管线的 LLM 调用——手动与自动补批两臂都带所
         /// 选 provider/model（不再回落默认档），动作簿触发源标签照旧；不带选择
         /// （`{}`，前端 choice 未解析时的形状）仍回落默认档（None）。
+        /// 自动补批臂带墙钟预算、判定时读进程级测试槽（rs8）——须串行。
         #[tokio::test]
+        #[serial_test::serial]
         async fn grow_threads_model_choice_into_growth_calls() {
             let cases = [
                 ("", Some((PROVIDER, "model-a")), "manual"),
