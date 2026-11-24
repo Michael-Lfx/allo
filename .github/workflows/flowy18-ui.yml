@@ -38,7 +38,14 @@ jobs:
 
           root = pathlib.Path('flowy18_wip')
           manifest = (root / 'Cargo.toml').read_text(encoding='utf-8')
-          patch = re.search(r'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"', manifest)
+          # A commented-out patch line is documentation, not a dependency.
+          # Matching one here disabled the Windows job silently for months.
+          active_manifest = '\n'.join(
+              line
+              for line in manifest.splitlines()
+              if not line.lstrip().startswith('#')
+          )
+          patch = re.search(r'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"', active_manifest)
           source = root / patch.group(1) / 'Cargo.toml' if patch else None
           tracked = source is None or (
               source.is_file() and subprocess.run(
@@ -89,7 +96,9 @@ jobs:
       - name: Validate clean-checkout patch source
         run: |
           $manifest = Get-Content -LiteralPath Cargo.toml -Raw
-          $patch = [regex]::Match($manifest, 'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"')
+          # Ignore commented-out patch lines: only an active dependency can be missing.
+          $activeManifest = ($manifest -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+          $patch = [regex]::Match($activeManifest, 'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"')
           if ($patch.Success) {
             $patchManifest = Join-Path $patch.Groups[1].Value 'Cargo.toml'
             if (-not (Test-Path -LiteralPath $patchManifest)) {
