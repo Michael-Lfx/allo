@@ -179,9 +179,10 @@ if lock(&state.live)
 
 - `AcceptedMessage { id, session_id, text, created_at_ms, taken_at_ms }`
 - `AcceptanceQueue::accept()` —— 忙时唯一的一次写：一个文件、一次原子 rename，**不碰 session 状态**
+  （**旧实现，任务 7 已改为追加日志**）
 - `pending()` —— 取未处理的，按时间排序
 - `take(id)` —— 标记已领取，**两个并发调用者不会跑同一段文本**
-- 落盘位置 `root/acceptance/pending.json`，**故意与 `sessions/history.json` 分开** —— 队列在 turn 运行中写，索引在 turn 边界写，共用一个文件就是白送的写竞争
+- 落盘位置 `root/acceptance/pending.json`（**旧实现，现为 `journal.jsonl`**），**故意与 `sessions/history.json` 分开** —— 队列在 turn 运行中写，索引在 turn 边界写，共用一个文件就是白送的写竞争
 
 ### 测试（4/4 通过）
 

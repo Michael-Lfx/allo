@@ -14,7 +14,7 @@
 
 | | 根 workspace | `flowy18_wip/`（嵌套独立 workspace） |
 | --- | --- | --- |
-| 技术栈 | Tauri + React | **GPUI（`gpui-ce`）+ pi-rust** |
+| 技术栈 | Tauri + React | **GPUI（`gpui-pre` 0.3.14 + `gpui-kit` 0.11.0）+ pi-rust** |
 | 包名 | `Flowy`（`apps/desktop/Cargo.toml`） | **`flowy-app`**（`crates/flowy-app`） |
 | 产物 | `target/debug/Flowy.exe` | **`flowy18_wip/target/debug/flowy-app.exe`** |
 | 与方案的关系 | **无关** | **本方案描述的就是它** |

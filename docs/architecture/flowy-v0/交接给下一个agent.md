@@ -248,7 +248,7 @@ agent-desktop press ctrl+v --window-id $W
 | 4 | **`taken` 改租约** | 现在是永久布尔：先落 `taken` 再执行，中间崩溃 → 消息不在 pending、永远不跑、没有错误。方案要「至少一次」，实现成「至多一次可能零次」 |
 | 5 | **V2 队列消费** | `take()` **零生产调用方**，队列只写不读 |
 | 6 | **`accept()` 每次全文重放** | 方案 §5.7 要求忙时提交 50ms 出编号，10⁵ 行就过不了 |
-| 7 | **文档陈旧** | `PROGRESS.md` 三处还写「一次原子 rename」（代码早已是 journal） |
+| 7 | ~~文档陈旧~~ | **已修**：`PROGRESS.md` 的历史段落已就地标注「旧实现，任务 7 已改为追加日志」；`BLOCKED.md` 的 `gpui-ce` 已更正为 `gpui-pre` + `gpui-kit` |
 
 **排在第一位的是 #1，不是 #2** —— 不写死第六条，V0 的断言就是凑数。
 
@@ -298,14 +298,22 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 ## 10. 当前未提交的改动
 
-rebase 后为适配 gpui-pre 改了两处，**已编译、已测试（245 全绿）、已实测**：
+**代码（rebase 后为适配 gpui-pre，已编译、已测试 245 全绿、已实测）：**
 
 ```
 flowy18_wip/crates/flowy-studio/src/panel.rs   emplace → set_prompt_text；测试用 open_panel
 flowy18_wip/crates/flowy-studio/src/studio.rs  去掉 aria_live（gpui-pre 已删除该 API）
 ```
 
-**建议先提交这两处，再开新活。**
+**文档（知识收尾时校正）：**
+
+```
+BLOCKED.md                  技术栈 gpui-ce → gpui-pre 0.3.14 + gpui-kit 0.11.0
+PROGRESS.md                 两处历史描述就地标注「旧实现」
+交接给下一个agent.md        第 7 项标记为已修
+```
+
+**建议先把这 5 个文件提交，再开新活。**
 
 ---
 
