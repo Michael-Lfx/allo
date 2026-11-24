@@ -15,6 +15,7 @@ members = [
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
+    "crates/flowy-skills",
 ]
 default-members = [
     "crates/flowy-core",
@@ -31,6 +32,7 @@ default-members = [
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
+    "crates/flowy-skills",
 ]
 
 [workspace.package]
@@ -66,6 +68,9 @@ flowy-studio = { path = "crates/flowy-studio" }
 flowy-net = { path = "crates/flowy-net" }
 flowy-ota = { path = "crates/flowy-ota" }
 flowy-obs = { path = "crates/flowy-obs" }
+flowy-skills = { path = "crates/flowy-skills" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "json",

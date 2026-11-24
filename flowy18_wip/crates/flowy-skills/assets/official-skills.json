@@ -1,0 +1,18 @@
+[
+  {
+    "owner_handle": "flowy",
+    "slug": "excel",
+    "version": "1.0.0",
+    "title": "Excel",
+    "summary": "Spreadsheets",
+    "auto_invoke": true
+  },
+  {
+    "owner_handle": "flowy",
+    "slug": "pdf",
+    "version": "1.0.0",
+    "title": "PDF",
+    "summary": "Read and edit PDF documents",
+    "auto_invoke": true
+  }
+]
