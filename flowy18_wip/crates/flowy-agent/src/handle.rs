@@ -37,6 +37,10 @@ use crate::title::{self, TITLE_MAX_CHARS};
 /// The lease handed to a consumer claim; long enough for a normal turn.
 const ACCEPTED_LEASE_MS: u64 = 30_000;
 
+/// First retry delay after a failed turn; doubled per attempt, capped.
+const ACCEPTED_RELEASE_BASE_MS: u64 = 5_000;
+const ACCEPTED_RELEASE_MAX_MS: u64 = 5 * 60_000;
+
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
     pub id: String,
@@ -83,9 +87,11 @@ struct Live {
     session_workspace: Option<SessionWorkspace>,
 }
 
+#[derive(Clone)]
 struct AcceptedClaim {
     receipt_id: String,
     attempt_id: String,
+    attempts: u32,
 }
 
 struct UiState {
@@ -1309,7 +1315,8 @@ impl AgentHandle {
                     .is_some_and(|session| !session.status.is_busy()) =>
             {
                 if let Err(error) = self.select_session(hint) {
-                    let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+                    let _ =
+                        queue.release(&claimed.id, &attempt_id, now_ms(), 0);
                     return Err(error);
                 }
                 hint.to_owned()
@@ -1317,7 +1324,8 @@ impl AgentHandle {
             _ => match self.create_home_session() {
                 Ok(session) => session,
                 Err(error) => {
-                    let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+                    let _ =
+                        queue.release(&claimed.id, &attempt_id, now_ms(), 0);
                     return Err(error);
                 }
             },
@@ -1339,12 +1347,13 @@ impl AgentHandle {
             Vec::new(),
         );
         if let Err(error) = self.submit_chat(submission, &claimed.text) {
-            let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+            let _ = queue.release(&claimed.id, &attempt_id, now_ms(), 0);
             return Err(error);
         }
         *lock(&state.accepted_claim) = Some(AcceptedClaim {
             receipt_id: claimed.id.clone(),
             attempt_id: attempt_id.clone(),
+            attempts: claimed.attempts,
         });
         tracing::debug!(
             target: "flowy.prompt",
@@ -1364,7 +1373,8 @@ impl AgentHandle {
 
     /// Finish the receipt started by [`Self::run_accepted_once`].
     pub fn finish_accepted(&self, completed: bool) -> Result<(), &'static str> {
-        let Some(claim) = lock(&self.inner.state.accepted_claim).take() else {
+        let claim = lock(&self.inner.state.accepted_claim).clone();
+        let Some(claim) = claim else {
             return Ok(());
         };
         let queue = AcceptanceQueue::new(self.inner.state.root.clone());
@@ -1372,8 +1382,18 @@ impl AgentHandle {
         let result = if completed {
             queue.complete(&claim.receipt_id, &claim.attempt_id, now)
         } else {
-            queue.release(&claim.receipt_id, &claim.attempt_id, now)
+            queue.release(
+                &claim.receipt_id,
+                &claim.attempt_id,
+                now,
+                release_backoff(claim.attempts),
+            )
         };
+        // Only drop the claim once the journal accepted the outcome; a failed
+        // write keeps it so a retry can finish the same attempt.
+        if result.is_ok() {
+            *lock(&self.inner.state.accepted_claim) = None;
+        }
         result.map(|_| ()).map_err(|_| "notice.storage_error")
     }
 
@@ -2870,6 +2890,13 @@ fn now_ms() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+fn release_backoff(attempts: u32) -> u64 {
+    let shift = attempts.saturating_sub(1).min(6);
+    ACCEPTED_RELEASE_BASE_MS
+        .saturating_mul(1 << shift)
+        .min(ACCEPTED_RELEASE_MAX_MS)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

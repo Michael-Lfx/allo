@@ -343,6 +343,7 @@
   "more.save": "บันทึก",
   "more.skills": "ทักษะ",
   "more.skills_body": "ทักษะยังไม่ได้เชื่อมต่อ หน้านี้ไม่แสดงรายการหรือเรียกใช้ทักษะ",
+  "notice.accepted_ran": "A queued message started in another session",
   "notice.account_change_later": "Changing account details comes in a later stage",
   "notice.account_delete_later": "Account deletion comes in a later stage",
   "notice.account_manage_later": "Account management comes in a later stage",

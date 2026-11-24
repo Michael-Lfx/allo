@@ -56,6 +56,12 @@ pub struct AcceptedMessage {
     /// returns to `pending`.
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
+    /// Earliest time this receipt may be claimed again after a release.
+    #[serde(default)]
+    pub available_at_ms: Option<u64>,
+    /// How many times the receipt has been claimed.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 /// A claim on one receipt. The attempt id lets only the owner complete or
@@ -69,6 +75,9 @@ pub struct Lease {
 impl AcceptedMessage {
     fn is_claimable(&self, now_ms: u64) -> bool {
         self.completed_at_ms.is_none()
+            && self
+                .available_at_ms
+                .is_none_or(|available| available <= now_ms)
             && self
                 .lease
                 .as_ref()
@@ -106,6 +115,9 @@ enum JournalEntry {
     Released {
         id: String,
         attempt_id: String,
+        /// Backoff written by the releasing host; 0 on old lines.
+        #[serde(default)]
+        retry_after_ms: u64,
         at_ms: u64,
     },
 }
@@ -170,6 +182,8 @@ impl AcceptanceQueue {
                     taken_at_ms: None,
                     lease: None,
                     completed_at_ms: None,
+                    available_at_ms: None,
+                    attempts: 0,
                 }),
                 JournalEntry::Taken {
                     id,
@@ -181,6 +195,8 @@ impl AcceptanceQueue {
                         receipts.iter_mut().find(|receipt| receipt.id == id)
                     {
                         receipt.taken_at_ms.get_or_insert(at_ms);
+                        receipt.available_at_ms = None;
+                        receipt.attempts = receipt.attempts.saturating_add(1);
                         receipt.lease = Some(Lease {
                             attempt_id,
                             expires_at_ms: lease_until_ms,
@@ -194,11 +210,18 @@ impl AcceptanceQueue {
                         receipt.completed_at_ms = Some(at_ms);
                     }
                 }
-                JournalEntry::Released { id, .. } => {
+                JournalEntry::Released {
+                    id,
+                    retry_after_ms,
+                    at_ms,
+                    ..
+                } => {
                     if let Some(receipt) =
                         receipts.iter_mut().find(|receipt| receipt.id == id)
                     {
                         receipt.lease = None;
+                        receipt.available_at_ms =
+                            Some(at_ms.saturating_add(retry_after_ms));
                     }
                 }
             }
@@ -221,7 +244,7 @@ impl AcceptanceQueue {
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
-        let id = new_receipt_id(now_ms, self.next_ordinal(now_ms)?);
+        let id = new_receipt_id(now_ms);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
             session_hint: session_hint.map(str::to_owned),
@@ -237,6 +260,8 @@ impl AcceptanceQueue {
             taken_at_ms: None,
             lease: None,
             completed_at_ms: None,
+            available_at_ms: None,
+            attempts: 0,
         })
     }
 
@@ -284,6 +309,8 @@ impl AcceptanceQueue {
             expires_at_ms: now_ms.saturating_add(lease_ms),
         };
         receipt.taken_at_ms.get_or_insert(now_ms);
+        receipt.available_at_ms = None;
+        receipt.attempts = receipt.attempts.saturating_add(1);
         receipt.lease = Some(lease.clone());
         let claimed = receipt.clone();
         self.append(&JournalEntry::Taken {
@@ -302,18 +329,19 @@ impl AcceptanceQueue {
         attempt_id: &str,
         now_ms: u64,
     ) -> io::Result<bool> {
-        self.finish(id, attempt_id, now_ms, true)
+        self.finish(id, attempt_id, now_ms, true, 0)
     }
 
-    /// Drop the lease so the receipt can be claimed again. Only the current
-    /// lease owner can release it.
+    /// Drop the lease so the receipt can be claimed again after
+    /// `retry_after_ms`. Only the current lease owner can release it.
     pub fn release(
         &self,
         id: &str,
         attempt_id: &str,
         now_ms: u64,
+        retry_after_ms: u64,
     ) -> io::Result<bool> {
-        self.finish(id, attempt_id, now_ms, false)
+        self.finish(id, attempt_id, now_ms, false, retry_after_ms)
     }
 
     fn finish(
@@ -322,6 +350,7 @@ impl AcceptanceQueue {
         attempt_id: &str,
         now_ms: u64,
         completed: bool,
+        retry_after_ms: u64,
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -351,6 +380,7 @@ impl AcceptanceQueue {
             JournalEntry::Released {
                 id: id.to_owned(),
                 attempt_id: attempt_id.to_owned(),
+                retry_after_ms,
                 at_ms: now_ms,
             }
         };
@@ -367,16 +397,6 @@ impl AcceptanceQueue {
         let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut locks = registry.lock().unwrap_or_else(PoisonError::into_inner);
         locks.entry(Self::path(&self.root)).or_default().clone()
-    }
-
-    /// Ordinal used to keep ids unique inside the same millisecond. Replays the
-    /// journal, which is cheap at first-version sizes.
-    fn next_ordinal(&self, now_ms: u64) -> io::Result<usize> {
-        Ok(self
-            .replay()?
-            .iter()
-            .filter(|receipt| receipt.created_at_ms == now_ms)
-            .count())
     }
 
     fn append(&self, entry: &JournalEntry) -> io::Result<()> {
@@ -400,8 +420,12 @@ impl AcceptanceQueue {
     }
 }
 
-fn new_receipt_id(now_ms: u64, ordinal: usize) -> String {
-    format!("accepted-{now_ms:x}-{ordinal:x}")
+fn new_receipt_id(now_ms: u64) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let random = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    format!("accepted-{now_ms:x}-{random:016x}")
 }
 
 fn now_ms() -> u64 {
@@ -489,6 +513,8 @@ mod tests {
         assert!(first.is_some());
         let claimed = first.expect("claimed");
         assert_eq!(claimed.taken_at_ms, Some(2_000));
+        assert_eq!(claimed.attempts, 1);
+        assert!(claimed.available_at_ms.is_none());
         assert_eq!(
             claimed
                 .lease
@@ -680,7 +706,7 @@ mod tests {
         );
         assert!(
             queue
-                .release(&accepted.id, "attempt-1", 1_200)
+                .release(&accepted.id, "attempt-1", 1_200, 0)
                 .expect("release")
         );
         assert_eq!(queue.pending_at(1_200).expect("pending").len(), 1);
@@ -688,6 +714,36 @@ mod tests {
             queue
                 .take(&accepted.id, "attempt-2", 1_200, 100)
                 .expect("take again")
+                .is_some()
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_released_receipt_waits_for_its_backoff() {
+        let root = temp_root("lease-backoff");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "slow retry", 1_000).expect("accept");
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-1", 1_000, 30_000)
+                .expect("take")
+                .is_some()
+        );
+        assert!(
+            queue
+                .release(&accepted.id, "attempt-1", 1_100, 4_000)
+                .expect("release")
+        );
+
+        assert_eq!(queue.pending_at(1_100).expect("pending").len(), 0);
+        assert_eq!(queue.pending_at(5_099).expect("pending").len(), 0);
+        assert_eq!(queue.pending_at(5_100).expect("pending").len(), 1);
+        assert!(
+            queue
+                .take(&accepted.id, "attempt-2", 5_100, 100)
+                .expect("take")
                 .is_some()
         );
 
@@ -712,7 +768,7 @@ mod tests {
         );
         assert!(
             !queue
-                .release(&accepted.id, "attempt-2", 1_200)
+                .release(&accepted.id, "attempt-2", 1_200, 0)
                 .expect("wrong owner")
         );
         assert!(

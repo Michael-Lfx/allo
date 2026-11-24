@@ -343,6 +343,7 @@
   "more.save": "Salva",
   "more.skills": "Competenze",
   "more.skills_body": "Le competenze non sono collegate. Questa pagina non le elenca e non le esegue.",
+  "notice.accepted_ran": "A queued message started in another session",
   "notice.account_change_later": "Changing account details comes in a later stage",
   "notice.account_delete_later": "Account deletion comes in a later stage",
   "notice.account_manage_later": "Account management comes in a later stage",

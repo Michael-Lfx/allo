@@ -752,6 +752,12 @@ mod tests {
         let first = handle.run_accepted_once().expect("run").expect("claimed");
         wait_for_turn(&handle);
         handle.finish_accepted(false).expect("release");
+        assert_eq!(
+            handle.pending_acceptances().len(),
+            0,
+            "a released receipt waits for its backoff"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5_100));
         assert_eq!(handle.pending_acceptances().len(), 1);
         let second = handle
             .run_accepted_once()

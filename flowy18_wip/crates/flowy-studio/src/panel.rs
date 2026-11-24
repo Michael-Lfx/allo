@@ -821,19 +821,35 @@ impl StudioPanel {
     fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
         if !self.status.is_busy() {
             if self.agent.has_active_claim() {
-                let completed = matches!(
+                // Completed and Stopped are terminal; DeliveryFailed already
+                // produced its artifacts and has its own retry surface, so it
+                // must not rerun the whole turn. Only a plain error is retried,
+                // with the journal's backoff.
+                let completed = !matches!(
                     self.status,
-                    flowy_agent::TurnStatus::Completed
-                        | flowy_agent::TurnStatus::Stopped
+                    flowy_agent::TurnStatus::Error { .. }
+                        | flowy_agent::TurnStatus::Idle
                 );
-                let _ = self.agent.finish_accepted(completed);
+                if let Err(error) = self.agent.finish_accepted(completed) {
+                    self.emit_notice(Some(error), cx);
+                }
             }
-            if !self.agent.pending_acceptances().is_empty()
-                && self.agent.run_accepted_once().ok().flatten().is_some()
-            {
-                self.pending_receipts = self.agent.pending_acceptances();
-                self.refresh_chat(cx);
-                return;
+            if !self.agent.pending_acceptances().is_empty() {
+                let previous = self.agent.active_session_id();
+                match self.agent.run_accepted_once() {
+                    Ok(Some(run)) => {
+                        self.pending_receipts =
+                            self.agent.pending_acceptances();
+                        self.refresh_chat(cx);
+                        if previous.as_deref() != Some(run.session_id.as_str())
+                        {
+                            self.emit_notice(Some("notice.accepted_ran"), cx);
+                        }
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.emit_notice(Some(error), cx),
+                }
             }
         }
         self.pending_receipts = self.agent.pending_acceptances();

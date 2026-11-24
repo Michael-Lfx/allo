@@ -343,6 +343,7 @@
   "more.save": "Speichern",
   "more.skills": "Fähigkeiten",
   "more.skills_body": "Fähigkeiten sind nicht verbunden. Diese Seite listet keine Fähigkeiten und führt sie nicht aus.",
+  "notice.accepted_ran": "A queued message started in another session",
   "notice.account_change_later": "Changing account details comes in a later stage",
   "notice.account_delete_later": "Account deletion comes in a later stage",
   "notice.account_manage_later": "Account management comes in a later stage",

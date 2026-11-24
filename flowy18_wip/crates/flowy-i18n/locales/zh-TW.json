@@ -343,6 +343,7 @@
   "more.save": "儲存",
   "more.skills": "技能",
   "more.skills_body": "技能還沒接上。這裡不會列出或執行技能。",
+  "notice.accepted_ran": "排隊中的消息已在另一個會話開始",
   "notice.account_change_later": "更改账户信息将在后续阶段接入",
   "notice.account_delete_later": "删除账户将在后续阶段接入",
   "notice.account_manage_later": "账户管理将在后续阶段接入",

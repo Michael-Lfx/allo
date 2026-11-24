@@ -343,6 +343,7 @@
   "more.save": "저장",
   "more.skills": "스킬",
   "more.skills_body": "스킬은 연결되지 않았습니다. 이 화면은 스킬을 나열하거나 실행하지 않습니다.",
+  "notice.accepted_ran": "A queued message started in another session",
   "notice.account_change_later": "Changing account details comes in a later stage",
   "notice.account_delete_later": "Account deletion comes in a later stage",
   "notice.account_manage_later": "Account management comes in a later stage",

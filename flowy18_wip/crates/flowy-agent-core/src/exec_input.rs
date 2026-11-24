@@ -145,6 +145,8 @@ mod tests {
             taken_at_ms: None,
             lease: None,
             completed_at_ms: None,
+            available_at_ms: None,
+            attempts: 0,
         }
     }
 
