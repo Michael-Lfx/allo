@@ -6281,6 +6281,205 @@ async fn growth_transport_failure_stops_after_a_single_call() {
     );
 }
 
+/// sb1（ADR-0018 决定 2）地形清单接线：`build_coach_context` 读挂载行算覆
+/// 盖集，教练输入里的地形清单随之折叠。走真实 `kick_growth` 路径捕获教练
+/// user 消息（教练调用注入传输失败——恰一次调用、批次转 failed，捕获面只
+/// 有上下文装配）。三态各一门课：
+/// - 无挂载行 → 「尚无节点挂载记录」说明行 + 全部块展开；
+/// - fresh 行 → 活节点所在块折叠成一行、孤儿条目（节点已删）所在块仍展开、
+///   无说明行；
+/// - 行写入后结构变过（stale）→ stale 说明行（**不是**「尚无节点挂载记
+///   录」——区分「读到行但判 stale」与「根本没读到行」）+ 全部块展开；
+/// - 存量 v1 行（hash 取整列原样字节）结构未变 → 照常折叠（stale 判定
+///   必须拿整列 `structure_json` 的原始字符串去比）。
+#[tokio::test]
+async fn growth_coach_reads_a_coverage_folded_terrain_list() {
+    struct CaptureCoach(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl crate::completer::LearningCompleter for CaptureCoach {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, AppError> {
+            unreachable!("growth pipeline only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.0.lock().unwrap().push(user.to_owned());
+            Err(AppError::Timeout("capture only (test)".into()))
+        }
+    }
+
+    let (service, _knowledge, owner) = job_test_service().await;
+    let completer = Arc::new(CaptureCoach(std::sync::Mutex::new(Vec::new())));
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+
+    fn envelope(c_note: &str) -> String {
+        serde_json::json!({
+            "version": 1,
+            "generated_at": 1,
+            "structure": {
+                "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+                "blocks": [
+                    { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "甲的主题" },
+                    { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "advanced", "note": "乙的主题" },
+                    { "name": "块丙", "slug": "block-c", "spine": "主干一", "stage": "expert", "note": c_note }
+                ],
+                "edges": []
+            }
+        })
+        .to_string()
+    }
+    const ROW_A: &str = "- 块甲(block-a)|甲的主题|basic|主干一|无前置";
+    const ROW_B: &str = "- 块乙(block-b)|乙的主题|advanced|主干一|无前置";
+    const NO_MOUNTS_LINE: &str = "尚无节点挂载记录，以下为完整地形";
+    const STALE_MOUNTS_LINE: &str = "结构已更新，节点与结构的对应待重新检查，以下为完整地形";
+    // 活节点「节点A」挂块甲；「已删节点」是孤儿（库里没有这个课时）挂块乙。
+    const MOUNTS_JSON: &str =
+        r#"[{"node":"节点A","blocks":["block-a"],"reason":"r"},{"node":"已删节点","blocks":["block-b"],"reason":"孤儿"}]"#;
+
+    // 一门带结构的图课程（节点A / 节点B 由夹具建好），不写挂载行。
+    async fn course_with_structure(service: &LearningService, raw: &str) -> String {
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(service).await;
+        sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+            .bind(raw)
+            .bind(&course_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        course_id
+    }
+    async fn insert_mount_row(
+        service: &LearningService,
+        course_id: &str,
+        hash: i64,
+        version: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO learning_structure_mounts \
+             (course_id, mounts_json, structure_hash, hash_version, updated_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(course_id)
+        .bind(MOUNTS_JSON)
+        .bind(hash)
+        .bind(version)
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+    // 挂载回合落盘的 fresh 行：v2 口径（内层 structure 的规范化投影）。
+    async fn insert_fresh_mount_row(service: &LearningService, course_id: &str, raw: &str) {
+        let (hash, version) = crate::learning_graph::mounting::hash_structure_column(raw);
+        insert_mount_row(service, course_id, hash as i64, version).await;
+    }
+    // 触发一轮生长，等教练调用到达后取其 user 消息（第 `at` 次捕获）。
+    async fn coach_prompt(
+        service: &LearningService,
+        owner: &UserId,
+        course_id: &str,
+        completer: &CaptureCoach,
+        at: usize,
+    ) -> String {
+        let course = LearningCourseId::parse(course_id).unwrap();
+        assert!(service.kick_growth(owner, &course, true, None).await.unwrap());
+        for _ in 0..500 {
+            if completer.0.lock().unwrap().len() > at {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            wait_for_batch_status(service, course_id, "failed").await,
+            "capture completer fails the batch; the run must terminate"
+        );
+        let prompts = completer.0.lock().unwrap();
+        assert!(prompts.len() > at, "教练调用未到达（第 {at} 次捕获）");
+        prompts[at].clone()
+    }
+
+    // (1) 无挂载行：说明行 + 完整地形。
+    let raw = envelope("丙的主题");
+    let course = course_with_structure(&service, &raw).await;
+    let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 0).await;
+    assert!(prompt.contains("【地形清单（"), "{prompt}");
+    assert!(prompt.contains(NO_MOUNTS_LINE), "无挂载行 = 空覆盖集 + 说明行：{prompt}");
+    for row in [ROW_A, ROW_B, "- 块丙(block-c)|丙的主题|expert|主干一|无前置"] {
+        assert!(prompt.contains(row), "无覆盖 = 全部展开，缺 {row}：{prompt}");
+    }
+    assert!(!prompt.contains(STALE_MOUNTS_LINE), "没有挂载行就不是 stale：{prompt}");
+    assert!(!prompt.contains("已覆盖 "), "{prompt}");
+    assert!(!prompt.contains("结构参考材料"), "{prompt}");
+
+    // (2) fresh 行：活节点所在块折叠，孤儿所在块照常展开。
+    let course = course_with_structure(&service, &raw).await;
+    insert_fresh_mount_row(&service, &course, &raw).await;
+    let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 1).await;
+    assert!(
+        prompt.contains("已覆盖 1 块（1 个节点）：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
+        "fresh 行：块甲折叠成一行、孤儿条目的块乙仍展开：{prompt}"
+    );
+    assert!(!prompt.contains(ROW_A), "已覆盖块不再展开：{prompt}");
+    assert!(prompt.contains("- 块丙(block-c)|丙的主题|expert|主干一|无前置"), "{prompt}");
+    for note in [NO_MOUNTS_LINE, STALE_MOUNTS_LINE] {
+        assert!(!prompt.contains(note), "fresh 行无说明行：{prompt}");
+    }
+
+    // (3) 行写入后结构变过（只改块丙的主题）：行 stale → stale 说明行 +
+    // 完整地形；不得落成「尚无节点挂载记录」。
+    let course = course_with_structure(&service, &raw).await;
+    insert_fresh_mount_row(&service, &course, &raw).await;
+    let repaired = envelope("丙的主题（修补后）");
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(&repaired)
+        .bind(&course)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 2).await;
+    assert!(prompt.contains(STALE_MOUNTS_LINE), "stale 行出 stale 说明行：{prompt}");
+    assert!(!prompt.contains(NO_MOUNTS_LINE), "有挂载行：不得报「尚无节点挂载记录」：{prompt}");
+    assert!(prompt.contains(ROW_A), "stale = 整表按未覆盖：{prompt}");
+    assert!(prompt.contains(ROW_B), "{prompt}");
+    assert!(
+        prompt.contains("- 块丙(block-c)|丙的主题（修补后）|expert|主干一|无前置"),
+        "清单读的是当前结构：{prompt}"
+    );
+    assert!(!prompt.contains("已覆盖 "), "stale 行不折叠：{prompt}");
+
+    // (4) 存量 v1 行（hash 取整列 structure_json 的原样字节，列内容是非规范
+    // 化排版）：结构没变就保持 fresh、照常折叠。stale 判定必须拿**整列原
+    // 始字符串**去比——拿内层 structure 或重新序列化的内容去比，v1 行会被
+    // 误判成 stale（v2 行是规范化投影，比不出这个接线错）。
+    let pretty = serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(&raw).unwrap())
+        .unwrap();
+    assert_ne!(pretty, raw, "夹具：列内容必须与任何重新序列化都不同字节");
+    let course = course_with_structure(&service, &pretty).await;
+    insert_mount_row(
+        &service,
+        &course,
+        crate::learning_graph::mounting::fnv1a_64(pretty.as_bytes()) as i64,
+        crate::learning_graph::mounting::STRUCTURE_HASH_VERSION_V1,
+    )
+    .await;
+    let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 3).await;
+    assert!(
+        prompt.contains("已覆盖 1 块（1 个节点）：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
+        "v1 存量行结构未变 = fresh，照常折叠：{prompt}"
+    );
+    assert!(!prompt.contains(STALE_MOUNTS_LINE), "v1 行不得被误判 stale：{prompt}");
+}
+
 /// 异错烧满预算：每轮违约不同（指纹互异）→ 3 轮全烧，exhausted。
 #[tokio::test]
 async fn growth_burns_the_full_budget_when_violations_differ() {

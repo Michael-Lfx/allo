@@ -2011,7 +2011,7 @@ impl LearningService {
         let course_id = &engine.course_id;
         let mut task = self.begin_growth_task(course_id).await?;
         let token = task.token();
-        task.set_step("draft", "教练正在阅读结构参考与花名册，起草本批节点…");
+        task.set_step("draft", "教练正在阅读地形清单与花名册，起草本批节点…");
         // 运行级计时（o1）：accept/failure 读数行与 reject WARN 对称——批次
         // 通过不再静默（2026-11-16 病历：attempt-3 通过后零日志，确认只能
         // 查 DB learning_growth_batches.status）。
@@ -2031,7 +2031,7 @@ impl LearningService {
             "growth_started",
             serde_json::json!({
                 "phase": crate::events::phase::STARTED,
-                "text": "教练正在阅读结构参考与花名册，起草本批节点…",
+                "text": "教练正在阅读地形清单与花名册，起草本批节点…",
             }),
         );
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
@@ -3178,9 +3178,11 @@ impl LearningService {
             .and_then(|stats| stats.clone())
     }
 
-    /// 教练上下文（g3 九块）：结构参考材料与地形门口从本课 structure_json
-    /// 快照重读（课程内铁律：只读本课快照，不触碰概念登记表）；无快照 =
-    /// 两块均为空，教练退回自行盘点。
+    /// 教练上下文（g3 九块）：地形清单（按挂载覆盖折叠，ADR-0018 决定 2）与
+    /// 地形门口从本课 structure_json 快照重读（课程内铁律：只读本课快照与
+    /// 本课挂载行，不触碰概念登记表）；无快照 = 两块均为空，教练退回自行
+    /// 盘点。同一份上下文起草、重裁、评审复用——评审面渲染时不含地形清单
+    /// （[`crate::learning_graph::CoachContext::render_for_review`]）。
     async fn build_coach_context(
         &self,
         course_id: &LearningCourseId,
@@ -3230,11 +3232,41 @@ impl LearningService {
                     .to_owned()
             })
             .unwrap_or_default();
-        // 块 2：结构参考材料（全量块摊开，呈现序 = 难度档/前置链深/主干序/块序）。
-        let structure_reference = structure
-            .as_ref()
-            .map(crate::learning_graph::structure_view::render_reference_lines)
-            .unwrap_or_default();
+        // 块 2：地形清单（ADR-0018 决定 2；呈现序 = 难度档/前置链深/主干序/
+        // 块序）：覆盖读数取自本课挂载行 × 现存节点——无挂载行、行过时
+        // （结构变过）一律按未覆盖，清单回到完整地形。挂载是导航事实：这
+        // 里只取「位置事实」供折叠，不取判定。无结构快照 = 清单为空，也就
+        // 不必读挂载表。
+        let lesson_titles = self.lesson_titles(course_id).await?;
+        let terrain_list = match structure.as_ref() {
+            Some(structure) => {
+                let mount_row: Option<(String, i64, i64)> = sqlx::query_as(
+                    "SELECT mounts_json, structure_hash, hash_version \
+                     FROM learning_structure_mounts WHERE course_id = ?",
+                )
+                .bind(course_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+                let node_titles: std::collections::HashSet<String> =
+                    lesson_titles.values().cloned().collect();
+                // stale 判定要拿整列原始字符串去比：v1 行比的是原样字节。
+                let coverage = crate::learning_graph::structure_view::terrain_coverage(
+                    structure,
+                    snapshot.as_deref().unwrap_or_default(),
+                    &node_titles,
+                    mount_row
+                        .as_ref()
+                        .map(|(mounts_json, hash, version)| (mounts_json.as_str(), *hash, *version)),
+                );
+                crate::learning_graph::structure_view::render_terrain_list(
+                    structure,
+                    &coverage.covered,
+                    coverage.note,
+                )
+            }
+            None => String::new(),
+        };
         // 块 3：前置地形门口。
         let terrain_doors = terrain
             .as_ref()
@@ -3250,7 +3282,6 @@ impl LearningService {
             .map(|digest| digest.blockers.iter().map(|b| b.lesson_id.clone()).collect())
             .unwrap_or_default();
         let roster = self.render_roster(course_id, &engine.user_id, &stalled).await?;
-        let lesson_titles = self.lesson_titles(course_id).await?;
         let behavior_digest = digest
             .map(|digest| digest.render(&lesson_titles))
             .unwrap_or_default();
@@ -3264,7 +3295,7 @@ impl LearningService {
             goal: if goal.is_empty() { title } else { goal },
             proficiency_statement,
             learner_basis,
-            structure_reference,
+            terrain_list,
             terrain_doors,
             roster,
             taught_summary,

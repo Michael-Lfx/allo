@@ -12,9 +12,11 @@
 //! NOW. Cross-course readiness falls out of the global concept registry.
 //!
 //! The coach drafts a batch per call (json seam, thinking ON) over the 9-block
-//! context (goal + declarations, the full structure reference material, the
-//! terrain doors, ready count, roster, taught ledger, coverage gauge, behavior
-//! digest, registry excerpt). Deterministic gates hold the decision power:
+//! context (goal + declarations, the terrain list, the terrain doors, ready
+//! count, roster, taught ledger, coverage gauge, behavior digest, registry
+//! excerpt). The review renders the same context minus the terrain list
+//! (ADR-0018): the knowledge structure feeds no review verdict. Deterministic
+//! gates hold the decision power:
 //! shape violations (ng.*), semantic gate rejections and concept-review
 //! rejections each inject their clause report back into the next attempt
 //! (≤3 rounds, the whole batch re-emitted); a structurally valid batch then
@@ -189,9 +191,12 @@ pub struct ProposedNode {
     /// `learning_lessons.estimated_minutes`（列名无用户面，语义 = est）。
     #[serde(default)]
     pub est: Option<u16>,
-    /// 难度 1–5（标尺见 COACH_SYSTEM）：呈现序（结构参考材料排序）与花名册
-    /// 仍消费；**深度水位确定性门已退役**（g3：档位比较是精度剧场）——难度
-    /// 诚实性由 AI 概念评审门作语义兜底。缺省按 2（入门档）处理。
+    /// 难度 1–5（标尺见 COACH_SYSTEM）。下游只有三处：形状契约校验取值
+    /// 范围、重裁点修守卫的逐字段比对、落库写 `learning_lessons.difficulty`
+    /// （该列现无读侧）。花名册与呈现序**不**消费它。**深度水位确定性门已
+    /// 退役**（g3：档位比较是精度剧场）——难度诚实性由 AI 概念评审门作语义
+    /// 兜底（判据 4 只对照内容实际，不对照知识结构的块档位）。缺省按 2
+    /// （入门档）处理。
     #[serde(default)]
     pub difficulty: Option<u8>,
     #[serde(default)]
@@ -550,7 +555,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【起点纪律】
 - 学习者的真实起点 = 【学习目标】里的基础声明（未声明即彻底零基础）。判断一个节点是不是合格入口，看基线，不看它在教材里的位置：「简单」「基础」「入门」「第一章」都不等于零基础可起步。
 - 零基础校验：入口节点直接用到的每个概念，要么本节点就教它（写进 teaches、随批铸名），要么属于课程外通用常识（时间、方位、日常活动一类）；既像常识又像本课概念的两可词，按概念对待。校验范围不止「用到」：节点文本（定义、操作、实例、易错提醒）里引用或预设的每个课程内概念同样算依赖——零基础学习者读到那句文本时，该概念要么已教、要么本节点就地教它。
-- 提交自查（铸名完备性）：teaches/assumes 引用的每个概念名，必须能在 已教账面、登记表切片、本批 mints 三者之一对上号——**结构参考材料里的块名不是登记表名**：照块名起的概念不随批铸名就引用，整批会被结构门打回；拿不准的名字宁补一条 mints（铸名≠教，只登记名字不产生教学），也不要让引用悬空。
+- 提交自查（铸名完备性）：teaches/assumes 引用的每个概念名，必须能在 已教账面、登记表切片、本批 mints 三者之一对上号——**地形清单里的块名不是登记表名**：照块名起的概念不随批铸名就引用，整批会被结构门打回；拿不准的名字宁补一条 mints（铸名≠教，只登记名字不产生教学），也不要让引用悬空。
 - 「入门教材第一章」不等于零基础入口：第一章默认读者已带着该领域的日常底子，零基础学习者没有——这些概念只是离目标更近的台阶，不是入口。例：目标「业余段位围棋」的真入口是「数出棋盘上一块棋的气」，而不是「用大雪崩定式处理小目挂角」；目标「家庭手冲咖啡」的真入口是「按粉水比称出一次冲煮的粉与水」，而不是「用三段注水矫正萃取率」。
 - 入口素材从学习目标「往下问」得来：目标只是路线的上层，它依赖的通用语言——操作工具、认读记号、基本量与单位、分类与命名、简单判断与比较——才是入口层的素材。对目标逐层往下追问「基线学习者现在连什么都不会，第一步从哪算起」，把最底层那一格摆出来；起点够不够低的唯一标准是基线学习者今天拿到节点就能开始，而不是它长得像该方向的入门课。
 - 方向感优先级：学习者当下最缺的台阶优先——贴着概念网的最前沿往目标方向长，不直线冲终点。为逼近目标而长出基线够不着的节点，是比停摆更坏的错误。
@@ -640,9 +645,12 @@ pub struct CoachContext {
     pub proficiency_statement: String,
     /// 块 1 附注：基础声明（地形产物回执；空 = 纯零基础假设）。
     pub learner_basis: String,
-    /// 块 2：结构参考材料——全量块摊开（learnhub reference.rs 行格式，纯结构
-    /// 事实、不裁剪候选面、不限批范围；教练可围绕参考装箱也可自拟）。
-    pub structure_reference: String,
+    /// 块 2：地形清单（GLOSSARY「地形清单」；ADR-0018 决定 2）——知识结构
+    /// 的知识组按节点挂载折叠：尚无节点覆盖的逐块展开（行格式沿用 learnhub
+    /// reference.rs），已覆盖的折叠成一行只留名；运行时重算、不落盘。纯结构
+    /// 事实、不裁剪候选面、不限批范围；教练可围绕它装箱也可自拟。**评审面
+    /// 不渲染这一块**（[`CoachContext::render_for_review`]）。
+    pub terrain_list: String,
     /// 块 3：前置地形门口（`- [G1]（硬前置）判据` 行列表；首批入口重点参照、
     /// 其后软参照；空 = 无结构快照，教练自行盘点）。
     pub terrain_doors: String,
@@ -665,11 +673,33 @@ pub struct CoachContext {
     pub course_context_words: String,
 }
 
+/// [`CoachContext`] 的两个渲染面（ADR-0018 决定 1：一个上下文、两个渲染
+/// 函数——同源渲染，不是第二份渲染体）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderSurface {
+    /// 教练（起草 / 重裁）：九块全渲染。
+    Coach,
+    /// 评审：唯一差别是跳过地形清单块。
+    Review,
+}
+
 impl CoachContext {
-    /// 9 块渲染，顺序即注意力序（g3 裁决）：学习目标（+程度/基础声明）→
-    /// 结构参考材料 → 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
-    /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
+    /// 教练面（起草 [`coach_draft`] / 重裁 [`coach_redraft`]）：九块全渲染。
     pub(crate) fn render(&self) -> String {
+        self.render_on(RenderSurface::Coach)
+    }
+
+    /// 评审面（ADR-0018 决定 1：知识结构退出评审输入）：与 [`Self::render`]
+    /// 同源，只跳过地形清单块（连同它的前导换行）——其余各块逐字节相同。
+    /// 首批纪律不分渲染面（评审同样要核对入口起点）。
+    pub(crate) fn render_for_review(&self) -> String {
+        self.render_on(RenderSurface::Review)
+    }
+
+    /// 9 块渲染，顺序即注意力序（g3 裁决）：学习目标（+程度/基础声明）→
+    /// 地形清单（教练面）→ 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
+    /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
+    fn render_on(&self, surface: RenderSurface) -> String {
         let gap = growth_batch_cap(self.ready_count);
         let mut text = String::new();
         // 块 1：学习目标（+程度/基础声明附注）。
@@ -681,11 +711,12 @@ impl CoachContext {
                 if self.learner_basis.is_empty() { "未声明（按纯零基础处理）" } else { &self.learner_basis },
             ));
         }
-        // 块 2：结构参考材料（全量块摊开；纯参考，不裁剪候选面、不做判定）。
-        if !self.structure_reference.is_empty() {
+        // 块 2：地形清单（教练面专属；纯参考，不裁剪候选面、不做判定）。
+        // 评审面整块跳过，前导换行一并跳掉——前后块之间不留下空行。
+        if surface == RenderSurface::Coach && !self.terrain_list.is_empty() {
             text.push_str(&format!(
-                "\n【结构参考材料（全量块摊开：课程内参考地图，只回答「这门课有哪些知识地形」；它是参考不是限制——围绕它装箱或自拟都可，学习顺序权威在你）】\n{}\n",
-                self.structure_reference
+                "\n【地形清单（按节点挂载折叠：尚无节点覆盖的知识组（块）逐块展开，已覆盖的只留名；课程内参考地图，只回答「这门课有哪些知识地形」；它是参考不是限制——围绕它装箱或自拟都可，学习顺序权威在你）】\n{}\n",
+                self.terrain_list
             ));
         }
         // 块 3：前置地形门口（首批入口重点参照；其后软参照）。
@@ -700,9 +731,11 @@ impl CoachContext {
                 self.terrain_doors
             ));
         }
-        // 首批凝练纪律（g3：删 6 条规则长文，收缩为结构材料摊开 + 门口参考 +
+        // 首批凝练纪律（g3：删 6 条规则长文，收缩为地形清单 + 门口参考 +
         // 两条纪律 + 空账本机械地板）。已教账非空时（老学习者开新课）机械地板
         // 让位给跨课程口径：账内概念可进 assumes（就绪判定本就跨课程计数）。
+        // 本块两个渲染面同文（评审同样要核对入口起点）——评审面因此也含
+        // 「地形清单」四字，「评审输入不带地形清单」的断言要钉块头。
         if self.roster.is_empty() {
             let ledger_line = if self.taught_summary.is_empty() {
                 "- 已教概念账为空 ⇒ 本批 assumes 必须全空（机械地板：空账不供给任何概念）。\n"
@@ -711,7 +744,7 @@ impl CoachContext {
             };
             text.push_str(&format!(
                 "\n【首批纪律（花名册为空）】\n\
-                 - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
+                 - 入口从地形清单的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
                  - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。标题以学科内容本身命名，日常经验类比只写进 purpose、不得进标题。\n\
                  {}", ledger_line));
         }
@@ -1045,7 +1078,7 @@ const FRAGMENT_PROVENANCE_RELATION_CLAUSE: &str = "- [definition] 来源的片�
 
 const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
-4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议——建议拆分时给出逐半后的 intent/scope（照各自那一半的实际内容写，不照抄原条目），供重裁直接消费。
+4. 难度诚实：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；内容过载（一个节点塞进多个核心概念）可附拆分建议——建议拆分时给出逐半后的 intent/scope（照各自那一半的实际内容写，不照抄原条目），供重裁直接消费。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
 - 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）；候选缺席 = 登记表无近邻，直接裁新铸。逐条裁决「复用 | 新铸」：
@@ -1061,7 +1094,7 @@ const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节�
 - 你从材料确认不了的：宁放勿错。
 
 【findings——数据缺陷留痕（不打回，只留痕）】
-- 数据缺陷观察（如：材料里疑似缺某基础概念、结构材料可能过时、命名与材料用法可能有出入）
+- 数据缺陷观察（如：材料里疑似缺某基础概念、命名与材料用法可能有出入）
   不构成打回硬伤时，写进输出顶层可选 `findings` 数组：`{ "node": "<节点标题或空>",
   "field": "<字段或空>", "issue": "<缺什么/疑点什么>", "advice": "<一条修补方向>" }`。
 - findings 是线索不是第二真相：与 problems 并行——该打回的仍走 problems；拿不准的
@@ -1575,7 +1608,9 @@ pub(crate) async fn concept_review(
     // 由评审面补注（w02）：context.render() 每一批都渲染【课程语境词】块
     // （同一单源 [`course_context_words_block`]），评审 user 经渲染自然携
     // 带——补注通道撤销，避免双份；豁免语义（可作定义背景用语、teaches
-    // 照常挂号）不变。off 臂两块恒零注入（基线逐字节）。
+    // 照常挂号）不变。off 臂两块恒零注入（基线逐字节）。评审 user 走的
+    // 是 [`CoachContext::render_for_review`]（sb1）：只比教练面少地形清单
+    // 一块，语境词块照常携带。
     let anti_loop = anti_loop_enabled();
     let overturn_lock = if anti_loop && !prior_review.trim().is_empty() {
         format!(
@@ -1771,10 +1806,12 @@ pub(crate) async fn concept_review(
     // 缺失行的 term 照抄有源；off 臂恒空串（基线逐字节）。
     let words_block = provenance_candidates_block(batch);
     loop {
+        // 评审面渲染（ADR-0018 决定 1）：知识结构按设计不参与任何判定，
+        // 不再进评审输入；带死因重试的每一轮同此。
         let mut user = format!(
-        "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
-        context.render()
-    );
+            "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
+            context.render_for_review()
+        );
         if fragments_on {
             user.push_str(&fragment_verdict::naming_list_block(naming_list));
         }
@@ -5832,17 +5869,19 @@ mod tests {
     /// 铸名完备性提交自查条款（m1，2026-11-16 真机病历：教练照结构块名
     /// 引用「共享状态」不铸名，整批被结构门打回两轮未修上）——COACH_SYSTEM
     /// 须带「块名不是登记表名」的自查句（prompt 侧 substring 断言，删句 =
-    /// 本测试红）。
+    /// 本测试红）。条款本身与知识结构对照无关，不随 sb1 退役；只随术语
+    /// 更名改称「地形清单」（结构参考材料是 i06 的旧称，GLOSSARY 列为 Avoid）。
     #[test]
     fn coach_system_carries_the_mint_completeness_self_check() {
         let system = coach_system();
         for phrase in [
             "提交自查（铸名完备性）",
-            "结构参考材料里的块名不是登记表名",
+            "地形清单里的块名不是登记表名",
             "拿不准的名字宁补一条 mints",
         ] {
             assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
         }
+        assert!(!system.contains("结构参考材料"), "COACH_SYSTEM 不再用旧称：{system}");
     }
 
     #[test]
@@ -6001,22 +6040,24 @@ mod tests {
         assert!(system.contains("首教形式化"), "{system}");
     }
 
-    /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；
+    /// 首批九块渲染：地形清单 + 地形门口（首批重点框架语）+ 凝练纪律三行；
     /// 非首批不渲染首批纪律、门口换软参照框架语。
     #[test]
-    fn coach_context_renders_structure_reference_and_first_batch_discipline() {
+    fn coach_context_renders_the_terrain_list_and_first_batch_discipline() {
         let with_material = CoachContext {
             roster: String::new(),
-            structure_reference: "- 块A(a)|主题描述|basic|主干一|无前置".into(),
+            terrain_list: "- 块A(a)|主题描述|basic|主干一|无前置".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
             ..Default::default()
         };
         let rendered = with_material.render();
-        assert!(rendered.contains("结构参考材料"), "{rendered}");
+        assert!(rendered.contains("【地形清单（"), "{rendered}");
+        assert!(!rendered.contains("结构参考材料"), "块头不再用旧称：{rendered}");
         assert!(rendered.contains("- 块A(a)|主题描述|basic|主干一|无前置"), "{rendered}");
         assert!(rendered.contains("首批入口重点参照"), "{rendered}");
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
         assert!(rendered.contains("首批纪律"), "{rendered}");
+        assert!(rendered.contains("入口从地形清单的入门档起步"), "首批纪律首行随术语更名改称：{rendered}");
         assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
 
         // 老学习者开新课：账非空 × 花名册为空是常态——首批纪律换跨课程口径，
@@ -6046,5 +6087,162 @@ mod tests {
         let rendered = later_batch.render();
         assert!(!rendered.contains("首批纪律"), "later batches: no first-batch discipline");
         assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
+    }
+
+    // ── sb1（ADR-0018 决定 1–2）：评审退出地形清单、教练改读地形清单 ────────
+
+    /// 评审侧退出（决定 1）：同一个 [`CoachContext`]，教练面带地形清单、评审
+    /// 面不带——`concept_review` 发出的 user 消息里既没有清单行也没有块头。
+    /// 负断言钉**块头与清单行**，不钉裸子串「地形清单」：首批纪律首行两个
+    /// 渲染面同文，也含这四个字。
+    #[tokio::test]
+    async fn review_input_leaves_out_the_terrain_list_the_coach_reads() {
+        let context = CoachContext {
+            terrain_list: "- 块A(a)|主题描述|basic|主干一|无前置".into(),
+            ..Default::default()
+        };
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec!["not json".to_owned()].into_iter(),
+            Vec::new(),
+        )));
+        let _ = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &context,
+            "",
+            &[],
+            &[],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        let prompts = completer.0.lock().unwrap().1.clone();
+        let (_, user) = prompts[0]
+            .split_once('\x1f')
+            .expect("captured system\\x1fuser");
+        assert!(user.contains("【待审批次】"), "评审 user 到达：{user}");
+        assert!(
+            !user.contains("- 块A(a)|主题描述|basic|主干一|无前置"),
+            "评审输入不带地形清单行：{user}"
+        );
+        assert!(!user.contains("【地形清单"), "评审输入不带地形清单块头：{user}");
+        assert!(!user.contains("【结构参考材料"), "评审输入不带结构块头（旧称也不得回潮）：{user}");
+        // 同一上下文的教练面照常携带（起草/重裁不动）。
+        let coach = context.render();
+        assert!(
+            coach.contains("- 块A(a)|主题描述|basic|主干一|无前置"),
+            "教练面仍读地形清单：{coach}"
+        );
+    }
+
+    /// 验收①：同一上下文两个渲染面对比——评审输出不含块头；且逐字节等于
+    /// 「教练渲染去掉地形清单块」。独立对照 = 把清单字段清空再走教练面
+    /// 渲染（空字段整块省略是既有行为，正是「跳过结构块」的定义）——所以
+    /// 多一个空行、少一个块都会红。首批与后续批各比一次（首批纪律、门口
+    /// 框架语随花名册空与否变化，都不许按渲染面分叉）。
+    #[test]
+    fn review_render_is_the_coach_render_minus_the_terrain_list_block() {
+        let full = CoachContext {
+            goal: "学会手冲一杯咖啡".into(),
+            proficiency_statement: "能独立冲煮".into(),
+            learner_basis: "纯零基础".into(),
+            terrain_list: "- 块A(a)|主题描述|basic|主干一|无前置\n- 块B(b)|进阶|advanced|主干一|前置:块A"
+                .into(),
+            terrain_doors: "- [G1]（硬前置）能辨认水温".into(),
+            roster: String::new(),
+            taught_summary: "水温@会用".into(),
+            coverage_gauge: "已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无".into(),
+            behavior_digest: "近窗正确率 80%".into(),
+            ready_count: 1,
+            registry_excerpt: "水温｜水的口感与萃取".into(),
+            course_context_words: "手冲、咖啡".into(),
+        };
+        for (label, roster, doors_framing) in [
+            ("首批", String::new(), "首批入口重点参照"),
+            ("后续批", "在学 | 节点A".to_owned(), "软参照"),
+        ] {
+            let context = CoachContext { roster, ..full.clone() };
+            let coach = context.render();
+            let review = context.render_for_review();
+            let without_list =
+                CoachContext { terrain_list: String::new(), ..context.clone() }.render();
+            assert_eq!(review, without_list, "{label}：评审面 = 教练面减地形清单块（逐字节）");
+            assert!(coach.contains("【地形清单"), "{label}：教练面带地形清单块头");
+            assert!(coach.contains("- 块A(a)|主题描述"), "{label}：教练面带清单行");
+            for header in ["【地形清单", "【结构参考材料"] {
+                assert!(!review.contains(header), "{label}：评审面不带块头 {header}");
+            }
+            assert!(!coach.contains("【结构参考材料"), "{label}：教练面不用旧称");
+            // 负断言钉块头不钉裸子串：首批纪律首行两渲染面同文（评审同样
+            // 要核对入口起点），它本身含「地形清单」四字。
+            for block in [
+                "【学习目标】",
+                "（程度声明：能独立冲煮",
+                "【前置地形门口",
+                "【当前就绪】1 个",
+                "【花名册】",
+                "【已教概念账（跨课程全局",
+                "【覆盖读数",
+                "【行为摘要】",
+                "【概念登记表",
+                "【课程语境词】手冲、咖啡",
+                doors_framing,
+            ] {
+                assert!(review.contains(block), "{label}：评审面保留 {block}");
+            }
+        }
+        let first_batch = CoachContext { roster: String::new(), ..full.clone() };
+        let first_review = first_batch.render_for_review();
+        assert!(
+            first_review.contains("【首批纪律（花名册为空）】"),
+            "首批纪律不按渲染面分叉"
+        );
+        assert!(
+            first_review.contains("入口从地形清单的入门档起步"),
+            "首批纪律首行两渲染面同文——评审面也因此含「地形清单」四字：{first_review}"
+        );
+        // 清单字段本就为空：两个渲染面逐字节相同。
+        let listless = CoachContext { terrain_list: String::new(), ..full.clone() };
+        assert_eq!(listless.render(), listless.render_for_review());
+    }
+
+    /// 验收④：评审提示词（四个开关的全部十六个臂）不再引用知识结构——
+    /// 判据 4 只退役结构对照那一句（决定 1 / Q30 b）：难度如实申报句与 z02
+    /// 拆分建议句逐字保留，`difficulty` 仍是 problems 的合法 field，判据条
+    /// 数不变。env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+    #[test]
+    #[serial_test::serial]
+    fn review_prompt_retires_only_the_structure_comparison() {
+        let arm = |system: &str, label: &str| {
+            for retired in ["结构参考材料", "同名块", "结构材料可能过时", "阶段/档位相符"] {
+                assert!(!system.contains(retired), "{label} 臂仍含「{retired}」");
+            }
+            for kept in [
+                "【判据——逐节点核对四条】",
+                "4. 难度诚实：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；",
+                "可附拆分建议——建议拆分时给出逐半后的 intent/scope（照各自那一半的实际内容写，不照抄原条目），供重裁直接消费。",
+                "拆分建议写在难度诚实条的 advice 里",
+                "\"field\": \"teaches|assumes|mints|title|difficulty\"",
+                "数据缺陷观察（如：材料里疑似缺某基础概念、命名与材料用法可能有出入）",
+            ] {
+                assert!(system.contains(kept), "{label} 臂缺「{kept}」");
+            }
+        };
+        for provenance in ["on", "off"] {
+            for v2 in ["on", "off"] {
+                for fragments in ["on", "off"] {
+                    for context_v2 in ["on", "off"] {
+                        let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, provenance);
+                        let _v2 = set_env(REVIEW_V2_SWITCH_ENV, v2);
+                        let _fragments = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, fragments);
+                        let _context = set_env(REVIEW_CONTEXT_V2_SWITCH_ENV, context_v2);
+                        let label = format!("provenance={provenance} v2={v2} fragments={fragments} context_v2={context_v2}");
+                        arm(&concept_review_system(), &label);
+                    }
+                }
+            }
+        }
     }
 }
