@@ -1,5 +1,12 @@
 # 迁移进度（gpui-ce → gpui-pre + gpui-kit）
 
+## 2026-11-24 · Clippy 欠债清理（fix-flowy18-clippy-debt）
+
+- 理解的目标：让 `flowy18-ui` 的 UI clippy 门禁在干净 main 上转绿，并修掉让 Windows 作业长期静默跳过的依赖预检。
+- 顺序：任务 0 核对基线 → flowy-agent 8 条 → 量清并修 flowy-app → 修 CI 预检 → 全量验证 → 推分支开 PR。
+- 最大风险：flowy-app 的确切条数在 flowy-agent 清零前量不出来，可能远超预期；`unused import: prelude` 删法不对会让 `div()`/`.w()` 全失效。
+- 任务 0 实测（2026-11-24，本工作树）：HEAD `0d78e116b`；门禁命令退出 101，`flowy-agent` lib 8 条 error；测试 157 passed / 0 failed / 0 ignored（ui 30+2、i18n 8、studio 74、app 43）。与任务书一致，开工。
+
 ## 开工回执
 - 理解目标：换依赖到 gpui-pre =0.3.14 + gpui-kit 0.11，重做 Flowy Studio 首页。
 - 实际路线：**放弃**移植 `editable_text`（证明不可行），改用 `gpui_kit::base::input`

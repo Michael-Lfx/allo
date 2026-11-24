@@ -281,7 +281,7 @@ mod tests {
     use super::{ConversationDeleteState, FlowyApp};
     use crate::app::state::ActiveDialog;
     use crate::session::SessionStore;
-    use gpui::{TestAppContext, prelude::*};
+    use gpui::TestAppContext;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -320,10 +320,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test harness passes &mut TestAppContext"
-    )]
     fn delayed_delete_completion_preserves_other_dialog_and_new_request(
         cx: &mut TestAppContext,
     ) {

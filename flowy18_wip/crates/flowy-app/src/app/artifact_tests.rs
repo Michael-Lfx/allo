@@ -8,7 +8,7 @@ use flowy_agent::{
     ArtifactStore, DeliveryCommit, PrepareArtifact, SessionOrigin,
 };
 use flowy_studio::library::LibraryEvent;
-use gpui::{Entity, TestAppContext, prelude::*};
+use gpui::{Entity, TestAppContext};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -158,10 +158,6 @@ fn assert_export_failure(cx: &TestAppContext, app: &Entity<FlowyApp>) {
 }
 
 #[gpui::test]
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "GPUI test harness passes &mut TestAppContext"
-)]
 fn save_picker_cancellation_creates_no_export(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let app = app_with_loaded_artifact(cx, &fixture);
@@ -184,10 +180,6 @@ fn save_picker_cancellation_creates_no_export(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "GPUI test harness passes &mut TestAppContext"
-)]
 fn save_picker_exports_snapshot_and_replaces_an_accepted_existing_path(
     cx: &mut TestAppContext,
 ) {
@@ -222,10 +214,6 @@ fn save_picker_exports_snapshot_and_replaces_an_accepted_existing_path(
 }
 
 #[gpui::test]
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "GPUI test harness passes &mut TestAppContext"
-)]
 fn save_picker_rejects_a_directory_destination_and_preserves_existing_data(
     cx: &mut TestAppContext,
 ) {
@@ -258,10 +246,6 @@ fn save_picker_rejects_a_directory_destination_and_preserves_existing_data(
 
 #[cfg(windows)]
 #[gpui::test]
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "GPUI test harness passes &mut TestAppContext"
-)]
 fn save_picker_reports_a_locked_destination_without_truncating_it(
     cx: &mut TestAppContext,
 ) {

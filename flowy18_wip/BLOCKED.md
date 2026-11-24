@@ -62,3 +62,11 @@
 9. 启动固定落 Home，不再自动恢复上次会话
 10. `set_value` 不发 change 事件，所有「写值 → 等事件 → 落盘」的链路都需要
     改成「算出最终值 → 排队 → 直接用最终值提交」
+
+## 2026-11-24 · Clippy 欠债清理（fix-flowy18-clippy-debt）
+
+- 待裁决：无。
+- 顺带记录（未处理，不影响门禁）：`Cargo.toml` 的 `[workspace.dependencies]` 里
+  `flowy-skills` 目前没有任何成员依赖，每次 `cargo check` 都会输出一条
+  `unused_workspace_dependencies` 警告。它属于 cargo 层警告，不是 clippy 门禁，
+  本次未动。
