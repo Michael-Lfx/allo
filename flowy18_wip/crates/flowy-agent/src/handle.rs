@@ -2847,6 +2847,7 @@ fn recover_corrupt_index(root: &Path) -> std::io::Result<()> {
 fn tool_registry(cwd: &Path) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
+    registry.register(crate::pptx::definition());
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.
@@ -3213,6 +3214,15 @@ mod background_init_tests {
 
         drop(handle);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_tool_registry_advertises_the_deck_capability() {
+        let registry = tool_registry(std::path::Path::new("."));
+        assert!(
+            registry.list().iter().any(|name| name == "create_deck"),
+            "the deck tool is part of the capability registry"
+        );
     }
 
     #[test]

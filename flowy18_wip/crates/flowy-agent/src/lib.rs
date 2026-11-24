@@ -15,6 +15,7 @@ mod handle;
 mod index;
 mod model;
 mod model_directory;
+mod pptx;
 mod projection;
 mod publish_tool;
 mod title;

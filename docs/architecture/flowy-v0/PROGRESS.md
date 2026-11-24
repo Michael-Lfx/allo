@@ -828,3 +828,13 @@ no session was live, so there is nothing to hint at
 - 新增 `run_accepted_once_submits_the_exec_input_prompt`：提交的提示词确实来自 `ExecInput`。
 - 先红后绿证据：把 `prompt()` 临时改成 `inputs.get(1)` 时重放测试红；改回 `inputs.first()` 后绿。
 - 基线：core 73 / agent 108 / studio 82 / i18n 8；accept.sh 3/3；clippy 干净。
+
+---
+
+## 任务 11 · V4 按环境加载产物能力（2026-11-25）
+
+- 新增 `create_deck` 工具：一次调用生成 1–12 页 pptx（默认三页），写盘后用 `rpptx` 重新读回校验页数。
+- 能力探测：内置渲染器可用时正常生成；环境声明不可用（`FLOWY_PPTX=missing`）时返回 `{status:"missing", need:"pptx generator"}`，这是成功结果而不是工具错误，也不会失败整轮。
+- 工具注册进 capability registry，模型能看到 `create_deck`；`rpptx` 只是当前环境里的实现，后续可替换为 skill 或外部生成器。
+- 先红后绿：把 missing 分支改成 `ToolExecutionResult::error` 时 `a_missing_generator...` 红；改回后绿。
+- 基线：core 73 / agent 111 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净。

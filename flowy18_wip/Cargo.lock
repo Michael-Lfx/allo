@@ -2211,6 +2211,7 @@ dependencies = [
  "async-trait",
  "flowy-agent-core",
  "getrandom 0.3.4",
+ "rpptx",
  "rustix",
  "serde",
  "serde_json",
