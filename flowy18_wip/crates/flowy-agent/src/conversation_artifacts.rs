@@ -20,7 +20,7 @@ use crate::artifact_store::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ConversationWrite {
+pub struct ConversationWrite {
     pub(crate) raw_path: String,
     pub(crate) tool_call_id: String,
     pub(crate) turn_id: String,
@@ -44,7 +44,7 @@ struct TurnBudget {
 }
 
 #[must_use]
-pub(crate) fn session_supports_import(session: &SessionRecord) -> bool {
+pub const fn session_supports_import(session: &SessionRecord) -> bool {
     matches!(
         session.origin,
         SessionOrigin::Home | SessionOrigin::Project { .. }
@@ -52,21 +52,19 @@ pub(crate) fn session_supports_import(session: &SessionRecord) -> bool {
 }
 
 #[must_use]
-pub(crate) fn turn_id_for_submission(submission: u128) -> String {
+pub fn turn_id_for_submission(submission: u128) -> String {
     format!("submission-{submission:032x}")
 }
 
 /// Pair successful `write_file` / `edit_file` tool calls with their persisted
 /// results. Failed calls, orphaned results, and unknown tools are ignored.
 #[must_use]
-pub(crate) fn parse_successful_writes(
-    messages: &[Message],
-) -> Vec<ConversationWrite> {
+pub fn parse_successful_writes(messages: &[Message]) -> Vec<ConversationWrite> {
     parse_successful_writes_filtered(messages, None)
 }
 
 #[must_use]
-pub(crate) fn parse_successful_writes_for_turn(
+pub fn parse_successful_writes_for_turn(
     messages: &[Message],
     turn_id: &str,
 ) -> Vec<ConversationWrite> {
@@ -161,7 +159,7 @@ fn parse_successful_writes_filtered(
 /// Prepare one durable one-file commit per current source path. The caller
 /// must persist each returned commit before committing it to the store.
 #[must_use]
-pub(crate) fn prepare_conversation_artifacts(
+pub fn prepare_conversation_artifacts(
     store: &ArtifactStore,
     session: &SessionRecord,
     writes: &[ConversationWrite],

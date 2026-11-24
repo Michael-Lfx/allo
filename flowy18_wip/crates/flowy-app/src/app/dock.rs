@@ -398,6 +398,10 @@ impl FlowyApp {
 
     /// Same chrome as a project row, so the more button sits inside the hover
     /// fill and lines up with the project's edit button.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one row reads better than a struct built at each call site"
+    )]
     fn conversation_row(
         &self,
         window: &mut Window,
@@ -483,7 +487,7 @@ impl FlowyApp {
     fn conversation_row_actions(
         &self,
         _window: &mut Window,
-        cx: &mut Context<'_, Self>,
+        cx: &Context<'_, Self>,
         session_id: &str,
     ) -> impl IntoElement {
         let id = session_id.to_owned();
@@ -617,6 +621,10 @@ impl FlowyApp {
         section
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one row reads better than a struct built at each call site"
+    )]
     fn section_header(
         &self,
         window: &mut Window,
@@ -1116,6 +1124,10 @@ fn brand() -> impl IntoElement {
 }
 
 /// Same inset, padding, border, and radius as a dock navigation row.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "every theme helper in this dock module takes the theme by reference"
+)]
 fn dock_nav_row(
     theme: &flowy_ui::ResolvedTheme,
     id: impl Into<gpui::ElementId>,
@@ -1133,6 +1145,10 @@ fn dock_nav_row(
         .gap_2()
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "every theme helper in this dock module takes the theme by reference"
+)]
 fn body_line_height(
     theme: &flowy_ui::ResolvedTheme,
     window: &Window,
@@ -1150,6 +1166,10 @@ fn body_line_height(
 /// interactive surface, so the hit target that the anchor and the tooltip
 /// attach to lives on this shell. The control keeps its own `ControlSize`
 /// metrics instead of the old line-height square.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "every theme helper in this dock module takes the theme by reference"
+)]
 fn dock_icon_button(
     id: impl Into<gpui::ElementId>,
     button: theme::IconButton,
@@ -1165,6 +1185,10 @@ fn dock_icon_button(
 
 /// Project folder toggle. Same hit target as the other dock icons, with no
 /// fill of its own, so hovering it stays on the row background.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "every theme helper in this dock module takes the theme by reference"
+)]
 fn project_folder_toggle(
     window: &Window,
     theme: &flowy_ui::ResolvedTheme,

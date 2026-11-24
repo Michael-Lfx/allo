@@ -96,13 +96,15 @@ pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
                         .and_then(|workspace_root| {
                             output_root.strip_prefix(workspace_root).ok()
                         })
-                        .map(|relative| {
-                            relative
-                                .join(Path::new(&parsed.path))
-                                .to_string_lossy()
-                                .replace('\\', "/")
-                        })
-                        .unwrap_or_else(|| parsed.path.replace('\\', "/"));
+                        .map_or_else(
+                            || parsed.path.replace('\\', "/"),
+                            |relative| {
+                                relative
+                                    .join(Path::new(&parsed.path))
+                                    .to_string_lossy()
+                                    .replace('\\', "/")
+                            },
+                        );
                     let receipt = match store.prepare(PrepareArtifact {
                         source_root: output_root,
                         relative_path: parsed.path,

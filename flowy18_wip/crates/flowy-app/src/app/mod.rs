@@ -635,6 +635,10 @@ impl FlowyApp {
     /// to the focused element on keymap depth; the field forwards the action
     /// into the editor instead, which keeps Enter a line break here and a
     /// submit in the composer.
+    #[expect(
+        clippy::unused_self,
+        reason = "keeps the call site reading as an app command; the body only forwards to the field state"
+    )]
     fn insert_line_break(
         &self,
         state: &Entity<TextareaState>,
@@ -646,7 +650,7 @@ impl FlowyApp {
 
     /// Installs input text queued by [`FlowyApp::set_input_text`].
     fn apply_pending_input_text(
-        &mut self,
+        &self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -3430,10 +3434,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test harness passes &mut TestAppContext"
-    )]
     fn unavailable_or_locked_tiers_never_change_the_selected_route(
         cx: &mut TestAppContext,
     ) {
@@ -3488,10 +3488,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test harness passes &mut TestAppContext"
-    )]
     fn new_task_reconciles_deferred_studio_notice(cx: &mut TestAppContext) {
         let root = test_root();
         let app = cx
@@ -3528,10 +3524,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test harness passes &mut TestAppContext"
-    )]
     fn storage_error_survives_login_settings_and_navigation_until_dismissed(
         cx: &mut TestAppContext,
     ) {
@@ -3575,10 +3567,6 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test harness passes &mut TestAppContext"
-    )]
     fn failed_new_task_is_not_hidden_by_navigation(cx: &mut TestAppContext) {
         let root = test_root();
         let sessions = root.join("sessions");
