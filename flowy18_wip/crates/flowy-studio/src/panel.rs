@@ -1040,7 +1040,9 @@ impl StudioPanel {
                         receipt = %receipt.id,
                         "accepted-deferred"
                     );
-                    self.prompt.update(cx, |state, cx| state.emplace("", cx));
+                    // gpui-pre dropped `emplace`; the queueing entry point
+                    // is `set_prompt_text`, drained at the top of render.
+                    self.set_prompt_text("", cx);
                     // The receipt is the feedback now. Saying "added to this
                     // session's task list" while no such list existed was a
                     // lie; `pending_receipts` is rendered by `workspace()`.
@@ -1696,7 +1698,7 @@ mod tests {
 
         // Second run over the same store root: the constructor reads the
         // journal, so the strip is populated before anything is submitted.
-        let reopened = cx.new(|cx| {
+        let reopened = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             StudioPanel::new(
@@ -1714,6 +1716,7 @@ mod tests {
                     },
                 },
                 ui,
+                window,
                 cx,
             )
         });
@@ -1758,7 +1761,7 @@ mod tests {
         // The draft is handed over to the queue, so the composer is clear and
         // the user can keep typing.
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            assert_eq!(panel.prompt.read(cx).value(), "");
         });
 
         // Reopening the client is a fresh queue handle over the same root:

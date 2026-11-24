@@ -103,7 +103,6 @@ impl crate::panel::StudioPanel {
                     .gap_1()
                     .px(self.theme.space(32.))
                     .py(self.theme.space(6.))
-                    .aria_live(gpui::accesskit::Live::Polite)
                     .children(rows)
                     .children(overflow),
             );
