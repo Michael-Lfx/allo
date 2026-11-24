@@ -234,5 +234,10 @@ impl FlowyApp {
         }
         self.sync_studio_surface(cx);
         cx.notify();
+        if section == Section::More
+            && self.persona.page == super::more::Page::Skills
+        {
+            self.refresh_skills(cx);
+        }
     }
 }

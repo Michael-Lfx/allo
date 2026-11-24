@@ -460,8 +460,8 @@ impl FlowyApp {
             cx.subscribe(&font_size_field, |app, _, _: &InputEvent, cx| {
                 app.touch_font_size(cx);
             }),
-            cx.subscribe(&skills_query, |_, _, _: &InputEvent, cx| {
-                cx.notify();
+            cx.subscribe(&skills_query, |app, _, _: &InputEvent, cx| {
+                app.touch_skills_query(cx);
             }),
             cx.subscribe(&studio, |app, _, event: &StudioEvent, cx| {
                 app.on_studio_event(event, cx);
@@ -510,8 +510,22 @@ impl FlowyApp {
                 idea_note: false,
             },
             skills: SkillsState {
-                filter: skills::Category::All,
+                category: None,
                 query: skills_query,
+                cards: Vec::new(),
+                cursor: None,
+                loading: false,
+                unavailable: false,
+                exhausted: false,
+                generation: 0,
+                task: None,
+                search_task: None,
+                opened: None,
+                scroll: gpui::ScrollHandle::new(),
+                auto_pages: 0,
+                follow_armed: std::cell::Cell::new(false),
+                empty_follows: 0,
+                follow_mark: 0,
             },
             ota: ota::OtaController::new(),
             settings: SettingsState {
@@ -1396,7 +1410,15 @@ impl FlowyApp {
             .update(cx, flowy_studio::StudioPanel::reset_session);
         self.gallery.page = 0;
         self.gallery.idea_note = false;
-        self.skills.filter = skills::Category::All;
+        self.skills.category = None;
+        self.skills.cards.clear();
+        self.skills.loading = false;
+        self.skills.unavailable = false;
+        self.skills.exhausted = false;
+        self.skills.generation = self.skills.generation.wrapping_add(1);
+        self.skills.task = None;
+        self.skills.search_task = None;
+        self.skills.opened = None;
         self.ota.reset();
         cx.notify();
     }
@@ -1861,6 +1883,9 @@ impl Render for FlowyApp {
             }
             state::ActiveDialog::Idea(_) => {
                 root.child(self.idea_layer(window, cx))
+            }
+            state::ActiveDialog::RemoteSkill => {
+                root.child(self.skill_shelf_layer(window, cx))
             }
             state::ActiveDialog::Skill(_)
             | state::ActiveDialog::SkillUnlock(_)

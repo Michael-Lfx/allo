@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Shelf identity used when a catalog card has no published version.
+pub const UNVERSIONED: &str = "unversioned";
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SkillId {
     pub owner_handle: String,

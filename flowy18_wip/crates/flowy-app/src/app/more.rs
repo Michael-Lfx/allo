@@ -49,11 +49,15 @@ impl FlowyApp {
         page: Page,
         cx: &mut Context<'_, Self>,
     ) {
+        let already_here = self.section == Section::More;
         self.persona.page = page;
         self.notice = None;
-        if self.section == Section::More {
+        if already_here {
             self.sync_studio_surface(cx);
             cx.notify();
+            if page == Page::Skills {
+                self.refresh_skills(cx);
+            }
         } else {
             self.push_section(Section::More, cx);
         }

@@ -19,22 +19,26 @@ pub use archive::{
     extract_skill_zip, github_archive_allowed, sha256_hex,
 };
 pub use catalog::{
-    CatalogError, Category, parse_categories, parse_search_page,
+    CatalogError, CatalogPage, Category, parse_categories, parse_search_page,
     parse_skill_page,
 };
-pub use id::{IdError, SkillId, parse_skill_id};
+pub use id::{IdError, SkillId, UNVERSIONED, parse_skill_id};
 pub use install::{
     InstallError, InstallEvent, InstallRecord, InstallStep, accept_verify_body,
     advance, begin_community_install, download_url, verify_url,
 };
-pub use market::{MarketError, SkillMarket};
+pub use market::{
+    CachedShelf, MarketError, ShelfWindow, SkillMarket,
+    category_cache_reusable, trending_cache_reusable,
+};
 pub use official::{
     OfficialError, OfficialSkill, bundled_official, parse_official,
 };
 pub use plan::{
-    CATEGORY_TTL_SECS, Fetch, MAX_PACKAGE_BYTES, PAGE_LIMIT_CATEGORY,
-    PAGE_LIMIT_SEARCH, PlanError, SEARCH_TTL_SECS, category_url, search_url,
-    trending_url,
+    CATEGORY_CARD_CAP, CATEGORY_TTL_SECS, Fetch, MAX_PACKAGE_BYTES,
+    PAGE_LIMIT_CATEGORY, PAGE_LIMIT_SEARCH, PAGE_LIMIT_TRENDING, PlanError,
+    SEARCH_CARD_CAP, SEARCH_TTL_SECS, TRENDING_CARD_CAP, category_url,
+    percent_encode, search_url, trending_url,
 };
 pub use registry::{
     InstalledSkill, RegistryError, project_installed, prompt_lines,

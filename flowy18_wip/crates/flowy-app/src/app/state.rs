@@ -5,8 +5,9 @@ use super::settings;
 use super::skills;
 use crate::prefs::FlexProvider;
 use crate::session::Session;
-use gpui::{Entity, Task, WindowAppearance};
+use gpui::{Entity, ScrollHandle, Task, WindowAppearance};
 use gpui_kit::base::input::{InputState, TextareaState};
+use std::cell::Cell;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,8 +70,23 @@ pub(super) struct GalleryState {
 }
 
 pub(super) struct SkillsState {
-    pub(super) filter: skills::Category,
+    /// Selected market category slug. `None` is the trending shelf.
+    pub(super) category: Option<String>,
     pub(super) query: Entity<InputState>,
+    pub(super) cards: Vec<skills::ShelfCard>,
+    pub(super) cursor: Option<String>,
+    pub(super) loading: bool,
+    pub(super) unavailable: bool,
+    pub(super) exhausted: bool,
+    pub(super) generation: u64,
+    pub(super) task: Option<Task<()>>,
+    pub(super) search_task: Option<Task<()>>,
+    pub(super) opened: Option<skills::ShelfCard>,
+    pub(super) scroll: ScrollHandle,
+    pub(super) auto_pages: u8,
+    pub(super) follow_armed: Cell<bool>,
+    pub(super) empty_follows: u8,
+    pub(super) follow_mark: usize,
 }
 
 pub struct SettingsState {
@@ -140,6 +156,7 @@ pub(super) enum ActiveDialog {
     Skill(&'static str),
     SkillUnlock(&'static str),
     SkillDocs(&'static str),
+    RemoteSkill,
     Invite,
     ProjectCreate,
     ProjectDelete,
@@ -162,6 +179,7 @@ impl ActiveDialog {
             Self::Skill(_) => Some("skill"),
             Self::SkillUnlock(_) => Some("skill-unlock"),
             Self::SkillDocs(_) => Some("skill-docs"),
+            Self::RemoteSkill => Some("skill-shelf"),
             Self::Invite => Some("invite"),
             Self::ProjectCreate => Some("project-create"),
             Self::ProjectDelete => Some("project-delete"),

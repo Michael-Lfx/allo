@@ -88,6 +88,11 @@ mod tests {
             id: parse_skill_id(owner, slug, "1.0.0").unwrap(),
             summary: slug.into(),
             categories: vec![],
+            title: String::new(),
+            preverified: false,
+            downloads: None,
+            installs: None,
+            updated_at_ms: None,
         }
     }
 

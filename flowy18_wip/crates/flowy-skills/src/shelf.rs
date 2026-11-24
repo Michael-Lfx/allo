@@ -7,6 +7,20 @@ pub struct Card {
     pub id: SkillId,
     pub summary: String,
     pub categories: Vec<String>,
+    #[serde(default)]
+    pub title: String,
+    /// The catalog payload already reported this card as clean.
+    #[serde(default)]
+    pub preverified: bool,
+    /// Lifetime downloads from a skills-list or search row.
+    #[serde(default)]
+    pub downloads: Option<u64>,
+    /// Lifetime installs. Trending rows report this instead of downloads.
+    #[serde(default)]
+    pub installs: Option<u64>,
+    /// Unix timestamp in milliseconds.
+    #[serde(default)]
+    pub updated_at_ms: Option<i64>,
 }
 
 #[must_use]
@@ -29,6 +43,11 @@ mod tests {
             id: parse_skill_id(owner, slug, "1.0.0").unwrap(),
             summary: slug.into(),
             categories: vec!["knowledge".into()],
+            title: String::new(),
+            preverified: false,
+            downloads: None,
+            installs: None,
+            updated_at_ms: None,
         }
     }
 

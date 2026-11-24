@@ -18,6 +18,7 @@ flowy-i18n = { workspace = true }
 flowy-obs = { workspace = true }
 flowy-ota = { workspace = true }
 flowy-shell = { workspace = true }
+flowy-skills = { workspace = true }
 flowy-studio = { workspace = true }
 flowy-ui = { workspace = true }
 tracing = { workspace = true }
