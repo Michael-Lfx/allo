@@ -32,8 +32,11 @@
 ### 3. `gpui-tray`（已解决）
 
 `gpui-tray` 用一个 cargo feature 桥接三套 GPUI 类型图。工作区选的是 `gpui-kit`，
-它的真包就是 `gpui-pre`，所以 `MenuItem` / `App` / `Action` 类型一致，托盘已恢复：
+它的真包就是 `gpui-pre`，所以 `MenuItem` / `App` / `Action` 类型一致，托盘代码已接回：
 图标、Show / Quit 菜单，`flowy_shell::tray_available()` 报告是否可用。
+
+**但运行时建不出来**：启动时 `Shell_NotifyIconW operation 0 failed`，`tray_available()`
+为 false，所以本机实际仍是关窗即退出。见文末「运行时与遗留」。
 
 ## 能力缺口（`gpui-pre` 没有）
 
@@ -48,7 +51,7 @@
 | `emplace` | `state.emplace(text, cx)` | 无；`set_value(text, window, cx)` 需要 window |
 | 字母间距 | `letter_spacing(px(..))` | 无 |
 | RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
-| 系统托盘 | `gpui-tray` | 已恢复：`gpui-kit` feature 指向 `gpui-pre` |
+| 系统托盘 | `gpui-tray` | 代码已接回（`gpui-kit` → `gpui-pre`），运行时 `Shell_NotifyIconW` 失败 |
 
 ## 当前已知遗留（不影响编译，影响行为或体验）
 
@@ -67,7 +70,23 @@
 ## 2026-11-24 · Clippy 欠债清理（fix-flowy18-clippy-debt）
 
 - 待裁决：无。
-- 顺带记录（未处理，不影响门禁）：`Cargo.toml` 的 `[workspace.dependencies]` 里
-  `flowy-skills` 目前没有任何成员依赖，每次 `cargo check` 都会输出一条
-  `unused_workspace_dependencies` 警告。它属于 cargo 层警告，不是 clippy 门禁，
-  本次未动。
+- 已处理：`Cargo.toml` 的 `[workspace.dependencies]` 里那条 `flowy-skills` 没有任何
+  成员依赖，每次 `cargo check` 都会报 `unused_workspace_dependencies`。该行已删除；
+  `crates/flowy-skills` 仍是 workspace 成员，随时可以被别的 crate 以
+  `flowy-skills = { path = "..." }` 或重新登记的 workspace 依赖接上。
+
+## 2026-11-24 · 运行时与遗留（实测）
+
+- **托盘运行时不可用**：启动日志 `WARN flowy.boot: system tray unavailable
+  stage="shell::tray::build" error=native tray error: Shell_NotifyIconW operation 0 failed`。
+  代码路径已接回、编译通过，但本机建不出图标，`tray_available()` 为 false，于是关窗
+  直接退出，托盘菜单与最小化都走不到。原因未查，需单独排查（explorer 通知区域、
+  图标数据、会话权限都可能是因）。
+- **`flowy-agent` 测试目标 45 条 clippy**：`cargo clippy -p flowy-agent --all-targets
+  --locked -- -D warnings` 退出 101，报 45 条，全部落在 lib test；`--lib` 已清零。
+  CI 门禁命令不选 `flowy-agent`，所以这 45 条不进流水线。要清得先决定是否把
+  `-p flowy-agent` 加进门禁，再另开一轮。
+- **资料库导入被跳过（环境问题）**：日志 `artifact import skipped ...
+  publisher directory is a link or reparse point`。本机 `%APPDATA%\Flowy` 是指向
+  `.absorb_tmp/flowy-appdata` 的 junction，导入逻辑拒绝这类路径。属本机数据目录
+  形态，不是代码缺陷。
