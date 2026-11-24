@@ -1374,7 +1374,10 @@ impl AgentHandle {
             },
             Vec::new(),
         );
-        if let Err(error) = self.submit_chat(submission, &claimed.text) {
+        let prompt = input
+            .prompt()
+            .map_or_else(|| claimed.text.clone(), str::to_owned);
+        if let Err(error) = self.submit_chat(submission, &prompt) {
             let _ = queue.release(&claimed.id, &attempt_id, now_ms(), 0);
             return Err(error);
         }
@@ -3176,6 +3179,36 @@ mod background_init_tests {
         assert!(
             pending[0].taken_at_ms.is_none(),
             "waiting must not inflate the attempt count"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_accepted_once_submits_the_exec_input_prompt() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-exec-prompt-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        handle.create_session().expect("session");
+        handle.accept_deferred("from the input").expect("accepted");
+
+        let run = handle.run_accepted_once().expect("pump").expect("claimed");
+        assert_eq!(run.input.prompt(), Some("from the input"));
+        assert!(
+            handle.chat_history().rows.iter().any(|row| matches!(
+                row,
+                crate::projection::ChatLine::User { text }
+                    if text == "from the input"
+            )),
+            "the submitted prompt is the ExecInput prompt"
         );
 
         drop(handle);

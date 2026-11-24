@@ -818,3 +818,13 @@ no session was live, so there is nothing to hint at
 验证基线：core 72 / agent 107 / studio 82 / i18n 8；`accept.sh` 3/3；`clippy --lib -D warnings` 干净。
 
 `accept.sh` 同时修掉假绿：`grep -q "0 failed"` 在过滤零匹配时也会通过，现在要求正数 passed。
+
+---
+
+## 任务 10 · V3 执行输入与重放（2026-11-25）
+
+- `ExecInput::prompt()` 成为执行入口读取提示词的唯一入口；`run_accepted_once` 用它提交，不再直接读 `receipt.text`。
+- 新增 `the_same_exec_input_replays_the_same_event_sequence`：同一 `ExecInput`（经 `from_receipt`）跑两次，比较 `TurnObserver` 归一化回调序列，并比较落盘历史的 `(role, content)` 形状，均相等。
+- 新增 `run_accepted_once_submits_the_exec_input_prompt`：提交的提示词确实来自 `ExecInput`。
+- 先红后绿证据：把 `prompt()` 临时改成 `inputs.get(1)` 时重放测试红；改回 `inputs.first()` 后绿。
+- 基线：core 73 / agent 108 / studio 82 / i18n 8；accept.sh 3/3；clippy 干净。

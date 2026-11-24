@@ -130,6 +130,16 @@ impl ExecInput {
             receipt_id: Some(receipt.id.clone()),
         }
     }
+
+    /// The prompt this attempt runs.
+    ///
+    /// The receipt's text lives in `context.inputs`; the executor reads it
+    /// from here instead of re-reading the receipt, so the journal is not a
+    /// second source of truth during a run.
+    #[must_use]
+    pub fn prompt(&self) -> Option<&str> {
+        self.context.inputs.first().map(String::as_str)
+    }
 }
 
 #[cfg(test)]
