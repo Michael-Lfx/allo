@@ -1801,7 +1801,9 @@ impl Render for FlowyApp {
                 ] {
                     let presentation = field.read(cx).presentation();
                     if Some(presentation.focus_handle()) == focused.as_ref() {
-                        if presentation.is_disabled() || presentation.is_readonly() {
+                        if presentation.is_disabled()
+                            || presentation.is_readonly()
+                        {
                             return;
                         }
                         field.update(cx, |state, cx| {
@@ -3057,7 +3059,10 @@ mod tests {
         click(cx, &cancel);
         cx.read_entity(&app, |app, cx| {
             assert_eq!(app.active_dialog, state::ActiveDialog::None);
-            assert_eq!(app.studio.read(cx).projects, [] as [flowy_studio::Project; 0]);
+            assert_eq!(
+                app.studio.read(cx).projects,
+                [] as [flowy_studio::Project; 0]
+            );
         });
         assert!(!root.join("projects.json").exists());
         drop(app);
@@ -3198,7 +3203,10 @@ mod tests {
         click(cx, &delete);
         click(cx, &delete);
         cx.read_entity(&app, |app, cx| {
-            assert_eq!(app.studio.read(cx).projects, [] as [flowy_studio::Project; 0]);
+            assert_eq!(
+                app.studio.read(cx).projects,
+                [] as [flowy_studio::Project; 0]
+            );
         });
         assert!(folder.is_dir(), "project removal must preserve local files");
         drop(app);

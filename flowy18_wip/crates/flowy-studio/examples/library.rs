@@ -245,12 +245,11 @@ fn main() {
                             },
                         )
                         .detach();
-                        if preview
-                            && let Some(id) = first {
-                                panel.update(cx, |panel, cx| {
-                                    panel.preview_item(&id, window, cx);
-                                });
-                            }
+                        if preview && let Some(id) = first {
+                            panel.update(cx, |panel, cx| {
+                                panel.preview_item(&id, window, cx);
+                            });
+                        }
                         cx.observe(&panel, |_, _, cx| cx.notify()).detach();
                         LibraryDemo { panel, ui }
                     })

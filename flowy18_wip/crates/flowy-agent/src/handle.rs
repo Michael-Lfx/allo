@@ -364,8 +364,7 @@ impl AgentHandle {
             }
         };
         let deleted_sessions = if let Some(store) = state.artifact_store.get() {
-            let mut deleted =
-                recover_session_deletions(store, &engine, &state);
+            let mut deleted = recover_session_deletions(store, &engine, &state);
             deleted.extend(migrate_legacy_source_deletions(
                 store, &engine, &state,
             ));
@@ -486,7 +485,9 @@ impl AgentHandle {
         }
         import_engine_sessions(&engine, &state, &deleted_sessions);
         // A crash leaves the old status in the file; persist the repaired view.
-        let index_persisted = if persist_index(&state) == Ok(()) { true } else {
+        let index_persisted = if persist_index(&state) == Ok(()) {
+            true
+        } else {
             state.report_storage_error();
             false
         };

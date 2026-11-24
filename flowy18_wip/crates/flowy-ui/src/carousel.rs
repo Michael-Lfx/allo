@@ -78,7 +78,9 @@ impl CarouselGeometry {
         let per_page = ((visible_w + self.gap) / (self.item_w + self.gap))
             .floor()
             .max(1.);
-        per_page.mul_add(self.item_w + self.gap, -self.gap).max(self.item_w)
+        per_page
+            .mul_add(self.item_w + self.gap, -self.gap)
+            .max(self.item_w)
     }
 
     pub fn needs_paging(&self, visible_w: f32) -> bool {

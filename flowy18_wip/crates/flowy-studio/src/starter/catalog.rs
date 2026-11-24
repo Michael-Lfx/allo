@@ -33,13 +33,8 @@ pub enum Category {
 }
 
 impl Category {
-    pub(crate) const ALL: [Self; 5] = [
-        Self::Website,
-        Self::App,
-        Self::Game,
-        Self::Docs,
-        Self::Data,
-    ];
+    pub(crate) const ALL: [Self; 5] =
+        [Self::Website, Self::App, Self::Game, Self::Docs, Self::Data];
 
     pub(crate) const fn title_key(self) -> &'static str {
         match self {
