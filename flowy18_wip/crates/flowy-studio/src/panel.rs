@@ -507,7 +507,7 @@ impl StudioPanel {
                     if due
                         && panel.initialized
                         && !panel.submission_pending
-                        && !panel.agent.has_busy_session()
+                        && !panel.status.is_busy()
                     {
                         panel.last_drain_check = Some(now);
                         panel.refresh_pending_receipts(cx);
@@ -845,12 +845,10 @@ impl StudioPanel {
     /// Re-read the acceptance journal, finish a settled claim, and start the
     /// next receipt when the agent is idle.
     fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
-        // A manual submit, or a turn in any session, must not interleave with
-        // a queued receipt; the pump re-checks when the agent is idle.
-        if self.submission_pending
-            || self.status.is_busy()
-            || self.agent.has_busy_session()
-        {
+        // A manual submit, or the active session's turn, must not interleave
+        // with a queued receipt; the pump re-checks when it is idle. Receipts
+        // owned by other busy sessions are skipped by `run_accepted_once`.
+        if self.submission_pending || self.status.is_busy() {
             self.pending_receipts = self.agent.pending_acceptances();
             cx.notify();
             return;

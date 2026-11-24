@@ -1297,7 +1297,15 @@ impl AgentHandle {
             .pending()
             .map_err(|_| "notice.storage_error")?
             .into_iter()
-            .next()
+            .find(|receipt| match receipt.session_hint.as_deref() {
+                // A receipt belongs to the session it was submitted from.
+                // While that session is still running, wait for it instead
+                // of taking the receipt and inflating its attempt count.
+                Some(hint) => lock(&state.live)
+                    .get(hint)
+                    .is_none_or(|session| !session.status.is_busy()),
+                None => true,
+            })
         else {
             return Ok(None);
         };
@@ -1313,19 +1321,35 @@ impl AgentHandle {
             return Ok(None);
         };
         let session = match claimed.session_hint.as_deref() {
-            Some(hint)
+            Some(hint) => {
                 if lock(&state.live)
                     .get(hint)
-                    .is_some_and(|session| !session.status.is_busy()) =>
-            {
-                if let Err(error) = self.select_session(hint) {
+                    .is_some_and(|session| session.status.is_busy())
+                {
+                    // Lost the race after selection: wait, do not fork.
                     let _ =
                         queue.release(&claimed.id, &attempt_id, now_ms(), 0);
-                    return Err(error);
+                    return Ok(None);
                 }
-                hint.to_owned()
+                // Selecting also loads a session that a restart has not
+                // brought into `live` yet; a deleted hint falls back home.
+                match self.select_session(hint) {
+                    Ok(()) => hint.to_owned(),
+                    Err(_) => match self.create_home_session() {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let _ = queue.release(
+                                &claimed.id,
+                                &attempt_id,
+                                now_ms(),
+                                0,
+                            );
+                            return Err(error);
+                        }
+                    },
+                }
             }
-            _ => match self.create_home_session() {
+            None => match self.create_home_session() {
                 Ok(session) => session,
                 Err(error) => {
                     let _ =
@@ -3107,6 +3131,52 @@ mod background_init_tests {
         assert_eq!(receipt.session_hint.as_deref(), Some(id.as_str()));
         // The hint did not change which session is active.
         assert_eq!(handle.active_session_id().as_deref(), Some(id.as_str()));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_receipt_for_a_busy_session_waits_instead_of_forking() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-accept-busy-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let hinted = handle.create_session().expect("hinted session");
+        let receipt = handle
+            .accept_deferred("wait for the hinted session")
+            .expect("accepted");
+        assert_eq!(receipt.session_hint.as_deref(), Some(hinted.as_str()));
+
+        // The user moved on to another session; the hinted one is still busy.
+        handle.create_session().expect("other session");
+        lock(&handle.inner.state.live)
+            .get_mut(&hinted)
+            .expect("hinted session is live")
+            .status = TurnStatus::Running;
+
+        assert!(
+            handle.run_accepted_once().expect("pump").is_none(),
+            "the busy session's receipt must wait"
+        );
+        assert_eq!(
+            handle.list_sessions().len(),
+            2,
+            "waiting must not fork a new conversation"
+        );
+        assert!(!handle.has_active_claim(), "nothing was claimed");
+        let pending = handle.pending_acceptances();
+        assert_eq!(pending.len(), 1);
+        assert!(
+            pending[0].taken_at_ms.is_none(),
+            "waiting must not inflate the attempt count"
+        );
 
         drop(handle);
         let _ = std::fs::remove_dir_all(root);
