@@ -101,10 +101,6 @@ pub(crate) struct GrowthBudget {
     deadline: std::time::Instant,
     /// 预算墙钟秒数（仅文案/日志读数，不参与判定）。
     window_secs: u64,
-    /// 测试注入缝：确定性到点开关（单测强制边界时序，不依赖真实时钟；生
-    /// 产恒 None）。learnhub #257 `expired_override` 同款。
-    #[cfg(test)]
-    expired_override: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl GrowthBudget {
@@ -113,17 +109,19 @@ impl GrowthBudget {
         Self {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(secs),
             window_secs: secs,
-            #[cfg(test)]
-            expired_override: None,
         }
     }
 
     /// 是否已到点（纯内存；判定点只设在 LLM 调用边界，在途调用不被打断
-    /// ——回包落定后的下一个判定点才生效）。
+    /// ——回包落定后的下一个判定点才生效）。测试臂先读进程槽
+    /// （`TEST_BUDGET_EXPIRED_FLAG`）——确定性到点开关（单测强制边界时
+    /// 序，不依赖真实时钟；生产不编译该臂）。
     fn expired(&self) -> bool {
         #[cfg(test)]
-        if let Some(flag) = &self.expired_override {
-            return flag.load(std::sync::atomic::Ordering::SeqCst);
+        if let Some(flag) = &*TEST_BUDGET_EXPIRED_FLAG.lock().expect("预算测试槽中毒") {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return true;
+            }
         }
         std::time::Instant::now() >= self.deadline
     }
@@ -145,10 +143,18 @@ fn budget_failure_message(budget: &GrowthBudget, detail: &str) -> String {
     format!("自动补批超时（{}）：{detail}", budget.wall_label())
 }
 
-/// 测试注入缝的进程内槽（rs8）：[`set_test_budget_expired_flag`] 装入的确
-/// 定性到点开关，随下一个自动补批臂的预算构造挂接（测试各自装各自清）。
-/// 进程全局态：测试必须 `#[serial]`，与写 env 的测试同律。测试辅助面：
-/// 产品代码不读写。
+/// rs8 预算到点判定的单一入口（growth_body 四处判定点同构面收敛）：预算
+/// 在场且已到点时返回预算引用，否则 None。三处 break 判定点（attempt 前 /
+/// 评审前 / 重裁前）各自只补「失败文案 + stop_reason + break」分工，落位
+/// note 判定点补 note 留痕——判定本身纯内存零 IO。
+fn expired_budget(budget: Option<&GrowthBudget>) -> Option<&GrowthBudget> {
+    budget.filter(|budget| budget.expired())
+}
+
+/// 测试注入缝的进程内槽（rs8）：[`set_test_budget_expired_flag`] 装入的
+/// 确定性到点开关，由 [`GrowthBudget::expired`] 每次判定直接读（测试各自
+/// 装各自清）。进程全局态：测试必须 `#[serial]`，与写 env 的测试同律。
+/// 测试辅助面：产品代码不读写。
 #[cfg(test)]
 static TEST_BUDGET_EXPIRED_FLAG: std::sync::Mutex<
     Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -174,17 +180,7 @@ fn growth_budget_for_trigger(trigger: SystemActionTrigger) -> Option<GrowthBudge
         return None;
     }
     let secs = crate::switches::auto_refill_budget_secs()?;
-    #[cfg(test)]
-    let budget = {
-        let mut budget = GrowthBudget::from_secs(secs);
-        if let Some(flag) = TEST_BUDGET_EXPIRED_FLAG.lock().expect("预算测试槽中毒").clone() {
-            budget.expired_override = Some(flag);
-        }
-        budget
-    };
-    #[cfg(not(test))]
-    let budget = GrowthBudget::from_secs(secs);
-    Some(budget)
+    Some(GrowthBudget::from_secs(secs))
 }
 
 impl LearningService {
@@ -1387,9 +1383,51 @@ impl LearningService {
         course_id: &LearningCourseId,
         findings: &[crate::learning_graph::ReviewFinding],
     ) {
+        // 行数据在这里成形（trim 单源在共享通道内再做一遍无害）：node/
+        // field/advice 照评审结论逐条落。
+        let rows: Vec<(String, String, String, String)> = findings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.node.clone(),
+                    finding.field.clone(),
+                    finding.issue.clone(),
+                    finding.advice.clone(),
+                )
+            })
+            .collect();
+        self.append_structure_findings(course_id, "concept-review", "review", rows)
+            .await;
+    }
+
+    /// 预算触发事件落 findings（rs8 R-c）：一行 `source = 'growth-budget'`
+    /// ——到点 / 停在哪 / 剩余缺口点名（issue = 同一条可见失败文案）。与
+    /// j09 同律：留痕是线索不是第二真相，坏行/落表失败只 warn 不阻断。
+    async fn record_budget_finding(&self, course_id: &LearningCourseId, issue: &str) {
+        self.append_structure_findings(
+            course_id,
+            "growth-budget",
+            "budget",
+            vec![(String::new(), String::new(), issue.to_owned(), String::new())],
+        )
+        .await;
+    }
+
+    /// findings 落表共享私有通道（j09 评审留痕 + rs8 预算留痕同一模板）：
+    /// 每课程单调 seq 取号（`COALESCE(MAX(seq),0)+1`，x06——水位锚它而非
+    /// 自增 id；回合持 generation slot 单写者，取号与插入之间无并发源）→
+    /// 逐行 INSERT（`source` 参数化）→ 任何失败只 warn 不阻断。行数据 =
+    /// (node, field, issue, advice) 四元组（trim 在此单源）；issue 空的坏行
+    /// 跳过并 warn（线索行坏档不落）。取号失败整批放弃（warn 不 Broken）。
+    /// `label` 只进日志措辞（"review finding …" / "budget finding …"）。
+    async fn append_structure_findings(
+        &self,
+        course_id: &LearningCourseId,
+        source: &'static str,
+        label: &str,
+        rows: Vec<(String, String, String, String)>,
+    ) {
         let now = now_ms();
-        // 每课程单调 seq（x06）：水位锚它而非自增 id。回合持 generation
-        // slot（单写者），取号与插入之间无并发源。
         let mut next_seq: i64 = match sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM learning_structure_findings WHERE course_id = ?",
         )
@@ -1402,31 +1440,38 @@ impl LearningService {
                 tracing::warn!(
                     course = course_id.as_str(),
                     error = %error,
-                    "review finding seq lookup failed — 留痕不阻断生长"
+                    "{label} finding seq lookup failed — 留痕不阻断生长"
                 );
                 return;
             }
         };
-        for finding in findings {
-            if finding.issue.trim().is_empty() {
+        for (node, field, issue, advice) in rows {
+            let (node, field, issue, advice) = (
+                node.trim(),
+                field.trim(),
+                issue.trim(),
+                advice.trim(),
+            );
+            if issue.is_empty() {
                 tracing::warn!(
                     course = course_id.as_str(),
-                    "review finding with empty issue skipped (线索行坏档不落)"
+                    "{label} finding with empty issue skipped (线索行坏档不落)"
                 );
                 continue;
             }
             let result = sqlx::query(
                 "INSERT INTO learning_structure_findings \
                  (ts, course_id, seq, source, node, field, issue, advice) \
-                 VALUES (?, ?, ?, 'concept-review', ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(now)
             .bind(course_id.as_str())
             .bind(next_seq)
-            .bind(finding.node.trim())
-            .bind(finding.field.trim())
-            .bind(finding.issue.trim())
-            .bind(finding.advice.trim())
+            .bind(source)
+            .bind(node)
+            .bind(field)
+            .bind(issue)
+            .bind(advice)
             .execute(&self.pool)
             .await;
             match result {
@@ -1434,50 +1479,9 @@ impl LearningService {
                 Err(error) => tracing::warn!(
                     course = course_id.as_str(),
                     error = %error,
-                    "review finding insert failed — 留痕不阻断生长"
+                    "{label} finding insert failed — 留痕不阻断生长"
                 ),
             }
-        }
-    }
-
-    /// 预算触发事件落 findings（rs8 R-c）：一行 `source = 'growth-budget'`
-    /// ——到点 / 停在哪 / 剩余缺口点名（issue = 同一条可见失败文案）。与
-    /// j09 同律：留痕是线索不是第二真相，坏行/落表失败只 warn 不阻断。
-    async fn record_budget_finding(&self, course_id: &LearningCourseId, issue: &str) {
-        let seq: i64 = match sqlx::query_scalar(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM learning_structure_findings WHERE course_id = ?",
-        )
-        .bind(course_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        {
-            Ok(seq) => seq,
-            Err(error) => {
-                tracing::warn!(
-                    course = course_id.as_str(),
-                    error = %error,
-                    "budget finding seq lookup failed — 留痕不阻断生长"
-                );
-                return;
-            }
-        };
-        let result = sqlx::query(
-            "INSERT INTO learning_structure_findings \
-             (ts, course_id, seq, source, node, field, issue, advice) \
-             VALUES (?, ?, ?, 'growth-budget', '', '', ?, '')",
-        )
-        .bind(now_ms())
-        .bind(course_id.as_str())
-        .bind(seq)
-        .bind(issue.trim())
-        .execute(&self.pool)
-        .await;
-        if let Err(error) = result {
-            tracing::warn!(
-                course = course_id.as_str(),
-                error = %error,
-                "budget finding insert failed — 留痕不阻断生长"
-            );
         }
     }
 
@@ -2295,14 +2299,13 @@ impl LearningService {
             // （纯内存）。到点 = 不再发起新的起草/评审/重裁——后续尝试预判
             // 预算不再白跑；本批尚未过门 → 可见失败（缺口点名，不静默）。
             // 预算不是落位闸门：已过门的批在前序尝试内已照常落位。
-            if budget.is_some_and(GrowthBudget::expired) {
-                let budget = budget.expect("预算到点 ⇒ budget 存在");
+            if let Some(budget) = expired_budget(budget) {
                 let detail = if last == "(未执行)" {
                     "本批未落位，不再发起起草/评审/重裁".to_owned()
                 } else {
                     format!("本批未通过全部门，不再发起新一轮；最后一次打回：{last}")
                 };
-                last = budget_failure_message(&budget, &detail);
+                last = budget_failure_message(budget, &detail);
                 stop_reason = "budget_expired";
                 break 'budget;
             }
@@ -2322,14 +2325,15 @@ impl LearningService {
                 // 裁发起前（纯内存）。评审打回的重裁与守卫原地重试都从本口
                 // 发起新的教练调用——到点即不再重裁；缺口 = 最后一次打回报
                 // 告（feedback），可见失败不静默。
-                if previous.is_some() && budget.is_some_and(GrowthBudget::expired) {
-                    let budget = budget.expect("预算到点 ⇒ budget 存在");
-                    last = budget_failure_message(
-                        &budget,
-                        &format!("本批尚未落位，不再发起重裁；缺口：{}", feedback),
-                    );
-                    stop_reason = "budget_expired";
-                    break 'budget;
+                if previous.is_some() {
+                    if let Some(budget) = expired_budget(budget) {
+                        last = budget_failure_message(
+                            budget,
+                            &format!("本批尚未落位，不再发起重裁；缺口：{}", feedback),
+                        );
+                        stop_reason = "budget_expired";
+                        break 'budget;
+                    }
                 }
                 let drafted = match previous.as_ref() {
                     Some(previous) => {
@@ -2657,10 +2661,9 @@ impl LearningService {
             // 钟若已到点，不再发起评审——本批尚未过评审门，可见失败（缺口
             // 点名，不静默），评审在途期间到点则由本点之后的落位/重裁判定
             // 面接手（在途调用不被打断）。
-            if budget.is_some_and(GrowthBudget::expired) {
-                let budget = budget.expect("预算到点 ⇒ budget 存在");
+            if let Some(budget) = expired_budget(budget) {
                 last = budget_failure_message(
-                    &budget,
+                    budget,
                     &format!(
                         "本批尚未过评审门，不再发起评审（{} 个节点在途作废）",
                         candidate.nodes.len()
@@ -2981,8 +2984,7 @@ impl LearningService {
             // rs8 预算到点落位：墙钟在评审在途期间到点，而本批已过全部门
             // ——照常落库（预算不是落位闸门，learnhub #257 同款），note 留
             // 痕可追溯（上游 Stopped 行同款读数面）。
-            if budget.is_some_and(GrowthBudget::expired) {
-                let budget = budget.expect("预算到点 ⇒ budget 存在");
+            if let Some(budget) = expired_budget(budget) {
                 if !candidate.note.trim().is_empty() {
                     candidate.note.push('；');
                 }
