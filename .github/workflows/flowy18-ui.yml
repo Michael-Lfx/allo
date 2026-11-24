@@ -141,4 +141,4 @@ jobs:
       - name: Desktop compile
         run: cargo check -p flowy-desktop --locked
       - name: UI clippy
-        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings
+        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets --locked -- -D warnings

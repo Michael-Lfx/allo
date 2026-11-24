@@ -334,6 +334,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the field is prefixed on purpose so it reads as kept-alive state; the test only inspects that it is populated"
+    )]
     #[test]
     fn opens_the_exact_nested_regular_file() {
         let scratch = Scratch::new();

@@ -54,8 +54,7 @@ mod tests {
     fn temp_root(tag: &str) -> std::path::PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let path =
             std::env::temp_dir().join(format!("flowy-agent-{tag}-{stamp}"));
         let _ = std::fs::create_dir_all(&path);
@@ -307,7 +306,7 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         }
@@ -356,7 +355,7 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         }
@@ -409,7 +408,7 @@ mod tests {
                 status: TurnStatus::Running,
                 titled: true,
                 workspace: None,
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         };
@@ -513,7 +512,7 @@ mod tests {
                 status: TurnStatus::Running,
                 titled: true,
                 workspace: None,
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         };
@@ -649,7 +648,7 @@ mod tests {
             Some(active.as_str())
         );
         assert_eq!(handle.list_sessions().len(), 1);
-        assert!(handle.lines().is_empty());
+        assert_eq!(handle.lines().as_slice(), []);
         assert!(!handle.turn_status().is_busy());
     }
 
@@ -674,7 +673,7 @@ mod tests {
                 status: TurnStatus::Completed,
                 titled: true,
                 workspace: None,
-                origin: Default::default(),
+                origin: SessionOrigin::default(),
                 session_workspace: None,
             }],
         }

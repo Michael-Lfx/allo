@@ -2828,7 +2828,7 @@ mod background_init_tests {
             Err("notice.agent_busy")
         );
         assert!(handle.list_sessions().is_empty());
-        assert!(handle.lines().is_empty());
+        assert_eq!(handle.lines().as_slice(), []);
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2923,17 +2923,21 @@ mod background_init_tests {
             live.status = TurnStatus::DeliveryFailed;
         }
         handle.retry_delivery(Some("home")).unwrap();
-        {
-            let live = lock(&state.live);
-            let live = live.get("home").unwrap();
-            assert_eq!(live.status, TurnStatus::Completed);
-            assert!(!live.projection.lines.iter().any(|line| {
-                matches!(line, ChatLine::Status { text } if text == "chat.status_delivery_failed")
-            }));
-            assert!(live.projection.lines.iter().any(|line| {
-                matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &receipt.artifact_id)
-            }));
-        }
+        // Read under the guard, then release it: the lock is a significant
+        // drop, and holding it across the assertions serves nothing.
+        let live_state = lock(&state.live);
+        let live = live_state.get("home").unwrap();
+        let is_completed = live.status == TurnStatus::Completed;
+        let has_failure_line = live.projection.lines.iter().any(|line| {
+            matches!(line, ChatLine::Status { text } if text == "chat.status_delivery_failed")
+        });
+        let has_artifact_line = live.projection.lines.iter().any(|line| {
+            matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &receipt.artifact_id)
+        });
+        drop(live_state);
+        assert!(is_completed);
+        assert!(!has_failure_line);
+        assert!(has_artifact_line);
         assert_eq!(
             store.read_payload(&receipt.artifact_id).unwrap(),
             b"# report\n"
@@ -3043,7 +3047,7 @@ mod background_init_tests {
                 .is_empty()
         );
         let store = handle.artifact_store().unwrap();
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert!(store.get(&receipt.artifact_id).unwrap().is_none());
         assert!(store.session_deletions().unwrap().is_empty());
         drop(handle);
@@ -3106,7 +3110,7 @@ mod background_init_tests {
 
         let deleted = migrate_legacy_source_deletions(&store, &engine, &state);
         assert!(deleted.contains("legacy"));
-        assert!(store.list().unwrap().is_empty());
+        assert_eq!(store.list().unwrap().as_slice(), []);
         assert!(store.get(&receipt.artifact_id).unwrap().is_none());
         assert_eq!(store.session_deletions().unwrap().len(), 1);
         store.complete_session_deletion("legacy").unwrap();
