@@ -8,6 +8,14 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::base::input::{Input, InputState, Textarea, TextareaState};
 use std::rc::Rc;
 
+/// Key context carried by [`TextAreaField`] only.
+///
+/// `gpui-base` gives the single-line and multi-line engines the same `"Input"`
+/// context, so a keymap entry cannot otherwise distinguish them. Registering
+/// this one deeper lets the app bind `tab` to indent inside multi-line fields
+/// while single-line fields keep moving focus.
+pub const MULTILINE_CONTEXT: &str = "FlowyMultiLineInput";
+
 /// Low-level single-line editor; callers must attach their localized aria label.
 pub fn text_input(
     _id: impl Into<ElementId>,
@@ -217,6 +225,10 @@ impl TextAreaField {
         let mut shell = div()
             .id(self.id.clone())
             .aria_label(self.label.clone())
+            // gpui-base gives both engines the same `"Input"` key context, so
+            // this deeper context is the only way a keymap entry can tell a
+            // multi-line field apart and let Tab indent instead of moving focus.
+            .key_context(MULTILINE_CONTEXT)
             .w_full()
             .h(self.height)
             .rounded_lg()

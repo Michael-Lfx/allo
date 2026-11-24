@@ -55,6 +55,7 @@ actions!(
         NavigateBack,
         NavigateForward,
         OpenSearch,
+        InsertIndent,
     ]
 );
 
@@ -1787,6 +1788,26 @@ impl Render for FlowyApp {
             .bg(self.theme.canvas())
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            .on_action(cx.listener(|app, _: &InsertIndent, window, cx| {
+                // Only reachable from the deeper multi-line context, but find
+                // the focused field explicitly rather than assuming which one.
+                let focused = window.focused(cx);
+                for field in [
+                    &app.persona.about,
+                    &app.persona.instructions,
+                    &app.persona.import_paste,
+                    &app.persona.knowledge_body,
+                ] {
+                    let presentation = field.read(cx).presentation();
+                    if Some(presentation.focus_handle()) == focused.as_ref() {
+                        field.update(cx, |state, cx| {
+                            state.insert("    ", window, cx);
+                        });
+                        break;
+                    }
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|app, _: &ToggleDock, _, cx| {
                 app.toggle_dock(cx);
             }))
@@ -2103,6 +2124,13 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("shift-tab", FocusPrevious, Some("Input")),
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
+        // Multi-line fields carry a deeper context so they can claim Tab for
+        // indentation while single-line fields keep moving focus.
+        KeyBinding::new(
+            "tab",
+            InsertIndent,
+            Some(flowy_ui::MULTILINE_CONTEXT),
+        ),
         // Cursor / VS Code: toggle primary side bar
         KeyBinding::new("ctrl-b", ToggleDock, None),
         // Cursor / VS Code: navigate back / forward
