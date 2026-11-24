@@ -239,19 +239,18 @@ fn main() {
                                             *request_id,
                                             result,
                                             cx,
-                                        )
+                                        );
                                     });
                                 }
                             },
                         )
                         .detach();
-                        if preview {
-                            if let Some(id) = first {
+                        if preview
+                            && let Some(id) = first {
                                 panel.update(cx, |panel, cx| {
-                                    panel.preview_item(&id, window, cx)
+                                    panel.preview_item(&id, window, cx);
                                 });
                             }
-                        }
                         cx.observe(&panel, |_, _, cx| cx.notify()).detach();
                         LibraryDemo { panel, ui }
                     })

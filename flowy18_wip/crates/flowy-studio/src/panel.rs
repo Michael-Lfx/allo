@@ -1224,11 +1224,11 @@ impl StudioPanel {
 
     /// Whether the user opened a conversation in this run. The app shell uses
     /// this to keep launch on Home while still restoring an opened session.
-    pub fn session_opened_by_user(&self) -> bool {
+    pub const fn session_opened_by_user(&self) -> bool {
         self.session_opened_by_user
     }
 
-    pub(crate) fn starter_category(&self) -> Category {
+    pub(crate) const fn starter_category(&self) -> Category {
         self.starter_category
     }
     pub(crate) fn open_deliverables(

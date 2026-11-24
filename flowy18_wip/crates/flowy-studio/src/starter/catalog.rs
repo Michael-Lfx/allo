@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use gpui::{Image, ImageFormat, Img, img};
 
 /// One prompt the user can drop into the composer.
-pub(crate) struct Starter {
+pub struct Starter {
     pub(crate) title_key: &'static str,
     pub(crate) prompt_key: &'static str,
     cover: fn() -> Img,
@@ -24,7 +24,7 @@ impl Starter {
 /// The five starter buckets. Each owns four examples and reuses its first
 /// example's cover as its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Category {
+pub enum Category {
     Website,
     App,
     Game,
@@ -33,31 +33,31 @@ pub(crate) enum Category {
 }
 
 impl Category {
-    pub(crate) const ALL: [Category; 5] = [
-        Category::Website,
-        Category::App,
-        Category::Game,
-        Category::Docs,
-        Category::Data,
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Website,
+        Self::App,
+        Self::Game,
+        Self::Docs,
+        Self::Data,
     ];
 
-    pub(crate) fn title_key(self) -> &'static str {
+    pub(crate) const fn title_key(self) -> &'static str {
         match self {
-            Category::Website => "home.starter.group.website",
-            Category::App => "home.starter.group.app",
-            Category::Game => "home.starter.group.game",
-            Category::Docs => "home.starter.group.docs",
-            Category::Data => "home.starter.group.data",
+            Self::Website => "home.starter.group.website",
+            Self::App => "home.starter.group.app",
+            Self::Game => "home.starter.group.game",
+            Self::Docs => "home.starter.group.docs",
+            Self::Data => "home.starter.group.data",
         }
     }
 
-    pub(crate) fn examples(self) -> &'static [Starter] {
+    pub(crate) const fn examples(self) -> &'static [Starter] {
         match self {
-            Category::Website => WEBSITE,
-            Category::App => APP,
-            Category::Game => GAME,
-            Category::Docs => DOCS,
-            Category::Data => DATA,
+            Self::Website => WEBSITE,
+            Self::App => APP,
+            Self::Game => GAME,
+            Self::Docs => DOCS,
+            Self::Data => DATA,
         }
     }
 }

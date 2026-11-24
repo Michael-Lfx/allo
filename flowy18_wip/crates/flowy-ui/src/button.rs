@@ -7,6 +7,12 @@ use gpui::{
 use gpui_kit::base::TestSupportExt as _;
 
 /// The unobserved interaction surface shared by [`interactive`] and [`button`].
+// The theme is taken by reference on purpose: every control receives the same
+// theme for the whole frame, and copying it per control buys nothing.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "callers share one theme across many controls"
+)]
 fn interaction_surface(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -484,7 +490,7 @@ mod tests {
                             .render(
                                 &crate::ResolvedTheme::default(),
                                 cx.listener(|this, _, _, _| {
-                                    this.clicks.push("icon")
+                                    this.clicks.push("icon");
                                 }),
                             ),
                         ),

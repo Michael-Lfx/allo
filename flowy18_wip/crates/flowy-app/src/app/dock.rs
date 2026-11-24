@@ -239,7 +239,7 @@ impl FlowyApp {
                     })
                     .hover(|row| row.bg(self.theme.dock_selected()))
                     .on_hover({
-                        let hovered = hovered.clone();
+                        let hovered = hovered;
                         move |active, window, cx| {
                             let changed = hovered.update(cx, |state, cx| {
                                 if *state == *active {
@@ -435,7 +435,7 @@ impl FlowyApp {
             .when(show_menu, |row| row.bg(self.theme.dock_selected()))
             .hover(|row| row.bg(self.theme.dock_selected()))
             .on_hover({
-                let hovered = hovered.clone();
+                let hovered = hovered;
                 move |active, window, cx| {
                     let changed = hovered.update(cx, |state, cx| {
                         if *state == *active {
@@ -504,7 +504,7 @@ impl FlowyApp {
                     .disabled(self.conversation_delete_busy()),
                     &self.theme,
                     cx.listener({
-                        let id = id.clone();
+                        let id = id;
                         move |app, _, _, cx| {
                             cx.stop_propagation();
                             app.toggle_task_menu(&id, cx);
@@ -652,7 +652,7 @@ impl FlowyApp {
             .bg(self.theme.dock())
             .hover(|row| row.bg(self.theme.dock_selected()))
             .on_hover({
-                let hovered = hovered.clone();
+                let hovered = hovered;
                 move |active, window, cx| {
                     let changed = hovered.update(cx, |state, cx| {
                         if *state == *active {

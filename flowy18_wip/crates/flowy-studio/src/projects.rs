@@ -52,7 +52,7 @@ pub fn path(root: &Path) -> PathBuf {
     root.join(FILE_NAME)
 }
 
-pub(crate) fn root_available(root: &Path) -> bool {
+pub fn root_available(root: &Path) -> bool {
     root.is_dir() && fs::read_dir(root).is_ok()
 }
 

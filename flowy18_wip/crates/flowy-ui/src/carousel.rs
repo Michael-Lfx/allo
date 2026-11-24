@@ -114,7 +114,7 @@ mod tests {
             gap: 12.,
             count: 4,
         };
-        assert_eq!(g.total_width(), 220. * 4. + 12. * 3.);
+        assert_eq!(g.total_width(), 12.0f32.mul_add(3., 220. * 4.));
     }
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
             gap: 12.,
             count: 4,
         };
-        assert_eq!(g.page_width(700.), 220. * 3. + 12. * 2.);
+        assert_eq!(g.page_width(700.), 12.0f32.mul_add(2., 220. * 3.));
         assert_eq!(g.page_width(200.), 220.);
     }
 

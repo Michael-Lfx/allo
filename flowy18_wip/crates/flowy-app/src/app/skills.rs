@@ -855,7 +855,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.close_skill_unlock(cx)
+                                app.close_skill_unlock(cx);
                             }),
                         ),
                     ),
@@ -882,7 +882,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.close_skill_unlock(cx)
+                                app.close_skill_unlock(cx);
                             }),
                         ),
                     )
@@ -969,7 +969,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.close_skill_docs(cx)
+                                app.close_skill_docs(cx);
                             }),
                         ),
                     ),

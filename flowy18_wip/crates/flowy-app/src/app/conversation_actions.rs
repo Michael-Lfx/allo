@@ -65,7 +65,7 @@ impl ConversationDeleteState {
 }
 
 impl FlowyApp {
-    pub(super) fn conversation_delete_busy(&self) -> bool {
+    pub(super) const fn conversation_delete_busy(&self) -> bool {
         self.conversation_delete.busy
     }
 
@@ -348,14 +348,14 @@ mod tests {
                 app.active_dialog = ActiveDialog::None;
                 assert!(!app.conversation_delete.open("second".into()));
                 app.active_dialog = ActiveDialog::Settings;
-            })
+            });
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 app.finish_conversation_delete(&first, Ok(()), cx);
                 assert_eq!(app.active_dialog, ActiveDialog::Settings);
                 assert!(!app.conversation_delete.busy);
-            })
+            });
         });
         let second = cx.update(|cx| {
             app.update(cx, |app, _| {
@@ -390,7 +390,7 @@ mod tests {
                     Some("notice.agent_busy")
                 );
                 assert!(!app.conversation_delete.busy);
-            })
+            });
         });
         drop(app);
         let _ = std::fs::remove_dir_all(root);

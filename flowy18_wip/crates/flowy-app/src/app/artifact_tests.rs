@@ -1,5 +1,5 @@
 //! TC-17 exercises the application's real native save-picker receiver with
-//! immutable CSV bytes created by ArtifactStore. TestPlatform supplies the
+//! immutable CSV bytes created by `ArtifactStore`. `TestPlatform` supplies the
 //! user's selection; it never reads or writes the suggested Documents folder.
 
 use super::{FlowyApp, Screen, Section, state::ActiveDialog};
@@ -143,7 +143,7 @@ fn request_save(
                 &LibraryEvent::SaveAsRequested(fixture.artifact_id.clone()),
                 cx,
             );
-        })
+        });
     });
     assert!(
         cx.did_prompt_for_new_path(),
@@ -176,7 +176,7 @@ fn save_picker_cancellation_creates_no_export(cx: &mut TestAppContext) {
             .is_none()
     );
     cx.update(|cx| {
-        assert_ne!(app.read(cx).notice, Some("library.error.export"))
+        assert_ne!(app.read(cx).notice, Some("library.error.export"));
     });
     fixture.assert_sources_unchanged();
     drop(app);

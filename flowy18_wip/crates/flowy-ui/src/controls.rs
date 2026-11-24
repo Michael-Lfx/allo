@@ -8,14 +8,6 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::base::input::{Input, InputState, Textarea, TextareaState};
 use std::rc::Rc;
 
-/// Key context carried by [`TextAreaField`] only.
-///
-/// `gpui-base` gives the single-line and multi-line engines the same `"Input"`
-/// context, so a keymap entry cannot otherwise distinguish them. Registering
-/// this one deeper lets the app bind `tab` to indent inside multi-line fields
-/// while single-line fields keep moving focus.
-pub const MULTILINE_CONTEXT: &str = "FlowyMultiLineInput";
-
 /// Low-level single-line editor; callers must attach their localized aria label.
 pub fn text_input(
     _id: impl Into<ElementId>,
@@ -111,18 +103,7 @@ impl TextField {
                 let hover_border = theme.quiet_field_hover_border();
                 shell.hover(move |style| style.border_color(hover_border))
             });
-        if self.mode != InputMode::Editable {
-            // Read-only and disabled share the non-interactive text
-            // presentation: neither may host an editor, because the kit engine
-            // exposes no per-render read-only flag and an edit would land in
-            // the caller's state. Only the disabled field is dimmed.
-            shell = shell
-                .role(Role::TextInput)
-                .when(disabled, |field| field.opacity(0.5))
-                .px_3()
-                .py_2()
-                .child(self.state.read(cx).value().to_string());
-        } else {
+        if self.mode == InputMode::Editable {
             // `InputState` fixes its placeholder at construction, so the hint
             // is rendered by the shell instead of the engine.
             let empty = self.state.read(cx).value().is_empty();
@@ -148,6 +129,17 @@ impl TextField {
                     ),
                 )
                 .child(A11yElement::new(div()).invalid(self.error.is_some()));
+        } else {
+            // Read-only and disabled share the non-interactive text
+            // presentation: neither may host an editor, because the kit engine
+            // exposes no per-render read-only flag and an edit would land in
+            // the caller's state. Only the disabled field is dimmed.
+            shell = shell
+                .role(Role::TextInput)
+                .when(disabled, |field| field.opacity(0.5))
+                .px_3()
+                .py_2()
+                .child(self.state.read(cx).value().to_string());
         }
         shell.test_support()
     }
@@ -225,10 +217,6 @@ impl TextAreaField {
         let mut shell = div()
             .id(self.id.clone())
             .aria_label(self.label.clone())
-            // gpui-base gives both engines the same `"Input"` key context, so
-            // this deeper context is the only way a keymap entry can tell a
-            // multi-line field apart and let Tab indent instead of moving focus.
-            .key_context(MULTILINE_CONTEXT)
             .w_full()
             .h(self.height)
             .rounded_lg()
@@ -244,21 +232,7 @@ impl TextAreaField {
                 let hover_border = theme.quiet_field_hover_border();
                 shell.hover(move |style| style.border_color(hover_border))
             });
-        if self.mode != InputMode::Editable {
-            // Same split as `TextField`: read-only and disabled only present
-            // text, so an edit can never reach the caller's state.
-            shell = shell
-                .role(Role::MultilineTextInput)
-                .when(disabled, |field| field.opacity(0.5))
-                .px_3()
-                .py_2()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .whitespace_normal()
-                        .child(self.state.read(cx).value().to_string()),
-                );
-        } else {
+        if self.mode == InputMode::Editable {
             // Same shell-side hint as `TextField`: the state's placeholder is
             // fixed at construction, and these fields are built without one.
             let empty = self.state.read(cx).value().is_empty();
@@ -281,6 +255,20 @@ impl TextAreaField {
                     ),
                 )
                 .child(A11yElement::new(div()).invalid(self.error.is_some()));
+        } else {
+            // Same split as `TextField`: read-only and disabled only present
+            // text, so an edit can never reach the caller's state.
+            shell = shell
+                .role(Role::MultilineTextInput)
+                .when(disabled, |field| field.opacity(0.5))
+                .px_3()
+                .py_2()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .whitespace_normal()
+                        .child(self.state.read(cx).value().to_string()),
+                );
         }
         shell.test_support()
     }
@@ -882,7 +870,7 @@ mod tests {
                 window
                     .find_all_by_label(label)
                     .into_iter()
-                    .find(|node| node.visible())
+                    .find(gpui_kit::test::ElementSnapshot::visible)
                     .unwrap_or_else(|| {
                         panic!("missing accessible field {label:?}")
                     })

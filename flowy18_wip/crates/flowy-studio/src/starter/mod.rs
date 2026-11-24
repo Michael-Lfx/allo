@@ -5,7 +5,7 @@
 //! place. Picking an example overwrites the composer so the prompt can be
 //! previewed without sending it.
 
-pub(crate) mod catalog;
+pub mod catalog;
 
 use crate::panel::StudioPanel;
 use catalog::{Category, Starter};
@@ -112,7 +112,7 @@ impl StudioPanel {
             theme::icons::chevron_right()
         };
         theme::interactive(
-            ("home-carousel", if direction < 0 { 0u64 } else { 1 }),
+            ("home-carousel", u64::from(direction >= 0)),
             SharedString::from(if direction < 0 { "previous" } else { "next" }),
             &self.theme,
         )

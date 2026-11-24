@@ -6,7 +6,7 @@ use flowy_ui as theme;
 
 /// The file-type artwork a name maps onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FileKind {
+pub enum FileKind {
     Code,
     Document,
     Java,
@@ -23,7 +23,7 @@ pub(crate) enum FileKind {
 /// counts, so `notes/report.pdf` resolves to [`FileKind::Pdf`]. A name with
 /// no known extension returns `None`, which lets the caller fall back to its
 /// own category.
-pub(crate) fn from_path(path: &str) -> Option<FileKind> {
+pub fn from_path(path: &str) -> Option<FileKind> {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let extension = name
         .rsplit_once('.')

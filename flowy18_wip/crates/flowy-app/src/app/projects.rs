@@ -246,7 +246,7 @@ impl FlowyApp {
                 })
             };
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 self.projects_open = true;
                 if let Some(project_id) =
                     self.studio.read(cx).active_project_id.clone()
@@ -649,7 +649,7 @@ impl FlowyApp {
         label: String,
         danger: bool,
         cx: &Context<'_, Self>,
-        action: impl Fn(&mut FlowyApp, &mut Context<'_, FlowyApp>) + 'static,
+        action: impl Fn(&mut Self, &mut Context<'_, Self>) + 'static,
     ) -> impl IntoElement {
         theme::interactive(id, label.clone(), &self.theme)
             .w_full()
@@ -749,7 +749,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.close_project_delete(cx)
+                                app.close_project_delete(cx);
                             }),
                         ),
                     ),
@@ -776,7 +776,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.close_project_delete(cx)
+                                app.close_project_delete(cx);
                             }),
                         ),
                     )
@@ -790,7 +790,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.confirm_project_delete(cx)
+                                app.confirm_project_delete(cx);
                             }),
                         ),
                     ),

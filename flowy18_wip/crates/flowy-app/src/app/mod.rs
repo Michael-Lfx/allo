@@ -1789,8 +1789,9 @@ impl Render for FlowyApp {
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .on_action(cx.listener(|app, _: &InsertIndent, window, cx| {
-                // Only reachable from the deeper multi-line context, but find
-                // the focused field explicitly rather than assuming which one.
+                // Reached from every "Input" context, so find the focused
+                // field explicitly. A single-line field falls through to the
+                // usual focus move instead of swallowing the key.
                 let focused = window.focused(cx);
                 for field in [
                     &app.persona.about,
@@ -1800,13 +1801,17 @@ impl Render for FlowyApp {
                 ] {
                     let presentation = field.read(cx).presentation();
                     if Some(presentation.focus_handle()) == focused.as_ref() {
+                        if presentation.is_disabled() || presentation.is_readonly() {
+                            return;
+                        }
                         field.update(cx, |state, cx| {
                             state.insert("    ", window, cx);
                         });
-                        break;
+                        cx.notify();
+                        return;
                     }
                 }
-                cx.notify();
+                window.focus_next(cx);
             }))
             .on_action(cx.listener(|app, _: &ToggleDock, _, cx| {
                 app.toggle_dock(cx);
@@ -2124,13 +2129,13 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("shift-tab", FocusPrevious, Some("Input")),
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
-        // Multi-line fields carry a deeper context so they can claim Tab for
-        // indentation while single-line fields keep moving focus.
-        KeyBinding::new(
-            "tab",
-            InsertIndent,
-            Some(flowy_ui::MULTILINE_CONTEXT),
-        ),
+        // Registered after the two above, at the same depth, so it wins:
+        // same-depth bindings resolve last-registered-first. The outer key
+        // context of a multi-line field sits on an ancestor and therefore
+        // loses to the editor's own "Input", which is why this cannot live
+        // there. The handler moves focus itself when no multi-line field holds
+        // it, so single-line fields keep their old behaviour.
+        KeyBinding::new("tab", InsertIndent, Some("Input")),
         // Cursor / VS Code: toggle primary side bar
         KeyBinding::new("ctrl-b", ToggleDock, None),
         // Cursor / VS Code: navigate back / forward
@@ -3052,7 +3057,7 @@ mod tests {
         click(cx, &cancel);
         cx.read_entity(&app, |app, cx| {
             assert_eq!(app.active_dialog, state::ActiveDialog::None);
-            assert!(app.studio.read(cx).projects.is_empty());
+            assert_eq!(app.studio.read(cx).projects, [] as [flowy_studio::Project; 0]);
         });
         assert!(!root.join("projects.json").exists());
         drop(app);
@@ -3193,7 +3198,7 @@ mod tests {
         click(cx, &delete);
         click(cx, &delete);
         cx.read_entity(&app, |app, cx| {
-            assert!(app.studio.read(cx).projects.is_empty());
+            assert_eq!(app.studio.read(cx).projects, [] as [flowy_studio::Project; 0]);
         });
         assert!(folder.is_dir(), "project removal must preserve local files");
         drop(app);
@@ -3297,7 +3302,7 @@ mod tests {
                 created.project_id.as_deref(),
                 Some(project_id.as_str())
             );
-            assert!(created.title.is_empty());
+            assert_eq!(created.title, "");
             assert_eq!(panel.surface, StudioSurface::Home);
             assert_eq!(app.section, Section::Studio);
             assert!(app.expanded_projects.contains(&project_id));

@@ -475,10 +475,13 @@ pub fn dialog(
 /// that `Element::prepaint` receives, which is exactly what the old hook
 /// delivered. Delegation keeps the wrapped element's styles, focus tracking,
 /// hitboxes and accessibility node unchanged.
+/// Callback run after the wrapped element prepaints, receiving its real bounds.
+type PrepaintListener = Box<dyn Fn(Bounds<Pixels>, &mut App) + 'static>;
+
 #[must_use]
 pub struct PrepaintBounds<E> {
     element: E,
-    listener: Box<dyn Fn(Bounds<Pixels>, &mut App) + 'static>,
+    listener: PrepaintListener,
 }
 
 impl<E> PrepaintBounds<E> {
@@ -640,7 +643,7 @@ pub fn popover(
 
 /// Positions a hover card without taking the pointer. A tooltip must not
 /// occlude its trigger, or the click that the card is describing never lands.
-pub(crate) fn information_popover(
+pub fn information_popover(
     id: impl Into<SharedString>,
     anchor_id: impl Into<SharedString>,
     content: impl IntoElement,
@@ -687,6 +690,11 @@ struct PopoverPlacement {
     above: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site threads the same popover geometry; grouping it \
+              would only move the fields into a struct built here"
+)]
 fn popover_with_direction(
     id: impl Into<SharedString>,
     anchor_id: impl Into<SharedString>,

@@ -374,7 +374,7 @@ mod tests {
                 "chat.status_saving_files",
             ] {
                 let message = i18n.t(key);
-                assert!(!message.is_empty());
+                assert_ne!(message, "");
                 assert_ne!(message, key, "{}: {key}", locale.code());
             }
         }

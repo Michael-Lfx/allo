@@ -248,8 +248,7 @@ impl PreviewPanel {
         let typed = self
             .page_input
             .as_ref()
-            .map(|input| input.read(cx).value())
-            .unwrap_or_default();
+            .map_or_default(|input| input.read(cx).value());
         if let Ok(page) = typed.parse::<usize>()
             && page > 0
         {
@@ -454,7 +453,7 @@ impl PreviewPanel {
             )
             .on_action(cx.listener(
                 |this, _: &gpui_kit::base::input::Enter, _, cx| {
-                    this.go_input(cx)
+                    this.go_input(cx);
                 },
             ));
         let go = ui::Button::new("preview-go", self.t("library.preview.go"))

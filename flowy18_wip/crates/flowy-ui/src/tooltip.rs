@@ -193,7 +193,7 @@ mod tests {
             window
                 .find_all_by_role(Role::Tooltip)
                 .iter()
-                .any(|node| node.visible())
+                .any(gpui_kit::test::ElementSnapshot::visible)
         })
     }
 

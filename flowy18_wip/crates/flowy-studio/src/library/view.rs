@@ -940,7 +940,7 @@ impl LibraryPanel {
         )
         .debug_selector({
             let selector = format!("library-row-{}", item.id);
-            move || selector.clone()
+            move || selector
         })
         .w_full()
         .h(px(LIST_ROW_HEIGHT))
@@ -1012,7 +1012,7 @@ impl LibraryPanel {
                 .id(format!("{more_id}-anchor"))
                 .debug_selector({
                     let selector = format!("library-more-{}", item.id);
-                    move || selector.clone()
+                    move || selector
                 })
                 .child(more),
             more_id,
@@ -1104,7 +1104,7 @@ impl LibraryPanel {
         )
         .debug_selector({
             let selector = format!("library-card-{}", item.id);
-            move || selector.clone()
+            move || selector
         })
         .relative()
         .min_w(px(CARD_MIN_WIDTH))
@@ -1126,7 +1126,7 @@ impl LibraryPanel {
                         .id(format!("{more_id}-anchor"))
                         .debug_selector({
                             let selector = format!("library-more-{}", item.id);
-                            move || selector.clone()
+                            move || selector
                         })
                         .child(more),
                     more_id,

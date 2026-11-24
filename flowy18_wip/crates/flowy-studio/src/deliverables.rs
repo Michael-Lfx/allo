@@ -19,7 +19,7 @@ use crate::panel::StudioPanel;
 const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 
 /// What the drawer shows for the selected file.
-pub(crate) enum PreviewBody {
+pub enum PreviewBody {
     Text(String),
     Image(Arc<Image>),
     /// Locale key explaining why the file cannot be shown.
@@ -27,7 +27,7 @@ pub(crate) enum PreviewBody {
 }
 
 /// Reads one file for preview, classifying it by extension and size.
-pub(crate) fn load_preview(path: &str) -> PreviewBody {
+pub fn load_preview(path: &str) -> PreviewBody {
     let path = Path::new(path);
     let Ok(meta) = std::fs::metadata(path) else {
         return PreviewBody::Notice("chat.preview_missing");
@@ -44,7 +44,7 @@ pub(crate) fn load_preview(path: &str) -> PreviewBody {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase());
+        .map(str::to_ascii_lowercase);
     match extension.as_deref() {
         Some("png") => PreviewBody::Image(Arc::new(Image::from_bytes(
             ImageFormat::Png,

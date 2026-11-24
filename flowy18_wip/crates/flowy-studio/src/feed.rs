@@ -663,7 +663,7 @@ impl ChatFeed {
     ) -> impl IntoElement {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         let icon = crate::file_kind::from_path(path)
-            .map_or_else(theme::icons::code_file, |kind| kind.icon());
+            .map_or_else(theme::icons::code_file, super::file_kind::FileKind::icon);
         // Line counts only mean something for text; a binary change shows a dash.
         let delta = if binary {
             "\u{2014}".to_owned()
