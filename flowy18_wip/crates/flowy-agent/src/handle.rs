@@ -2848,6 +2848,7 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
+    registry.register(crate::verify::definition());
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.

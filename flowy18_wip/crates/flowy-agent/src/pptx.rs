@@ -54,7 +54,8 @@ fn missing_result() -> ToolExecutionResult {
     )
 }
 
-fn write_deck(
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn write_deck(
     path: &Path,
     title: &str,
     slides: &[String],
@@ -74,27 +75,33 @@ fn write_deck(
         } else {
             format!("{title} · {}", index + 1)
         };
-        slide
+        let mut title_box = slide
             .add_textbox(
                 rpptx::Emu::from_inches(0.6),
                 rpptx::Emu::from_inches(0.4),
                 rpptx::Emu::from_inches(9.0),
                 rpptx::Emu::from_inches(0.9),
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        title_box
+            .set_name(&format!("S{index}-title"))
+            .map_err(|error| error.to_string())?;
+        title_box
             .set_text(&heading)
             .map_err(|error| error.to_string())?;
         if !body.trim().is_empty() {
-            slide
+            let mut body_box = slide
                 .add_textbox(
                     rpptx::Emu::from_inches(0.6),
                     rpptx::Emu::from_inches(1.6),
                     rpptx::Emu::from_inches(9.0),
                     rpptx::Emu::from_inches(4.6),
                 )
-                .map_err(|error| error.to_string())?
-                .set_text(body)
                 .map_err(|error| error.to_string())?;
+            body_box
+                .set_name(&format!("S{index}-body"))
+                .map_err(|error| error.to_string())?;
+            body_box.set_text(body).map_err(|error| error.to_string())?;
         }
     }
     if slides.is_empty() {

@@ -838,3 +838,15 @@ no session was live, so there is nothing to hint at
 - 工具注册进 capability registry，模型能看到 `create_deck`；`rpptx` 只是当前环境里的实现，后续可替换为 skill 或外部生成器。
 - 先红后绿：把 missing 分支改成 `ToolExecutionResult::error` 时 `a_missing_generator...` 红；改回后绿。
 - 基线：core 73 / agent 111 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净。
+
+---
+
+## 任务 12 · V5 锚核验（2026-11-25）
+
+- 新增 `verify.rs`：先做 L1（页数），再按**形状名**逐锚核验；统一报告 `{artifact, anchor:"shape_name", ok, issues:[{code, field, ui_key}]}`。
+- 四类错误码齐：`ANCHOR_MISSING` / `ANCHOR_DUPLICATE` / `ANCHOR_INVALID`（多出来的锚）/ `VALUE_MISMATCH`；同类问题按 `(code, field)` 聚合去重。
+- 新增 `verify_deck` 工具并注册进 capability registry；`ok=false` 是报告结果，不是工具错误。
+- 新增 5 个 i18n 键（四码 + 结构）在 23 个 locale 同步。
+- 先红后绿：集成测试第一次报 `ANCHOR_INVALID: Title 1 / Subtitle 2`（模板自带空占位符），改成「空文本形状不算锚」后绿。
+- 未做（留给交付切片）：§6.4 的硬门（报告不存在/`ok=false`/哈希不符时拒绝交付）与卡片渲染；本轮只到核验器和文案。
+- 基线：core 73 / agent 115 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净。

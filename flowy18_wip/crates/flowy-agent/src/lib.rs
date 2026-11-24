@@ -19,6 +19,7 @@ mod pptx;
 mod projection;
 mod publish_tool;
 mod title;
+mod verify;
 
 pub use artifact_store::{
     ArtifactManifest, ArtifactPreference, ArtifactRecord, ArtifactStore,
