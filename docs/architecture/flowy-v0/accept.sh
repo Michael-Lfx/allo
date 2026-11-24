@@ -26,37 +26,48 @@ ok()   { printf '  [PASS] %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  [FAIL] %s\n' "$1"; fail=$((fail+1)); }
 head() { printf '\n== %s ==\n' "$1"; }
 
+# Run one cargo test filter and require a non-empty passing run.
+# `grep -q "0 failed"` alone turns green when the filter matches zero tests:
+# cargo prints "0 passed; 0 failed" and the step passes without running
+# anything. Asserting a positive passed count keeps the ledger honest.
+run_case() {
+    local crate="$1" filter="$2" out
+    out="$(cargo test -q -p "$crate" --lib "$filter" 2>&1)"
+    if printf '%s' "$out" | grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed'; then
+        return 0
+    fi
+    printf '%s\n' "$out" | tail -20
+    return 1
+}
+
 cd "$WS" || { echo "找不到 flowy18_wip 工作区：$WS"; exit 2; }
 
 # ---------------------------------------------------------------------------
 head "1/4 存储契约：受理后可被新句柄读到"
 # ---------------------------------------------------------------------------
-if cargo test -q -p flowy-agent-core --lib acceptance 2>&1 | grep -q "0 failed"; then
+if run_case flowy-agent-core acceptance; then
     ok "acceptance 日志测试全过（含「只增不改」「尾部截断容忍」）"
 else
     bad "acceptance 队列测试失败"
-    cargo test -p flowy-agent-core --lib acceptance 2>&1 | tail -20
 fi
 
 # ---------------------------------------------------------------------------
 head "2/4 agent 契约：忙时受理返回回执，另一个 handle 读得回"
 # ---------------------------------------------------------------------------
-if cargo test -q -p flowy-agent --lib accept_deferred 2>&1 | grep -q "0 failed"; then
+if run_case flowy-agent accept_deferred; then
     ok "accept_deferred：受理拿到 receipt，独立 handle 重新读到同一条"
 else
     bad "accept_deferred 测试失败"
-    cargo test -p flowy-agent --lib accept_deferred 2>&1 | tail -20
 fi
 
 # ---------------------------------------------------------------------------
 head "3/4 UI 端到端：运行中调用 send_prompt，落盘且重开可读"
 # ---------------------------------------------------------------------------
 # 走的是真实的 StudioPanel::send_prompt，不是另写的模拟路径。
-if cargo test -q -p flowy-studio --lib sending_while_running 2>&1 | grep -q "0 failed"; then
+if run_case flowy-studio sending_while_running; then
     ok "运行中提交被受理：队列多一条、草稿清空、换句柄仍读得到"
 else
     bad "UI 端到端测试失败"
-    cargo test -p flowy-studio --lib sending_while_running 2>&1 | tail -25
 fi
 
 # ---------------------------------------------------------------------------

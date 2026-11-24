@@ -145,6 +145,10 @@ pub struct StudioPanel {
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
     last_elapsed: Option<u64>,
+    /// Set once the agent reports its first `Initialized` update.
+    initialized: bool,
+    /// Throttles the level-triggered drain check in the pump.
+    last_drain_check: Option<std::time::Instant>,
     _theme_sub: gpui::Subscription,
     _overlay_sub: gpui::Subscription,
     pub projects: Vec<crate::projects::Project>,
@@ -432,6 +436,8 @@ impl StudioPanel {
             working,
             status,
             last_elapsed: None,
+            initialized: false,
+            last_drain_check: None,
             _theme_sub: theme_sub,
             _overlay_sub: overlay_sub,
             prompt,
@@ -492,6 +498,20 @@ impl StudioPanel {
                         panel.last_elapsed = elapsed;
                         panel.refresh_working(cx);
                     }
+                    // Level-triggered drain: a restart, a crashed lease, or an
+                    // expired backoff all become a run without another submit.
+                    let now = std::time::Instant::now();
+                    let due = panel.last_drain_check.is_none_or(|last| {
+                        now.duration_since(last) >= Duration::from_secs(5)
+                    });
+                    if due
+                        && panel.initialized
+                        && !panel.submission_pending
+                        && !panel.agent.has_busy_session()
+                    {
+                        panel.last_drain_check = Some(now);
+                        panel.refresh_pending_receipts(cx);
+                    }
                 });
                 if ok.is_err() {
                     break;
@@ -512,6 +532,7 @@ impl StudioPanel {
             matches!(update, flowy_agent::AgentUpdate::Initialized)
         });
         if initialized {
+            self.initialized = true;
             self.active_project_id = self
                 .agent
                 .active_workspace()
@@ -559,6 +580,11 @@ impl StudioPanel {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         self.refresh_chat(cx);
+        if initialized {
+            // Startup is a level, not an edge: a receipt accepted by the
+            // previous process must start without a second submit.
+            self.refresh_pending_receipts(cx);
+        }
     }
 
     fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
@@ -819,37 +845,43 @@ impl StudioPanel {
     /// Re-read the acceptance journal, finish a settled claim, and start the
     /// next receipt when the agent is idle.
     fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
-        if !self.status.is_busy() {
-            if self.agent.has_active_claim() {
-                // Completed and Stopped are terminal; DeliveryFailed already
-                // produced its artifacts and has its own retry surface, so it
-                // must not rerun the whole turn. Only a plain error is retried,
-                // with the journal's backoff.
-                let completed = !matches!(
-                    self.status,
-                    flowy_agent::TurnStatus::Error { .. }
-                        | flowy_agent::TurnStatus::Idle
-                );
-                if let Err(error) = self.agent.finish_accepted(completed) {
-                    self.emit_notice(Some(error), cx);
-                }
+        // A manual submit, or a turn in any session, must not interleave with
+        // a queued receipt; the pump re-checks when the agent is idle.
+        if self.submission_pending
+            || self.status.is_busy()
+            || self.agent.has_busy_session()
+        {
+            self.pending_receipts = self.agent.pending_acceptances();
+            cx.notify();
+            return;
+        }
+        if self.agent.has_active_claim() {
+            // Completed and Stopped are terminal; DeliveryFailed already
+            // produced its artifacts and has its own retry surface, so it
+            // must not rerun the whole turn. Only a plain error is retried,
+            // with the journal's backoff.
+            let completed = !matches!(
+                self.status,
+                flowy_agent::TurnStatus::Error { .. }
+                    | flowy_agent::TurnStatus::Idle
+            );
+            if let Err(error) = self.agent.finish_accepted(completed) {
+                self.emit_notice(Some(error), cx);
             }
-            if !self.agent.pending_acceptances().is_empty() {
-                let previous = self.agent.active_session_id();
-                match self.agent.run_accepted_once() {
-                    Ok(Some(run)) => {
-                        self.pending_receipts =
-                            self.agent.pending_acceptances();
-                        self.refresh_chat(cx);
-                        if previous.as_deref() != Some(run.session_id.as_str())
-                        {
-                            self.emit_notice(Some("notice.accepted_ran"), cx);
-                        }
-                        return;
+        }
+        if !self.agent.pending_acceptances().is_empty() {
+            let previous = self.agent.active_session_id();
+            match self.agent.run_accepted_once() {
+                Ok(Some(run)) => {
+                    self.pending_receipts = self.agent.pending_acceptances();
+                    self.refresh_chat(cx);
+                    if previous.as_deref() != Some(run.session_id.as_str()) {
+                        self.emit_notice(Some("notice.accepted_ran"), cx);
                     }
-                    Ok(None) => {}
-                    Err(error) => self.emit_notice(Some(error), cx),
+                    return;
                 }
+                Ok(None) => {}
+                Err(error) => self.emit_notice(Some(error), cx),
             }
         }
         self.pending_receipts = self.agent.pending_acceptances();
@@ -1767,6 +1799,119 @@ mod tests {
         });
 
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_restarted_panel_drains_the_queued_receipt_without_another_submit(
+        cx: &mut TestAppContext,
+    ) {
+        // First run: accept while busy, then die with the receipt still queued.
+        let (panel, root) = submission_panel(cx, "restart-drain");
+        let receipt_id = panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            panel.fill_prompt("drain me after restart", cx);
+            panel.send_prompt(cx);
+            panel.pending_receipts[0].id.clone()
+        });
+        drop(panel);
+
+        // Second run: nothing is submitted; startup alone must claim it.
+        let reopened = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        // Deliver the startup event the way the pump would after the agent
+        // reports readiness; the panel must claim the waiting receipt itself.
+        reopened.update(cx, |panel, cx| {
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Initialized],
+                cx,
+            );
+        });
+        let queued = flowy_agent::AcceptanceQueue::new(root.clone())
+            .all()
+            .expect("acceptance journal readable");
+        let receipt = queued
+            .iter()
+            .find(|receipt| receipt.id == receipt_id)
+            .expect("the queued receipt is still on disk");
+        assert!(
+            receipt.taken_at_ms.is_some(),
+            "startup must claim the queued receipt without a second submit"
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_manual_submit_keeps_the_queue_waiting(cx: &mut TestAppContext) {
+        let (panel, root) = submission_panel(cx, "drain-guard");
+        let receipt_id = panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            panel.fill_prompt("wait for the submit", cx);
+            panel.send_prompt(cx);
+            let receipt_id = panel.pending_receipts[0].id.clone();
+            panel.initialized = true;
+            panel.submission_pending = true;
+            panel.refresh_pending_receipts(cx);
+            receipt_id
+        });
+        let queued = flowy_agent::AcceptanceQueue::new(root.clone())
+            .all()
+            .expect("acceptance journal readable");
+        let receipt = queued
+            .iter()
+            .find(|receipt| receipt.id == receipt_id)
+            .expect("the queued receipt is still on disk");
+        assert!(
+            receipt.taken_at_ms.is_none(),
+            "a manual submit must not be interleaved with a queued receipt"
+        );
+
+        panel.update(cx, |panel, cx| {
+            panel.submission_pending = false;
+            panel.status = flowy_agent::TurnStatus::Idle;
+            panel.refresh_pending_receipts(cx);
+        });
+        let queued = flowy_agent::AcceptanceQueue::new(root.clone())
+            .all()
+            .expect("acceptance journal readable");
+        let receipt = queued
+            .iter()
+            .find(|receipt| receipt.id == receipt_id)
+            .expect("the queued receipt is still on disk");
+        assert!(
+            receipt.taken_at_ms.is_some(),
+            "once idle the queued receipt starts"
+        );
+
+        drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1402,6 +1402,18 @@ impl AgentHandle {
         lock(&self.inner.state.accepted_claim).is_some()
     }
 
+    /// Whether any live session is currently running a turn.
+    ///
+    /// Draining the acceptance queue is a level condition over the whole
+    /// handle: a receipt must not start while another session is still
+    /// running, even if the user is looking at an idle one.
+    #[must_use]
+    pub fn has_busy_session(&self) -> bool {
+        lock(&self.inner.state.live)
+            .values()
+            .any(|session| session.status.is_busy())
+    }
+
     fn capabilities_for(&self, session: &str) -> Vec<String> {
         let workspace = lock(&self.inner.state.live)
             .get(session)
