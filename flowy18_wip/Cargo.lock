@@ -2354,6 +2354,7 @@ version = "1.8.0"
 dependencies = [
  "directories",
  "gpui-pre",
+ "gpui-tray",
  "tracing",
 ]
 
@@ -3858,6 +3859,24 @@ name = "gpui-pre-ztracing-macro"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0de0aaa67d6974e0983f6d4ded918b73547db6cb82b61ac2de88576a45b0e81"
+
+[[package]]
+name = "gpui-tray"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312c3f394b27270f149d2b5f51ee6512bd37266dbfe8d2677c1992c76b7adfc5"
+dependencies = [
+ "async-channel",
+ "gpui-pre",
+ "image",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+ "zbus 6.2.1",
+]
 
 [[package]]
 name = "granit-parser"

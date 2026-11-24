@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 directories = { workspace = true }
 gpui = { workspace = true }
+gpui-tray = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

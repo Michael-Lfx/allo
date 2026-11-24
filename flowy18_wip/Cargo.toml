@@ -97,6 +97,12 @@ sentry-tracing = "0.38"
 gpui = { package = "gpui-pre", version = "=0.3.14", features = ["hot-reload"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14" }
 gpui-kit = "=0.11.0"
+# The default `gpui` feature pulls in `gpui 0.2.2`, a different type graph.
+# `gpui-kit` is this crate's alias for `gpui-pre`, which must stay the same
+# version as the workspace's.
+gpui-tray = { version = "0.3.0", default-features = false, features = [
+    "gpui-kit",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

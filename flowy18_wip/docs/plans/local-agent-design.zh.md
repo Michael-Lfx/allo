@@ -241,7 +241,7 @@ P1 产物先写入任务自己的输出区，读取并核验后再提交已交�
 
 **答复**
 
-有。**最值得借鉴的是按轮次收起执行过程，以及展开详情时保住阅读位置。** 两边都是 Rust + GPUI。fintwind 使用带补丁的 `gpui-pre 0.3.8`，Flowy 使用 `gpui-ce 0.3.0`。适合借鉴交互和渲染策略，再用 Flowy 现有的 `ChatFeed` 实现。[fintwind 依赖与许可证](https://github.com/roketskiy/fintwind/blob/eb8a6a36a90bcd80e3a9b7471954f9b4d03813e9/Cargo.toml#L48-L65) · [Flowy 依赖](/D:/workSpace/git_clone_test/allo/flowy18_wip/Cargo.toml:82)
+有。**最值得借鉴的是按轮次收起执行过程，以及展开详情时保住阅读位置。** 两边都是 Rust + GPUI。fintwind 使用带补丁的 `gpui-pre 0.3.8`，Flowy 使用 `gpui-pre 0.3.14`。适合借鉴交互和渲染策略，再用 Flowy 现有的 `ChatFeed` 实现。[fintwind 依赖与许可证](https://github.com/roketskiy/fintwind/blob/eb8a6a36a90bcd80e3a9b7471954f9b4d03813e9/Cargo.toml#L48-L65) · [Flowy 依赖](/D:/workSpace/git_clone_test/allo/flowy18_wip/Cargo.toml:82)
 
 1. **执行过程按轮次收起。** fintwind 保留用户提问和最终回答，把已结束轮次的中间过程折叠为一个入口。Flowy 可以沿用同一条时间线：首页发起的任务显示「提问 → 可展开的执行过程 → 结果」，普通对话自然呈现为「提问 → 回答」。运行中、失败和中止状态应保持可见，旧历史也应保留原始消息顺序。[fintwind 轮次折叠实现](https://github.com/roketskiy/fintwind/blob/eb8a6a36a90bcd80e3a9b7471954f9b4d03813e9/src/app/transcript.rs#L1203-L1252)
 
