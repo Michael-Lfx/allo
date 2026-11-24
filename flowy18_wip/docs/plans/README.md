@@ -4,6 +4,7 @@
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
+| [clawhub-skill-market.md](clawhub-skill-market.md) | 已实现（2026-11-23） | ClawHub 社区货架、官方 JSON、SQLite 缓存、审核过滤与安装门禁 |
 | [conversation-artifact-library-execution.zh.md](conversation-artifact-library-execution.zh.md) | 实施与验证中 | 代码链路、自动化证据、TC-01–35 与待完成原生/发行门禁 |
 | [conversation-artifact-library.zh.md](conversation-artifact-library.zh.md) | 计划（2026-11-21，产品范围已确认） | 首页对话文件交付、自动归集、独立存储、共享预览与来源定位的完整实施计划 |
 | [agent-core-migration-handoff.md](agent-core-migration-handoff.md) | 待启动 | agent 内核迁移后的收尾项、验收集与行为补齐项 |
