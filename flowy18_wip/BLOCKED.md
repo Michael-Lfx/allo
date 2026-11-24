@@ -95,7 +95,30 @@
   --locked -- -D warnings` 退出 101，报 45 条，全部落在 lib test；`--lib` 已清零。
   CI 门禁命令不选 `flowy-agent`，所以这 45 条不进流水线。要清得先决定是否把
   `-p flowy-agent` 加进门禁，再另开一轮。
-- **资料库导入被跳过（环境问题）**：日志 `artifact import skipped ...
+- **资料库导入被跳过（已修复）**：日志 `artifact import skipped ...
   publisher directory is a link or reparse point`。本机 `%APPDATA%\Flowy` 是指向
-  `.absorb_tmp/flowy-appdata` 的 junction，导入逻辑拒绝这类路径。属本机数据目录
-  形态，不是代码缺陷。
+  `.absorb_tmp/flowy-appdata` 的 junction，于是整条导入被静默跳过。
+  - 原因有两层：`artifact_source::open` 要求从卷根起每一级祖先「不是 reparse」，
+    而形状判断用了 `Metadata::is_dir()`——用 `OPEN_REPARSE_POINT` 打开的 junction
+    属性里有 `FILE_ATTRIBUTE_DIRECTORY`（`0x410`），`is_dir()` 却返回 **false**，
+    所以在 reparse 判断之前就已经被拒。
+  - 修法：祖先链照旧逐级打开、照旧用不含 `SHARE_DELETE` 的共享模式钉住（真正挡换链
+    的是这些句柄），但**只有 root 本身**要求非 reparse；形状判断改成看属性位。
+    root 本身与 root 以下的严格性不变。
+  - 影响面：OneDrive 已知文件夹、域控文件夹重定向、junction 过的用户目录都会踩到，
+    不是本机特例。
+  - 覆盖：新增 `allows_a_redirected_ancestor_but_rejects_a_link_at_or_below_the_root`，
+    用免权限的 `mklink /J` 造 junction；`symlink_dir` 在普通账户上需要开发者模式，
+    原有几条链接用例在本机会直接跳过。
+  - **已加诊断（2026-11-24）**：unix 的 `openat` 失败现已按 `rustix::io::Errno::LOOP`
+    翻译成明确错误——「root 之上是软链」与「root 及以下是链接」分开报，前者带
+    `BLOCKED.md` 指引。注意不能用 `ErrorKind::FilesystemLoop`，该变体在 rustc 1.100
+    仍属 unstable（`io_error_more`）。`Errno::LOOP` 这条路已用 `--target
+    x86_64-unknown-linux-gnu` 单独编过验证。
+  - 待办（A 项，已延后）：**unix 分支没有同改**。`artifact_source::open` 的 unix 实现仍用
+    `openat + NOFOLLOW` 逐级打开 root 组件，祖先里只要有一层软链就返回 `ELOOP`，
+    导入同样会失败。默认数据根在 `~/Library/Application Support`（macOS）或
+    `~/.local/share`（Linux），家目录正常时碰不到；会踩的是家目录本身被软链、
+    或数据目录被重定向的环境。注意 `/var` 不是触发条件——只在输出目录落进
+    `/var/folders` 的临时区时才会中，默认不走那里。本轮只放宽了 Windows，
+    因为本机无法验证 unix；新用例因此标成 `#[cfg(windows)]`。

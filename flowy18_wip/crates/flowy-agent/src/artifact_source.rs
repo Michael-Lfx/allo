@@ -28,6 +28,7 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const REPARSE_POINT: u32 = 0x0400;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0010;
     const SHARE_READ: u32 = 1;
     const SHARE_WRITE: u32 = 2;
 
@@ -35,9 +36,14 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     let absolute = root.to_path_buf();
     let mut directories = Vec::new();
     // Pin every ancestor from the volume/UNC root down. Excluding SHARE_DELETE
-    // stops renames and junction swaps while a subsequent component is opened.
-    // OPEN_REPARSE_POINT lets metadata inspect the link itself rather than the
-    // target, including a junction at the host-provided output root.
+    // stops renames and junction swaps while a subsequent component is opened,
+    // which is what actually protects the copy - the shape of the ancestors
+    // does not. A host may legitimately redirect the tree above the assigned
+    // root: a junctioned profile, OneDrive, or a domain folder-redirection
+    // policy. Rejecting those would skip every import for that user while
+    // gaining nothing, because the pinned handles block a swap either way.
+    // The root itself must still be a real directory: that is the boundary
+    // the caller hands us, and anything inside it stays strict below.
     for ancestor in absolute.ancestors().collect::<Vec<_>>().into_iter().rev() {
         if ancestor.as_os_str().is_empty() {
             continue;
@@ -47,12 +53,17 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
             .share_mode(SHARE_READ | SHARE_WRITE)
             .custom_flags(BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
             .open(ancestor)?;
-        let metadata = handle.metadata()?;
-        if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0
-        {
-            return Err(invalid(
-                "publisher directory is a link or reparse point",
-            ));
+        // A reparse-opened junction reports `is_dir() == false` even though its
+        // attributes carry FILE_ATTRIBUTE_DIRECTORY, so the attribute bit is
+        // the only reliable shape test here.
+        let attributes = handle.metadata()?.file_attributes();
+        let is_directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        let is_root = ancestor == absolute.as_path();
+        if !is_directory {
+            return Err(invalid("publisher path is not a directory"));
+        }
+        if is_root && attributes & REPARSE_POINT != 0 {
+            return Err(invalid("publisher root is a link or reparse point"));
         }
         directories.push(handle);
     }
@@ -68,9 +79,11 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
             .share_mode(SHARE_READ | SHARE_WRITE)
             .custom_flags(BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
             .open(&current)?;
-        let metadata = handle.metadata()?;
-        if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0
-        {
+        let attributes = handle.metadata()?.file_attributes();
+        if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(invalid("publisher path is not a directory"));
+        }
+        if attributes & REPARSE_POINT != 0 {
             return Err(invalid(
                 "publisher directory is a link or reparse point",
             ));
@@ -100,6 +113,24 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     })
 }
 
+/// `openat` reports a symbolic link as `ELOOP`, which reads like a malformed
+/// path rather than the real cause. `ErrorKind::FilesystemLoop` would name it,
+/// but that variant is still unstable, so match the normalized errno instead.
+/// Name the two sites separately: a link above the root is the harmful case
+/// (this platform still requires real directories there, see `BLOCKED.md`), a
+/// link at or below the root is the intended rejection.
+#[cfg(unix)]
+fn explain_unix_link(error: rustix::io::Errno, above_root: bool) -> io::Error {
+    if error != rustix::io::Errno::LOOP {
+        return error.into();
+    }
+    invalid(if above_root {
+        "publisher path above the root is a symbolic link; this platform still requires real directories above the root (see BLOCKED.md)"
+    } else {
+        "publisher directory is a link or reparse point"
+    })
+}
+
 #[cfg(unix)]
 pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     use rustix::fs::{Mode, OFlags, openat};
@@ -119,7 +150,8 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
                     part,
                     flags,
                     Mode::empty(),
-                )?;
+                )
+                .map_err(|error| explain_unix_link(error, true))?;
                 directories.push(File::from(opened));
             }
             _ => {
@@ -136,7 +168,8 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
             component.as_os_str(),
             flags,
             Mode::empty(),
-        )?;
+        )
+        .map_err(|error| explain_unix_link(error, false))?;
         directories.push(File::from(opened));
     }
     let opened = openat(
@@ -147,7 +180,8 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
             .as_os_str(),
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
-    )?;
+    )
+    .map_err(|error| explain_unix_link(error, false))?;
     let file = File::from(opened);
     if !file.metadata()?.is_file() {
         return Err(invalid("publisher source is not a regular file"));
@@ -356,6 +390,63 @@ mod tests {
         }
     }
 
+    /// Junction creation needs no privilege, so this case is verifiable on a
+    /// normal developer account - unlike `symlink_dir`, which needs Developer
+    /// Mode and silently skips the link tests above.
+    #[cfg(windows)]
+    fn junction_directory(target: &Path, link: &Path) -> bool {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output();
+        match output {
+            Ok(output) if output.status.success() => true,
+            Ok(output) => {
+                eprintln!(
+                    "junction unavailable: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+                false
+            }
+            Err(error) => {
+                eprintln!("junction creation failed: {error}");
+                false
+            }
+        }
+    }
+
+    /// Windows only: the unix branch of `open` still walks the root components
+    /// with `NOFOLLOW`, so a redirected ancestor is rejected there. Mirroring
+    /// the relaxation needs a unix test run; tracked in `BLOCKED.md`.
+    #[cfg(windows)]
+    #[test]
+    fn windows_allows_a_redirected_ancestor_but_rejects_a_link_at_or_below_the_root()
+     {
+        let scratch = Scratch::new();
+        let redirected = scratch.0.join("redirected");
+        if !junction_directory(&scratch.0.join("outputs"), &redirected) {
+            return;
+        }
+        // A host may redirect a directory above the assigned root - OneDrive
+        // or a domain policy moving the data tree, or a junctioned profile.
+        // The ancestors are pinned either way, so a swap during the copy
+        // still fails; only the shape of the path changes.
+        assert!(
+            open(&redirected.join("nested"), Path::new("report.csv")).is_ok(),
+            "a redirected ancestor above the root must not block the import"
+        );
+        // The root itself, and anything below it, stays strict.
+        assert!(open(&redirected, Path::new("nested/report.csv")).is_err());
+        assert!(
+            open(&scratch.0, Path::new("redirected/nested/report.csv"))
+                .is_err()
+        );
+        // Remove the link explicitly instead of relying on `Scratch`'s
+        // recursive delete to recognise the reparse point.
+        let _ = fs::remove_dir(&redirected);
+    }
+
     #[cfg(any(windows, unix))]
     #[test]
     fn rejects_a_link_at_the_raw_output_root_and_each_ancestor() {
@@ -367,6 +458,10 @@ mod tests {
         assert!(open(&direct_link, Path::new("nested/report.csv")).is_err());
         let parent_link = scratch.0.join("parent-link");
         assert!(symlink_directory(&scratch.0.join("outputs"), &parent_link));
+        // Windows allows a redirected ancestor above the root; the dedicated
+        // junction test covers it. Unix still follows the exact-component rule
+        // here, so the assertion stays for that target only.
+        #[cfg(unix)]
         assert!(
             open(&parent_link.join("nested"), Path::new("report.csv")).is_err()
         );
