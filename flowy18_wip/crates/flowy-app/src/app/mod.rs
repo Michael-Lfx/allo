@@ -3059,10 +3059,7 @@ mod tests {
         click(cx, &cancel);
         cx.read_entity(&app, |app, cx| {
             assert_eq!(app.active_dialog, state::ActiveDialog::None);
-            assert_eq!(
-                app.studio.read(cx).projects,
-                []
-            );
+            assert_eq!(app.studio.read(cx).projects, []);
         });
         assert!(!root.join("projects.json").exists());
         drop(app);
@@ -3203,10 +3200,7 @@ mod tests {
         click(cx, &delete);
         click(cx, &delete);
         cx.read_entity(&app, |app, cx| {
-            assert_eq!(
-                app.studio.read(cx).projects,
-                []
-            );
+            assert_eq!(app.studio.read(cx).projects, []);
         });
         assert!(folder.is_dir(), "project removal must preserve local files");
         drop(app);

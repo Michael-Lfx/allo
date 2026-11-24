@@ -387,7 +387,9 @@ mod tests {
                 image
                     .as_bytes(0)
                     .unwrap()
-                    .as_chunks::<4>().0.iter()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel[0] != 255)
             );
         }
