@@ -69,7 +69,7 @@ fn tab(
     tab: Tab,
     id: &'static str,
     label_key: &'static str,
-) -> gpui::Stateful<gpui::Div> {
+) -> flowy_ui::InteractiveDiv {
     let selected = app.persona.tab == tab;
     let label = app.t(label_key);
     let theme = app.theme;

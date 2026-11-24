@@ -65,23 +65,7 @@ impl crate::panel::StudioPanel {
                         cx,
                     )),
             )
-            .child(
-                text_area("auto-prompt")
-                    .aria_label(self.t("auto.prompt_placeholder"))
-                    .state(self.prompt.downgrade())
-                    .placeholder(self.tf(
-                        "auto.prompt_placeholder",
-                        &[("product", self.product)],
-                    ))
-                    .placeholder_color(self.theme.muted())
-                    .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-                    .caret_blink_interval_500ms()
-                    .w_full()
-                    .h(px(56.))
-                    .whitespace_normal()
-                    .overflow_y_scroll()
-                    .text_color(self.theme.ink()),
-            )
+            .child(text_area("auto-prompt", &self.prompt).into_any_element())
             .child(
                 div()
                     .flex()

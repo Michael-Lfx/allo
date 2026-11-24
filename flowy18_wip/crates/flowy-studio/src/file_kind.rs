@@ -32,12 +32,14 @@ pub(crate) fn from_path(path: &str) -> Option<FileKind> {
         "java" => Some(FileKind::Java),
         "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
         | "html" | "js" | "json" | "jsx" | "kt" | "kts" | "log" | "md"
-        | "markdown" | "php" | "ps1" | "py" | "rb" | "rs" | "scss"
-        | "sh" | "swift" | "toml" | "ts" | "tsx" | "txt" | "xml"
-        | "yaml" | "yml" => Some(FileKind::Code),
+        | "markdown" | "php" | "ps1" | "py" | "rb" | "rs" | "scss" | "sh"
+        | "swift" | "toml" | "ts" | "tsx" | "txt" | "xml" | "yaml" | "yml" => {
+            Some(FileKind::Code)
+        }
         "doc" | "docx" | "odt" | "rtf" => Some(FileKind::Document),
-        "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp"
-        | "avif" => Some(FileKind::Image),
+        "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp" | "avif" => {
+            Some(FileKind::Image)
+        }
         "aac" | "flac" | "m4a" | "mp3" | "ogg" | "wav" => Some(FileKind::Audio),
         "avi" | "mkv" | "mov" | "mp4" | "webm" => Some(FileKind::Video),
         "pdf" => Some(FileKind::Pdf),

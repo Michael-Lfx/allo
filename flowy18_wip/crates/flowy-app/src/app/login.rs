@@ -16,8 +16,8 @@ impl FlowyApp {
             LoginPhase::Sending | LoginPhase::Verifying | LoginPhase::Success
         );
         let on_otp = self.auth.step == LoginStep::Otp;
-        let email = self.auth.email.read(cx).as_str().to_string();
-        let code = self.auth.code.read(cx).as_str().to_string();
+        let email = self.auth.email.read(cx).value().to_string();
+        let code = self.auth.code.read(cx).value().to_string();
         let email_ok = valid_email(&email);
         let can_send =
             !busy && !on_otp && email_ok && self.auth.cooldown_left == 0;
@@ -105,7 +105,6 @@ impl FlowyApp {
                                         div()
                                             .text_3xl()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .letter_spacing(px(-0.6))
                                             .text_color(self.theme.ink())
                                             .child(heading),
                                     )
@@ -188,7 +187,6 @@ impl FlowyApp {
                         div()
                             .text_size(self.theme.heading_size())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .letter_spacing(px(-0.6))
                             .text_color(self.theme.ink())
                             .child(crate::brand::product().to_string()),
                     ),
@@ -400,7 +398,6 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let _ = cx;
         div()
             .flex()
             .flex_col()
@@ -412,7 +409,7 @@ impl FlowyApp {
                     .text_color(self.theme.ink())
                     .child(self.t("login.email")),
             )
-            .child(self.email_field(busy))
+            .child(self.email_field(busy, cx))
             .child(
                 div()
                     .text_size(self.theme.caption_size())
@@ -475,18 +472,20 @@ impl FlowyApp {
             self.auth.phase,
             LoginPhase::Sending | LoginPhase::Verifying
         );
-        theme::Button::new("sign-in", label)
-            .variant(theme::ControlVariant::Primary)
-            .size(theme::ControlSize::Large)
-            .full_width()
-            .disabled(!enabled && !loading)
-            .loading(loading)
-            .render(
-                &self.theme,
-                cx.listener(|app, _, _, cx| app.submit_login(cx)),
-            )
-            .mt(px(20.))
-            .min_h(px(48.))
+        // `Button` renders to an opaque element, so the CTA spacing and its
+        // taller-than-`Large` hit target live on this shell.
+        div().mt(px(20.)).min_h(px(48.)).flex().child(
+            theme::Button::new("sign-in", label)
+                .variant(theme::ControlVariant::Primary)
+                .size(theme::ControlSize::Large)
+                .full_width()
+                .disabled(!enabled && !loading)
+                .loading(loading)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _, _, cx| app.submit_login(cx)),
+                ),
+        )
     }
 
     fn login_resend(
@@ -541,15 +540,16 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::Button::new("network-diagnose", self.t("login.diagnose"))
-            .variant(theme::ControlVariant::Ghost)
-            .size(theme::ControlSize::Small)
-            .disabled(busy)
-            .render(
-                &self.theme,
-                cx.listener(|app, _, _, cx| app.run_login_diagnose(cx)),
-            )
-            .mt(px(24.))
+        div().mt(px(24.)).flex().child(
+            theme::Button::new("network-diagnose", self.t("login.diagnose"))
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .disabled(busy)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _, _, cx| app.run_login_diagnose(cx)),
+                ),
+        )
     }
 
     fn change_email_link(
@@ -567,15 +567,20 @@ impl FlowyApp {
             )
     }
 
-    fn email_field(&self, locked: bool) -> impl gpui::IntoElement {
-        let field = text_input("email")
-            .aria_label(self.t("login.email"))
-            .state(self.auth.email.downgrade())
-            .accepts_input(!locked)
-            .placeholder(self.t("login.email_placeholder"))
-            .placeholder_color(self.theme.muted())
-            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-            .caret_blink_interval_500ms()
+    fn email_field(
+        &self,
+        locked: bool,
+        cx: &Context<'_, Self>,
+    ) -> impl gpui::IntoElement {
+        // `InputState` fixes its placeholder at construction, so the hint is
+        // drawn by the shell instead of the editing engine.
+        let hint = if self.auth.email.read(cx).value().is_empty() {
+            self.t("login.email_placeholder")
+        } else {
+            String::new()
+        };
+        let field = div()
+            .relative()
             .w_full()
             .min_h_auto()
             .whitespace_nowrap()
@@ -585,21 +590,27 @@ impl FlowyApp {
             .border_1()
             .border_color(self.theme.line())
             .bg(self.theme.soft())
-            .text_color(self.theme.ink());
+            .text_color(self.theme.ink())
+            .child(text_input("email", &self.auth.email))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(12.))
+                    .text_color(self.theme.muted())
+                    .child(hint),
+            );
         if locked { field.opacity(0.7) } else { field }
     }
 
     fn code_field(&self, locked: bool) -> impl gpui::IntoElement {
-        let field = text_input("otp")
-            .aria_label(self.t("login.step_otp"))
-            .state(self.auth.code.downgrade())
-            .accepts_input(!locked)
-            .placeholder("")
-            .placeholder_color(self.theme.muted())
-            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-            .caret_blink_interval_500ms()
+        // The real editor stays almost invisible on top of the drawn OTP cells;
+        // `flex` stretches it over the whole strip so a tap anywhere focuses it.
+        let field = div()
+            .relative()
             .w_full()
             .h_full()
+            .flex()
             .whitespace_nowrap()
             .px_3()
             .py(px(12.))
@@ -607,7 +618,8 @@ impl FlowyApp {
             .border_1()
             .border_color(self.theme.line())
             .bg(self.theme.soft())
-            .text_color(self.theme.ink());
+            .text_color(self.theme.ink())
+            .child(text_input("otp", &self.auth.code));
         if locked { field.opacity(0.7) } else { field }
     }
 }

@@ -5,7 +5,9 @@
 mod autostart;
 mod deep_link;
 mod notify;
-mod tray;
+// System tray is parked while `gpui-tray` targets the retired community fork; its
+// `MenuItem`/`App`/`Action` types do not unify with `gpui-pre`.
+// mod tray;
 
 use gpui::{App, actions};
 use std::cell::RefCell;
@@ -14,7 +16,7 @@ use std::sync::OnceLock;
 actions!(shell, [ShowMainWindow, QuitApp]);
 
 thread_local! {
-    static TRAY: RefCell<Option<gpui_tray::Tray>> = const { RefCell::new(None) };
+    static TRAY: RefCell<Option<()>> = const { RefCell::new(None) };
 }
 
 static BRAND: OnceLock<Brand> = OnceLock::new();
@@ -95,26 +97,27 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
         let _ = task.await;
     })
     .detach();
-    match tray::build(cx) {
-        Ok(handle) => {
-            TRAY.with(|slot| {
-                *slot.borrow_mut() = Some(handle);
-            });
-            tracing::debug!(
-                target: "flowy.boot",
-                stage = "shell::tray::build",
-                "tray ready"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                target: "flowy.boot",
-                stage = "shell::tray::build",
-                %error,
-                "system tray unavailable"
-            );
-        }
-    }
+    // System tray is parked until `gpui-tray` targets `gpui-pre`.
+    // match tray::build(cx) {
+    //     Ok(handle) => {
+    //         TRAY.with(|slot| {
+    //             *slot.borrow_mut() = Some(handle);
+    //         });
+    //         tracing::debug!(
+    //             target: "flowy.boot",
+    //             stage = "shell::tray::build",
+    //             "tray ready"
+    //         );
+    //     }
+    //     Err(error) => {
+    //         tracing::warn!(
+    //             target: "flowy.boot",
+    //             stage = "shell::tray::build",
+    //             %error,
+    //             "system tray unavailable"
+    //         );
+    //     }
+    // }
     tracing::debug!(
         target: "flowy.boot",
         stage = "shell::install",

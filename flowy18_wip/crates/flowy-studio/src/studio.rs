@@ -28,7 +28,6 @@ impl crate::panel::StudioPanel {
                 div()
                     .id("studio-notice")
                     .role(gpui::Role::Status)
-                    .aria_live(gpui::accesskit::Live::Polite)
                     .aria_label(message.clone())
                     .px(self.theme.space(32.))
                     .py(self.theme.space(8.))
@@ -255,7 +254,6 @@ impl crate::panel::StudioPanel {
                 theme::interactive(row_id, label, &self.theme)
                     .role(gpui::Role::MenuItemRadio)
                     .aria_selected(selected)
-                    .aria_disabled(locked)
                     .w_full()
                     .px(self.theme.space(12.))
                     .py(self.theme.space(8.))
@@ -495,7 +493,11 @@ impl crate::panel::StudioPanel {
         card
     }
 
-    fn studio(&self, window: &Window, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn studio(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         // The width is left to flex: this column takes whatever the drawer
         // leaves, so an open drawer shrinks it without any pixel math.
         div()

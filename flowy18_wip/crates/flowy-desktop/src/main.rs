@@ -32,10 +32,7 @@ fn main() {
         set_temp_env(dir);
         flowy_obs::record_boot_note(
             BootNoteLevel::Info,
-            format!(
-                "stage=main::ensure_runtime_temp path={}",
-                dir.display()
-            ),
+            format!("stage=main::ensure_runtime_temp path={}", dir.display()),
         );
     } else if let Err(error) = &runtime_temp {
         flowy_obs::record_boot_note(

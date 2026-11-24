@@ -62,16 +62,16 @@ impl FlowyApp {
     }
 
     fn send_invite(&mut self, cx: &mut Context<'_, Self>) {
-        let email = self.invite.email.read(cx).as_str();
-        if !remember(&mut self.invite.emails, email) {
+        let email = self.invite.email.read(cx).value();
+        if !remember(&mut self.invite.emails, &email) {
             self.invite.status = Some("invite.bad_email");
             cx.notify();
             return;
         }
         save(self.store.root(), &self.invite.code, &self.invite.emails);
-        self.invite
-            .email
-            .update(cx, |state, cx| state.emplace("", cx));
+        // The saved address is already in `self.invite.emails`; clearing the
+        // editor only resets the next entry, so no change event is needed.
+        self.set_input_text(&self.invite.email, "", cx);
         self.invite.status = Some("invite.email_saved");
         cx.notify();
     }
@@ -322,18 +322,21 @@ impl FlowyApp {
         key: &'static str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::Button::new(id, self.t(key))
-            .variant(theme::ControlVariant::Ghost)
-            .size(theme::ControlSize::Medium)
-            .render(
-                &self.theme,
-                cx.listener(|app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    app.share_invite(cx);
-                }),
-            )
-            .flex_1()
-            .text_size(self.theme.body_size())
+        // `Button::render` is opaque, so the row share lives on this shell and
+        // the control itself fills it.
+        div().flex_1().child(
+            theme::Button::new(id, self.t(key))
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Medium)
+                .full_width()
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
+                        cx.stop_propagation();
+                        app.share_invite(cx);
+                    }),
+                ),
+        )
     }
 
     fn invite_action_button(
@@ -351,19 +354,17 @@ impl FlowyApp {
             })
             .size(theme::ControlSize::Large);
         let button = if copy { button.full_width() } else { button };
-        button
-            .render(
-                &self.theme,
-                cx.listener(move |app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    if copy {
-                        app.copy_invite(cx);
-                    } else {
-                        app.send_invite(cx);
-                    }
-                }),
-            )
-            .text_size(self.theme.body_size())
+        button.render(
+            &self.theme,
+            cx.listener(move |app, _event, _window, cx| {
+                cx.stop_propagation();
+                if copy {
+                    app.copy_invite(cx);
+                } else {
+                    app.send_invite(cx);
+                }
+            }),
+        )
     }
 
     fn text_button(
@@ -383,7 +384,6 @@ impl FlowyApp {
                     app.show_panel(panel, cx);
                 }),
             )
-            .text_size(self.theme.body_size())
     }
 
     fn invite_heading(&self, key: &str) -> impl IntoElement {

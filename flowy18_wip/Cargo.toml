@@ -94,10 +94,9 @@ sentry = { version = "0.38", default-features = false, features = [
     "rustls",
 ] }
 sentry-tracing = "0.38"
-gpui = { package = "gpui-ce", version = "0.3.0", features = ["hot-patching"] }
-gpui_platform = { package = "gpui_ce_platform", version = "0.3.0" }
-gpui_ce_elements = "0.3.0"
-gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
+gpui = { package = "gpui-pre", version = "=0.3.14", features = ["hot-reload"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14" }
+gpui-kit = "=0.11.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -175,12 +174,3 @@ overflow-checks = true
 # gated on debug_assertions; enable it for the host proc-macro only.
 [profile.release.package.gpui-pre-macros]
 debug-assertions = true
-
-
-# Local fix for a self-deadlock in gpui-ce 0.3.0: the macOS launch callback
-# kept the platform mutex locked, so the first open_window never returned.
-# Disabled: `.scratch/gpui_ce_macos-0.3.0` is absent from this checkout and no
-# crate depends on `gpui_ce_macos`, so this patch failed every cargo command.
-# Restore it together with the patched source when macOS builds need it.
-# [patch.crates-io]
-# gpui_ce_macos = { path = ".scratch/gpui_ce_macos-0.3.0" }

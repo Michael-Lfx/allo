@@ -1,9 +1,9 @@
 //! Layout patterns shared by settings and forms. Content is supplied by the caller.
-use crate::{ResolvedTheme, Text, TextRole, Title, TitleLevel};
+use crate::{InteractiveDiv, ResolvedTheme, Text, TextRole, Title, TitleLevel};
 use gpui::StatefulInteractiveElement;
 use gpui::{
     AnyElement, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
-    Role, SharedString, Stateful, Styled, accesskit, div, prelude::*,
+    Role, SharedString, Stateful, Styled, div, prelude::*,
 };
 
 pub fn form_field(
@@ -45,7 +45,7 @@ pub fn nav_item(
     selected: bool,
     icon: impl IntoElement,
     theme: &ResolvedTheme,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     let label = label.into();
     crate::interactive(id, label.clone(), theme)
         .mx_2()
@@ -124,8 +124,6 @@ pub fn notice(
         } else {
             Role::Status
         })
-        .aria_live(accesskit::Live::Polite)
-        .aria_live_atomic(true)
         .px_3()
         .py_2()
         .rounded_lg()

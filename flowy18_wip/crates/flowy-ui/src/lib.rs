@@ -6,9 +6,11 @@
 //! are all behaviours that compile fine and fail only when run.
 
 mod button;
+mod carousel;
 mod chrome;
 mod context;
 mod controls;
+
 mod feedback;
 mod overlays;
 mod theme;
@@ -20,6 +22,7 @@ pub mod icons;
 pub use button::{
     Button, IconButton, button, install_initial_tab_focus, interactive,
 };
+pub use carousel::{CarouselGeometry, CarouselState, carousel_track};
 pub use chrome::{
     FilterTabs, ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
 };
@@ -34,7 +37,21 @@ pub use typeface::{
     Title, TitleLevel, TypeMetrics, page_inset, ui_font,
 };
 
+use gpui::{Div, Stateful};
 use serde::{Deserialize, Serialize};
+
+/// The element type returned by the crate's interactive builders.
+///
+/// With the `test-support` feature this is an observation wrapper that
+/// registers the node for UI queries; without it the builders return the plain
+/// `Stateful<Div>` unchanged. Callers therefore see one type in both builds, and
+/// release code keeps the exact element it always had.
+///
+/// Observation must stay at the *end* of a builder chain: `Observed` forwards
+/// `Styled`, `ParentElement` and `InteractiveElement`, so later calls still
+/// work, but its `PrepaintState` stops being `Option<Hitbox>` and a second
+/// `test_support()` becomes an identity call.
+pub type InteractiveDiv = gpui_kit::base::ObservedElement<Stateful<Div>>;
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,

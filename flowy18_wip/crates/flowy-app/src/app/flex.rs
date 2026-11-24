@@ -3,7 +3,8 @@ use crate::prefs::FlexProvider;
 use flowy_agent::{LlmConfig, Model};
 use flowy_ui as theme;
 use flowy_ui::text_input;
-use gpui::{Context, SharedString, div, prelude::*, px};
+use gpui::{Context, Hsla, SharedString, div, prelude::*, px};
+use gpui_kit::base::input::{InputAccessibility, InputEditorStyle};
 
 impl FlowyApp {
     pub(super) fn open_flex(&mut self, cx: &mut Context<'_, Self>) {
@@ -13,9 +14,27 @@ impl FlowyApp {
         self.flex.secret = self.prefs.flex_api_key.clone();
         self.flex.key_visible = false;
         let mask = "*".repeat(self.flex.secret.chars().count());
-        self.flex
-            .api_key
-            .update(cx, |state, cx| state.emplace(&mask, cx));
+        // The kit input paints its own glyphs, caret and semantics, so the
+        // dialog's inks and labels are projected onto the state before the
+        // field is rendered.
+        let ink = Hsla::from(self.theme.ink());
+        let muted = Hsla::from(self.theme.muted());
+        let label = SharedString::from(self.t("flex.api_key"));
+        let hint = SharedString::from(self.t("flex.api_key_placeholder"));
+        self.flex.api_key.update(cx, |state, _cx| {
+            state.set_editor_style(InputEditorStyle {
+                foreground: ink,
+                muted_foreground: muted,
+                caret: ink,
+                ..Default::default()
+            });
+            state.set_accessibility(
+                InputAccessibility::new(Some(gpui::Role::TextInput))
+                    .with_label(Some(label))
+                    .with_placeholder(Some(hint)),
+            );
+        });
+        self.set_input_text(&self.flex.api_key, mask, cx);
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
             cx.notify();
@@ -89,22 +108,21 @@ impl FlowyApp {
             .items_center()
             .gap_3()
             .child(
-                theme::IconButton::new(
-                    "flex-close",
-                    self.t("ui.close"),
-                    theme::icons::x(),
-                )
-                .variant(theme::ControlVariant::Ghost)
-                .size(theme::ControlSize::Small)
-                .render(
-                    &self.theme,
-                    cx.listener(|app, _event, _window, cx| {
-                        app.close_flex(cx);
-                    }),
-                )
-                .absolute()
-                .top_0()
-                .right_0(),
+                div().absolute().top_0().right_0().child(
+                    theme::IconButton::new(
+                        "flex-close",
+                        self.t("ui.close"),
+                        theme::icons::x(),
+                    )
+                    .variant(theme::ControlVariant::Ghost)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.close_flex(cx);
+                        }),
+                    ),
+                ),
             )
             .child(
                 div()
@@ -272,6 +290,13 @@ impl FlowyApp {
         let hidden = !self.flex.key_visible;
         // Field holds real text when visible and `*` when hidden, so the caret
         // tracks the same glyphs the user sees (no overlay width mismatch).
+        // The kit fixes an input's placeholder at construction, so the
+        // empty-state hint is a sibling of the field.
+        let hint = if self.flex.secret.is_empty() {
+            Some(self.t("flex.api_key_placeholder"))
+        } else {
+            None
+        };
         div()
             .flex()
             .flex_col()
@@ -292,18 +317,24 @@ impl FlowyApp {
                     .items_center()
                     .gap_2()
                     .child(
-                        text_input("flex-api-key")
-                            .aria_label(self.t("flex.api_key"))
-                            .state(self.flex.api_key.downgrade())
-                            .placeholder(self.t("flex.api_key_placeholder"))
-                            .placeholder_color(self.theme.muted())
-                            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-                            .caret_blink_interval_500ms()
+                        div()
+                            .relative()
                             .flex_1()
                             .min_w_0()
-                            .min_h_auto()
-                            .whitespace_nowrap()
-                            .text_color(self.theme.ink()),
+                            .child(text_input(
+                                "flex-api-key",
+                                &self.flex.api_key,
+                            ))
+                            .when_some(hint, |field, hint| {
+                                field.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .text_color(self.theme.muted())
+                                        .child(hint),
+                                )
+                            }),
                     )
                     .child(
                         theme::IconButton::new(
@@ -330,11 +361,11 @@ impl FlowyApp {
 
     pub(super) fn touch_flex_key(&mut self, cx: &mut Context<'_, Self>) {
         if self.flex.key_visible {
-            self.flex.secret = self.flex.api_key.read(cx).as_str().to_string();
+            self.flex.secret = self.flex.api_key.read(cx).value().to_string();
             cx.notify();
             return;
         }
-        let shown = self.flex.api_key.read(cx).as_str().to_string();
+        let shown = self.flex.api_key.read(cx).value().to_string();
         let mask = "*".repeat(self.flex.secret.chars().count());
         if shown == mask {
             return;
@@ -342,9 +373,7 @@ impl FlowyApp {
         Self::apply_masked_edit(&mut self.flex.secret, &shown);
         let next = "*".repeat(self.flex.secret.chars().count());
         if shown != next {
-            self.flex
-                .api_key
-                .update(cx, |state, cx| state.emplace(&next, cx));
+            self.set_input_text(&self.flex.api_key, next, cx);
         }
         cx.notify();
     }
@@ -377,17 +406,13 @@ impl FlowyApp {
 
     fn toggle_flex_key_visible(&mut self, cx: &mut Context<'_, Self>) {
         if self.flex.key_visible {
-            self.flex.secret = self.flex.api_key.read(cx).as_str().to_string();
+            self.flex.secret = self.flex.api_key.read(cx).value().to_string();
             let mask = "*".repeat(self.flex.secret.chars().count());
-            self.flex
-                .api_key
-                .update(cx, |state, cx| state.emplace(&mask, cx));
+            self.set_input_text(&self.flex.api_key, mask, cx);
             self.flex.key_visible = false;
         } else {
             let secret = self.flex.secret.clone();
-            self.flex
-                .api_key
-                .update(cx, |state, cx| state.emplace(&secret, cx));
+            self.set_input_text(&self.flex.api_key, secret, cx);
             self.flex.key_visible = true;
         }
         cx.notify();
@@ -399,28 +424,30 @@ impl FlowyApp {
             .flex()
             .gap_3()
             .child(
-                theme::Button::new("flex-cancel", self.t("flex.cancel"))
-                    .variant(theme::ControlVariant::Secondary)
-                    .size(theme::ControlSize::Large)
-                    .render(
-                        &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
-                            app.close_flex(cx);
-                        }),
-                    )
-                    .flex_1(),
+                div().flex_1().child(
+                    theme::Button::new("flex-cancel", self.t("flex.cancel"))
+                        .variant(theme::ControlVariant::Secondary)
+                        .size(theme::ControlSize::Large)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.close_flex(cx);
+                            }),
+                        ),
+                ),
             )
             .child(
-                theme::Button::new("flex-connect", self.t("flex.connect"))
-                    .variant(theme::ControlVariant::Primary)
-                    .size(theme::ControlSize::Large)
-                    .render(
-                        &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
-                            app.connect_flex(cx);
-                        }),
-                    )
-                    .flex_1(),
+                div().flex_1().child(
+                    theme::Button::new("flex-connect", self.t("flex.connect"))
+                        .variant(theme::ControlVariant::Primary)
+                        .size(theme::ControlSize::Large)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.connect_flex(cx);
+                            }),
+                        ),
+                ),
             )
     }
 
@@ -430,7 +457,7 @@ impl FlowyApp {
             return;
         };
         if self.flex.key_visible {
-            self.flex.secret = self.flex.api_key.read(cx).as_str().to_string();
+            self.flex.secret = self.flex.api_key.read(cx).value().to_string();
         }
         let api_key = self.flex.secret.trim().to_string();
         if api_key.is_empty() {

@@ -328,10 +328,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let root = test_root();
-        let app = cx.update(|cx| {
-            cx.new(|cx| {
-                FlowyApp::new(SessionStore::new(root.clone()), false, cx)
-            })
+        let (app, _cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
         });
         // Hold the service completion across UI turns, as a background delete
         // that has not yet answered would do. Production completion uses the

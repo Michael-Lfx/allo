@@ -5,8 +5,8 @@
 
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, Image, ImageFormat, Img,
-    InspectorElementId, InteractiveElement, Interactivity, IntoElement,
-    LayoutId, Pixels, StyleRefinement, Styled, Svg, Window, img, px, svg,
+    InspectorElementId, InteractiveElement, Interactivity, LayoutId, Pixels,
+    StyleRefinement, Styled, Svg, Window, img, px, svg,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -22,13 +22,6 @@ pub struct Icon {
 impl std::fmt::Debug for Icon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Icon").finish_non_exhaustive()
-    }
-}
-
-impl IntoElement for Icon {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
     }
 }
 

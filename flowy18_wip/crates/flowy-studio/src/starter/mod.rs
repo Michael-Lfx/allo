@@ -7,14 +7,12 @@
 
 pub(crate) mod catalog;
 
-
-
 use crate::panel::StudioPanel;
 use catalog::{Category, Starter};
 use flowy_ui as theme;
 use gpui::{
-    Animation, AnimationExt, Context, IntoElement, ObjectFit, SharedString,
-    Window, div, prelude::*, px,
+    Animation, AnimationExt, AnyElement, Context, IntoElement, ObjectFit,
+    SharedString, Window, div, prelude::*, px,
 };
 
 /// Width of the whole stage, shared by the slogan, the chips and the cards.
@@ -35,43 +33,44 @@ impl StudioPanel {
         let gap = self.theme.space(12.);
         let category = self.starter_category();
         let title = self.t("home.title");
-        // One row, never wrapping: the row keeps its natural width and the host
-        // above scrolls, so a narrow window shows fewer cards instead of
-        // stacking them.
-        let mut row = div().flex().gap(gap).flex_none();
+        // Cards are collected rather than assembled: `flowy_ui::carousel_track`
+        // owns the rail so every carousel in the app shares one implementation.
+        let mut items: Vec<AnyElement> =
+            Vec::with_capacity(category.examples().len());
         for (index, starter) in category.examples().iter().enumerate() {
-            row = row.child(self.example_card(
-                starter,
-                index as u64,
-                category,
-                cx,
-            ));
+            items.push(
+                self.example_card(starter, index as u64, category, cx)
+                    .into_any_element(),
+            );
         }
-        // One row, never wrapping. The offset is owned by the panel rather than
-        // a `ScrollHandle`: GPUI leaves `max_offset` at zero until the node has
-        // been laid out, and `set_offset` then clamps every press back to zero.
-        let total =
-            category.examples().len() as f32 * (CARD_W + 12.) - 12.;
-        let max_scroll = (total - STAGE_W).max(0.);
-        let offset = self.starter_offset.clamp(-max_scroll, 0.);
-        let strip = div()
-            .id("home-starters-row")
-            .w_full()
-            .overflow_hidden()
-            .child(row.relative().left(px(offset)));
-        let show_prev = offset < -0.5;
-        let show_next = offset > -max_scroll + 0.5;
+        // One row, never wrapping. Geometry and paging live in `flowy-ui` so
+        // every carousel in the app clamps identically.
+        //
+        // `stage_w` is the design ceiling, not a measured width: GPUI's
+        // `viewport_size` keeps reporting the launch size after a resize, so a
+        // window narrower than the stage scrolls less far than it could. Paging
+        // stays predictable, it just cannot use the tail of a narrow window.
+        let geometry = flowy_ui::CarouselGeometry {
+            item_w: CARD_W,
+            gap: 12.,
+            count: category.examples().len(),
+        };
+        let stage_w = STAGE_W;
+        let paging = geometry.needs_paging(stage_w);
+        let total = geometry.total_width();
+        let state = self.starter_carousel;
+        let strip = flowy_ui::carousel_track(&state, gap, items);
         let mut rail = div()
             .w_full()
             .flex()
             .items_center()
             .gap(self.theme.space(8.));
-        if show_prev {
-            rail = rail.child(self.carousel_arrow(-1, max_scroll, cx));
+        if paging && state.can_prev() {
+            rail = rail.child(self.carousel_arrow(-1, geometry, stage_w, cx));
         }
         rail = rail.child(div().flex_1().min_w_0().child(strip));
-        if show_next {
-            rail = rail.child(self.carousel_arrow(1, max_scroll, cx));
+        if paging && state.can_next(total, stage_w) {
+            rail = rail.child(self.carousel_arrow(1, geometry, stage_w, cx));
         }
         div()
             .id("home-starters")
@@ -103,7 +102,8 @@ impl StudioPanel {
     fn carousel_arrow(
         &self,
         direction: i32,
-        max_scroll: f32,
+        geometry: flowy_ui::CarouselGeometry,
+        stage_w: f32,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let icon = if direction < 0 {
@@ -128,11 +128,16 @@ impl StudioPanel {
         .cursor_pointer()
         .child(icon)
         .on_click(cx.listener(move |panel, _, _, cx| {
-            // Offset grows negative when moving right; clamp against the known
-            // content width so the row never scrolls past its own end.
-            let step = if direction < 0 { 660. } else { -660. };
-            panel.starter_offset =
-                (panel.starter_offset + step).clamp(-max_scroll, 0.);
+            // Clamping, page size and end detection all live in `CarouselState`.
+            if direction < 0 {
+                panel.starter_carousel.prev(geometry.page_width(stage_w));
+            } else {
+                panel.starter_carousel.next(
+                    geometry.page_width(stage_w),
+                    geometry.total_width(),
+                    stage_w,
+                );
+            }
             cx.notify();
         }))
     }
@@ -200,11 +205,7 @@ impl StudioPanel {
         let height = CARD_H;
         // Cards arrive one after another: each holds its curve slightly longer
         // than the previous one, so the row reads as a sequence.
-        let delay = crate::motion::stagger(
-            index,
-            24,
-            crate::motion::MODERATE,
-        );
+        let delay = crate::motion::stagger(index, 24, crate::motion::MODERATE);
         theme::interactive(
             ("home-starter-example", index),
             SharedString::from(title.clone()),
@@ -271,7 +272,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn test_panel(
-        cx: &TestAppContext,
+        cx: &mut TestAppContext,
         name: &str,
     ) -> (Entity<StudioPanel>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -283,31 +284,30 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let panel = cx.update(|cx| {
+        let (panel, _) = cx.add_window_view(|window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            cx.new(|cx| {
-                StudioPanel::new(
-                    StudioConfig {
-                        product: "Flowy",
-                        i18n: I18n::embedded("Flowy"),
-                        model: Model::Lite,
-                        plan: Plan::Free,
-                        model_info_version: String::new(),
-                        model_info_open: false,
-                        store_root: root.clone(),
-                        llm: LlmConfig {
-                            api_key: None,
-                            base_url: String::new(),
-                            model: String::new(),
-                            provider: String::new(),
-                            ..LlmConfig::default()
-                        },
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
                     },
-                    ui,
-                    cx,
-                )
-            })
+                },
+                ui,
+                window,
+                cx,
+            )
         });
         (panel, root)
     }
@@ -322,7 +322,7 @@ mod tests {
         cx.read_entity(&panel, |panel, cx| {
             // The click means "show me this prompt", so the draft is replaced
             // without asking.
-            assert_eq!(panel.prompt.read(cx).as_str(), "starter copy");
+            assert_eq!(panel.prompt.read(cx).value(), "starter copy");
         });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);

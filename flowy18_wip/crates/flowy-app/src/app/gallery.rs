@@ -1,8 +1,7 @@
 use super::FlowyApp;
 use flowy_ui as theme;
 use gpui::{
-    ColorExt, Context, Pixels, SharedString, Size, Window, div, prelude::*, px,
-    rgb,
+    Context, Pixels, SharedString, Size, Window, div, prelude::*, px, rgb,
 };
 
 const PAGE: usize = 3;
@@ -286,7 +285,8 @@ fn gallery_arrow(
     cx: &Context<'_, FlowyApp>,
 ) -> impl IntoElement {
     let theme = &app.theme;
-    let mut button = theme::IconButton::new(
+    // `IconButton::render` is opaque, so the edge placement lives on this shell.
+    let button = theme::IconButton::new(
         id,
         app.t(if previous { "ui.previous" } else { "ui.next" }),
         if previous {
@@ -309,15 +309,13 @@ fn gallery_arrow(
             }
             cx.notify();
         }),
-    )
-    .absolute()
-    .top(px(58.));
-    button = if previous {
-        button.left(px(8.))
-    } else {
-        button.right(px(8.))
-    };
-    button
+    );
+    div()
+        .absolute()
+        .top(px(58.))
+        .when(previous, |shell| shell.left(px(8.)))
+        .when(!previous, |shell| shell.right(px(8.)))
+        .child(button)
 }
 
 impl FlowyApp {

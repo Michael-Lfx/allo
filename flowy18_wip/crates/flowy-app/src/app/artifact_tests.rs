@@ -103,22 +103,21 @@ impl Drop for Fixture {
 }
 
 fn app_with_loaded_artifact(
-    cx: &TestAppContext,
+    cx: &mut TestAppContext,
     fixture: &Fixture,
 ) -> Entity<FlowyApp> {
-    let app = cx.update(|cx| {
-        cx.new(|cx| {
-            let mut app = FlowyApp::new(
-                SessionStore::new(fixture.root.clone()),
-                false,
-                cx,
-            );
-            app.screen = Screen::Main;
-            app.section = Section::Library;
-            app.active_dialog = ActiveDialog::None;
-            app.ota.checked = true;
-            app
-        })
+    let (app, _cx) = cx.add_window_view(|window, cx| {
+        let mut app = FlowyApp::new(
+            SessionStore::new(fixture.root.clone()),
+            false,
+            window,
+            cx,
+        );
+        app.screen = Screen::Main;
+        app.section = Section::Library;
+        app.active_dialog = ActiveDialog::None;
+        app.ota.checked = true;
+        app
     });
     // FlowyApp owns the asynchronous library query; no test-only row is
     // injected into LibraryPanel or the conversation projection.

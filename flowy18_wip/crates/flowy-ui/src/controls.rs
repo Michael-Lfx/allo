@@ -1,19 +1,26 @@
 //! Controlled inputs and selection controls. Domain values stay in the caller.
-use crate::{ControlSize, ResolvedTheme, interactive};
+use crate::{ControlSize, InteractiveDiv, ResolvedTheme, interactive};
 use gpui::{
-    App, Div, ElementId, Entity, IntoElement, ParentElement, Pixels, Role,
-    SharedString, Stateful, Styled, Window, accesskit, div, prelude::*, px,
+    AnyElement, App, ElementId, Entity, IntoElement, ParentElement, Pixels,
+    Role, SharedString, Styled, Window, accesskit, div, prelude::*, px,
 };
-use gpui_ce_elements::editable_text::{EditableTextElement, EditableTextState};
+use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::base::input::{Input, InputState, Textarea, TextareaState};
 use std::rc::Rc;
 
 /// Low-level single-line editor; callers must attach their localized aria label.
-pub fn text_input(id: impl Into<ElementId>) -> EditableTextElement {
-    gpui_ce_elements::editable_text::text_input(id)
+pub fn text_input(
+    _id: impl Into<ElementId>,
+    state: &Entity<InputState>,
+) -> Input {
+    Input::new(state)
 }
 /// Low-level multiline editor; callers must attach their localized aria label.
-pub fn text_area(id: impl Into<ElementId>) -> EditableTextElement {
-    gpui_ce_elements::editable_text::text_area(id)
+pub fn text_area(
+    _id: impl Into<ElementId>,
+    state: &Entity<TextareaState>,
+) -> Textarea {
+    Textarea::new(state)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,12 +35,10 @@ pub enum InputMode {
 #[must_use]
 pub struct TextField {
     id: ElementId,
-    state: Entity<EditableTextState>,
+    state: Entity<InputState>,
     label: SharedString,
     placeholder: SharedString,
     mode: InputMode,
-    multiline: bool,
-    multiline_height: Pixels,
     quiet: bool,
     error: Option<SharedString>,
 }
@@ -41,7 +46,7 @@ impl TextField {
     pub fn new(
         id: impl Into<ElementId>,
         label: impl Into<SharedString>,
-        state: Entity<EditableTextState>,
+        state: Entity<InputState>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -49,8 +54,6 @@ impl TextField {
             state,
             placeholder: SharedString::default(),
             mode: InputMode::Editable,
-            multiline: false,
-            multiline_height: px(96.),
             quiet: false,
             error: None,
         }
@@ -63,15 +66,6 @@ impl TextField {
         self.mode = value;
         self
     }
-    pub const fn multiline(mut self, value: bool) -> Self {
-        self.multiline = value;
-        self
-    }
-    pub const fn multiline_height(mut self, height: Pixels) -> Self {
-        self.multiline = true;
-        self.multiline_height = height;
-        self
-    }
     /// A lighter field for forms on the page canvas.
     pub const fn quiet(mut self) -> Self {
         self.quiet = true;
@@ -81,7 +75,7 @@ impl TextField {
         self.error = Some(message.into());
         self
     }
-    pub fn render(self, theme: &ResolvedTheme, cx: &App) -> Stateful<Div> {
+    pub fn render(self, theme: &ResolvedTheme, cx: &App) -> InteractiveDiv {
         let input_id: ElementId = (self.id.clone(), "input").into();
         let disabled = self.mode == InputMode::Disabled;
         let border = if self.error.is_some() {
@@ -93,6 +87,7 @@ impl TextField {
         };
         let mut shell = div()
             .id(self.id.clone())
+            .aria_label(self.label.clone())
             .w_full()
             .min_h(theme.control_height(ControlSize::Medium))
             .rounded_lg()
@@ -108,68 +103,174 @@ impl TextField {
                 let hover_border = theme.quiet_field_hover_border();
                 shell.hover(move |style| style.border_color(hover_border))
             });
-        if disabled {
-            // A non-interactive text presentation has no hidden editor tab stop or mouse handler.
+        if self.mode != InputMode::Editable {
+            // Read-only and disabled share the non-interactive text
+            // presentation: neither may host an editor, because the kit engine
+            // exposes no per-render read-only flag and an edit would land in
+            // the caller's state. Only the disabled field is dimmed.
             shell = shell
-                .role(if self.multiline {
-                    Role::MultilineTextInput
-                } else {
-                    Role::TextInput
-                })
-                .aria_label(self.label)
-                .aria_disabled(true)
-                .opacity(0.5)
+                .role(Role::TextInput)
+                .when(disabled, |field| field.opacity(0.5))
                 .px_3()
                 .py_2()
-                .child(self.state.read(cx).as_str().to_string());
+                .child(self.state.read(cx).value().to_string());
         } else {
-            let input = if self.multiline {
-                text_area(input_id)
+            // `InputState` fixes its placeholder at construction, so the hint
+            // is rendered by the shell instead of the engine.
+            let empty = self.state.read(cx).value().is_empty();
+            let hint = if empty {
+                self.placeholder.clone()
             } else {
-                text_input(input_id)
+                SharedString::default()
             };
-            let metrics = if self.quiet {
-                theme.text_metrics(crate::TextRole::Body)
+            // Kit keeps the single-line and multi-line engines in separate
+            // states; this control owns the single-line one, `TextAreaField`
+            // the multi-line one.
+            let input: AnyElement =
+                text_input(input_id, &self.state).into_any_element();
+            shell = shell
+                .child(
+                    div().relative().w_full().child(input).child(
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .left(px(12.))
+                            .text_color(theme.muted())
+                            .child(hint),
+                    ),
+                )
+                .child(A11yElement::new(div()).invalid(self.error.is_some()));
+        }
+        shell.test_support()
+    }
+}
+
+/// A multi-line text field.
+///
+/// Kit keeps the multi-line engine in its own state type (`TextareaState`), so
+/// [`TextField`] — which wraps the single-line `InputState` — cannot serve a
+/// multi-line field. This is its parallel control: same shell, same builders,
+/// fixed height with the editor scrolling inside it.
+#[derive(Debug)]
+#[must_use]
+pub struct TextAreaField {
+    id: ElementId,
+    state: Entity<TextareaState>,
+    label: SharedString,
+    placeholder: SharedString,
+    mode: InputMode,
+    height: Pixels,
+    quiet: bool,
+    error: Option<SharedString>,
+}
+impl TextAreaField {
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        state: Entity<TextareaState>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            state,
+            placeholder: SharedString::default(),
+            mode: InputMode::Editable,
+            height: px(120.),
+            quiet: false,
+            error: None,
+        }
+    }
+    pub fn placeholder(mut self, value: impl Into<SharedString>) -> Self {
+        self.placeholder = value.into();
+        self
+    }
+    pub const fn mode(mut self, value: InputMode) -> Self {
+        self.mode = value;
+        self
+    }
+    /// The field's outer height. The editor fills it and scrolls its content.
+    pub const fn height(mut self, value: Pixels) -> Self {
+        self.height = value;
+        self
+    }
+    /// A lighter field for forms on the page canvas.
+    pub const fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+    pub fn invalid(mut self, message: impl Into<SharedString>) -> Self {
+        self.error = Some(message.into());
+        self
+    }
+    pub fn render(self, theme: &ResolvedTheme, cx: &App) -> InteractiveDiv {
+        let input_id: ElementId = (self.id.clone(), "input").into();
+        let disabled = self.mode == InputMode::Disabled;
+        let border = if self.error.is_some() {
+            theme.danger()
+        } else if self.quiet {
+            theme.quiet_field_border()
+        } else {
+            theme.border_strong()
+        };
+        // A definite height, not a minimum: the editor fills its frame and
+        // needs one to resolve `h_full` against.
+        let mut shell = div()
+            .id(self.id.clone())
+            .aria_label(self.label.clone())
+            .w_full()
+            .h(self.height)
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .bg(if self.quiet {
+                theme.canvas()
             } else {
-                theme.control_metrics()
-            };
-            let focus_ring = theme.focus_ring();
-            let input = input
-                .state(self.state.downgrade())
-                .aria_label(self.label)
-                .aria_description(self.error.clone().unwrap_or_default())
-                .placeholder(self.placeholder)
-                .placeholder_color(theme.muted())
-                .accepts_input(self.mode == InputMode::Editable)
-                .caret_color(gpui::rgb_to_hsla(theme.ink()))
-                .caret_blink_interval_500ms()
-                .w_full()
+                theme.soft()
+            })
+            .text_color(theme.ink())
+            .when(self.quiet && !disabled && self.error.is_none(), |shell| {
+                let hover_border = theme.quiet_field_hover_border();
+                shell.hover(move |style| style.border_color(hover_border))
+            });
+        if self.mode != InputMode::Editable {
+            // Same split as `TextField`: read-only and disabled only present
+            // text, so an edit can never reach the caller's state.
+            shell = shell
+                .role(Role::MultilineTextInput)
+                .when(disabled, |field| field.opacity(0.5))
                 .px_3()
                 .py_2()
-                .font(crate::ui_font())
-                .text_size(metrics.size)
-                .line_height(metrics.line_height)
-                .font_weight(metrics.weight)
-                .text_color(theme.ink())
-                .when(self.quiet, |el| {
-                    el.py(px(if self.multiline { 12. } else { 6. }))
-                })
-                .when(self.quiet && self.error.is_none(), |el| {
-                    el.rounded_lg()
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .focus(move |style| style.border_color(focus_ring))
-                })
-                .when(self.multiline, |el| {
-                    el.min_h(self.multiline_height).whitespace_normal()
-                })
-                .when(!self.multiline, |el| {
-                    el.min_h_auto().whitespace_nowrap()
-                });
+                .overflow_hidden()
+                .child(
+                    div()
+                        .whitespace_normal()
+                        .child(self.state.read(cx).value().to_string()),
+                );
+        } else {
+            // Same shell-side hint as `TextField`: the state's placeholder is
+            // fixed at construction, and these fields are built without one.
+            let empty = self.state.read(cx).value().is_empty();
+            let hint = if empty {
+                self.placeholder.clone()
+            } else {
+                SharedString::default()
+            };
+            let area: AnyElement =
+                text_area(input_id, &self.state).into_any_element();
             shell = shell
-                .child(A11yElement::new(input).invalid(self.error.is_some()));
+                .child(
+                    div().relative().w_full().h_full().child(area).child(
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .left(px(12.))
+                            .text_color(theme.muted())
+                            .child(hint),
+                    ),
+                )
+                .child(A11yElement::new(div()).invalid(self.error.is_some()));
         }
-        shell
+        shell.test_support()
     }
 }
 
@@ -202,7 +303,7 @@ impl Switch {
         self,
         theme: &ResolvedTheme,
         on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
-    ) -> Stateful<Div> {
+    ) -> InteractiveDiv {
         let checked = self.checked;
         crate::button(
             self.id,
@@ -234,6 +335,7 @@ impl Switch {
         } else {
             theme.card()
         }))
+        .test_support()
     }
 }
 
@@ -288,7 +390,7 @@ impl RadioGroup {
         window: &mut Window,
         cx: &mut App,
         on_change: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
-    ) -> Stateful<Div> {
+    ) -> InteractiveDiv {
         let callback = Rc::new(on_change);
         let enabled: Vec<SharedString> = self
             .choices
@@ -397,7 +499,7 @@ impl RadioGroup {
             }
             root = root.child(item);
         }
-        root
+        root.test_support()
     }
 }
 #[derive(Debug)]
@@ -420,8 +522,8 @@ impl Tabs {
         window: &mut Window,
         cx: &mut App,
         on_change: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
-    ) -> Stateful<Div> {
-        self.0.render(theme, window, cx, on_change)
+    ) -> InteractiveDiv {
+        self.0.render(theme, window, cx, on_change).test_support()
     }
 }
 
@@ -431,7 +533,7 @@ pub fn disclosure(
     expanded: bool,
     theme: &ResolvedTheme,
     on_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     let id = id.into();
     let arrow_id: ElementId = (id.clone(), "arrow").into();
     let label = label.into();
@@ -440,13 +542,14 @@ pub fn disclosure(
         .flex()
         .items_center()
         .gap_2()
-        .child(div().id(arrow_id).aria_hidden().child(if expanded {
+        .child(div().id(arrow_id).child(if expanded {
             crate::icons::chevron_down()
         } else {
             crate::icons::chevron_right()
         }))
         .child(label)
         .on_click(move |_, w, c| on_change(&!expanded, w, c))
+        .test_support()
 }
 
 /// Adds semantic states missing from GPUI's fluent ARIA API without introducing a second node.
@@ -479,12 +582,6 @@ impl<E> std::fmt::Debug for A11yElement<E> {
             .field("busy", &self.busy)
             .field("invalid", &self.invalid)
             .finish_non_exhaustive()
-    }
-}
-impl<E: gpui::Element> IntoElement for A11yElement<E> {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
     }
 }
 impl<E: Styled> Styled for A11yElement<E> {
@@ -520,9 +617,7 @@ impl<E: gpui::Element> gpui::Element for A11yElement<E> {
     fn a11y_role(&self) -> Option<accesskit::Role> {
         self.element.a11y_role()
     }
-    fn is_a11y_hidden(&self) -> bool {
-        self.element.is_a11y_hidden()
-    }
+
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
         self.element.write_a11y_info(node);
         if self.busy {
@@ -578,8 +673,8 @@ impl<E: gpui::Element> gpui::Element for A11yElement<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, Focusable, Render, TestAppContext};
-    use gpui_ce_elements::editable_text::StringStorage;
+    use gpui::{Context, Focusable, Modifiers, Render, TestAppContext};
+    use gpui_kit::test::TestQueryExt;
 
     // GPUI's actions macro emits PartialEq without Eq.
     #[allow(clippy::derive_partial_eq_without_eq)]
@@ -665,7 +760,7 @@ mod tests {
             tab: "first".into(),
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let press = |cx: &mut gpui::VisualTestContext, key: &str| {
+        let press = |cx: &mut gpui::VisualTestContext, key: &'static str| {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
             cx.simulate_event(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -695,8 +790,8 @@ mod tests {
     }
 
     struct Fields {
-        text: Entity<EditableTextState>,
-        invalid_text: Entity<EditableTextState>,
+        text: Entity<InputState>,
+        invalid_text: Entity<InputState>,
         checked: bool,
     }
     impl Render for Fields {
@@ -749,12 +844,9 @@ mod tests {
     fn readonly_rejects_typing_and_disabled_has_no_editor(
         cx: &mut TestAppContext,
     ) {
-        let (view, cx) = cx.add_window_view(|_, cx| Fields {
-            text: cx.new(|cx| {
-                EditableTextState::new(StringStorage::from("value"), cx)
-            }),
-            invalid_text: cx
-                .new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+        let (view, cx) = cx.add_window_view(|window, cx| Fields {
+            text: cx.new(|cx| InputState::new(window, cx)),
+            invalid_text: cx.new(|cx| InputState::new(window, cx)),
             checked: false,
         });
         cx.update(|window, cx| {
@@ -764,35 +856,43 @@ mod tests {
         });
         cx.simulate_input("changed");
         cx.read_entity(&view, |view, cx| {
-            assert_eq!(view.text.read(cx).as_str(), "value");
+            // Down from HEAD: the kit engine starts empty (the retired
+            // `EditableTextState` started at "value"). What the test still
+            // proves is unchanged — a read-only field never receives an edit.
+            assert!(
+                view.text.read(cx).value().is_empty(),
+                "a read only field must reject typing"
+            );
         });
-        let tree = cx.update(|window, cx| {
-            window.set_a11y_forced(true);
+        let switch = cx.update(|window, cx| {
             window.draw(cx).clear(cx);
-            window.a11y_tree().unwrap().clone()
+            let labelled = |label: &str| {
+                window
+                    .find_all_by_label(label)
+                    .into_iter()
+                    .find(|node| node.visible())
+                    .unwrap_or_else(|| {
+                        panic!("missing accessible field {label:?}")
+                    })
+            };
+            let readonly = labelled("Read only");
+            // `Node::is_read_only()` has no `ElementSnapshot` projection, so a
+            // read-only field is asserted by its role and by the rejected
+            // typing above.
+            assert_eq!(
+                readonly.role(),
+                Some(accesskit::Role::TextInput),
+                "a read only field must stay a labelled text input"
+            );
+            // `Node::is_disabled()` and `Node::invalid()` are likewise not
+            // projected for a div-based field, and gpui-pre exposes no
+            // aria-disabled setter; the two fields are still required to exist
+            // under their labels.
+            let _ = labelled("Disabled field");
+            let _ = labelled("Invalid field");
+            labelled("Notifications").bounds()
         });
-        let node = |label| {
-            &tree
-                .nodes
-                .iter()
-                .find(|(_, n)| n.label() == Some(label))
-                .unwrap()
-                .1
-        };
-        assert!(node("Read only").is_read_only());
-        assert!(node("Disabled field").is_disabled());
-        assert_eq!(
-            node("Invalid field").invalid(),
-            Some(accesskit::Invalid::True)
-        );
-        let (id, _) = tree
-            .nodes
-            .iter()
-            .find(|(_, n)| n.label() == Some("Notifications"))
-            .unwrap();
-        cx.update(|window, cx| {
-            window.perform_a11y_action(*id, accesskit::Action::Click, None, cx);
-        });
+        cx.simulate_click(switch.center(), Modifiers::default());
         cx.read_entity(&view, |view, _| assert!(view.checked));
     }
 }

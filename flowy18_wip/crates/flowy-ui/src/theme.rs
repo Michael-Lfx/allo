@@ -1,6 +1,6 @@
 //! Window-scoped, immutable design tokens. A render never changes theme state.
 use crate::{Accent, Density};
-use gpui::{ColorExt, Context, Pixels, Rgba, Size, px, rgb, size};
+use gpui::{Context, Pixels, Rgba, Size, px, rgb, size};
 use serde::{Deserialize, Serialize};
 
 pub const DOCK_WIDTH: f32 = 248.0;
@@ -398,11 +398,8 @@ mod tests {
                 }
             }
             0.0722f32.mul_add(
-                linear(color.color.blue),
-                0.7152f32.mul_add(
-                    linear(color.color.green),
-                    0.2126 * linear(color.color.red),
-                ),
+                linear(color.b),
+                0.7152f32.mul_add(linear(color.g), 0.2126 * linear(color.r)),
             )
         }
         let (a, b) = (luminance(a), luminance(b));

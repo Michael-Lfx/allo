@@ -12,9 +12,7 @@ impl FlowyApp {
         self.project_create.deleting_project_id = None;
         self.project_create.title_key = "project.create_title";
         self.project_menu = None;
-        self.project_create
-            .name
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.set_input_text(&self.project_create.name, "", cx);
         self.activate_dialog(state::ActiveDialog::ProjectCreate, cx);
     }
 
@@ -39,9 +37,11 @@ impl FlowyApp {
         self.project_create.status = None;
         self.project_create.editing_project_id = Some(project.id);
         self.project_create.title_key = "project.edit_title";
-        self.project_create
-            .name
-            .update(cx, |state, cx| state.emplace(&project.name, cx));
+        self.set_input_text(
+            &self.project_create.name,
+            project.name.as_str(),
+            cx,
+        );
         self.project_menu = None;
         self.activate_dialog(state::ActiveDialog::ProjectCreate, cx);
     }
@@ -69,9 +69,7 @@ impl FlowyApp {
         self.project_create.title_key = "project.copy_title";
         let copy_name =
             format!("{} {}", project.name, self.t("project.copy_suffix"));
-        self.project_create
-            .name
-            .update(cx, |state, cx| state.emplace(&copy_name, cx));
+        self.set_input_text(&self.project_create.name, copy_name.as_str(), cx);
         self.project_menu = None;
         self.activate_dialog(state::ActiveDialog::ProjectCreate, cx);
     }
@@ -226,7 +224,7 @@ impl FlowyApp {
     }
 
     fn submit_project_create(&mut self, cx: &mut Context<'_, Self>) {
-        let name = self.project_create.name.read(cx).as_str().trim().to_owned();
+        let name = self.project_create.name.read(cx).value().trim().to_owned();
         let Some(folder) = self.project_create.folder.clone() else {
             self.project_create.status = Some("project.invalid_folder");
             cx.notify();
@@ -295,7 +293,10 @@ impl FlowyApp {
         window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let name = self.project_create.name.read(cx).as_str().trim();
+        // Own the text first: `value()` returns a temporary the borrow cannot
+        // outlive.
+        let name = self.project_create.name.read(cx).value();
+        let name = name.trim();
         let can_create =
             !name.is_empty() && self.project_create.folder.is_some();
         let folder = self.project_create.folder.as_ref();
@@ -392,7 +393,8 @@ impl FlowyApp {
             div()
                 .id("project-create-error")
                 .role(gpui::Role::Alert)
-                .aria_live(gpui::accesskit::Live::Assertive)
+                // gpui-pre has no `aria_live`; the role still announces the
+                // alert when the accessibility tree updates.
                 .text_size(self.theme.caption_size())
                 .text_color(self.theme.danger())
                 .whitespace_normal()
@@ -405,47 +407,57 @@ impl FlowyApp {
                 .flex()
                 .gap_3()
                 .child(
-                    theme::Button::new(
-                        "cancel-project-create",
-                        self.t("more.cancel"),
-                    )
-                    .variant(theme::ControlVariant::Secondary)
-                    .full_width()
-                    .render(
-                        &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
-                            cx.stop_propagation();
-                            app.close_project_create(cx);
-                        }),
-                    )
-                    .min_h(px(34.))
-                    .border_1()
-                    .border_color(self.theme.line())
-                    .bg(self.theme.canvas()),
+                    // `Button::render` erases to `AnyElement`, which no longer
+                    // carries the styled surface, so the frame lives on a wrapper.
+                    div()
+                        .flex_1()
+                        .min_h(px(34.))
+                        .border_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.canvas())
+                        .child(
+                            theme::Button::new(
+                                "cancel-project-create",
+                                self.t("more.cancel"),
+                            )
+                            .variant(theme::ControlVariant::Secondary)
+                            .full_width()
+                            .render(
+                                &self.theme,
+                                cx.listener(|app, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    app.close_project_create(cx);
+                                }),
+                            ),
+                        ),
                 )
                 .child(
-                    theme::Button::new(
-                        "submit-project-create",
-                        self.t(
-                            if self.project_create.editing_project_id.is_some()
-                            {
-                                "project.save"
-                            } else {
-                                "project.create"
-                            },
+                    div().flex_1().min_h(px(34.)).child(
+                        theme::Button::new(
+                            "submit-project-create",
+                            self.t(
+                                if self
+                                    .project_create
+                                    .editing_project_id
+                                    .is_some()
+                                {
+                                    "project.save"
+                                } else {
+                                    "project.create"
+                                },
+                            ),
+                        )
+                        .variant(theme::ControlVariant::Primary)
+                        .disabled(!can_create)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                cx.stop_propagation();
+                                app.submit_project_create(cx);
+                            }),
                         ),
-                    )
-                    .variant(theme::ControlVariant::Primary)
-                    .disabled(!can_create)
-                    .full_width()
-                    .render(
-                        &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
-                            cx.stop_propagation();
-                            app.submit_project_create(cx);
-                        }),
-                    )
-                    .min_h(px(34.)),
+                    ),
                 ),
         )
     }
@@ -808,7 +820,7 @@ pub(super) fn project_menu_width(
             };
             window
                 .text_system()
-                .layout_line(*label, font_size, &[run])
+                .layout_line(*label, font_size, &[run], None)
                 .width
         })
         .max()

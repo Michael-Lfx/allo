@@ -349,7 +349,7 @@ impl FlowyApp {
     }
 
     fn skills_grid(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let query = self.skills.query.read(cx).as_str().trim().to_lowercase();
+        let query = self.skills.query.read(cx).value().trim().to_lowercase();
         let filtered: Vec<&'static Skill> = SKILLS
             .iter()
             .filter(|skill| self.skills.filter.matches(skill.categories))

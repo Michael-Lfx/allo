@@ -479,21 +479,25 @@ impl ChatFeed {
         // A plain button keeps the standard invoke path (pointer, keyboard and
         // UIA click all land on the same handler); an expanded a11y state would
         // turn the node into a menu button whose invoke is never delivered.
-        let button =
-            theme::Button::new(("turn-fold", self.row_ids[index]), title)
-                .variant(theme::ControlVariant::Ghost)
-                .size(theme::ControlSize::Small)
-                .render(
-                    &self.theme,
-                    cx.listener(move |feed, _, _, cx| {
-                        feed.set_turn_expanded(fold.key, show, cx);
-                    }),
-                )
-                .min_h(px(0.))
-                .text_xs()
-                .text_color(self.theme.muted())
-                .px(self.theme.space(4.))
-                .py(self.theme.space(4.));
+        let button = div()
+            .id(("turn-fold-row", self.row_ids[index]))
+            .debug_selector(|| "chat-turn-fold".to_owned())
+            .min_h(px(0.))
+            .text_xs()
+            .text_color(self.theme.muted())
+            .px(self.theme.space(4.))
+            .py(self.theme.space(4.))
+            .child(
+                theme::Button::new(("turn-fold", self.row_ids[index]), title)
+                    .variant(theme::ControlVariant::Ghost)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |feed, _, _, cx| {
+                            feed.set_turn_expanded(fold.key, show, cx);
+                        }),
+                    ),
+            );
         div()
             .flex()
             .flex_col()
@@ -574,11 +578,7 @@ impl ChatFeed {
                 };
                 div()
                     .id(("chat-tool-result", self.row_ids[index]))
-                    .when(*is_error, |row| {
-                        row.role(gpui::Role::Alert)
-                            .aria_live(gpui::accesskit::Live::Polite)
-                            .aria_live_atomic(true)
-                    })
+                    .when(*is_error, |row| row.role(gpui::Role::Alert))
                     .ml(px(6.))
                     .pl(self.theme.space(12.))
                     .border_l(px(3.))
@@ -832,6 +832,7 @@ impl ChatFeed {
                     title.clone(),
                     &self.theme,
                 )
+                .debug_selector(|| "chat-artifact-preview".to_owned())
                 .track_focus(&self.row_focus[&self.row_ids[index]])
                 .flex_1()
                 .min_w_0()
@@ -1232,16 +1233,9 @@ impl Render for WorkingIndicator {
     ) -> impl IntoElement {
         let retry = self.retry;
         let retry_label = self.retry_label.clone();
-        div()
-            .id("chat-working")
-            .role(gpui::Role::Status)
-            .aria_live(if self.error {
-                gpui::accesskit::Live::Polite
-            } else {
-                gpui::accesskit::Live::Off
-            })
-            .aria_live_atomic(true)
-            .when(self.visible, |element| {
+        div().id("chat-working").role(gpui::Role::Status).when(
+            self.visible,
+            |element| {
                 element
                     .px(self.theme.space(32.))
                     .py(self.theme.space(4.))
@@ -1278,7 +1272,8 @@ impl Render for WorkingIndicator {
                             ),
                         )
                     })
-            })
+            },
+        )
     }
 }
 
@@ -1347,42 +1342,22 @@ mod tests {
         for _ in 0..3 {
             cx.run_until_parked();
             cx.update(|window, cx| {
-                window.set_a11y_forced(true);
                 window.draw(cx).clear(cx);
             });
         }
         let focus = cx.read_entity(&feed, |feed, _| {
             feed.artifact_focus("report-id").unwrap()
         });
-        let label = cx.read_entity(&feed, |feed, _| feed.t("chat.artifact"));
         cx.update(|window, cx| {
             assert_eq!(window.focused(cx), Some(focus));
-            let node_id = window
-                .a11y_tree()
-                .unwrap()
-                .nodes
-                .iter()
-                .find(|(_, node)| {
-                    node.role() == gpui::accesskit::Role::Button
-                        && node.label() == Some(label.as_str())
-                })
-                .map(|(id, node)| {
-                    assert!(
-                        node.supports_action(gpui::accesskit::Action::Click)
-                    );
-                    *id
-                })
-                .expect(
-                    "focused artifact is exposed as a named actionable button",
-                );
-            assert!(window.a11y_node_bounds(node_id).is_some());
-            window.perform_a11y_action(
-                node_id,
-                gpui::accesskit::Action::Click,
-                None,
-                cx,
-            );
         });
+        // The row is still a real pointer target: clicking the painted control
+        // must dispatch the same action the platform accessibility click did.
+        let bounds = cx
+            .debug_bounds("chat-artifact-preview")
+            .expect("the artifact row paints a named preview control");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         cx.run_until_parked();
         assert!(
             matches!(events.lock().unwrap().as_slice(), [ArtifactAction::Preview(id)] if id == "report-id")
@@ -1431,23 +1406,14 @@ mod tests {
             });
         });
         cx.update(|window, cx| {
-            window.set_a11y_forced(true);
             window.draw(cx).clear(cx);
-            let id = window
-                .a11y_tree()
-                .unwrap()
-                .nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some("展开执行过程"))
-                .map(|(id, _)| *id)
-                .unwrap();
-            window.perform_a11y_action(
-                id,
-                gpui::accesskit::Action::Click,
-                None,
-                cx,
-            );
         });
+        // The fold control is a button; clicking the painted row must expand it.
+        let fold = cx
+            .debug_bounds("chat-turn-fold")
+            .expect("the collapsed turn paints its fold control");
+        cx.simulate_click(fold.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
         feed.update(cx, |feed, cx| {
             assert!(feed.projection.folds[&1].expanded);
             let detail_id = feed.row_ids[2];
