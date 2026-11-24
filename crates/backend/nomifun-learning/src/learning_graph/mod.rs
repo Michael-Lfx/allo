@@ -619,6 +619,17 @@ pub(crate) fn coach_system() -> String {
     text
 }
 
+/// growth 单轮批上限的机械单源（rs7 数量契约）：`min(缺口, 批容量红线)`——
+/// 缺口 = [`ready_target`] − ready（不小于 0），红线 [`MAX_BATCH_NODES`]
+/// 独立生效。教练提示词「新增节点 ≤ 缺口且至多 {MAX_BATCH_NODES}」条款与
+/// 块 4 的缺口读数都以此式为推导源（合法目标域 2-5 ≤ 红线 5，故缺口显示
+/// 与纯缺口式数值恒同）。
+pub(crate) fn growth_batch_cap(ready_count: usize) -> usize {
+    ready_target()
+        .saturating_sub(ready_count)
+        .min(MAX_BATCH_NODES)
+}
+
 /// Everything the coach needs, rendered once into the opening user message.
 /// 字段序不是渲染序——渲染按 g3 裁定的 9 块注意力序（见 [`CoachContext::render`]）。
 #[derive(Debug, Clone, Default)]
@@ -659,7 +670,7 @@ impl CoachContext {
     /// 结构参考材料 → 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
     /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
     pub(crate) fn render(&self) -> String {
-        let gap = ready_target().saturating_sub(self.ready_count);
+        let gap = growth_batch_cap(self.ready_count);
         let mut text = String::new();
         // 块 1：学习目标（+程度/基础声明附注）。
         text.push_str(&format!("【学习目标】\n{}\n", self.goal));
@@ -2753,8 +2764,16 @@ mod tests {
     /// 裁决三态（m6 定案阈值语义不动；未设 rs7 开关时水位 3）：就绪 ≥ 触发
     /// 水位 = BelowThreshold（水位以上，无需补批）；就绪 < 水位 = Due（面
     /// 不够，补一批）；开关合力 false = Disabled（恒，水位以下也不再补）。
+    /// `ready_trigger()` 读进程 env（rs7 单旋钮）——显式钉「未设」臂 +
+    /// `#[serial]` 互斥：并行测试写开关不污染本测试的水位读数（守卫 Drop
+    /// 恢复原值）。
     #[test]
+    #[serial_test::serial]
     fn auto_refill_verdict_three_states() {
+        let _guard = crate::switches::switch_env_guard(
+            crate::switches::READY_TARGET_SWITCH_ENV,
+            None,
+        );
         assert_eq!(
             auto_refill_verdict(ready_trigger(), true),
             AutoRefillVerdict::BelowThreshold
@@ -5959,6 +5978,15 @@ mod tests {
         let context = CoachContext { ready_count: 1, ..Default::default() };
         let rendered = context.render();
         assert!(rendered.contains("目标 3 个，缺口 2 个"), "{rendered}");
+        // 批上限直接断言（纯函数级，不再只靠 prompt 渲染间接覆盖）：
+        // 「growth 单轮批 ≤ target − ready」——target=3、ready=1 ⇒ 批上限
+        // = 2；ready=0 ⇒ 3；批容量红线独立生效（rs7 不碰批上限）。
+        assert_eq!(growth_batch_cap(1), 2, "target=3、ready=1 ⇒ 单轮批上限 = 缺口 2");
+        assert_eq!(growth_batch_cap(0), 3, "target=3、ready=0 ⇒ 批上限 3（红线 5 之内）");
+        assert!(
+            growth_batch_cap(0) <= MAX_BATCH_NODES,
+            "批上限永不超容量红线（{MAX_BATCH_NODES}）"
+        );
     }
 
     /// k06（learnhub a39d36a 深度本位修订）：档位自省以教学深度本身为准、

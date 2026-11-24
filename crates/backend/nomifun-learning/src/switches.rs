@@ -332,27 +332,46 @@ pub fn variant_v2_enabled_value(value: Option<&str>) -> bool {
 /// 注入——上游同款区分：自动触发的无界尾巴发生在用户不在场的后台，
 /// 可预测性比完成率重要。取值：未设 = 缺省 600；`0` = 关（预算不注入
 /// ——等效现行为，A/B 负优化时的回退档）；非法值（非数字/负数）回退
-/// 缺省。
+/// 缺省并 warn 一次留痕（与 rs7 就绪目标开关同律）。
 pub const AUTO_REFILL_BUDGET_SECS_ENV: &str = "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS";
 
 /// 预算缺省秒数（learnhub #257 同款 600 = 10 分钟墙钟）。
 pub const AUTO_REFILL_BUDGET_DEFAULT_SECS: u64 = 600;
 
+/// 非法取值的 warn 一次性留痕（进程级一次——逐次 warn 会在每次读数刷日
+/// 志；多份不同非法值只记首份，运维面足够定位。与
+/// [`warn_invalid_ready_target_once`] 同律同形）。
+fn warn_invalid_auto_refill_budget_secs_once(raw: &str) {
+    static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+    WARN_ONCE.call_once(|| {
+        tracing::warn!(
+            raw,
+            "NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS 非法（合法域：非负整数的秒数），回退缺省 600"
+        );
+    });
+}
+
 /// 预算秒数判定（取值注入面，纯函数——测试不触进程 env）：`None` = 关
-/// （预算不注入），`Some(secs)` = 预算窗口秒数。
+/// （预算不注入），`Some(secs)` = 预算窗口秒数；非法值回退缺省（留痕见
+/// [`warn_invalid_auto_refill_budget_secs_once`]）。
 pub fn auto_refill_budget_secs_value(value: Option<&str>) -> Option<u64> {
     match value {
         None => Some(AUTO_REFILL_BUDGET_DEFAULT_SECS),
         Some(raw) => match raw.trim().parse::<u64>() {
             Ok(0) => None,
             Ok(secs) => Some(secs),
-            // 非法值回退缺省（与「未设」同窗——配置坏了不静默改行为面）。
-            Err(_) => Some(AUTO_REFILL_BUDGET_DEFAULT_SECS),
+            // 非法值回退缺省（与「未设」同窗——返回值面不漂）并 warn 一次
+            // 留痕：坏配置可定位，不静默。
+            Err(_) => {
+                warn_invalid_auto_refill_budget_secs_once(raw);
+                Some(AUTO_REFILL_BUDGET_DEFAULT_SECS)
+            }
         },
     }
 }
 
-/// 自动补批墙钟预算秒数（未设 = 600；`0` = 关；非法值回退缺省）。
+/// 自动补批墙钟预算秒数（未设 = 600；`0` = 关；非法值回退缺省并 warn
+/// 一次留痕）。
 pub fn auto_refill_budget_secs() -> Option<u64> {
     auto_refill_budget_secs_value(std::env::var(AUTO_REFILL_BUDGET_SECS_ENV).ok().as_deref())
 }
