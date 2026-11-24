@@ -4987,7 +4987,7 @@ mod tests {
         let completer = ScriptedResults(std::sync::Mutex::new((
             vec![
                 Err(nomifun_common::AppError::Timeout(
-                    "json coach call exceeded 480s".into(),
+                    "json coach call exceeded 900s".into(),
                 )),
                 Ok("not json".to_owned()),
                 Ok(good),
@@ -5042,7 +5042,7 @@ mod tests {
             vec![
                 Ok("not json".to_owned()),
                 Err(nomifun_common::AppError::Timeout(
-                    "json coach call exceeded 480s".into(),
+                    "json coach call exceeded 900s".into(),
                 )),
                 Ok(good),
             ]

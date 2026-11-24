@@ -670,12 +670,12 @@ mod tests {
     #[test]
     fn transport_failure_carries_the_original_error() {
         let fail = AttemptFail::transport(AppError::Timeout(
-            "json coach call exceeded 480s".into(),
+            "json coach call exceeded 900s".into(),
         ));
         assert!(fail.is_transport());
         assert!(!fail.guard);
         assert!(fail.review_history.is_none());
-        assert_eq!(fail.report, "Request timeout: json coach call exceeded 480s");
+        assert_eq!(fail.report, "Request timeout: json coach call exceeded 900s");
         assert!(matches!(fail.transport, Some(AppError::Timeout(_))));
         assert!(!AttemptFail::generation("契约报告").is_transport());
     }

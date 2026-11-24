@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn transport_variants_are_split_from_rejected_ones() {
         for error in [
-            AppError::Timeout("json coach call exceeded 480s".into()),
+            AppError::Timeout("json coach call exceeded 900s".into()),
             AppError::BadGateway("LLM provider error: API error 502".into()),
             AppError::RateLimited,
             AppError::ProviderUnavailable("no provider".into()),
@@ -159,11 +159,11 @@ mod tests {
     #[test]
     fn transport_round_trips_the_original_error_unchanged() {
         let failure =
-            AttemptFailure::from_app_error(AppError::Timeout("json coach call exceeded 480s".into()));
-        assert_eq!(failure.reason(), "Request timeout: json coach call exceeded 480s");
+            AttemptFailure::from_app_error(AppError::Timeout("json coach call exceeded 900s".into()));
+        assert_eq!(failure.reason(), "Request timeout: json coach call exceeded 900s");
         assert!(matches!(
             failure.into_app_error(),
-            AppError::Timeout(message) if message.contains("480s")
+            AppError::Timeout(message) if message.contains("900s")
         ));
     }
 
