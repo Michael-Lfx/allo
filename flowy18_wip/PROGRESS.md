@@ -28,13 +28,21 @@
 
 | Crate | `cargo check` | `cargo check --tests` |
 | --- | --- | --- |
-| `flowy-ui` | 0 error | 有测试迁移遗留 |
-| `flowy-studio` | 0 error | 有测试迁移遗留 |
+| `flowy-ui` | 0 error | 0 error |
+| `flowy-studio` | 0 error | 0 error |
 | `flowy-shell` | 0 error | — |
-| `flowy-app` | 0 error | 有测试迁移遗留 |
+| `flowy-app` | 0 error | 0 error |
 | `flowy-desktop` | 0 error | — |
 
 `cargo check --workspace` exit 0，`cargo build -p flowy-desktop` 成功。
+
+### 验收记录（2026-11-24）
+
+- 迁移 PR #479 已合并；lint 欠债 PR #480 已合并（合并提交 `d0852b004`）。
+- CI `Flowy 1.8 UI` 的 Windows 作业第 9–15 步全绿：格式、flowy-ui / flowy-i18n /
+  flowy-studio / flowy-app 测试、desktop 编译、UI clippy。
+- 测试合计 **157 passed / 0 failed / 0 ignored**（ui 30 + 集成 2、i18n 8、studio 74、app 43）。
+  旧记录写的 155 漏掉了 `flowy-ui/tests/anchor_measurement.rs` 的 2 个用例。
 
 ## 迁移期功能取舍（技术债，需后续补）
 
@@ -48,7 +56,7 @@
 4. **RTL 根方向**：`gpui-pre` 只有全局 `LayoutDirection`，未接线。
 5. **a11y 属性**：`aria_live` / `aria_disabled` / `aria_modal` / `aria_hidden` 在
    `gpui-pre` 中不存在，生产代码中已删除，读屏播报与隐藏语义退化。
-6. **系统托盘**：`gpui-tray` 仍依赖 gpui-ce，整体摘除；关闭窗口语义变为退出应用。
+6. **系统托盘**：已恢复。`gpui-tray` 接 `gpui-kit` feature，加载的正是 `gpui-pre`，类型图一致；托盘有图标和 Show / Quit 菜单。关窗行为看托盘是否可用——可用时最小化（`gpui-pre` 无 `set_visible`），不可用时直接退出。
 7. **Tab 语义**：输入框内 Tab 只移动焦点，不再插入缩进。
 8. **光标闪烁间隔**：`caret_blink_interval_500ms` 无对应 API，交回引擎默认。
 9. **letter_spacing**：`gpui-pre` 无此属性，字距回默认。

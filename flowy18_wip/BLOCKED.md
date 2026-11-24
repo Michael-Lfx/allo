@@ -29,10 +29,11 @@
 （exit 1 / LNK1104）。用 cargo 走同一 wrapper 构建成功，说明问题在 dx 的
 调用参数，不在 wrapper / MSVC / CE。**本机不可用**。
 
-### 3. `gpui-tray`
+### 3. `gpui-tray`（已解决）
 
-依赖 `gpui-ce`，其 `MenuItem` / `App` / `Action` 与 `gpui-pre` 的类型不统一。
-托盘功能整体摘除。
+`gpui-tray` 用一个 cargo feature 桥接三套 GPUI 类型图。工作区选的是 `gpui-kit`，
+它的真包就是 `gpui-pre`，所以 `MenuItem` / `App` / `Action` 类型一致，托盘已恢复：
+图标、Show / Quit 菜单，`flowy_shell::tray_available()` 报告是否可用。
 
 ## 能力缺口（`gpui-pre` 没有）
 
@@ -47,7 +48,7 @@
 | `emplace` | `state.emplace(text, cx)` | 无；`set_value(text, window, cx)` 需要 window |
 | 字母间距 | `letter_spacing(px(..))` | 无 |
 | RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
-| 系统托盘 | `gpui-tray` | 依赖 ce，不可用 |
+| 系统托盘 | `gpui-tray` | 已恢复：`gpui-kit` feature 指向 `gpui-pre` |
 
 ## 当前已知遗留（不影响编译，影响行为或体验）
 
@@ -56,7 +57,7 @@
 3. 逐键硬截断改为保存时截断
 4. RTL 未接线，阿语/希语下根方向与局部方向不一致
 5. a11y 播报与隐藏语义退化
-6. 关闭窗口 = 退出应用（托盘已移除）
+6. 关窗：托盘可用时最小化到托盘，不可用时退出（`gpui-pre` 没有 `set_visible`）
 7. 输入框内 Tab：**多行框已改为插入 4 个空格**，单行框仍移焦点。注意首页 composer 用的是裸 `text_area`，不在那四个字段里，Tab 仍移焦点
 8. 光标闪烁间隔、letter_spacing 回默认
 9. 启动固定落 Home，不再自动恢复上次会话

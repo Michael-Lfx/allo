@@ -2236,9 +2236,9 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
                 // window back; otherwise closing would strand the process
                 // with no window and no way to quit.
                 if flowy_shell::tray_available() {
-                    // gpui-pre has no `Window::set_visible`; the tray that used
-                    // to keep a hidden window reachable is gone, so minimizing
-                    // is the closest surviving "keep the process alive" move.
+                    // gpui-pre has no `Window::set_visible`, so minimizing is
+                    // the closest "keep the process alive" move the tray can
+                    // still restore from.
                     window.minimize_window();
                     return false;
                 }
