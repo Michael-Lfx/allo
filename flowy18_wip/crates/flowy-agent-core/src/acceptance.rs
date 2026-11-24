@@ -21,7 +21,7 @@
 //! boundaries.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -85,10 +85,10 @@ impl AcceptanceQueue {
 
     /// Replay the journal into the current set of receipts, oldest first.
     ///
-    /// A truncated final line is tolerated: an append that was interrupted by a
-    /// crash leaves a partial record, and dropping it is better than refusing to
-    /// start. Anything malformed **before** the final line is also ignored, but
-    /// that is a corruption we do not try to repair here.
+    /// A torn final line is tolerated: an append that was interrupted by a crash
+    /// leaves a partial record, and dropping it is better than refusing to start.
+    /// Every malformed line is skipped, so a torn record in the middle cannot
+    /// hide the receipts appended after it.
     pub fn replay(&self) -> io::Result<Vec<AcceptedMessage>> {
         let path = Self::path(&self.root);
         let bytes = match fs::read(&path) {
@@ -105,8 +105,10 @@ impl AcceptanceQueue {
             if line.is_empty() {
                 continue;
             }
+            // A torn record from a crash: skip it instead of dropping every
+            // record that follows it.
             let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
-                break;
+                continue;
             };
             match entry {
                 JournalEntry::Accepted {
@@ -217,8 +219,14 @@ impl AcceptanceQueue {
         fs::create_dir_all(dir)?;
         let mut line = serde_json::to_vec(entry).map_err(io::Error::other)?;
         line.push(b'\n');
-        let mut handle =
-            fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        // A crash can leave a partial record without its newline. Terminate it
+        // before appending, so the new record never becomes part of the torn
+        // line.
+        ensure_trailing_newline(&path)?;
+        let mut handle = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         handle.write_all(&line)?;
         handle.flush()
     }
@@ -226,6 +234,33 @@ impl AcceptanceQueue {
 
 fn new_receipt_id(now_ms: u64, ordinal: usize) -> String {
     format!("accepted-{now_ms:x}-{ordinal:x}")
+}
+
+/// Make sure the next append starts on its own line.
+///
+/// A crash in the middle of `write_all` can leave a partial record with no
+/// terminating newline. Appending the next record straight after it would make
+/// one unparseable line and lose that record too; a single newline keeps the
+/// torn line isolated (and therefore skippable by `replay`).
+fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.len() == 0 {
+        return Ok(());
+    }
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0_u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    let mut handle = fs::OpenOptions::new().append(true).open(path)?;
+    handle.write_all(b"\n")?;
+    handle.flush()
 }
 
 #[cfg(test)]
@@ -348,6 +383,34 @@ mod tests {
         let pending = queue.pending().expect("pending");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].text, "complete");
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_torn_line_does_not_hide_receipts_appended_after_it() {
+        let root = temp_root("torn-middle");
+        let queue = AcceptanceQueue::new(&root);
+        queue.accept(None, "first", 1_000).expect("first");
+        let path = AcceptanceQueue::path(&root);
+        // Simulate a crash in the middle of an append: a partial record with no
+        // terminating newline.
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        handle
+            .write_all(br#"{"event":"accepted","id":"torn"#)
+            .expect("partial write");
+        drop(handle);
+
+        // The next accept must start on its own line; the torn line is skipped
+        // instead of hiding everything after it.
+        let second = queue.accept(None, "second", 2_000).expect("second");
+        let pending = queue.pending().expect("pending");
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[1].id, second.id);
+        assert_eq!(pending[1].text, "second");
 
         fs::remove_dir_all(&root).expect("cleanup");
     }
