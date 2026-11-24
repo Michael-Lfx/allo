@@ -4926,6 +4926,101 @@ fn usage_delta_since(path: Option<&Path>, skip: &mut usize) -> (u64, Option<u64>
     (fresh as u64, reasoning_seen.then_some(reasoning_total))
 }
 
+/// 档案游标定位到文件**当前**末尾（行数）：回放臂每个夹具开始时调用。
+/// calls.jsonl 整次运行共用一个文件、跨夹具累积——游标若从 0 起，非首夹具
+/// 首跑的读数会混入前面夹具的全部行（2026-11-24 真机实锤：放行锚首跑报
+/// `llm_calls=4`、live 夹具报 `7`，实为各 1 次）。文件缺席/不可读 = 0。
+fn archive_cursor_at_end(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|log| log.lines().count())
+        .unwrap_or(0)
+}
+
+/// 采样标记 completer 包装（只用于回放臂；生产评审路径不经过它）：每次
+/// 采样在 system **末尾**追加一行采样编号。模型服务端对逐字节相同的请求
+/// 直接返回上一次的答案——回放臂对同一夹具连跑 N 次，第 2 次起是缓存命中
+/// （2026-11-24 真机实锤：1–3s 返回、usage 与首次分毫不差、响应逐字节相
+/// 同），「N 跑」实为 1 跑。标记让请求互不相同而被测材料不变：原 system
+/// 逐字节保留在前面，user 一字不动。标记措辞明示「采样编号、无需处理」，
+/// 放在 system 末尾——离输出契约最远，不夹在判据中间。
+struct SampleMarker {
+    inner: Arc<dyn nomifun_learning::LearningCompleter>,
+    marker: String,
+}
+
+impl SampleMarker {
+    fn new(inner: Arc<dyn nomifun_learning::LearningCompleter>, sample: u32) -> Self {
+        Self {
+            inner,
+            marker: format!("\n\n（采样编号 #{sample}：仅用于区分重复请求，无需处理、不要提及。）"),
+        }
+    }
+
+    /// 原 system 逐字节在前，采样标记追加在末尾。
+    fn marked(&self, system: &str) -> String {
+        format!("{system}{}", self.marker)
+    }
+}
+
+#[async_trait::async_trait]
+impl nomifun_learning::LearningCompleter for SampleMarker {
+    async fn complete(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, nomifun_common::AppError> {
+        self.inner
+            .complete(model_override, &self.marked(system), user, max_tokens)
+            .await
+    }
+
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, nomifun_common::AppError> {
+        self.inner
+            .complete_with_thinking(model_override, &self.marked(system), user, max_tokens)
+            .await
+    }
+
+    async fn complete_json(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, nomifun_common::AppError> {
+        self.inner
+            .complete_json(model_override, &self.marked(system), user, max_tokens, temperature)
+            .await
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, nomifun_common::AppError> {
+        self.inner
+            .complete_json_with_thinking(
+                model_override,
+                &self.marked(system),
+                user,
+                max_tokens,
+                temperature,
+            )
+            .await
+    }
+}
+
 /// EXIT 判定（smoke 惯例「唯一硬判据 = 全灭 0/n」语义的方向面）：夹具
 /// 全部跑评审缺席（degraded）= 评审管线真机没走通 → 非零退出；方向翻转/
 /// 部分 flaky 只进 readout（EXIT 恒成功——锁方向口径：不达 100% 照记）。
@@ -4940,10 +5035,13 @@ fn review_replay_exit_code(all_degraded: bool) -> ExitCode {
 
 /// 单夹具 N 跑：真实评审逐跑计时，calls.jsonl 增量行聚合 per-run usage。
 /// 返回（逐跑读数, 首跑点名清单词——夹具机械面读数，逐跑同形取一次）。
+/// `fixture_index` 只用于合成采样编号（见 [`SampleMarker`]）——夹具序 ×
+/// 跑序保证整次运行内每个采样编号唯一。
 async fn replay_fixture_runs(
-    completer: &dyn nomifun_learning::LearningCompleter,
+    completer: Arc<dyn nomifun_learning::LearningCompleter>,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     fixture: &ReplayFixture,
+    fixture_index: usize,
     runs: usize,
     usage_log: Option<&Path>,
 ) -> Result<(Vec<ReplayRunReadout>, Vec<String>)> {
@@ -4954,11 +5052,20 @@ async fn replay_fixture_runs(
     };
     let mut readouts = Vec::new();
     let mut naming_terms = Vec::new();
-    let mut consumed_lines = 0usize;
-    for _ in 0..runs {
+    // 游标定位到档案当前末尾：calls.jsonl 跨夹具累积，本夹具只数自己的新增行
+    // （2026-11-24 真机实锤的计数 bug——曾从 0 起，读数混入前序夹具）。
+    let mut consumed_lines = usage_log.map_or(0, archive_cursor_at_end);
+    for run in 0..runs {
         let started = std::time::Instant::now();
+        // 每跑一个采样标记：同输入的重复请求否则会被服务端缓存命中（见
+        // [`SampleMarker`]）。同一跑内部的死因重试共用本标记——那几次请求
+        // 带了重试反馈、输入本就不同。
+        let marked: Arc<dyn nomifun_learning::LearningCompleter> = Arc::new(SampleMarker::new(
+            completer.clone(),
+            (fixture_index * runs + run) as u32,
+        ));
         let verdict = nomifun_learning::replay_concept_review(
-            completer,
+            marked.as_ref(),
             model_override,
             &fixture.batch,
             &context,
@@ -5024,13 +5131,14 @@ async fn run_review_replay(
     ];
     let mut any_verdict = false;
     let mut summaries = Vec::new();
-    for fixture in &fixtures {
+    for (fixture_index, fixture) in fixtures.iter().enumerate() {
         let (readouts, naming) = replay_fixture_runs(
-            pipeline.as_ref(),
+            pipeline.clone(),
             model_override
                 .as_ref()
                 .map(|(provider, model)| (provider, model.as_str())),
             fixture,
+            fixture_index,
             REVIEW_REPLAY_RUNS,
             usage_log.as_deref(),
         )
@@ -5211,7 +5319,8 @@ mod review_replay_tests {
             nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
             Some("off"),
         );
-        let scripted = ScriptedReplay::new(vec![pass_verdict()], vec![pass_verdict()]);
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(vec![pass_verdict()], vec![pass_verdict()]));
 
         let reject = reject_anchor_fixture();
         // known 面（登记表最小造数投影）：折叠名词查无出处。
@@ -5221,7 +5330,14 @@ mod review_replay_tests {
                 "折叠名词 {folded} 不得在 reject 夹具的已知面"
             );
         }
-        let (readouts, naming) = replay_fixture_runs(&scripted, None, &reject, 1, None)
+        let (readouts, naming) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &reject,
+            0,
+            1,
+            None,
+        )
             .await
             .unwrap();
         assert_eq!(readouts.len(), 1);
@@ -5248,7 +5364,14 @@ mod review_replay_tests {
                 "pass 夹具已知面缺已教名/铸名：{taught}"
             );
         }
-        let (_, pass_naming) = replay_fixture_runs(&scripted, None, &pass, 1, None)
+        let (_, pass_naming) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &pass,
+            0,
+            1,
+            None,
+        )
             .await
             .unwrap();
         assert!(
@@ -5275,10 +5398,11 @@ mod review_replay_tests {
             Some("off"),
         );
         // Scripted 按词分流：live 批不含「三角形」→ 全走 pass 桶（3 跑全放行）。
-        let scripted = ScriptedReplay::new(
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(
             Vec::new(),
             vec![pass_verdict(), pass_verdict(), pass_verdict()],
-        );
+            ));
         let live = live_real_batch_fixture();
         // 装配成功：批 JSON 原文可解析且三节点 teaches/三铸名/known 近似面在场。
         assert_eq!(live.batch.nodes.len(), 3, "11-20 live 批三节点");
@@ -5319,7 +5443,14 @@ mod review_replay_tests {
             live.direction.is_none(),
             "live 夹具是 readout-only，不得冒充方向锚（真机实录见夹具文档）"
         );
-        let (readouts, _naming) = replay_fixture_runs(&scripted, None, &live, 3, None)
+        let (readouts, _naming) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &live,
+            0,
+            3,
+            None,
+        )
             .await
             .unwrap();
         let hits = readouts
@@ -5349,11 +5480,19 @@ mod review_replay_tests {
             Some("off"),
         );
         // reject 桶：2 拒 1 放（第 3 跑模型放行 = flaky 现场）。
-        let scripted = ScriptedReplay::new(
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(
             vec![reject_verdict(), reject_verdict(), pass_verdict()],
             Vec::new(),
-        );
-        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 3, None)
+            ));
+        let (readouts, _) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &reject_anchor_fixture(),
+            0,
+            3,
+            None,
+        )
             .await
             .unwrap();
         let hits = readouts
@@ -5366,11 +5505,19 @@ mod review_replay_tests {
 
         // 全放行臂：3 跑全放行 → flaky=3/3（票面「不达 100% 照记」的记账面
         // ——方向翻转只在 readout 留痕，EXIT 判定另测）。
-        let scripted = ScriptedReplay::new(
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(
             vec![pass_verdict(), pass_verdict(), pass_verdict()],
             Vec::new(),
-        );
-        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 3, None)
+            ));
+        let (readouts, _) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &reject_anchor_fixture(),
+            0,
+            3,
+            None,
+        )
             .await
             .unwrap();
         let hits = readouts
@@ -5394,8 +5541,16 @@ mod review_replay_tests {
             nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
             Some("off"),
         );
-        let scripted = ScriptedReplay::new(Vec::new(), Vec::new());
-        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 1, None)
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(Vec::new(), Vec::new()));
+        let (readouts, _) = replay_fixture_runs(
+            scripted.clone(),
+            None,
+            &reject_anchor_fixture(),
+            0,
+            1,
+            None,
+        )
             .await
             .unwrap();
         assert_eq!(readouts.len(), 1);
@@ -5451,5 +5606,106 @@ mod review_replay_tests {
         assert_eq!((calls, reasoning), (0, None));
         let (calls, reasoning) = usage_delta_since(None, &mut skip);
         assert_eq!((calls, reasoning), (0, None));
+    }
+
+    /// 跨夹具游标（2026-11-24 真机实锤的计数 bug）：calls.jsonl 整次运行
+    /// 共用一个文件、跨夹具累积；`consumed_lines` 曾在每个夹具开头归零，
+    /// 于是非首夹具首跑的读数混入前面夹具的全部行（真机：放行锚首跑报
+    /// `llm_calls=4`、live 夹具报 `7`，实为各 1 次；reasoning 同样被累加）。
+    /// 修法：夹具开始时把游标定位到文件**当前**行数，只消费本夹具的新增行。
+    #[test]
+    fn archive_cursor_starts_at_the_current_end_so_each_fixture_counts_only_its_own_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls.jsonl");
+        // 夹具 A 已经落了 3 行。
+        std::fs::write(
+            &log,
+            concat!(
+                r#"{"usage":{"reasoning_tokens":20653}}"#, "\n",
+                r#"{"usage":{"reasoning_tokens":20653}}"#, "\n",
+                r#"{"usage":{"reasoning_tokens":20653}}"#, "\n",
+            ),
+        )
+        .unwrap();
+        // 夹具 B 开始：游标定位到当前末尾，而不是 0。
+        let mut cursor = archive_cursor_at_end(&log);
+        // B 的首跑新增 1 行。
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .unwrap()
+                .write_all(b"{\"usage\":{\"reasoning_tokens\":14007}}\n")
+                .unwrap();
+        }
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut cursor);
+        assert_eq!(calls, 1, "夹具 B 首跑只数自己的 1 次调用，不含夹具 A 的 3 次");
+        assert_eq!(reasoning, Some(14007), "reasoning 不混入夹具 A 的读数");
+        // 文件缺席/尚不存在：游标为 0（后续增量从文件头算——无前序行可漏）。
+        assert_eq!(archive_cursor_at_end(&dir.path().join("absent.jsonl")), 0);
+    }
+
+    /// 采样标记破缓存（2026-11-24 真机实锤）：回放臂对同一夹具连跑 N 次，
+    /// 请求逐字节相同 → 模型服务端直接返回上一次的答案（第 2/3 次仅 1–3s、
+    /// usage 与第 1 次分毫不差、响应逐字节相同）。「N 跑」实为 1 跑——它量
+    /// 的是缓存命中率，不是模型方差。修法：每次采样在 system **末尾**追加
+    /// 一行采样编号，请求互不相同而被测材料不变。
+    #[tokio::test]
+    async fn sample_marker_makes_each_request_distinct_without_touching_the_material() {
+        use nomifun_learning::LearningCompleter;
+
+        #[derive(Default)]
+        struct Capturing {
+            systems: std::sync::Mutex<Vec<String>>,
+            users: std::sync::Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl LearningCompleter for Capturing {
+            async fn complete(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                _system: &str,
+                _user: &str,
+                _max_tokens: u32,
+            ) -> Result<String, nomifun_common::AppError> {
+                unreachable!("回放臂只走 json+thinking")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                system: &str,
+                user: &str,
+                _max_tokens: u32,
+                _temperature: Option<f32>,
+            ) -> Result<String, nomifun_common::AppError> {
+                self.systems.lock().unwrap().push(system.to_owned());
+                self.users.lock().unwrap().push(user.to_owned());
+                Ok("{}".into())
+            }
+        }
+
+        let inner = std::sync::Arc::new(Capturing::default());
+        let system = "你是评审员。\n1. 判据一\n2. 判据二";
+        let user = "【待审批次】\n原样材料";
+        for sample in 0..3u32 {
+            let marked = SampleMarker::new(inner.clone(), sample);
+            let _ = marked
+                .complete_json_with_thinking(None, system, user, 1024, None)
+                .await;
+        }
+        let systems = inner.systems.lock().unwrap().clone();
+        let users = inner.users.lock().unwrap().clone();
+        assert_eq!(systems.len(), 3);
+        // 被测材料原样在前，标记只追加在末尾。
+        for marked in &systems {
+            assert!(marked.starts_with(system), "原 system 必须逐字节保留在前面");
+            assert!(marked.len() > system.len(), "标记必须追加");
+        }
+        // 三次请求互不相同（缓存键不同）。
+        assert_ne!(systems[0], systems[1]);
+        assert_ne!(systems[1], systems[2]);
+        // user（被审材料）一字不动。
+        assert!(users.iter().all(|u| u == user));
     }
 }
