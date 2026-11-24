@@ -2,7 +2,7 @@
 id: rs8
 title: auto-refill 墙钟预算——18 分钟无界尾巴的结构性上界（上游 #257 同款）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -58,3 +58,49 @@ part_of: map.md
   改 0（关），开关留运维面。
 - 预算把"本可落位的 run 变成失败"超出现有语义（提前中断在途评审且该评
   审本可过）= 违反严格加法 → 实现有误返工。
+
+## Resolution
+
+已施工收口（2026-11-24）。**结论：机制落地，缺省按回退条件改关；开关保留
+为运维面，缺省值待新数据再定。**
+
+- **落地**（wave/rs8 8753153e4 → merge 36ebf7161；评审修复批 28e974d29）：
+  `NOMI_LEARNING_AUTO_REFILL_BUDGET_SECS`（switches.rs 单源）；`GrowthBudget`
+  注入 `run_growth`，判定点三次（attempt 循环头 / `concept_review` 前 /
+  重裁前），纯内存不中断在途；到点 = 已过全门批落位（note 留痕）/ 未过门批
+  `stop_reason = budget_expired` 且失败文案以「自动补批超时（墙钟 N 分钟）：
+  」开头点名缺口；留痕进 `learning_structure_findings`（source =
+  `growth-budget`）。
+
+**已申报偏离（评审轴核对通过）**：注入臂含 `Settlement`——allo 只有
+`kick_growth_with_trigger` 一个 spawn，四触发源共用，枚举自身把
+Settlement/AutoRefill 注为「自动补批触发①/②」，只给②设预算会让最高频的
+结算钩子臂维持无界尾巴。手动 `grow` 不注入。
+
+- **真机读数（2026-11-24，冻结二进制 250169ebe，基线档 R1，auto_refill 路径，
+  缺省仍为 600s）**：
+
+  | 调用 | 耗时 | 结局 |
+  | --- | --- | --- |
+  | 起草 | 24s | 结构门打回 |
+  | 重裁 | 252s | 过结构门 |
+  | 评审 | 301s | 打回（1 个问题） |
+  | 重裁 | 145s | 预算到点，不再发起评审 |
+
+  墙钟 706s，`state=failed`，失败文案「自动补批超时（墙钟 10 分钟）：本批
+  尚未过评审门，不再发起评审（3 个节点在途作废）」——**缺口点名可读、非静
+  默失败，机制本身按设计工作**。对照 11-23 同形轮（无预算）：继续第二次评
+  审后 1089s 落库。
+
+- **按回退条件判定**：这一轮预算把「慢但能成」截成了「可见失败」，批次完
+  成率下降而无补偿收益（单轮只快了约 6 分钟，代价是 0 落库）。allo 单次评
+  审思考 ~5 分钟，一次返工即吃满 10 分钟；上游 #257 的 600 建立在批次更小、
+  单次评审更快的形态上。**→ 缺省改关**（`AUTO_REFILL_BUDGET_DEFAULT_SECS =
+  None`，未设/非法值同为关；设正整数秒启用）。
+- **测试面同步**：5 个预算臂测试原依赖「未设 = 600」让预算注入，缺省改关后
+  红——已改为各自显式声明窗口（`switch_env_guard(…, Some("600"))`，全部
+  `#[serial]`）。测试语义不变，前提显式化。
+- **检查**：全量 `cargo test -p nomifun-learning` **1048/0**；fmt 干净。
+- **遗留**：缺省值待 ADR-0018（结构退出评审输入，评审输入减约三分之一）
+  落地后的新数据再定；`auto_refill` 生产触发外部可达（`POST grow
+  ?trigger=auto_refill`）时用户在场也受预算——票面语义如此，记录不修。
