@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, RunError, SessionOrigin, SessionRecord,
-    SessionWorkspace, TurnObserver, TurnState,
+    ExecAssignment, ExecInput, LoopOutcome, ModelRoute, RunError,
+    SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver, TurnState,
     complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
@@ -33,6 +33,9 @@ use crate::projection::{
     ChatHistory, ChatLine, ChatProjection, FileChangeKind, TurnStatus,
 };
 use crate::title::{self, TITLE_MAX_CHARS};
+
+/// The lease handed to a consumer claim; long enough for a normal turn.
+const ACCEPTED_LEASE_MS: u64 = 30_000;
 
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
@@ -54,6 +57,16 @@ pub enum AgentUpdate {
     StorageError,
 }
 
+/// One accepted receipt claimed by `run_accepted_once`.
+#[derive(Clone, Debug)]
+pub struct AcceptedRun {
+    pub receipt_id: String,
+    pub attempt_id: String,
+    pub session_id: String,
+    pub submission: u128,
+    pub input: ExecInput,
+}
+
 struct Live {
     projection: ChatProjection,
     title: String,
@@ -70,6 +83,11 @@ struct Live {
     session_workspace: Option<SessionWorkspace>,
 }
 
+struct AcceptedClaim {
+    receipt_id: String,
+    attempt_id: String,
+}
+
 struct UiState {
     root: PathBuf,
     live: Mutex<HashMap<String, Live>>,
@@ -77,6 +95,7 @@ struct UiState {
     /// session and call id, so the change card never re-reads the file.
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
     active: Mutex<Option<String>>,
+    accepted_claim: Mutex<Option<AcceptedClaim>>,
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
@@ -100,6 +119,7 @@ impl UiState {
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
+            accepted_claim: Mutex::new(None),
             workspace_for_new_sessions: Mutex::new(None),
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
@@ -1247,6 +1267,134 @@ impl AgentHandle {
         AcceptanceQueue::new(self.inner.state.root.clone())
             .pending()
             .unwrap_or_default()
+    }
+
+    /// Claim and start the oldest accepted receipt, if any.
+    ///
+    /// This is the consumer entry point: it takes a lease, resolves the session
+    /// hint (or opens a new home conversation), derives the `ExecInput`, and
+    /// submits the turn. The caller must call [`Self::finish_accepted`] when the
+    /// turn ends.
+    pub fn run_accepted_once(
+        &self,
+    ) -> Result<Option<AcceptedRun>, &'static str> {
+        if self.has_active_claim() || self.turn_status().is_busy() {
+            return Ok(None);
+        }
+        let state = &self.inner.state;
+        let queue = AcceptanceQueue::new(state.root.clone());
+        let Some(next) = queue
+            .pending()
+            .map_err(|_| "notice.storage_error")?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
+        let submission = u128::from_le_bytes(bytes);
+        let attempt_id = format!("attempt-{submission:032x}");
+        let now = now_ms();
+        let Some(claimed) = queue
+            .take(&next.id, &attempt_id, now, ACCEPTED_LEASE_MS)
+            .map_err(|_| "notice.storage_error")?
+        else {
+            return Ok(None);
+        };
+        let session = match claimed.session_hint.as_deref() {
+            Some(hint)
+                if lock(&state.live)
+                    .get(hint)
+                    .is_some_and(|session| !session.status.is_busy()) =>
+            {
+                if let Err(error) = self.select_session(hint) {
+                    let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+                    return Err(error);
+                }
+                hint.to_owned()
+            }
+            _ => match self.create_home_session() {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+                    return Err(error);
+                }
+            },
+        };
+        let capabilities = self.capabilities_for(&session);
+        let token = format!("exec-{submission:032x}");
+        let ask_first: Vec<String> = Vec::new();
+        let input = ExecInput::from_receipt(
+            &claimed,
+            ExecAssignment {
+                work_id: &session,
+                revision: 0,
+                attempt_id: &attempt_id,
+                token: &token,
+                mode: "ask",
+                capabilities: &capabilities,
+                ask_first: &ask_first,
+            },
+            Vec::new(),
+        );
+        if let Err(error) = self.submit_chat(submission, &claimed.text) {
+            let _ = queue.release(&claimed.id, &attempt_id, now_ms());
+            return Err(error);
+        }
+        *lock(&state.accepted_claim) = Some(AcceptedClaim {
+            receipt_id: claimed.id.clone(),
+            attempt_id: attempt_id.clone(),
+        });
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "AgentHandle::run_accepted_once",
+            receipt = %claimed.id,
+            session = %session,
+            "accepted receipt claimed"
+        );
+        Ok(Some(AcceptedRun {
+            receipt_id: claimed.id,
+            attempt_id,
+            session_id: session,
+            submission,
+            input,
+        }))
+    }
+
+    /// Finish the receipt started by [`Self::run_accepted_once`].
+    pub fn finish_accepted(&self, completed: bool) -> Result<(), &'static str> {
+        let Some(claim) = lock(&self.inner.state.accepted_claim).take() else {
+            return Ok(());
+        };
+        let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+        let now = now_ms();
+        let result = if completed {
+            queue.complete(&claim.receipt_id, &claim.attempt_id, now)
+        } else {
+            queue.release(&claim.receipt_id, &claim.attempt_id, now)
+        };
+        result.map(|_| ()).map_err(|_| "notice.storage_error")
+    }
+
+    #[must_use]
+    pub fn has_active_claim(&self) -> bool {
+        lock(&self.inner.state.accepted_claim).is_some()
+    }
+
+    fn capabilities_for(&self, session: &str) -> Vec<String> {
+        let workspace = lock(&self.inner.state.live)
+            .get(session)
+            .and_then(|session| session.workspace.clone());
+        let cwd = session_working_directory(
+            &self.inner.state.root,
+            workspace.as_ref(),
+        );
+        tool_registry(&cwd)
+            .schemas()
+            .into_iter()
+            .map(|schema| schema.name)
+            .collect()
     }
 
     fn submit_message(
@@ -2851,7 +2999,8 @@ mod background_init_tests {
         handle.set_origin_for_new_sessions(SessionOrigin::Home);
         assert_eq!(handle.active_session_id(), None);
 
-        let receipt = handle.accept_deferred("orphan prompt").expect("accepted");
+        let receipt =
+            handle.accept_deferred("orphan prompt").expect("accepted");
 
         // The receipt must not claim a session it never had. Before this fix
         // `accept_deferred` called `ensure_active_session()`, which creates one,
@@ -2893,7 +3042,8 @@ mod background_init_tests {
         handle.set_origin_for_new_sessions(SessionOrigin::Home);
         let id = handle.create_session().expect("session");
 
-        let receipt = handle.accept_deferred("hinted prompt").expect("accepted");
+        let receipt =
+            handle.accept_deferred("hinted prompt").expect("accepted");
         assert_eq!(receipt.session_hint.as_deref(), Some(id.as_str()));
         // The hint did not change which session is active.
         assert_eq!(handle.active_session_id().as_deref(), Some(id.as_str()));
@@ -2904,8 +3054,8 @@ mod background_init_tests {
 
     #[test]
     fn accept_deferred_hands_back_a_receipt_a_fresh_handle_still_finds() {
-        let root = std::env::temp_dir()
-            .join(format!("flowy-accept-{}", next_stamp()));
+        let root =
+            std::env::temp_dir().join(format!("flowy-accept-{}", next_stamp()));
         let handle = AgentHandle::with_config(
             root.clone(),
             LlmConfig {

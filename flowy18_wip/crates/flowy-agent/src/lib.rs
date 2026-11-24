@@ -29,10 +29,12 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, SessionOrigin,
+    AcceptanceQueue, AcceptedMessage, DeliveryCommit, ExecInput, SessionOrigin,
     SessionWorkspace,
 };
-pub use handle::{AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary};
+pub use handle::{
+    AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary,
+};
 pub use model::{Model, Plan};
 pub use model_directory::{
     CLOUD_TIERS, TierResolution, TierSpec, is_locked, required_level,
@@ -75,6 +77,16 @@ mod tests {
                 ..LlmConfig::default()
             },
         )
+    }
+
+    fn wait_for_turn(handle: &AgentHandle) {
+        for _ in 0..200 {
+            if !handle.turn_status().is_busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("turn did not finish");
     }
 
     #[test]
@@ -700,5 +712,73 @@ mod tests {
                     .to_string_lossy()
                     .starts_with("history.corrupt-"))
         );
+    }
+
+    #[test]
+    fn an_accepted_receipt_runs_once_and_completes() {
+        let root = temp_root("accepted-run");
+        let handle = mock_handle(&root);
+        let receipt =
+            handle.accept_deferred("run the receipt").expect("accept");
+        let run = handle.run_accepted_once().expect("run").expect("claimed");
+        assert_eq!(run.receipt_id, receipt.id);
+        assert_eq!(run.input.receipt_id.as_deref(), Some(receipt.id.as_str()));
+        assert_eq!(run.input.session_hint, receipt.session_hint);
+        assert_eq!(
+            run.input.context.inputs,
+            vec!["run the receipt".to_owned()]
+        );
+        assert!(run.input.token.starts_with("exec-"));
+        assert_ne!(run.input.capabilities, Vec::<String>::new());
+        assert_eq!(run.input.context.decided.len(), 0);
+        assert!(handle.has_active_claim());
+        wait_for_turn(&handle);
+        assert_eq!(handle.turn_status(), TurnStatus::Completed);
+        handle.finish_accepted(true).expect("complete");
+        assert!(!handle.has_active_claim());
+        assert_eq!(handle.pending_acceptances().len(), 0);
+        assert!(handle.lines().iter().any(|line| {
+            matches!(line, ChatLine::User { text } if text == "run the receipt")
+        }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_released_receipt_is_retried() {
+        let root = temp_root("accepted-retry");
+        let handle = mock_handle(&root);
+        let receipt =
+            handle.accept_deferred("retry the receipt").expect("accept");
+        let first = handle.run_accepted_once().expect("run").expect("claimed");
+        wait_for_turn(&handle);
+        handle.finish_accepted(false).expect("release");
+        assert_eq!(handle.pending_acceptances().len(), 1);
+        let second = handle
+            .run_accepted_once()
+            .expect("run again")
+            .expect("claimed again");
+        assert_eq!(second.receipt_id, receipt.id);
+        assert_ne!(second.attempt_id, first.attempt_id);
+        wait_for_turn(&handle);
+        handle.finish_accepted(true).expect("complete");
+        assert_eq!(handle.pending_acceptances().len(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_accepted_receipt_reuses_its_session_hint() {
+        let root = temp_root("accepted-hint");
+        let handle = mock_handle(&root);
+        let session = handle.create_home_session().expect("session");
+        let receipt = handle.accept_deferred("hinted receipt").expect("accept");
+        assert_eq!(receipt.session_hint.as_deref(), Some(session.as_str()));
+        let run = handle.run_accepted_once().expect("run").expect("claimed");
+        assert_eq!(run.session_id, session);
+        assert_eq!(run.input.work_id, session);
+        assert_eq!(run.input.session_hint.as_deref(), Some(session.as_str()));
+        wait_for_turn(&handle);
+        handle.finish_accepted(true).expect("complete");
+        assert_eq!(handle.pending_acceptances().len(), 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

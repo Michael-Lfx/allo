@@ -816,8 +816,26 @@ impl StudioPanel {
         Ok(())
     }
 
-    /// Re-read the acceptance journal and repaint the queued strip.
+    /// Re-read the acceptance journal, finish a settled claim, and start the
+    /// next receipt when the agent is idle.
     fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.status.is_busy() {
+            if self.agent.has_active_claim() {
+                let completed = matches!(
+                    self.status,
+                    flowy_agent::TurnStatus::Completed
+                        | flowy_agent::TurnStatus::Stopped
+                );
+                let _ = self.agent.finish_accepted(completed);
+            }
+            if !self.agent.pending_acceptances().is_empty()
+                && self.agent.run_accepted_once().ok().flatten().is_some()
+            {
+                self.pending_receipts = self.agent.pending_acceptances();
+                self.refresh_chat(cx);
+                return;
+            }
+        }
         self.pending_receipts = self.agent.pending_acceptances();
         cx.notify();
     }
@@ -1029,7 +1047,8 @@ impl StudioPanel {
         // second source here would let the button and the handler disagree.
         let running = matches!(
             self.status,
-            flowy_agent::TurnStatus::Running | flowy_agent::TurnStatus::SavingFiles
+            flowy_agent::TurnStatus::Running
+                | flowy_agent::TurnStatus::SavingFiles
         );
         if running {
             match self.agent.accept_deferred(&text) {
@@ -1651,7 +1670,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_busy_submission_shows_up_in_the_pending_strip(cx: &mut TestAppContext) {
+    fn a_busy_submission_shows_up_in_the_pending_strip(
+        cx: &mut TestAppContext,
+    ) {
         let (panel, root) = submission_panel(cx, "pending-strip");
         panel.update(cx, |panel, cx| {
             let id = panel.agent.create_home_session().unwrap();
@@ -1754,7 +1775,11 @@ mod tests {
         let pending = flowy_agent::AcceptanceQueue::new(root.clone())
             .pending()
             .expect("acceptance queue readable");
-        assert_eq!(pending.len(), 1, "busy submit must be accepted, not dropped");
+        assert_eq!(
+            pending.len(),
+            1,
+            "busy submit must be accepted, not dropped"
+        );
         assert_eq!(pending[0].text, "second prompt while the first turn runs");
         assert!(pending[0].taken_at_ms.is_none(), "nothing ran it yet");
 
@@ -1772,6 +1797,40 @@ mod tests {
         assert_eq!(reopened.len(), 1);
         assert_eq!(reopened[0].id, pending[0].id);
 
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn an_accepted_receipt_is_drained_when_the_turn_finishes(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "accepted-drain");
+        panel.update(cx, |panel, cx| {
+            let id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&id, cx);
+            panel.status = flowy_agent::TurnStatus::Running;
+            panel.refresh_working(cx);
+            panel.fill_prompt("queued work", cx);
+            panel.send_prompt(cx);
+            assert_eq!(panel.pending_receipts.len(), 1);
+
+            // The running turn ends: the refresh drains the receipt and starts
+            // it in its hinted session.
+            panel.refresh_chat(cx);
+            assert!(panel.agent.has_active_claim());
+            assert_eq!(panel.pending_receipts.len(), 0);
+
+            for _ in 0..200 {
+                if !panel.agent.turn_status().is_busy() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panel.refresh_chat(cx);
+            assert!(!panel.agent.has_active_claim());
+            assert_eq!(panel.pending_receipts.len(), 0);
+        });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
