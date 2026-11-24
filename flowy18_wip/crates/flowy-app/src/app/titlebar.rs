@@ -129,8 +129,15 @@ impl FlowyApp {
                 "titlebar.close",
                 theme::icons::x().size(px(14.)),
                 WindowControlArea::Close,
-                cx.listener(|_app, _, window, _cx| {
-                    window.set_visible(false);
+                cx.listener(|_app, _, window, cx| {
+                    // gpui-pre has no `Window::set_visible`. Without the tray a
+                    // hidden window could never come back, so closing follows
+                    // the same rule as `on_window_should_close`.
+                    if flowy_shell::tray_available() {
+                        window.minimize_window();
+                    } else {
+                        cx.quit();
+                    }
                 }),
             ))
     }
@@ -157,15 +164,16 @@ impl FlowyApp {
         area: WindowControlArea,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> impl IntoElement {
-        theme::IconButton::new(id, self.t(label_key), icon)
-            .size(theme::ControlSize::Small)
-            .render(&self.theme, on_click)
-            // The title bar drag region is painted behind these buttons. GPUI
-            // reports the first window-control hitbox under the pointer, so a
-            // button must block that region. Otherwise Windows treats the click
-            // as a caption drag and minimize never runs.
-            .occlude()
-            .window_control_area(area)
+        // `IconButton::render` erases to `AnyElement`, which no longer exposes
+        // the interactive surface, so the window-control hitbox lives on a
+        // wrapper. `occlude` keeps the drag region painted behind these
+        // buttons from swallowing the click: otherwise Windows treats it as a
+        // caption drag and minimize never runs.
+        div().occlude().window_control_area(area).child(
+            theme::IconButton::new(id, self.t(label_key), icon)
+                .size(theme::ControlSize::Small)
+                .render(&self.theme, on_click),
+        )
     }
 
     pub(super) fn toggle_dock(&mut self, cx: &mut Context<'_, Self>) {

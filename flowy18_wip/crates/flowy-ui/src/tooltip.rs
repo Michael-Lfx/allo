@@ -25,7 +25,7 @@ pub fn tooltip_trigger<E>(
     rtl: bool,
 ) -> Stateful<Div>
 where
-    E: gpui::StatefulInteractiveElement + IntoElement + 'static,
+    E: gpui::StatefulInteractiveElement + gpui::Element + 'static,
 {
     let theme = ui.snapshot(cx);
     let id = id.into();
@@ -135,6 +135,7 @@ where
 mod tests {
     use super::*;
     use gpui::{Context, Render, Role, TestAppContext};
+    use gpui_kit::test::TestQueryExt;
 
     // GPUI's actions macro emits PartialEq without Eq.
     #[allow(clippy::derive_partial_eq_without_eq)]
@@ -156,11 +157,17 @@ mod tests {
                 .overlays
                 .update(cx, |host, _| host.begin_frame(window));
             let theme = self.ui.snapshot(cx);
-            let trigger = crate::Button::new("help", "Help")
-                .render(&theme, |_, _, _| {})
+            // `AnyElement` carries no `Styled` in gpui-pre, so the absolute
+            // placement wraps the trigger instead of being chained onto it.
+            let trigger = div()
+                .id("help-anchor")
                 .absolute()
                 .left(gpui::px(80.))
-                .top(gpui::px(80.));
+                .top(gpui::px(80.))
+                .child(
+                    crate::Button::new("help", "Help")
+                        .render(&theme, |_, _, _| {}),
+                );
             div()
                 .id("root")
                 .size_full()
@@ -182,14 +189,11 @@ mod tests {
     fn tooltip_visible(cx: &mut gpui::VisualTestContext) -> bool {
         cx.update(Window::simulate_next_frame);
         cx.update(|window, cx| {
-            window.set_a11y_forced(true);
             window.draw(cx).clear(cx);
             window
-                .a11y_tree()
-                .unwrap()
-                .nodes
+                .find_all_by_role(Role::Tooltip)
                 .iter()
-                .any(|(_, node)| node.role() == Role::Tooltip)
+                .any(gpui_kit::test::ElementSnapshot::visible)
         })
     }
 
@@ -229,7 +233,7 @@ mod tests {
             ui: UiContext::new(crate::ThemeOptions::default(), false, cx),
         });
         assert!(!tooltip_visible(cx));
-        let press = |cx: &mut gpui::VisualTestContext, key: &str| {
+        let press = |cx: &mut gpui::VisualTestContext, key: &'static str| {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
             cx.simulate_event(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -267,13 +271,17 @@ mod tests {
                     .update(cx, |host, _| host.begin_frame(window));
                 let theme = self.ui.snapshot(cx);
                 let clicks = self.clicks.clone();
-                let trigger = crate::Button::new("help", "Help")
-                    .render(&theme, move |_, _, _| {
-                        clicks.set(clicks.get() + 1);
-                    })
+                let trigger = div()
+                    .id("help-anchor")
                     .absolute()
                     .left(gpui::px(80.))
-                    .top(gpui::px(80.));
+                    .top(gpui::px(80.))
+                    .child(crate::Button::new("help", "Help").render(
+                        &theme,
+                        move |_, _, _| {
+                            clicks.set(clicks.get() + 1);
+                        },
+                    ));
                 div().id("root").size_full().child(tooltip_trigger(
                     "help-tooltip",
                     trigger,

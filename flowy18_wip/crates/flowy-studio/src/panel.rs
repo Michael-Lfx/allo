@@ -15,9 +15,6 @@ use flowy_ui::{ResolvedTheme, UiContext};
 use gpui::{
     Context, Entity, EventEmitter, IntoElement, Task, Window, prelude::*,
 };
-use gpui_ce_elements::editable_text::{
-    EditableTextState, StringStorage, TextChanged,
-};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -125,7 +122,7 @@ const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
 pub struct StudioPanel {
     pub ui: UiContext,
     pub theme: ResolvedTheme,
-    pub prompt: Entity<EditableTextState>,
+    pub prompt: Entity<gpui_kit::base::input::TextareaState>,
     pub(crate) feed: Entity<ChatFeed>,
     pub(crate) composer: Entity<ChatComposer>,
     _composer_sub: gpui::Subscription,
@@ -171,10 +168,12 @@ pub struct StudioPanel {
     /// Starter copy held back until the user confirms replacing the draft.
     /// Category whose examples the home stage shows.
     pub(crate) starter_category: Category,
-    /// Horizontal offset of the example row in logical pixels, 0 or negative.
-    /// Owned here because `ScrollHandle::max_offset` stays 0 until the node has
-    /// been laid out, which made arrow presses clamp straight back to zero.
-    pub(crate) starter_offset: f32,
+    /// Paging state of the example row; reset when the row's contents change.
+    pub(crate) starter_carousel: flowy_ui::CarouselState,
+    /// Set once the user opens a conversation in this run. Startup initialization
+    /// must not pull the app back into the last thread, but a session restored
+    /// because the user asked for it should land on Chat.
+    pub(crate) session_opened_by_user: bool,
     /// Files the deliverables drawer lists; `None` keeps it closed.
     pub(crate) deliverables: Option<Vec<FileEntry>>,
     /// Path being previewed inside the drawer.
@@ -183,6 +182,9 @@ pub struct StudioPanel {
     pub(crate) preview_body: Option<PreviewBody>,
     /// Composer drafts keyed by session, so switching tasks does not leak text.
     drafts: std::collections::HashMap<String, String>,
+    /// Prompt text waiting for the next render, which is the first point after
+    /// most callers where a `Window` is available to install it.
+    prompt_pending: Option<String>,
     _prompt_sub: gpui::Subscription,
     pump: Option<Task<()>>,
 }
@@ -205,23 +207,26 @@ impl StudioPanel {
     pub fn new(
         config: StudioConfig,
         ui: UiContext,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        Self::new_with_mode(config, ui, false, cx)
+        Self::new_with_mode(config, ui, false, window, cx)
     }
 
     pub fn new_background(
         config: StudioConfig,
         ui: UiContext,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        Self::new_with_mode(config, ui, true, cx)
+        Self::new_with_mode(config, ui, true, window, cx)
     }
 
     fn new_with_mode(
         config: StudioConfig,
         ui: UiContext,
         background: bool,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         tracing::debug!(
@@ -242,17 +247,27 @@ impl StudioPanel {
             store_root,
             llm,
         } = config;
-        let prompt =
-            cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
-        let prompt_sub =
-            cx.subscribe(&prompt, |panel, _, _: &TextChanged, cx| {
+        // The placeholder has to be set through the generic setter: the
+        // builder form only exists on the single-line state. Without it the
+        // composer renders empty and screen readers get no name.
+        let prompt_placeholder = i18n.t("chat.do_anything");
+        let prompt = cx.new(|cx| {
+            let mut state =
+                gpui_kit::base::input::TextareaState::new(window, cx);
+            state.set_placeholder(prompt_placeholder, window, cx);
+            state
+        });
+        let prompt_sub = cx.subscribe(
+            &prompt,
+            |panel, _, _: &gpui_kit::base::input::InputEvent, cx| {
                 if !panel.submission_pending {
                     panel.submission = None;
                 }
                 if panel.surface != StudioSurface::Chat {
                     cx.notify();
                 }
-            });
+            },
+        );
         tracing::debug!(
             target: "flowy.boot",
             stage = "StudioPanel::new",
@@ -435,11 +450,13 @@ impl StudioPanel {
             surface,
             notice: initial_notice,
             starter_category: Category::Website,
-            starter_offset: 0.,
+            starter_carousel: flowy_ui::CarouselState::new(),
+            session_opened_by_user: false,
             deliverables: None,
             preview_file: None,
             preview_body: None,
             drafts: std::collections::HashMap::new(),
+            prompt_pending: None,
             _prompt_sub: prompt_sub,
             pump: None,
         };
@@ -490,13 +507,20 @@ impl StudioPanel {
                 .agent
                 .active_workspace()
                 .map(|workspace| workspace.project_id);
-            if matches!(self.surface, StudioSurface::Home | StudioSurface::Chat)
-            {
-                self.surface = if self.agent.has_messages() {
-                    StudioSurface::Chat
+            // Startup always lands on Home: an existing history must not pull
+            // the app back into the last thread. A session the user opened in
+            // this run may restore into Chat, and an emptied conversation
+            // steps back down to Home.
+            if self.session_opened_by_user {
+                if self.agent.has_messages() {
+                    self.surface = StudioSurface::Chat;
                 } else {
-                    StudioSurface::Home
-                };
+                    self.surface = StudioSurface::Home;
+                }
+            } else if matches!(self.surface, StudioSurface::Chat)
+                && !self.agent.has_messages()
+            {
+                self.surface = StudioSurface::Home;
             }
             if self.agent.active_session_id().is_none() {
                 self.agent.set_workspace_for_new_sessions(None);
@@ -728,10 +752,10 @@ impl StudioPanel {
                 self.surface = StudioSurface::Home;
                 // A fresh task starts at the first card, not wherever the last
                 // row happened to be scrolled to.
-                self.starter_offset = 0.;
+                self.starter_carousel.reset();
                 self.refresh_chat(cx);
                 self.emit_notice(None, cx);
-                self.prompt.update(cx, |state, cx| state.emplace("", cx));
+                self.set_prompt_text("", cx);
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
             }
@@ -749,7 +773,7 @@ impl StudioPanel {
         self.document = DocumentSession::new(self.product);
         self.submission = None;
         self.surface = StudioSurface::Home;
-        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        self.set_prompt_text("", cx);
         self.refresh_chat(cx);
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -773,17 +797,18 @@ impl StudioPanel {
         self.invalidate_submission(cx);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
-        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        self.set_prompt_text("", cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
         Ok(())
     }
 
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
+        self.session_opened_by_user = true;
         // Reopening the current session must not round-trip its own draft.
         let same = self.agent.active_session_id().as_deref() == Some(id);
         if !same && let Some(current) = self.agent.active_session_id() {
-            let draft = self.prompt.read(cx).as_str().to_owned();
+            let draft = self.prompt_text(cx);
             self.drafts.insert(current, draft);
         }
         match self.agent.select_session(id) {
@@ -863,7 +888,7 @@ impl StudioPanel {
             self.active_project_id = None;
             self.agent.set_workspace_for_new_sessions(None);
             self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
-            self.prompt.update(cx, |state, cx| state.emplace("", cx));
+            self.set_prompt_text("", cx);
         }
         self.refresh_chat(cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -940,12 +965,15 @@ impl StudioPanel {
             return;
         }
         let model = self.catalog.selected_model().map(|m| m.id.clone());
+        // Text queued for the next render has not reached the prompt state yet;
+        // it is still what the user asked to send.
+        let typed = self.prompt_text(cx);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "StudioPanel::send_prompt",
             cloud_ready = self.cloud_ready,
             model = ?model,
-            chars = self.prompt.read(cx).as_str().trim().chars().count(),
+            chars = typed.trim().chars().count(),
             "enter"
         );
         if !self.cloud_ready || model.is_none() {
@@ -958,7 +986,7 @@ impl StudioPanel {
             self.emit_notice(Some("notice.agent_failed"), cx);
             return;
         }
-        let text = self.prompt.read(cx).as_str().trim().to_string();
+        let text = typed.trim().to_string();
         if text.is_empty() {
             tracing::debug!(
                 target: "flowy.prompt",
@@ -1033,17 +1061,14 @@ impl StudioPanel {
                 panel.submission_pending = false;
                 panel.submission_stop = None;
                 let active = panel.agent.active_session_id();
-                let draft_matches =
-                    panel.prompt.read(cx).as_str().trim() == text;
+                let draft_matches = panel.prompt_text(cx).trim() == text;
                 match result {
                     Ok(session_id)
                         if active.as_deref() == Some(session_id.as_str()) =>
                     {
                         panel.submission = None;
                         if draft_matches {
-                            panel
-                                .prompt
-                                .update(cx, |state, cx| state.emplace("", cx));
+                            panel.set_prompt_text("", cx);
                         }
                         panel.surface = StudioSurface::Chat;
                         panel.refresh_chat(cx);
@@ -1126,8 +1151,48 @@ impl StudioPanel {
     }
 
     pub fn fill_prompt(&mut self, text: &str, cx: &mut Context<'_, Self>) {
-        self.prompt.update(cx, |state, cx| state.emplace(text, cx));
+        self.set_prompt_text(text, cx);
+    }
+
+    /// The prompt text the user sees, including text queued for the next render.
+    fn prompt_text(&self, cx: &Context<'_, Self>) -> String {
+        match self.prompt_pending.as_deref() {
+            Some(pending) => pending.to_owned(),
+            None => self.prompt.read(cx).value().to_string(),
+        }
+    }
+
+    /// Queue prompt text for the render pass.
+    ///
+    /// The editing state installs programmatic text through `set_value`, which
+    /// needs a `&mut Window`; most prompt entry points (session restore,
+    /// background submission callbacks) run without one, so the text is applied
+    /// at the top of `render`.
+    fn set_prompt_text(
+        &mut self,
+        text: impl Into<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.prompt_pending = Some(text.into());
         cx.notify();
+    }
+
+    /// Install queued prompt text once a window is available.
+    fn apply_prompt_pending(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(text) = self.prompt_pending.take() else {
+            return;
+        };
+        self.prompt.update(cx, |state, cx| {
+            state.set_value(text, window, cx);
+            // `set_value` resets a multi-line selection to the start; a
+            // programmatic fill leaves the caret where typing continues.
+            let end = state.value().len();
+            state.set_selected_range(end..end, cx);
+        });
     }
 
     pub fn fill_prompt_key(
@@ -1161,11 +1226,17 @@ impl StudioPanel {
         self.starter_category = category;
         // Each category is a different row; carrying the old offset over would
         // open the new one mid-scroll, potentially past its own end.
-        self.starter_offset = 0.;
+        self.starter_carousel.reset();
         cx.notify();
     }
 
-    pub(crate) fn starter_category(&self) -> Category {
+    /// Whether the user opened a conversation in this run. The app shell uses
+    /// this to keep launch on Home while still restoring an opened session.
+    pub const fn session_opened_by_user(&self) -> bool {
+        self.session_opened_by_user
+    }
+
+    pub(crate) const fn starter_category(&self) -> Category {
         self.starter_category
     }
     pub(crate) fn open_deliverables(
@@ -1344,7 +1415,7 @@ impl StudioPanel {
             });
         self.active_project_id = Some(project_id);
         self.surface = StudioSurface::Home;
-        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        self.set_prompt_text("", cx);
         self.refresh_chat(cx);
         self.emit_notice(clear_error, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -1357,7 +1428,7 @@ impl StudioPanel {
     }
 
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
-        self.fill_prompt(&title, cx);
+        self.set_prompt_text(title, cx);
         self.send_prompt(cx);
     }
 
@@ -1386,6 +1457,7 @@ impl Render for StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        self.apply_prompt_pending(window, cx);
         let model_label = self.model_label();
         let cloud_ready = self.cloud_ready;
         self.composer.update(cx, |composer, cx| {
@@ -1408,6 +1480,40 @@ mod tests {
     use gpui::TestAppContext;
     use std::{cell::RefCell, rc::Rc};
 
+    /// Builds a panel inside its own window: `StudioPanel::new` needs the
+    /// window that owns its deferred work, and the tests only ever read state.
+    fn open_panel(
+        cx: &TestAppContext,
+        build: impl FnOnce(
+            &mut Window,
+            &mut Context<'_, StudioPanel>,
+        ) -> StudioPanel,
+    ) -> Entity<StudioPanel> {
+        let mut panel = None;
+        cx.update(|cx| {
+            let slot = &mut panel;
+            cx.open_window(
+                gpui::WindowOptions::default(),
+                move |window, cx| {
+                    let built = cx.new(|cx| build(window, cx));
+                    *slot = Some(built.clone());
+                    built
+                },
+            )
+            .expect("the test window opens");
+        });
+        panel.expect("the panel was built with its window")
+    }
+
+    /// The prompt text the user sees: queued programmatic text wins over the
+    /// editor state, which only receives it at the top of `render`.
+    fn visible_prompt(panel: &StudioPanel, cx: &gpui::App) -> String {
+        match panel.prompt_pending.as_deref() {
+            Some(pending) => pending.to_owned(),
+            None => panel.prompt.read(cx).value().to_string(),
+        }
+    }
+
     fn submission_panel(
         cx: &mut TestAppContext,
         tag: &str,
@@ -1420,10 +1526,10 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ));
-        let panel = cx.new(|cx| {
+        let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            let mut panel = StudioPanel::new(
+            StudioPanel::new(
                 StudioConfig {
                     product: "Flowy",
                     i18n: I18n::embedded("Flowy"),
@@ -1438,15 +1544,18 @@ mod tests {
                     },
                 },
                 ui,
+                window,
                 cx,
-            );
+            )
+        });
+        panel.update(cx, |panel, cx| {
             panel.catalog.replace(vec![flowy_agent::CatalogModel {
                 id: "test-model".into(),
                 name: "Test model".into(),
                 ..Default::default()
             }]);
             panel.cloud_ready = true;
-            panel
+            cx.notify();
         });
         (panel, root)
     }
@@ -1467,7 +1576,7 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
             assert!(!panel.submission_pending);
-            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            assert_eq!(panel.prompt.read(cx).value(), "");
             assert_eq!(
                 panel
                     .agent
@@ -1529,7 +1638,7 @@ mod tests {
         });
         cx.run_until_parked();
         panel.update(cx, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "keep for retry");
+            assert_eq!(panel.prompt.read(cx).value(), "keep for retry");
             assert_eq!(panel.submission, Some(id));
             assert!(!panel.agent.has_messages());
             assert_eq!(panel.notice, Some("project.folder_unavailable"));
@@ -1538,7 +1647,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "keep for retry");
+            assert_eq!(panel.prompt.read(cx).value(), "keep for retry");
             assert_eq!(panel.submission, Some(id));
             assert!(!panel.submission_pending);
         });
@@ -1567,7 +1676,7 @@ mod tests {
                 panel.agent.active_session_id().as_deref(),
                 Some(next.as_str())
             );
-            assert_eq!(panel.prompt.read(cx).as_str(), "new session draft");
+            assert_eq!(panel.prompt.read(cx).value(), "new session draft");
             assert!(!panel.agent.has_messages());
             assert_eq!(panel.surface, StudioSurface::Home);
         });
@@ -1576,7 +1685,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn background_initialized_event_restores_chat_and_preserves_unsent_draft(
+    fn background_initialized_event_keeps_home_and_preserves_unsent_draft(
         cx: &mut TestAppContext,
     ) {
         let root = std::env::temp_dir().join(format!(
@@ -1589,7 +1698,7 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join("sessions")).unwrap();
         std::fs::write(root.join("sessions/index.json"), r#"{"active":"restored","sessions":[{"id":"restored","title":"Saved conversation","updated_at":1,"lines":[{"kind":"user","text":"original request"},{"kind":"assistant","text":"Saved answer"}],"status":{"kind":"completed"},"origin":{"kind":"home"}}]}"#).unwrap();
-        let panel = cx.new(|cx| {
+        let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             StudioPanel::new_background(
@@ -1607,6 +1716,7 @@ mod tests {
                     },
                 },
                 ui,
+                window,
                 cx,
             )
         });
@@ -1639,9 +1749,13 @@ mod tests {
             panel.fill_prompt("keep this draft", cx);
             panel.process_agent_updates(updates, cx);
             assert_eq!(panel.notice, None);
-            assert_eq!(panel.surface, StudioSurface::Chat);
+            // Launching must not dive back into the last conversation just
+            // because it still has history; the user asked for Home first.
+            assert_eq!(panel.surface, StudioSurface::Home);
             assert_eq!(panel.agent.active_session_id().as_deref(), Some("restored"));
-            assert_eq!(panel.prompt.read(cx).as_str(), "keep this draft");
+            // Programmatic fills are applied at the top of `render`; the test
+            // reads the queued draft instead of driving a frame.
+            assert_eq!(visible_prompt(panel, cx), "keep this draft");
             let history = panel.agent.chat_history();
             assert_eq!(history.rows.len(), 2);
             assert!(matches!(&history.rows[0], flowy_agent::ChatLine::User { text } if text == "original request"));
@@ -1665,31 +1779,30 @@ mod tests {
         ));
         let folder = root.join("workspace");
         std::fs::create_dir_all(&folder).unwrap();
-        let panel = cx.update(|cx| {
+        let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            cx.new(|cx| {
-                StudioPanel::new(
-                    StudioConfig {
-                        product: "Flowy",
-                        i18n: I18n::embedded("Flowy"),
-                        model: Model::Lite,
-                        plan: Plan::Free,
-                        model_info_version: String::new(),
-                        model_info_open: false,
-                        store_root: root.clone(),
-                        llm: LlmConfig {
-                            api_key: None,
-                            base_url: String::new(),
-                            model: String::new(),
-                            provider: String::new(),
-                            ..LlmConfig::default()
-                        },
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
                     },
-                    ui,
-                    cx,
-                )
-            })
+                },
+                ui,
+                window,
+                cx,
+            )
         });
         let created = panel
             .update(cx, |panel, cx| panel.create_project("Client", &folder, cx))
@@ -1735,11 +1848,7 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
-    fn persisted_error_is_visible_on_the_first_frame(cx: &mut TestAppContext) {
+    fn persisted_error_is_visible_on_the_first_frame(cx: &TestAppContext) {
         let root = std::env::temp_dir().join(format!(
             "flowy-studio-working-{}-{}",
             std::process::id(),
@@ -1762,31 +1871,30 @@ mod tests {
             r#"{"active":"s1","sessions":[{"id":"s1","title":"t","updated_at":1,"titled":true,"lines":[],"status":{"kind":"error","message":"chat.status_error"}}]}"#,
         )
         .unwrap();
-        let panel = cx.update(|cx| {
+        let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            cx.new(|cx| {
-                StudioPanel::new(
-                    StudioConfig {
-                        product: "Flowy",
-                        i18n: I18n::embedded("Flowy"),
-                        model: Model::Lite,
-                        plan: Plan::Free,
-                        model_info_version: String::new(),
-                        model_info_open: false,
-                        store_root: root.clone(),
-                        llm: LlmConfig {
-                            api_key: None,
-                            base_url: String::new(),
-                            model: String::new(),
-                            provider: String::new(),
-                            ..LlmConfig::default()
-                        },
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
                     },
-                    ui,
-                    cx,
-                )
-            })
+                },
+                ui,
+                window,
+                cx,
+            )
         });
         cx.read_entity(&panel, |panel, cx| {
             assert_eq!(
@@ -1818,7 +1926,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let (panel, cx) = cx.add_window_view(|_, cx| {
+        let (panel, cx) = cx.add_window_view(|window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             StudioPanel::new(
@@ -1839,14 +1947,17 @@ mod tests {
                     },
                 },
                 ui,
+                window,
                 cx,
             )
         });
         cx.update(|window, cx| {
+            // The composer's editor advertises the `Input` key context, the
+            // same one the app binds its submit chord against.
             cx.bind_keys([gpui::KeyBinding::new(
                 "enter",
                 crate::SubmitComposer,
-                Some("EditableText"),
+                Some("Input"),
             )]);
             panel.update(cx, |panel, cx| {
                 panel.catalog.replace(vec![flowy_agent::CatalogModel {
@@ -1865,7 +1976,8 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            // Submitting queues the cleared draft for the next render.
+            assert_eq!(visible_prompt(panel, cx), "");
             assert!(panel.agent.has_messages());
         });
         drop(panel);
@@ -1884,7 +1996,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let (panel, cx) = cx.add_window_view(|_, cx| {
+        let (panel, cx) = cx.add_window_view(|window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             StudioPanel::new(
@@ -1905,6 +2017,7 @@ mod tests {
                     },
                 },
                 ui,
+                window,
                 cx,
             )
         });
@@ -1915,12 +2028,15 @@ mod tests {
                 gpui::KeyBinding::new(
                     "enter",
                     crate::SubmitComposer,
-                    Some("EditableText"),
+                    Some("Input"),
                 ),
                 gpui::KeyBinding::new(
                     "shift-enter",
-                    gpui_ce_elements::editable_text::actions::Enter,
-                    Some("EditableText"),
+                    gpui_kit::base::input::Enter {
+                        secondary: false,
+                        shift: true,
+                    },
+                    Some("Input"),
                 ),
             ]);
             panel.update(cx, |panel, cx| {
@@ -1939,12 +2055,13 @@ mod tests {
         // Home surface: Shift+Enter inserts a newline, Enter submits.
         cx.simulate_keystrokes("shift-enter");
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "hello\n");
+            assert_eq!(visible_prompt(panel, cx), "hello\n");
         });
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            // Submitting queues the cleared draft for the next render.
+            assert_eq!(visible_prompt(panel, cx), "");
             assert!(panel.agent.has_messages());
         });
 
@@ -1967,12 +2084,8 @@ mod tests {
     }
 
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
     fn background_session_updates_do_not_change_selected_surface(
-        cx: &mut TestAppContext,
+        cx: &TestAppContext,
     ) {
         let root = std::env::temp_dir().join(format!(
             "flowy-studio-navigation-{}-{}",
@@ -1982,31 +2095,30 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let panel = cx.update(|cx| {
+        let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            cx.new(|cx| {
-                StudioPanel::new(
-                    StudioConfig {
-                        product: "Flowy",
-                        i18n: I18n::embedded("Flowy"),
-                        model: Model::Lite,
-                        plan: Plan::Free,
-                        model_info_version: String::new(),
-                        model_info_open: false,
-                        store_root: root.clone(),
-                        llm: LlmConfig {
-                            api_key: None,
-                            base_url: String::new(),
-                            model: String::new(),
-                            provider: String::new(),
-                            ..LlmConfig::default()
-                        },
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
                     },
-                    ui,
-                    cx,
-                )
-            })
+                },
+                ui,
+                window,
+                cx,
+            )
         });
         let notices = Rc::new(RefCell::new(Vec::new()));
         let subscription = cx.update(|cx| {
@@ -2054,46 +2166,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
     #[gpui::test]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI test functions use the harness-provided mutable test context"
-    )]
     fn theme_changes_preserve_draft_and_do_not_leak_between_panels(
-        cx: &mut TestAppContext,
+        cx: &TestAppContext,
     ) {
         let root = std::env::temp_dir()
             .join(format!("flowy-studio-theme-{}", std::process::id()));
-        let (first, second, theme) = cx.update(|cx| {
+        let (first_ui, second_ui, theme) = cx.update(|cx| {
             let first_ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             let second_ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
             let theme = first_ui.theme.clone();
-            let make = |ui, cx: &mut gpui::App| {
-                cx.new(|cx| {
-                    StudioPanel::new(
-                        StudioConfig {
-                            product: "Flowy",
-                            i18n: I18n::embedded("Flowy"),
-                            model: Model::Lite,
-                            plan: Plan::Free,
-                            model_info_version: String::new(),
-                            model_info_open: false,
-                            store_root: root.clone(),
-                            llm: LlmConfig {
-                                api_key: None,
-                                base_url: String::new(),
-                                model: String::new(),
-                                provider: String::new(),
-                                ..LlmConfig::default()
-                            },
-                        },
-                        ui,
-                        cx,
-                    )
-                })
-            };
-            (make(first_ui, cx), make(second_ui, cx), theme)
+            (first_ui, second_ui, theme)
+        });
+        let panel_config = |root: &PathBuf| StudioConfig {
+            product: "Flowy",
+            i18n: I18n::embedded("Flowy"),
+            model: Model::Lite,
+            plan: Plan::Free,
+            model_info_version: String::new(),
+            model_info_open: false,
+            store_root: root.clone(),
+            llm: LlmConfig {
+                api_key: None,
+                base_url: String::new(),
+                model: String::new(),
+                provider: String::new(),
+                ..LlmConfig::default()
+            },
+        };
+        let first = open_panel(cx, {
+            let config = panel_config(&root);
+            move |window, cx| StudioPanel::new(config, first_ui, window, cx)
+        });
+        let second = open_panel(cx, {
+            let config = panel_config(&root);
+            move |window, cx| StudioPanel::new(config, second_ui, window, cx)
         });
         cx.update(|cx| {
             first.update(cx, |panel, cx| {
@@ -2116,7 +2224,7 @@ mod tests {
             assert!(first.read(cx).theme.dark);
             assert!(!second.read(cx).theme.dark);
             assert_eq!(
-                first.read(cx).prompt.read(cx).as_str(),
+                first.read(cx).prompt.read(cx).value(),
                 "preserve draft"
             );
         });

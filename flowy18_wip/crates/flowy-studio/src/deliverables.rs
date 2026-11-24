@@ -19,7 +19,7 @@ use crate::panel::StudioPanel;
 const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 
 /// What the drawer shows for the selected file.
-pub(crate) enum PreviewBody {
+pub enum PreviewBody {
     Text(String),
     Image(Arc<Image>),
     /// Locale key explaining why the file cannot be shown.
@@ -27,7 +27,7 @@ pub(crate) enum PreviewBody {
 }
 
 /// Reads one file for preview, classifying it by extension and size.
-pub(crate) fn load_preview(path: &str) -> PreviewBody {
+pub fn load_preview(path: &str) -> PreviewBody {
     let path = Path::new(path);
     let Ok(meta) = std::fs::metadata(path) else {
         return PreviewBody::Notice("chat.preview_missing");
@@ -44,17 +44,19 @@ pub(crate) fn load_preview(path: &str) -> PreviewBody {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase());
+        .map(str::to_ascii_lowercase);
     match extension.as_deref() {
-        Some("png") => {
-            PreviewBody::Image(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
-        }
-        Some("jpg" | "jpeg") => {
-            PreviewBody::Image(Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)))
-        }
-        Some("webp") => {
-            PreviewBody::Image(Arc::new(Image::from_bytes(ImageFormat::Webp, bytes)))
-        }
+        Some("png") => PreviewBody::Image(Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            bytes,
+        ))),
+        Some("jpg" | "jpeg") => PreviewBody::Image(Arc::new(
+            Image::from_bytes(ImageFormat::Jpeg, bytes),
+        )),
+        Some("webp") => PreviewBody::Image(Arc::new(Image::from_bytes(
+            ImageFormat::Webp,
+            bytes,
+        ))),
         _ => {
             if bytes.contains(&0) {
                 return PreviewBody::Notice("chat.preview_binary");
@@ -190,9 +192,11 @@ impl StudioPanel {
                         ),
                 )
                 .child(div().text_xs().child(delta))
-                .on_click(cx.listener(move |panel, _, _, cx| {
-                    panel.set_preview_file(Some(path.clone()), cx);
-                })),
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.set_preview_file(Some(path.clone()), cx);
+                    },
+                )),
             );
         }
         column
@@ -204,11 +208,7 @@ impl StudioPanel {
         preview: &PreviewBody,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let name = path
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(path)
-            .to_owned();
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
         let body = match preview {
             PreviewBody::Text(text) => div()
                 .p(self.theme.space(12.))
@@ -258,13 +258,11 @@ impl StudioPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_preview, PreviewBody, MAX_PREVIEW_BYTES};
+    use super::{MAX_PREVIEW_BYTES, PreviewBody, load_preview};
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "flowy-deliverables-{}-{name}",
-            std::process::id()
-        ))
+        std::env::temp_dir()
+            .join(format!("flowy-deliverables-{}-{name}", std::process::id()))
     }
 
     #[test]

@@ -3,15 +3,13 @@ use super::model::{
     LibraryUsage, LibraryView,
 };
 use super::preview_view::{PreviewEvent, PreviewPanel};
+use super::test_control;
 use crate::file_kind::FileKind;
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, UiContext};
 use gpui::{
     Context, Entity, FocusHandle, IntoElement, ParentElement, Render,
     SharedString, Subscription, Window, div, prelude::*, px,
-};
-use gpui_ce_elements::editable_text::{
-    EditableTextState, StringStorage, TextChanged,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,7 +141,7 @@ pub struct LibraryPanel {
     pub model: LibraryModel,
     ui: UiContext,
     i18n: I18n,
-    query: Entity<EditableTextState>,
+    query: Option<Entity<gpui_kit::base::input::InputState>>,
     popup: Option<Popup>,
     preview: Option<String>,
     preview_view: Option<Entity<PreviewPanel>>,
@@ -159,7 +157,7 @@ pub struct LibraryPanel {
     usage: Option<LibraryUsage>,
     category_focus: Vec<FocusHandle>,
     item_focus: std::collections::HashMap<String, FocusHandle>,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 
 impl std::fmt::Debug for LibraryPanel {
@@ -179,10 +177,10 @@ impl LibraryPanel {
         ui: UiContext,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let query =
-            cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
+        // `gpui_kit`'s `InputState` is created from a window, so the search
+        // field is built on the first render (`ensure_query`) instead of here;
+        // hosts construct the panel from windowless boot paths.
         let subscriptions = vec![
-            cx.subscribe(&query, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.observe(&ui.theme, |_, _, cx| cx.notify()),
             cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -209,7 +207,7 @@ impl LibraryPanel {
             model: LibraryModel::new(items),
             ui,
             i18n,
-            query,
+            query: None,
             popup: None,
             preview: None,
             preview_view: None,
@@ -228,8 +226,35 @@ impl LibraryPanel {
                 .map(|_| cx.focus_handle())
                 .collect(),
             item_focus,
-            _subscriptions: subscriptions,
+            subscriptions,
         }
+    }
+
+    /// Builds the search input on the first render, where a window is
+    /// available, and notifies on its events from then on.
+    fn ensure_query(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<gpui_kit::base::input::InputState> {
+        if let Some(query) = &self.query {
+            return query.clone();
+        }
+        let query =
+            cx.new(|cx| gpui_kit::base::input::InputState::new(window, cx));
+        self.subscriptions.push(cx.subscribe(
+            &query,
+            |_, _, _: &gpui_kit::base::input::InputEvent, cx| cx.notify(),
+        ));
+        self.query = Some(query.clone());
+        query
+    }
+
+    /// The search input, created by [`Self::ensure_query`] on the first render.
+    fn query_state(&self) -> Entity<gpui_kit::base::input::InputState> {
+        self.query
+            .clone()
+            .expect("the library search input is built on the first render")
     }
 
     pub fn set_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
@@ -499,7 +524,10 @@ impl LibraryPanel {
             .child(
                 theme::PageHeader::new(self.t("dock.library"))
                     .trailing(theme::anchor_trigger(
-                        sort,
+                        div()
+                            .id("library-sort-anchor")
+                            .debug_selector(|| "library-sort".to_owned())
+                            .child(sort),
                         "library-sort",
                         &self.ui,
                     ))
@@ -519,16 +547,25 @@ impl LibraryPanel {
                     .items_center()
                     .gap(px(8.))
                     .child(
-                        theme::ToolbarSearch::new(
-                            "library-search",
-                            self.t("library.search"),
-                            self.query.clone(),
-                        )
-                        .render(&t)
-                        .flex_1()
-                        .max_w(px(440.)),
+                        // The wrapper owns the toolbar slot so the search field
+                        // still grows to `max_w` inside it.
+                        div()
+                            .id("library-search")
+                            .debug_selector(|| "library-search".to_owned())
+                            .flex_1()
+                            .max_w(px(440.))
+                            .flex()
+                            .child(
+                                theme::ToolbarSearch::new(
+                                    "library-search",
+                                    self.t("library.search"),
+                                    self.query_state(),
+                                )
+                                .render(&t)
+                                .flex_1(),
+                            ),
                     )
-                    .child(favorite),
+                    .child(test_control("library-favorites", favorite)),
             )
     }
 
@@ -554,18 +591,29 @@ impl LibraryPanel {
                 theme::icons::layout_grid(),
             )
         };
-        theme::icon_segment(
-            id,
-            self.t(key),
-            icon.size(px(14.)),
-            self.model.view == view,
-            &t,
-            cx.listener(move |panel, _, _, cx| {
-                panel.model.view = view;
-                panel.popup = None;
-                cx.notify();
-            }),
-        )
+        let selector = if view == LibraryView::List {
+            "library-view-list"
+        } else {
+            "library-view-grid"
+        };
+        // Segments size themselves against the group's fixed height, so the
+        // test wrapper has to take that height rather than shrink-wrap it.
+        div()
+            .id(selector)
+            .debug_selector(move || selector.to_owned())
+            .h_full()
+            .child(theme::icon_segment(
+                id,
+                self.t(key),
+                icon.size(px(14.)),
+                self.model.view == view,
+                &t,
+                cx.listener(move |panel, _, _, cx| {
+                    panel.model.view = view;
+                    panel.popup = None;
+                    cx.notify();
+                }),
+            ))
     }
 
     fn filters(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -583,6 +631,9 @@ impl LibraryPanel {
                     selected,
                     &t,
                 )
+                .debug_selector(move || {
+                    format!("library-filter-{}", category.key())
+                })
                 .track_focus(&self.category_focus[index])
                 .tab_stop(selected)
                 .on_click(cx.listener(move |panel, _, _, cx| {
@@ -619,7 +670,7 @@ impl LibraryPanel {
 
     fn content(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let t = self.theme(cx);
-        let query = self.query.read(cx).as_str().to_owned();
+        let query = self.query_state().read(cx).value().to_string();
         let groups = self.model.groups(&query);
         let mut column = div().w_full().flex().flex_col().gap(px(24.));
         if groups.is_empty() {
@@ -668,7 +719,8 @@ impl LibraryPanel {
                 .render(&t),
             );
             if is_true_empty {
-                empty = empty.child(
+                empty = empty.child(test_control(
+                    "library-start-conversation",
                     theme::Button::new(
                         "library-start-conversation",
                         self.t("library.start_conversation"),
@@ -680,9 +732,10 @@ impl LibraryPanel {
                             cx.emit(LibraryEvent::StartConversationRequested);
                         }),
                     ),
-                );
+                ));
             } else {
-                empty = empty.child(
+                empty = empty.child(test_control(
+                    "library-clear-filters",
                     theme::Button::new(
                         "library-clear-filters",
                         self.t("library.clear_filters"),
@@ -690,17 +743,17 @@ impl LibraryPanel {
                     .variant(theme::ControlVariant::Secondary)
                     .render(
                         &t,
-                        cx.listener(|panel, _, _, cx| {
-                            panel
-                                .query
-                                .update(cx, |state, cx| state.emplace("", cx));
+                        cx.listener(|panel, _, window, cx| {
+                            panel.query_state().update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
                             panel.model.category = Category::All;
                             panel.model.favorites_only = false;
                             cx.emit(LibraryEvent::ClearFiltersRequested);
                             cx.notify();
                         }),
                     ),
-                );
+                ));
             }
             return column.child(empty);
         }
@@ -756,7 +809,8 @@ impl LibraryPanel {
                     )
                 })
                 .when(usage.view_bytes > 0, |line| {
-                    line.child(
+                    line.child(test_control(
+                        "library-clean-view-copies",
                         theme::Button::new(
                             "library-clean-view-copies",
                             self.t("library.storage.clean_views"),
@@ -769,7 +823,7 @@ impl LibraryPanel {
                                 cx.emit(LibraryEvent::CleanViewCopiesRequested);
                             }),
                         ),
-                    )
+                    ))
                 })
                 .into_any_element(),
         )
@@ -884,6 +938,10 @@ impl LibraryPanel {
             item.title.clone(),
             &t,
         )
+        .debug_selector({
+            let selector = format!("library-row-{}", item.id);
+            move || selector
+        })
         .w_full()
         .h(px(LIST_ROW_HEIGHT))
         .border_0()
@@ -949,7 +1007,17 @@ impl LibraryPanel {
             .flex_shrink_0(),
         )
         .child(div().w(px(1.)).flex_shrink_0())
-        .child(theme::anchor_trigger(more, more_id, &self.ui))
+        .child(theme::anchor_trigger(
+            div()
+                .id(format!("{more_id}-anchor"))
+                .debug_selector({
+                    let selector = format!("library-more-{}", item.id);
+                    move || selector
+                })
+                .child(more),
+            more_id,
+            &self.ui,
+        ))
         .when_some(self.item_focus.get(&item.id), |row, focus| {
             row.track_focus(focus).tab_stop(true)
         })
@@ -1034,6 +1102,10 @@ impl LibraryPanel {
             item.title.clone(),
             &t,
         )
+        .debug_selector({
+            let selector = format!("library-card-{}", item.id);
+            move || selector
+        })
         .relative()
         .min_w(px(CARD_MIN_WIDTH))
         .flex_1()
@@ -1048,11 +1120,19 @@ impl LibraryPanel {
         .gap(px(10.))
         .hover(move |style| style.bg(t.library_selected()).shadow_md())
         .child(
-            div()
-                .absolute()
-                .top(px(10.))
-                .right(px(10.))
-                .child(theme::anchor_trigger(more, more_id, &self.ui)),
+            div().absolute().top(px(10.)).right(px(10.)).child(
+                theme::anchor_trigger(
+                    div()
+                        .id(format!("{more_id}-anchor"))
+                        .debug_selector({
+                            let selector = format!("library-more-{}", item.id);
+                            move || selector
+                        })
+                        .child(more),
+                    more_id,
+                    &self.ui,
+                ),
+            ),
         )
         .child(self.file_icon(item, 28., cx))
         .child(
@@ -1088,13 +1168,14 @@ impl LibraryPanel {
     }
 
     fn action_menu_row(
-        id: impl Into<gpui::ElementId>,
+        id: &'static str,
         label: String,
         icon: impl IntoElement,
         theme: theme::ResolvedTheme,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> impl IntoElement {
         theme::menu_item_with_icon(id, label, icon, false, &theme, on_click)
+            .debug_selector(move || id.to_owned())
             .h(px(36.))
             .max_h(px(36.))
             .px(px(11.))
@@ -1113,15 +1194,17 @@ impl LibraryPanel {
     }
 
     fn sort_menu_row(
+        selector: &'static str,
         id: impl Into<gpui::ElementId>,
         label: String,
         mark: impl IntoElement,
         theme: theme::ResolvedTheme,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> impl IntoElement {
         let metrics = theme.control_metrics();
         let hover = theme.soft();
         theme::menu_item_with_icon(id, label, mark, false, &theme, on_click)
+            .debug_selector(move || selector.to_owned())
             .h(px(32.))
             .max_h(px(32.))
             .px(px(8.))
@@ -1174,6 +1257,11 @@ impl LibraryPanel {
                             mark.child(theme::icons::check().size(px(14.)))
                         });
                     menu = menu.child(Self::sort_menu_row(
+                        match sort {
+                            LibrarySort::Newest => "library-sort-newest",
+                            LibrarySort::Oldest => "library-sort-oldest",
+                            LibrarySort::Name => "library-sort-name",
+                        },
                         SharedString::from(format!(
                             "library-sort-{}",
                             sort.key()
@@ -1315,6 +1403,7 @@ impl Render for LibraryPanel {
                 focus.focus(window, cx);
             }
         }
+        let _ = self.ensure_query(window, cx);
         let t = self.theme(cx);
         let mut root = div()
             .id("library")
@@ -1384,7 +1473,7 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use flowy_i18n::Locale;
-    use gpui::{Focusable, TestAppContext, VisualTestContext, accesskit};
+    use gpui::{Focusable, TestAppContext, VisualTestContext};
 
     struct LibraryHarness {
         panel: Entity<LibraryPanel>,
@@ -1485,7 +1574,6 @@ mod tests {
         for _ in 0..4 {
             cx.run_until_parked();
             cx.update(|window, cx| {
-                window.set_a11y_forced(true);
                 window.simulate_next_frame(cx);
                 window.draw(cx).clear(cx);
             });
@@ -1493,34 +1581,37 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn activate(
+    /// `VisualTestContext::debug_bounds` only accepts `&'static str`, so ids
+    /// built from fixture data are leaked for the rest of the test process.
+    fn static_selector(selector: &str) -> &'static str {
+        Box::leak(selector.to_owned().into_boxed_str())
+    }
+
+    /// Whether the last frame painted the control a `.debug_selector` named.
+    fn painted(cx: &mut VisualTestContext, selector: &str) -> bool {
+        cx.debug_bounds(static_selector(selector)).is_some()
+    }
+
+    fn control_bounds(
         cx: &mut VisualTestContext,
-        label: &str,
-        role: accesskit::Role,
-    ) {
+        selector: &str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        cx.debug_bounds(static_selector(selector))
+            .unwrap_or_else(|| panic!("missing painted control {selector:?}"))
+    }
+
+    /// Clicks the painted control named `selector`.
+    ///
+    /// `gpui_pre` exposes no accessibility tree to tests, so the controls are
+    /// activated through the same pointer dispatch a platform click uses.
+    fn activate(cx: &mut VisualTestContext, selector: &str) {
         draw(cx);
-        let id = cx.update(|window, _| {
-            let tree = window.a11y_tree().expect("library accessibility tree");
-            let (id, node) = tree
-                .nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some(label) && node.role() == role)
-                .unwrap_or_else(|| {
-                    let labels: Vec<_> = tree.nodes.iter()
-                        .filter_map(|(_, node)| node.label().map(|label| (node.role(), label)))
-                        .collect();
-                    panic!("missing {role:?} labeled {label:?}; tree labels: {labels:?}")
-                });
-            assert!(node.supports_action(accesskit::Action::Click));
-            *id
-        });
-        cx.update(|window, cx| {
-            window.perform_a11y_action(id, accesskit::Action::Click, None, cx);
-        });
+        let bounds = control_bounds(cx, selector);
+        cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         draw(cx);
     }
 
-    fn press(cx: &mut VisualTestContext, key: &str) {
+    fn press(cx: &mut VisualTestContext, key: &'static str) {
         let keystroke =
             gpui::Keystroke::parse(key).expect("valid test keystroke");
         cx.simulate_event(gpui::KeyDownEvent {
@@ -1571,44 +1662,41 @@ mod tests {
         let captured = events.clone();
         let _subscription = host.update(cx, |_, cx| {
             cx.subscribe(&panel, move |_, _, event: &LibraryEvent, _| {
-                captured.lock().unwrap().push(event.clone())
+                captured.lock().unwrap().push(event.clone());
             })
         });
-        draw(cx);
-        cx.update(|window, _| {
-            let tree = window.a11y_tree().unwrap();
-            assert!(
-                !tree
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("Add files"))
-            );
-        });
-        let (id, title) = cx.read_entity(&panel, |panel, _| {
+        let (id, _title) = cx.read_entity(&panel, |panel, _| {
             (
                 panel.model.items[0].id.clone(),
                 panel.model.items[0].title.clone(),
             )
         });
+        draw(cx);
+        // The library offers no upload control: a file row exposes its own
+        // preview target and the "More actions" menu, nothing else.
+        assert!(painted(cx, &format!("library-row-{id}")));
+        assert!(painted(cx, &format!("library-more-{id}")));
         panel.update(cx, |panel, _| {
             panel.model.items[0].extension = "pdf".into();
         });
-        activate(cx, "More actions", accesskit::Role::Button);
-        activate(cx, "Open with default app", accesskit::Role::MenuItem);
+        activate(cx, &format!("library-more-{id}"));
+        activate(cx, "library-menu-open-default");
         cx.read_entity(&panel, |panel, _| assert!(panel.preview.is_none()));
-        activate(cx, &title, accesskit::Role::Button);
-        activate(cx, "Open with default app", accesskit::Role::Button);
-        let captured = events.lock().unwrap();
-        let open_events: Vec<_> = captured
+        activate(cx, &format!("library-row-{id}"));
+        activate(cx, "preview-open-default");
+        let open_events: Vec<_> = events
+            .lock()
+            .unwrap()
             .iter()
             .filter(|event| {
                 matches!(event, LibraryEvent::OpenWithDefaultRequested(_))
             })
+            .cloned()
             .collect();
         assert_eq!(open_events.len(), 2);
         for event in open_events {
             assert!(
-                matches!(event, LibraryEvent::OpenWithDefaultRequested(value) if value == &id)
+                matches!(event, LibraryEvent::OpenWithDefaultRequested(value) if value == id)
             );
         }
     }
@@ -1626,12 +1714,12 @@ mod tests {
                 captured.lock().unwrap().push(event.clone());
             })
         });
-        let (id, title) = panel.update(cx, |panel, _| {
+        let (id, _title) = panel.update(cx, |panel, _| {
             panel.internal_previews = false;
             let item = &panel.model.items[0];
             (item.id.clone(), item.title.clone())
         });
-        activate(cx, &title, accesskit::Role::Button);
+        activate(cx, &format!("library-row-{id}"));
         assert_eq!(
             events.lock().unwrap().as_slice(),
             &[LibraryEvent::PreviewRequested(id)]
@@ -1652,34 +1740,21 @@ mod tests {
         // content width instead of testing a full-width library in isolation.
         cx.simulate_resize(gpui::size(px(560.), px(600.)));
         draw(cx);
-        cx.update(|window, _| {
-            let tree = window.a11y_tree().unwrap();
-            for label in [
-                "Search files",
-                "Favorites",
-                "Sort",
-                "Grid view",
-                "List view",
-            ] {
-                let id = tree
-                    .nodes
-                    .iter()
-                    .find(|(_, node)| node.label() == Some(label))
-                    .map(|(id, _)| *id)
-                    .unwrap_or_else(|| {
-                        panic!("missing toolbar control {label}")
-                    });
-                let bounds = window
-                    .a11y_node_bounds(id)
-                    .expect("toolbar control has layout bounds");
-                assert!(
-                    bounds.left() >= px(0.) && bounds.right() <= px(560.),
-                    "{label} exceeds narrow content: {bounds:?}"
-                );
-                assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(600.));
-            }
-        });
-        activate(cx, "Favorites", accesskit::Role::Button);
+        for selector in [
+            "library-search",
+            "library-favorites",
+            "library-sort",
+            "library-view-grid",
+            "library-view-list",
+        ] {
+            let bounds = control_bounds(cx, selector);
+            assert!(
+                bounds.left() >= px(0.) && bounds.right() <= px(560.),
+                "{selector} exceeds narrow content: {bounds:?}"
+            );
+            assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(600.));
+        }
+        activate(cx, "library-favorites");
         cx.read_entity(&panel, |panel, _| assert!(panel.model.favorites_only));
     }
 
@@ -1726,43 +1801,22 @@ mod tests {
             panel.set_status(Some("library.error.catalog"), cx);
         });
         draw(cx);
-        cx.update(|window, _| {
-            assert!(
-                !window
-                    .a11y_tree()
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.label()
-                        == Some("Start a conversation"))
-            );
-        });
+        assert!(
+            !painted(cx, "library-start-conversation"),
+            "a catalog error must not offer the first-run empty state"
+        );
         panel.update(cx, |panel, cx| panel.set_status(None, cx));
         draw(cx);
-        cx.update(|window, _| {
-            assert!(
-                window
-                    .a11y_tree()
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.label()
-                        == Some("Start a conversation"))
-            );
-        });
+        assert!(
+            painted(cx, "library-start-conversation"),
+            "an empty library offers the first-run empty state"
+        );
         panel.update(cx, |panel, cx| panel.set_loading(true, cx));
         draw(cx);
-        cx.update(|window, _| {
-            assert!(
-                !window
-                    .a11y_tree()
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.label()
-                        == Some("Start a conversation"))
-            );
-        });
+        assert!(
+            !painted(cx, "library-start-conversation"),
+            "a loading library must not offer the first-run empty state"
+        );
     }
 
     #[gpui::test]
@@ -1775,7 +1829,7 @@ mod tests {
         let captured = events.clone();
         let _subscription = host.update(cx, |_, cx| {
             cx.subscribe(&panel, move |_, _, event: &LibraryEvent, _| {
-                captured.lock().unwrap().push(event.clone())
+                captured.lock().unwrap().push(event.clone());
             })
         });
         let mut usage = LibraryUsage {
@@ -1783,7 +1837,7 @@ mod tests {
             view_bytes: 4096,
         };
         panel.update(cx, |panel, cx| panel.set_usage(usage.clone(), cx));
-        activate(cx, "Clean viewing copies", accesskit::Role::Button);
+        activate(cx, "library-clean-view-copies");
         assert_eq!(
             events.lock().unwrap().as_slice(),
             &[LibraryEvent::CleanViewCopiesRequested]
@@ -1791,39 +1845,32 @@ mod tests {
         usage.view_bytes = 0;
         panel.update(cx, |panel, cx| panel.set_usage(usage, cx));
         draw(cx);
-        cx.update(|window, _| {
-            assert!(
-                !window
-                    .a11y_tree()
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.label()
-                        == Some("Clean viewing copies"))
-            );
-        });
+        assert!(
+            !painted(cx, "library-clean-view-copies"),
+            "the cleanup affordance disappears once no viewing copies remain"
+        );
     }
 
     #[gpui::test]
     fn real_pdf_preview_opens_navigates_and_closes(cx: &mut TestAppContext) {
         let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
         let panel = cx.read_entity(&host, |host, _| host.panel.clone());
-        let (id, title) = cx.read_entity(&panel, |panel, _| {
+        let (id, _title) = cx.read_entity(&panel, |panel, _| {
             let item = &panel.model.items[0];
             (item.id.clone(), item.title.clone())
         });
         panel.update(cx, |panel, _| {
             panel.model.items[0].extension = "pdf".into();
         });
-        activate(cx, &title, accesskit::Role::Button);
+        activate(cx, &format!("library-row-{id}"));
         draw(cx);
         cx.read_entity(&panel, |panel, _| {
-            assert_eq!(panel.preview.as_ref(), Some(&id))
+            assert_eq!(panel.preview.as_ref(), Some(&id));
         });
-        activate(cx, "Next page", accesskit::Role::Button);
-        activate(cx, "Previous page", accesskit::Role::Button);
-        activate(cx, "Zoom in", accesskit::Role::Button);
-        activate(cx, "Fit to window", accesskit::Role::Button);
+        activate(cx, "preview-next");
+        activate(cx, "preview-previous");
+        activate(cx, "preview-zoom-in");
+        activate(cx, "preview-fit");
         press(cx, "escape");
         draw(cx);
         cx.read_entity(&panel, |panel, _| {
@@ -1833,7 +1880,7 @@ mod tests {
         let expected_focus =
             cx.read_entity(&panel, |panel, _| panel.item_focus[&id].clone());
         cx.update(|window, cx| {
-            assert_eq!(window.focused(cx), Some(expected_focus))
+            assert_eq!(window.focused(cx), Some(expected_focus));
         });
     }
 
@@ -1848,7 +1895,7 @@ mod tests {
                 panel.preview_item(&id, window, cx);
                 panel.preview = None;
                 cx.notify();
-            })
+            });
         });
         draw(cx);
         cx.read_entity(&panel, |panel, _| {
@@ -1861,49 +1908,50 @@ mod tests {
     fn category_grid_toggle_and_typed_query_compose(cx: &mut TestAppContext) {
         let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
         let panel = cx.read_entity(&host, |host, _| host.panel.clone());
-        activate(cx, "Images", accesskit::Role::Tab);
-        activate(cx, "Grid view", accesskit::Role::Button);
+        let id =
+            cx.read_entity(&panel, |panel, _| panel.model.items[0].id.clone());
+        activate(cx, &format!("library-filter-{}", Category::Image.key()));
+        activate(cx, "library-view-grid");
         cx.read_entity(&panel, |panel, _| {
             assert_eq!(panel.model.category, Category::Image);
             assert_eq!(panel.model.view, LibraryView::Grid);
         });
         cx.update(|window, cx| {
-            let focus = panel.read(cx).query.read(cx).focus_handle(cx);
+            let focus = panel.read(cx).query_state().read(cx).focus_handle(cx);
             window.focus(&focus, cx);
         });
         cx.simulate_input("dew-stone");
         draw(cx);
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.query.read(cx).as_str(), "dew-stone");
-            let results = panel.model.filtered(panel.query.read(cx).as_str());
+            assert_eq!(
+                panel.query_state().read(cx).value().to_string(),
+                "dew-stone"
+            );
+            let query = panel.query_state().read(cx).value().to_string();
+            let results = panel.model.filtered(&query);
             assert_eq!(results.len(), 3);
             assert!(
                 results.iter().all(|item| item.category == Category::Image)
             );
         });
-        activate(cx, "List view", accesskit::Role::Button);
+        activate(cx, "library-view-list");
         cx.read_entity(&panel, |panel, cx| {
             assert_eq!(panel.model.view, LibraryView::List);
             assert_eq!(panel.model.category, Category::Image);
-            assert_eq!(panel.query.read(cx).as_str(), "dew-stone");
-        });
-        activate(cx, "Text and PDF", accesskit::Role::Tab);
-        cx.read_entity(&panel, |panel, cx| {
             assert_eq!(
-                panel.model.filtered(panel.query.read(cx).as_str()).len(),
-                0
+                panel.query_state().read(cx).value().to_string(),
+                "dew-stone"
             );
         });
-        cx.update(|window, _| {
-            let tree = window.a11y_tree().expect("library accessibility tree");
-            assert!(
-                !tree.nodes.iter().any(|(_, node)| {
-                    node.role() == accesskit::Role::Button
-                        && node.label() == Some("More actions")
-                }),
-                "an empty result must not retain file row actions"
-            );
+        activate(cx, &format!("library-filter-{}", Category::Document.key()));
+        cx.read_entity(&panel, |panel, cx| {
+            let query = panel.query_state().read(cx).value().to_string();
+            assert_eq!(panel.model.filtered(&query).len(), 0);
         });
+        assert!(
+            !painted(cx, &format!("library-more-{id}")),
+            "an empty result must not retain file row actions"
+        );
     }
 
     #[gpui::test]
@@ -1912,57 +1960,56 @@ mod tests {
     ) {
         let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
         let panel = cx.read_entity(&host, |host, _| host.panel.clone());
-        activate(cx, "Sort", accesskit::Role::Button);
+        // The fixture's first row; its menu drives the assertions below.
+        let item_id = "1104-byd-presentation";
+        let more = format!("library-more-{item_id}");
+        activate(cx, "library-sort");
         cx.read_entity(&panel, |panel, _| {
             assert_eq!(panel.popup, Some(Popup::Sort));
         });
-        activate(cx, "Oldest first", accesskit::Role::MenuItem);
+        activate(cx, "library-sort-oldest");
         cx.read_entity(&panel, |panel, _| {
             assert_eq!(panel.model.sort, LibrarySort::Oldest);
             assert!(panel.popup.is_none());
             let rows = panel.model.filtered("");
             assert!(rows.windows(2).all(|pair| pair[0].date <= pair[1].date));
         });
-        activate(cx, "Sort", accesskit::Role::Button);
-        activate(cx, "Newest first", accesskit::Role::MenuItem);
-        activate(cx, "More actions", accesskit::Role::Button);
-        let item_labels = cx.update(|window, _| {
-            let tree = window.a11y_tree().expect("library accessibility tree");
-            tree.nodes
-                .iter()
-                .filter_map(|(_, node)| {
-                    (node.role() == accesskit::Role::MenuItem)
-                        .then(|| node.label().map(str::to_owned))
-                        .flatten()
-                })
-                .collect::<Vec<_>>()
-        });
-        assert_eq!(
-            item_labels,
-            [
-                "Save as",
-                "Open with default app",
-                "Return to conversation",
-                "Add to favorites"
-            ]
+        activate(cx, "library-sort");
+        activate(cx, "library-sort-newest");
+        activate(cx, &more);
+        // The row menu keeps one stable top-to-bottom order; `control_bounds`
+        // also proves every documented action is reachable.
+        let menu_rows = [
+            "library-menu-save-as",
+            "library-menu-open-default",
+            "library-menu-locate-source",
+            "library-menu-favorite",
+        ];
+        let order: Vec<_> = menu_rows
+            .into_iter()
+            .map(|selector| control_bounds(cx, selector).origin.y)
+            .collect();
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "row menu order changed: {order:?}"
         );
         cx.read_entity(&panel, |panel, _| {
             assert!(matches!(panel.popup, Some(Popup::Item(_))));
         });
-        activate(cx, "Add to favorites", accesskit::Role::MenuItem);
+        activate(cx, "library-menu-favorite");
         cx.read_entity(&panel, |panel, cx| {
-            assert!(panel.model.is_favorite("1104-byd-presentation"));
+            assert!(panel.model.is_favorite(item_id));
             assert!(panel.popup.is_none());
             assert!(!panel.ui.overlays.read(cx).modal_active());
         });
-        activate(cx, "More actions", accesskit::Role::Button);
-        activate(cx, "Remove from favorites", accesskit::Role::MenuItem);
+        activate(cx, &more);
+        activate(cx, "library-menu-favorite");
         cx.read_entity(&panel, |panel, cx| {
-            assert!(!panel.model.is_favorite("1104-byd-presentation"));
+            assert!(!panel.model.is_favorite(item_id));
             assert!(panel.popup.is_none());
             assert!(!panel.ui.overlays.read(cx).modal_active());
         });
-        activate(cx, "Sort", accesskit::Role::Button);
+        activate(cx, "library-sort");
         press(cx, "escape");
         cx.read_entity(&panel, |panel, _| assert!(panel.popup.is_none()));
     }

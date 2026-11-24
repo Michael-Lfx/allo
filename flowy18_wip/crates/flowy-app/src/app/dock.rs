@@ -1,6 +1,6 @@
 use super::{FlowyApp, Section};
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, Window, div, prelude::*, px};
+use gpui::{Context, Window, div, prelude::*, px};
 
 #[derive(Clone, Copy)]
 enum DockIcon {
@@ -239,7 +239,7 @@ impl FlowyApp {
                     })
                     .hover(|row| row.bg(self.theme.dock_selected()))
                     .on_hover({
-                        let hovered = hovered.clone();
+                        let hovered = hovered;
                         move |active, window, cx| {
                             let changed = hovered.update(cx, |state, cx| {
                                 if *state == *active {
@@ -351,7 +351,7 @@ impl FlowyApp {
             .debug_selector(|| "project-actions".into())
             .child(theme::anchor_trigger(
                 dock_icon_button(
-                    window,
+                    format!("project-menu-button-hit-{project_id}"),
                     theme::IconButton::new(
                         format!("project-menu-button-{project_id}"),
                         self.t("project.menu"),
@@ -372,7 +372,7 @@ impl FlowyApp {
                 theme::tooltip_trigger(
                     format!("project-new-task-tip-{project_id}"),
                     dock_icon_button(
-                        window,
+                        format!("project-new-task-hit-{project_id}"),
                         theme::IconButton::new(
                             format!("project-new-task-{project_id}"),
                             self.t("project.new_task"),
@@ -435,7 +435,7 @@ impl FlowyApp {
             .when(show_menu, |row| row.bg(self.theme.dock_selected()))
             .hover(|row| row.bg(self.theme.dock_selected()))
             .on_hover({
-                let hovered = hovered.clone();
+                let hovered = hovered;
                 move |active, window, cx| {
                     let changed = hovered.update(cx, |state, cx| {
                         if *state == *active {
@@ -482,7 +482,7 @@ impl FlowyApp {
     /// the project's edit button, the rightmost action.
     fn conversation_row_actions(
         &self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<'_, Self>,
         session_id: &str,
     ) -> impl IntoElement {
@@ -495,7 +495,7 @@ impl FlowyApp {
             .debug_selector(|| "task-actions".into())
             .child(theme::anchor_trigger(
                 dock_icon_button(
-                    window,
+                    format!("task-options-hit-{session_id}"),
                     theme::IconButton::new(
                         format!("task-options-{session_id}"),
                         self.t("library.more"),
@@ -504,7 +504,6 @@ impl FlowyApp {
                     .disabled(self.conversation_delete_busy()),
                     &self.theme,
                     cx.listener({
-                        let id = id.clone();
                         move |app, _, _, cx| {
                             cx.stop_propagation();
                             app.toggle_task_menu(&id, cx);
@@ -652,7 +651,7 @@ impl FlowyApp {
             .bg(self.theme.dock())
             .hover(|row| row.bg(self.theme.dock_selected()))
             .on_hover({
-                let hovered = hovered.clone();
+                let hovered = hovered;
                 move |active, window, cx| {
                     let changed = hovered.update(cx, |state, cx| {
                         if *state == *active {
@@ -703,7 +702,7 @@ impl FlowyApp {
             )
             .when(show_add, |row| {
                 row.child(dock_icon_button(
-                    window,
+                    "new-project-hit",
                     theme::IconButton::new(
                         "new-project",
                         self.t("dock.new_project"),
@@ -1138,24 +1137,30 @@ fn body_line_height(
     theme: &flowy_ui::ResolvedTheme,
     window: &Window,
 ) -> gpui::Pixels {
-    window.pixel_snap(px(theme.body_size().as_f32() * gpui::phi().as_f32()))
+    // `gpui-pre` keeps the golden ratio as a `DefiniteLength` fraction; the
+    // plain constant is what the old `DefiniteLength::as_f32` handed back.
+    window.pixel_snap(px(
+        theme.body_size().as_f32() * std::f32::consts::GOLDEN_RATIO
+    ))
 }
 
+/// A dock action icon.
+///
+/// `IconButton::render` erases to `AnyElement`, which no longer exposes the
+/// interactive surface, so the hit target that the anchor and the tooltip
+/// attach to lives on this shell. The control keeps its own `ControlSize`
+/// metrics instead of the old line-height square.
 fn dock_icon_button(
-    window: &Window,
+    id: impl Into<gpui::ElementId>,
     button: theme::IconButton,
     theme: &flowy_ui::ResolvedTheme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> theme::A11yElement<gpui::Div> {
-    let line = body_line_height(theme, window);
-    button
-        .size(theme::ControlSize::Small)
-        .render(theme, on_click)
-        .w(line)
-        .h(line)
-        .min_w(line)
-        .min_h(line)
-        .flex_shrink_0()
+) -> gpui::Stateful<gpui::Div> {
+    div().id(id).flex_shrink_0().child(
+        button
+            .size(theme::ControlSize::Small)
+            .render(theme, on_click),
+    )
 }
 
 /// Project folder toggle. Same hit target as the other dock icons, with no
@@ -1167,7 +1172,7 @@ fn project_folder_toggle(
     label: impl Into<gpui::SharedString>,
     icon: impl IntoElement,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
+) -> flowy_ui::InteractiveDiv {
     let line = body_line_height(theme, window);
     theme::interactive(id, label, theme)
         .w(line)
@@ -1188,7 +1193,7 @@ fn item_row(
     label: String,
     selected: bool,
     icon: DockIcon,
-) -> gpui::Stateful<gpui::Div> {
+) -> flowy_ui::InteractiveDiv {
     theme::nav_item(id, label, selected, icon.render(), &theme)
 }
 

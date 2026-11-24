@@ -1,5 +1,5 @@
 //! TC-17 exercises the application's real native save-picker receiver with
-//! immutable CSV bytes created by ArtifactStore. TestPlatform supplies the
+//! immutable CSV bytes created by `ArtifactStore`. `TestPlatform` supplies the
 //! user's selection; it never reads or writes the suggested Documents folder.
 
 use super::{FlowyApp, Screen, Section, state::ActiveDialog};
@@ -103,22 +103,21 @@ impl Drop for Fixture {
 }
 
 fn app_with_loaded_artifact(
-    cx: &TestAppContext,
+    cx: &mut TestAppContext,
     fixture: &Fixture,
 ) -> Entity<FlowyApp> {
-    let app = cx.update(|cx| {
-        cx.new(|cx| {
-            let mut app = FlowyApp::new(
-                SessionStore::new(fixture.root.clone()),
-                false,
-                cx,
-            );
-            app.screen = Screen::Main;
-            app.section = Section::Library;
-            app.active_dialog = ActiveDialog::None;
-            app.ota.checked = true;
-            app
-        })
+    let (app, _cx) = cx.add_window_view(|window, cx| {
+        let mut app = FlowyApp::new(
+            SessionStore::new(fixture.root.clone()),
+            false,
+            window,
+            cx,
+        );
+        app.screen = Screen::Main;
+        app.section = Section::Library;
+        app.active_dialog = ActiveDialog::None;
+        app.ota.checked = true;
+        app
     });
     // FlowyApp owns the asynchronous library query; no test-only row is
     // injected into LibraryPanel or the conversation projection.
@@ -144,7 +143,7 @@ fn request_save(
                 &LibraryEvent::SaveAsRequested(fixture.artifact_id.clone()),
                 cx,
             );
-        })
+        });
     });
     assert!(
         cx.did_prompt_for_new_path(),
@@ -177,7 +176,7 @@ fn save_picker_cancellation_creates_no_export(cx: &mut TestAppContext) {
             .is_none()
     );
     cx.update(|cx| {
-        assert_ne!(app.read(cx).notice, Some("library.error.export"))
+        assert_ne!(app.read(cx).notice, Some("library.error.export"));
     });
     fixture.assert_sources_unchanged();
     drop(app);

@@ -1,40 +1,64 @@
-# BLOCKED — 待裁决/越界事项（不阻塞已交付部分）
+# 迁移阻塞记录（gpui-ce → gpui-pre + gpui-kit）
 
-## 2026-11-18 · 后续审查已解除 Clippy 阻塞
+## 结论（2026-11-24）
 
-- rebase 后的首次 Clippy 退出 101，恰好报任务书的 4 条 `flowy-ui` lint。应用四处修复后，原命令通过了 `flowy-ui` 检查，继续检查 `flowy-studio` 时退出 101。
-- `crates/flowy-studio/src/library/view.rs:20`：`doc_markdown`，文档中的 `IconPark` 缺少反引号。
-- `crates/flowy-studio/src/library/view.rs:38`：`map_unwrap_or`，对 `Option` 调用 `map(...).unwrap_or_default()`。
-- `crates/flowy-studio/src/library/view.rs:634`：`trivially_copy_pass_by_ref`，通过引用传递 5 字节的 `ResolvedTheme`。
-- 后续获准扩展到验收阻塞文件，已修复上述 3 条和继续编译发现的 Library 示例日志、技能页共享借用两条。最终 Clippy、反向验证、fmt 和原四 crate 测试均通过。
-- 保留本地既有特性提交和只读方案文档。从 `origin/main` 建立独立 PR 分支，范围限于本轮修复和本轮验证记录。
+`gpui-pre =0.3.14` + `gpui-kit 0.11` 可以承载 `flowy18_wip`，但需要接受一组
+能力缺口。本文件记录**已验证不可行**的方向和**已知的功能损失**，避免后来者
+重复踩坑。
 
-## 2026-11-18 · Clippy 任务的整分支差异验收
+## 已验证不可行的方向
 
-- rebase 前实测 `git rev-list --left-right --count origin/main...HEAD` 为 `1 5`，rebase 到 `9f51499af` 后为 `0 5`，既有 5 个提交涉及 49 个文件。要求整分支对 `origin/main` 的差异仅有本轮四个白名单文件，与保留既有特性提交冲突。
-- 工作区进入任务时已有两份未跟踪文档 `docs/plans/model-tiers-and-flex-final.zh.md`、`docs/plans/model-tiers-and-flex-recommendation.md`。按只读要求保留，两份文档会继续出现在 `git status`。
-- 本轮使用 rebase 后 HEAD `3195aa82f` 核对新增提交范围，仍执行任务指定的整分支差异命令并如实报告。
+### 1. 移植 `editable_text`
 
-## 三挡位模型选择器 — 历史记录
+`gpui-ce` 的 `editable_text` 是在 `gpui-pre` 的排版层之上加的一层封装
+（`ShapedText`、`ShapedTextLayout`、`CaretPosition`/`CaretSelection`、
+`UnicodeBidi`、`TextLayoutOptions`、`ColorExt`）。移植尝试后错误数长期在
+120～182 之间震荡，无法收敛：
 
-## 1. flowy-ui/src/overlays.rs 在改动集内但不在原白名单
-- 现状：`flowy18_wip/crates/flowy-ui/src/overlays.rs` 有 9 行未提交改动（`menu_item` 把 label 渲染成可见文本），属上一轮遗留，本次未改动。
-- 影响：菜单行文字依赖此改动才可见；回滚会导致菜单行空白，违反验收第 4 条。
-- 待裁决：交付判卷时是否视为既有基线；若必须严格白名单，需要单独提交或说明。
+- `gpui-pre` 的 `shape_text` 返回 `SmallVec<[WrappedLine; 1]>`，ce 返回 `ShapedText`
+- `WrappedLine` 不实现 `Clone`
+- `closest_index_for_position` 返回 `Result<usize, usize>`，签名不同
+- `WrappedLine::paint` 多出 `align` / `align_width` 参数
 
-## 2. i18n（已解决，2026-11-18）
-- 23 个语种包含 `credits.plan_pro`、`credits.plan_ultra`、`model.unavailable`、`model.menu_title`；已移除无引用的 `credits.plan_paid`。
-- 验证：`cargo test -p flowy-i18n` 4 passed（含 `every_locale_has_the_same_keys`）；脚本 parity `541 keys x 23 locales`。
+**结论**：不移植。直接用 `gpui_kit::base::input` 的 `Input` / `Textarea`，
+`flowy-ui` 只保留样式壳。
 
-## 3. 已记录、未顺手修的问题
-- 目录未加载时菜单只剩标题+刷新项（无三行占位、无 panic）；按任务 4 只验证不 panic，未加空态文案。
-- 已存 Pro 挡位但当前账号 Free（如付费期选过 Max 后降级）：启动时锁定不应用路由、无法发送，但 chip 仍显示该挡位为已选（`prefs.rs` 有意保留存储挡位，授权以 effectiveModelTier 为准）。属产品行为待裁决，不会越权发送。
-- `crates/flowy-app/locales/` 与 `crates/flowy-i18n/locales/` 重复且无代码引用（已确认无 include_str/读取）；未同步、未删除。删除属不可回收操作，需确认后处理。
+### 2. 热补丁（hot-patching）
 
-## 4. 环境限制（不影响结论）
-- 本机 shell 的 curl/PowerShell TLS 不可用（schannel `SEC_E_NO_CREDENTIALS`），无法在命令行预查云端目录；实跑用应用自身 rustls 栈验证。
-- `cargo` 在 Windows 下需把 `CARGO_TARGET_DIR`/`TEMP` 转成 Windows 路径（cygpath -w），否则拼出 `D:/d/...` 失败；关闭窗口后 flowy-app 可能仍驻留（托盘），重建前需确认进程已退出。
+`dx serve` 强制 `-Clinker=dx.exe`，两种模式都在链接阶段失败
+（exit 1 / LNK1104）。用 cargo 走同一 wrapper 构建成功，说明问题在 dx 的
+调用参数，不在 wrapper / MSVC / CE。**本机不可用**。
 
-## 已合入 main 的 Clippy 修复（#461）
+### 3. `gpui-tray`
 
-无本地门禁阻塞。Cargo 仍输出基线已有的 manifest 和 profile 元数据提示。Windows 示例的程序内截图接口返回拒绝访问，交互验证范围见 PROGRESS。
+依赖 `gpui-ce`，其 `MenuItem` / `App` / `Action` 与 `gpui-pre` 的类型不统一。
+托盘功能整体摘除。
+
+## 能力缺口（`gpui-pre` 没有）
+
+| 能力 | ce 的写法 | pre 的现状 |
+| --- | --- | --- |
+| 元素 prepaint 钩子 | `.on_prepaint(..)` | 无（popover 锚点测量需另想办法） |
+| ARIA 属性 | `.aria_live` `.aria_disabled` `.aria_modal` `.aria_hidden` | 无，生产代码中已删 |
+| a11y 测试 API | `window.a11y_tree()` 等 | 无，改用 `gpui-kit/test-support` |
+| 颜色工具 | `gpui::ColorExt`、`rgb_to_hsla` | `Hsla::from(rgba)` 等价；`ColorExt` 无 |
+| Enter action | `gpui::Enter` | `gpui_kit::base::input::Enter { secondary, shift }` |
+| 元素级样式 | `AnyElement` 可链 `.min_h` 等 | `AnyElement` 无 `Styled`，须包 `div()` |
+| `emplace` | `state.emplace(text, cx)` | 无；`set_value(text, window, cx)` 需要 window |
+| 字母间距 | `letter_spacing(px(..))` | 无 |
+| RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
+| 系统托盘 | `gpui-tray` | 依赖 ce，不可用 |
+
+## 当前已知遗留（不影响编译，影响行为或体验）
+
+1. popover / 菜单 / tooltip 的锚点测量：**已修复**，见 `flowy-ui/src/overlays.rs`
+   的 `PrepaintBounds` 与 `tests/anchor_measurement.rs`（2 个回归测试）
+3. 逐键硬截断改为保存时截断
+4. RTL 未接线，阿语/希语下根方向与局部方向不一致
+5. a11y 播报与隐藏语义退化
+6. 关闭窗口 = 退出应用（托盘已移除）
+7. 输入框内 Tab：**多行框已改为插入 4 个空格**，单行框仍移焦点。注意首页 composer 用的是裸 `text_area`，不在那四个字段里，Tab 仍移焦点
+8. 光标闪烁间隔、letter_spacing 回默认
+9. 启动固定落 Home，不再自动恢复上次会话
+10. `set_value` 不发 change 事件，所有「写值 → 等事件 → 落盘」的链路都需要
+    改成「算出最终值 → 排队 → 直接用最终值提交」

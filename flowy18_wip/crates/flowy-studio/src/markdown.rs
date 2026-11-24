@@ -6,8 +6,8 @@ use std::cell::Cell;
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, ResolvedTheme};
 use gpui::{
-    AnyElement, Div, Font, Rgba, StyledText, TextRun, UnderlineStyle, div,
-    font, prelude::*, px, rgb_to_hsla,
+    AnyElement, Div, Font, Hsla, Rgba, StyledText, TextRun, UnderlineStyle,
+    div, font, prelude::*, px,
 };
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag};
 use url::Url;
@@ -207,10 +207,10 @@ impl Renderer<'_> {
                     runs.push(TextRun {
                         len: content.len(),
                         font: face,
-                        color: rgb_to_hsla(color),
+                        color: Hsla::from(color),
                         background_color: style
                             .code
-                            .then(|| rgb_to_hsla(self.theme.soft())),
+                            .then(|| Hsla::from(self.theme.soft())),
                         ..Default::default()
                     });
                     text.push_str(content);
@@ -227,7 +227,7 @@ impl Renderer<'_> {
                             TextRun {
                                 len: label.len(),
                                 font: body_font.clone(),
-                                color: rgb_to_hsla(self.theme.accent()),
+                                color: Hsla::from(self.theme.accent()),
                                 underline: Some(UnderlineStyle::default()),
                                 ..Default::default()
                             },

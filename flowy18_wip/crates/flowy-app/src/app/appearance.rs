@@ -1,21 +1,22 @@
+use super::FlowyApp;
 use super::settings::Picker;
-use super::{FlowyApp, place};
 use crate::prefs::{Accent, Density, ThemeMode};
 use flowy_ui as theme;
 use gpui::{Context, SharedString, div, prelude::*, px};
 
 impl FlowyApp {
     pub(super) fn touch_font_size(&mut self, cx: &mut Context<'_, Self>) {
-        let raw = self
-            .appearance
-            .font_size_field
-            .read(cx)
-            .as_str()
-            .to_string();
+        let raw = self.appearance.font_size_field.read(cx).value().to_string();
         let digits: String =
             raw.chars().filter(char::is_ascii_digit).take(2).collect();
         if digits != raw {
-            place(&self.appearance.font_size_field, &digits, cx);
+            // `set_input_text` queues the value for the next render: installing
+            // it here would need a `&mut Window`, which this handler has none of.
+            self.set_input_text(
+                &self.appearance.font_size_field,
+                digits.as_str(),
+                cx,
+            );
             return;
         }
         let Ok(value) = digits.parse::<u8>() else {
@@ -26,7 +27,11 @@ impl FlowyApp {
         }
         let clamped = value.clamp(12, 16);
         if clamped != value {
-            place(&self.appearance.font_size_field, &clamped.to_string(), cx);
+            self.set_input_text(
+                &self.appearance.font_size_field,
+                clamped.to_string(),
+                cx,
+            );
         }
         if self.prefs.font_size == clamped {
             return;

@@ -7,6 +7,7 @@ Agent 阅读顺序：本页 → 对应分类 `README.md` → 目标文档。
 
 | 分类 | 何时读 | 入口 |
 | --- | --- | --- |
+| GPUI 迁移 | **写任何 GPUI 代码前**：依赖锁定、输入控件、键上下文、布局陷阱 | [gpui-pre-and-kit.md](gpui-pre-and-kit.md) |
 | 架构与决策 | 了解 agent 内核、shell 等已定方案 | [architecture/README.md](architecture/README.md) |
 | 计划与交接 | 接手未完成工作、查看待实现方案 | [plans/README.md](plans/README.md) · [PPTX/PDF/JPG 预览依赖调研](plans/document-preview-dependencies.zh.md) |
 | pi-loop 工作流 | 查 pi-rust loop 实验、证据与迁移结论 | [pi-loop/README.md](pi-loop/README.md) |

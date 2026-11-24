@@ -364,10 +364,9 @@ impl AgentHandle {
             }
         };
         let deleted_sessions = if let Some(store) = state.artifact_store.get() {
-            let mut deleted =
-                recover_session_deletions(&store, &engine, &state);
+            let mut deleted = recover_session_deletions(store, &engine, &state);
             deleted.extend(migrate_legacy_source_deletions(
-                &store, &engine, &state,
+                store, &engine, &state,
             ));
             deleted
         } else {
@@ -486,12 +485,11 @@ impl AgentHandle {
         }
         import_engine_sessions(&engine, &state, &deleted_sessions);
         // A crash leaves the old status in the file; persist the repaired view.
-        let index_persisted = match persist_index(&state) {
-            Ok(()) => true,
-            Err(_) => {
-                state.report_storage_error();
-                false
-            }
+        let index_persisted = if persist_index(&state) == Ok(()) {
+            true
+        } else {
+            state.report_storage_error();
+            false
         };
         if index_persisted && let Some(store) = state.artifact_store.get() {
             for session_id in &deleted_sessions {
@@ -1330,16 +1328,12 @@ impl AgentHandle {
                 submission,
             )
             .map_err(|error| {
-                match &error {
-                    RunError::Storage(storage_error) => {
-                        log_storage_io_error(
-                            "start agent turn",
-                            &flowy_agent_core::SessionIndex::path(&state.root),
-                            storage_error,
-                        );
-                    }
-                    RunError::Busy => {}
-                    _ => {}
+                if let RunError::Storage(storage_error) = &error {
+                    log_storage_io_error(
+                        "start agent turn",
+                        &flowy_agent_core::SessionIndex::path(&state.root),
+                        storage_error,
+                    );
                 }
                 match error {
                     RunError::Storage(_) => "notice.storage_error",
@@ -2019,8 +2013,7 @@ fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
     if let Some(store) = state.artifact_store.get() {
         let commits = engine
             .session(id)
-            .map(|record| record.delivery_commits)
-            .unwrap_or_default();
+            .map_or_default(|record| record.delivery_commits);
         if let Err(error) = store.recover_commits(&commits) {
             log_storage_io_error(
                 "update artifact source title",

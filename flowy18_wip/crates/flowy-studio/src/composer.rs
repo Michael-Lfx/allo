@@ -4,10 +4,10 @@ use flowy_i18n::I18n;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{
-    ColorExt, Context, Entity, EventEmitter, Render, SharedString,
-    Subscription, Window, div, prelude::*, px,
+    Context, Entity, EventEmitter, Render, SharedString, Subscription, Window,
+    div, prelude::*, px,
 };
-use gpui_ce_elements::editable_text::{EditableTextState, TextChanged};
+use gpui_kit::base::input::TextareaState;
 
 /// Enter pressed while the composer owns focus.
 #[derive(Clone, Debug, Default, PartialEq, Eq, gpui::Action)]
@@ -24,7 +24,7 @@ pub enum ComposerEvent {
 pub struct ChatComposer {
     ui: theme::UiContext,
     theme: theme::ResolvedTheme,
-    prompt: Entity<EditableTextState>,
+    prompt: Entity<TextareaState>,
     i18n: I18n,
     model: Model,
     /// Live cloud-catalog label. The catalog lives on `StudioPanel`, so the
@@ -42,7 +42,7 @@ impl EventEmitter<ComposerEvent> for ChatComposer {}
 impl ChatComposer {
     pub(crate) fn new(
         ui: theme::UiContext,
-        prompt: Entity<EditableTextState>,
+        prompt: Entity<TextareaState>,
         i18n: I18n,
         model: Model,
         cx: &mut Context<'_, Self>,
@@ -52,8 +52,10 @@ impl ChatComposer {
             composer.theme = entity.read(cx).resolved();
             cx.notify();
         });
-        let prompt_sub =
-            cx.subscribe(&prompt, |_, _, _: &TextChanged, cx| cx.notify());
+        let prompt_sub = cx.subscribe(
+            &prompt,
+            |_, _, _: &gpui_kit::base::input::InputEvent, cx| cx.notify(),
+        );
         Self {
             ui,
             theme,
@@ -109,7 +111,7 @@ impl ChatComposer {
         running: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let has_draft = !self.prompt.read(cx).as_str().trim().is_empty();
+        let has_draft = !self.prompt.read(cx).value().trim().is_empty();
         div()
             .id("chat-composer")
             .on_action(cx.listener(
@@ -117,8 +119,7 @@ impl ChatComposer {
                     // Enter submits; Shift+Enter keeps inserting newlines via
                     // the editable-text binding. Empty/running drafts swallow
                     // Enter so it cannot leave a stray blank line.
-                    let draft =
-                        !this.prompt.read(cx).as_str().trim().is_empty();
+                    let draft = !this.prompt.read(cx).value().trim().is_empty();
                     if running || !draft || !this.cloud_ready {
                         return;
                     }
@@ -151,21 +152,12 @@ impl ChatComposer {
                     .flex_col()
                     .gap(self.theme.space(8.))
                     .child(
-                        text_area("chat-prompt")
-                            .aria_label(self.t("chat.do_anything"))
-                            .state(self.prompt.downgrade())
-                            .placeholder(SharedString::from(
-                                self.t("chat.do_anything"),
-                            ))
-                            .placeholder_color(self.theme.muted())
-                            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-                            .caret_blink_interval_500ms()
-                            .w_full()
-                            .min_h(px(44.))
-                            .max_h(px(160.))
-                            .whitespace_normal()
-                            .overflow_y_scroll()
-                            .text_color(self.theme.ink()),
+                        // The kit multi-line editor is `h_full` inside, so it
+                        // needs a bounded parent or it collapses to one row.
+                        div().w_full().min_h(px(44.)).max_h(px(160.)).child(
+                            text_area("chat-prompt", &self.prompt)
+                                .into_any_element(),
+                        ),
                     )
                     .child(
                         div()

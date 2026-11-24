@@ -387,7 +387,9 @@ mod tests {
                 image
                     .as_bytes(0)
                     .unwrap()
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel[0] != 255)
             );
         }
@@ -446,7 +448,7 @@ mod tests {
         let path = "/ppt/slides/slide1.xml";
         let mut slide = package.get_part(path).unwrap().to_vec();
         // Valid trailing XML whitespace. A tiny fixture exercises a reduced limit.
-        slide.extend_from_slice(&[b' '; 24 * 1024]);
+        slide.extend(std::iter::repeat_n(b' ', 24 * 1024));
         package.set_part(path, slide);
         let mut archive = Cursor::new(Vec::new());
         package.write_to(&mut archive).unwrap();

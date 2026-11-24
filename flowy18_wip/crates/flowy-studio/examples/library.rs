@@ -74,29 +74,25 @@ impl Render for LibraryDemo {
                     Err(error) => eprintln!("Library capture failed: {error}"),
                 }
             })
-            .on_action(
-                |_: &gpui_ce_elements::editable_text::actions::Tab,
-                 window,
-                 cx| window.focus_next(cx),
-            )
             .child(self.panel.clone())
     }
 }
 
 fn main() {
     gpui_platform::application().run(|cx| {
+        // GPUI Kit owns the editing keymap for the `"Input"` context its
+        // fields render with. Install it first so the demo's own bindings win
+        // at the same context depth.
+        gpui_kit::base::init(cx);
         cx.bind_keys([
+            // Tab moves focus instead of inserting an indent in a field.
+            KeyBinding::new("tab", Next, Some("Input")),
+            KeyBinding::new("shift-tab", Previous, Some("Input")),
             KeyBinding::new("tab", Next, None),
             KeyBinding::new("shift-tab", Previous, None),
             KeyBinding::new("f8", Capture, None),
             KeyBinding::new("f6", ToggleTheme, None),
         ]);
-        cx.bind_keys(
-            gpui_ce_elements::editable_text::actions::default_bindings()
-                .as_keybindings(Some(
-                gpui_ce_elements::editable_text::actions::DEFAULT_INPUT_CONTEXT,
-            )),
-        );
         flowy_ui::install_initial_tab_focus(cx).detach();
         let dimensions = if std::env::var_os("FLOWY_LIBRARY_SMALL").is_some() {
             size(px(800.), px(600.))
@@ -243,18 +239,16 @@ fn main() {
                                             *request_id,
                                             result,
                                             cx,
-                                        )
+                                        );
                                     });
                                 }
                             },
                         )
                         .detach();
-                        if preview {
-                            if let Some(id) = first {
-                                panel.update(cx, |panel, cx| {
-                                    panel.preview_item(&id, window, cx)
-                                });
-                            }
+                        if preview && let Some(id) = first {
+                            panel.update(cx, |panel, cx| {
+                                panel.preview_item(&id, window, cx);
+                            });
                         }
                         cx.observe(&panel, |_, _, cx| cx.notify()).detach();
                         LibraryDemo { panel, ui }

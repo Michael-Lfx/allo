@@ -9,13 +9,22 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-gpui_ce_elements = { workspace = true }
 gpui = { workspace = true }
+gpui-kit = { workspace = true }
+derive_more = { version = "2", default-features = false, features = ["deref", "deref_mut"] }
+phf = { version = "0.11", features = ["macros"] }
+smallvec = "1"
+web-time = "1"
+unicode-segmentation = "1"
+log = "0.4"
 serde = { workspace = true }
 
 [dev-dependencies]
 gpui_platform = { workspace = true }
 gpui = { workspace = true, features = ["test-support"] }
+# Turns `.test_support()` in this crate's builders into observable elements, so
+# `find_all_by_label` / `find_all_by_role` can see them. Test builds only.
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

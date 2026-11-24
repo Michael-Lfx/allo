@@ -116,6 +116,10 @@ jobs:
           shared-key: flowy18-windows-ui
           workspaces: "flowy18_wip -> build.noindex"
           cache-on-failure: true
+      # Formatting runs first: it needs no build, and a two-second style
+      # problem should not wait behind a full compile and test pass.
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
       # Cargo operations are intentionally sequential, including the tests.
       - name: UI primitives and overlays
         run: cargo test -p flowy-ui --locked
@@ -127,7 +131,5 @@ jobs:
         run: cargo test -p flowy-app --locked
       - name: Desktop compile
         run: cargo check -p flowy-desktop --locked
-      - name: Rust formatting
-        run: cargo fmt --all -- --check
       - name: UI clippy
         run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings

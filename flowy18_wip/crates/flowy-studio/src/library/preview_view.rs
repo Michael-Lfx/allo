@@ -5,7 +5,6 @@ use gpui::{
     Context, Entity, EventEmitter, Focusable, Render, RenderImage, Task,
     Window, div, prelude::*, px,
 };
-use gpui_ce_elements::editable_text::{EditableTextState, StringStorage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -33,7 +32,10 @@ pub struct PreviewPanel {
     error: Option<&'static str>,
     status: Option<&'static str>,
     page: usize,
-    page_input: Entity<EditableTextState>,
+    page_input: Option<Entity<gpui_kit::base::input::InputState>>,
+    /// Page number waiting for the next render, which is the first point with a
+    /// `Window` available to build or update the page field.
+    page_pending: Option<String>,
     zoom: Option<f32>,
     effective_zoom: f32,
     cache: BTreeMap<(usize, u32), Arc<RenderImage>>,
@@ -78,9 +80,7 @@ impl PreviewPanel {
         ui: UiContext,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let page_input =
-            cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
-        page_input.update(cx, |state, cx| state.emplace("1", cx));
+        let page_input = None;
         Self {
             item,
             ui,
@@ -90,6 +90,7 @@ impl PreviewPanel {
             status: None,
             page: 0,
             page_input,
+            page_pending: Some("1".to_owned()),
             zoom: None,
             effective_zoom: 1.,
             cache: BTreeMap::new(),
@@ -160,8 +161,8 @@ impl PreviewPanel {
         self.document = None;
         self.page = 0;
         self.zoom = None;
-        self.page_input
-            .update(cx, |state, cx| state.emplace("1", cx));
+        self.page_pending = Some("1".to_owned());
+        cx.notify();
         self.pending_drops
             .extend(std::mem::take(&mut self.cache).into_values());
         if !self.item.inline_preview_supported()
@@ -238,21 +239,48 @@ impl PreviewPanel {
         self.page = page;
         self.requested = None;
         self.error = None;
-        self.page_input
-            .update(cx, |state, cx| state.emplace(&(page + 1).to_string(), cx));
+        self.page_pending = Some((page + 1).to_string());
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         cx.notify();
     }
 
     fn go_input(&mut self, cx: &mut Context<'_, Self>) {
-        if let Ok(page) = self.page_input.read(cx).as_str().parse::<usize>()
+        let typed = self
+            .page_input
+            .as_ref()
+            .map_or_default(|input| input.read(cx).value());
+        if let Ok(page) = typed.parse::<usize>()
             && page > 0
         {
             self.go(page - 1, cx);
         }
-        let page = (self.page + 1).to_string();
-        self.page_input
-            .update(cx, |state, cx| state.emplace(&page, cx));
+        self.page_pending = Some((self.page + 1).to_string());
+        cx.notify();
+    }
+
+    /// Build or update the page field.
+    ///
+    /// `InputState` needs a `Window` to shape its text, and the panel is
+    /// constructed from `cx.new` callbacks that have none, so the field is
+    /// created on the first render and updated there from `page_pending`.
+    fn page_field(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<gpui_kit::base::input::InputState> {
+        if let Some(input) = self.page_input.clone() {
+            if let Some(text) = self.page_pending.take() {
+                input.update(cx, |state, cx| state.set_value(text, window, cx));
+            }
+            return input;
+        }
+        let text = self.page_pending.take().unwrap_or_else(|| "1".to_owned());
+        let input = cx.new(|cx| {
+            gpui_kit::base::input::InputState::new(window, cx)
+                .default_value(text)
+        });
+        self.page_input = Some(input.clone());
+        input
     }
 
     fn change_zoom(&mut self, multiplier: f32, cx: &mut Context<'_, Self>) {
@@ -378,43 +406,55 @@ impl PreviewPanel {
         }));
     }
 
-    fn controls(&self, cx: &Context<'_, Self>) -> gpui::Div {
+    fn controls(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::Div {
         let t = self.ui.theme.read(cx).resolved();
         let count = self.document.as_ref().map_or(0, |doc| doc.dims.len());
-        let previous = ui::IconButton::new(
+        let previous = super::test_control(
             "preview-previous",
-            self.t("library.preview.previous"),
-            ui::icons::chevron_left(),
-        )
-        .disabled(self.page == 0)
-        .render(
-            &t,
-            cx.listener(|this, _, _, cx| {
-                this.go(this.page.saturating_sub(1), cx);
-            }),
+            ui::IconButton::new(
+                "preview-previous",
+                self.t("library.preview.previous"),
+                ui::icons::chevron_left(),
+            )
+            .disabled(self.page == 0)
+            .render(
+                &t,
+                cx.listener(|this, _, _, cx| {
+                    this.go(this.page.saturating_sub(1), cx);
+                }),
+            ),
         );
-        let next = ui::IconButton::new(
+        let next = super::test_control(
             "preview-next",
-            self.t("library.preview.next"),
-            ui::icons::chevron_right(),
-        )
-        .disabled(self.page + 1 >= count)
-        .render(&t, cx.listener(|this, _, _, cx| this.go(this.page + 1, cx)));
+            ui::IconButton::new(
+                "preview-next",
+                self.t("library.preview.next"),
+                ui::icons::chevron_right(),
+            )
+            .disabled(self.page + 1 >= count)
+            .render(
+                &t,
+                cx.listener(|this, _, _, cx| this.go(this.page + 1, cx)),
+            ),
+        );
         let page = div()
             .w(px(60.))
             .child(
                 ui::TextField::new(
                     "preview-page",
                     self.t("library.preview.page"),
-                    self.page_input.clone(),
+                    self.page_field(window, cx),
                 )
                 .render(&t, cx),
             )
             .on_action(cx.listener(
-                |this,
-                 _: &gpui_ce_elements::editable_text::actions::Enter,
-                 _,
-                 cx| this.go_input(cx),
+                |this, _: &gpui_kit::base::input::Enter, _, cx| {
+                    this.go_input(cx);
+                },
             ));
         let go = ui::Button::new("preview-go", self.t("library.preview.go"))
             .size(ui::ControlSize::Small)
@@ -425,16 +465,28 @@ impl PreviewPanel {
             ui::icons::minus(),
         )
         .render(&t, cx.listener(|this, _, _, cx| this.change_zoom(0.8, cx)));
-        let zoom_in = ui::IconButton::new(
+        let zoom_in = super::test_control(
             "preview-zoom-in",
-            self.t("library.preview.zoom_in"),
-            ui::icons::plus(),
-        )
-        .render(&t, cx.listener(|this, _, _, cx| this.change_zoom(1.25, cx)));
-        let fit = ui::Button::new("preview-fit", self.t("library.preview.fit"))
-            .size(ui::ControlSize::Small)
-            .variant(ui::ControlVariant::Ghost)
-            .render(&t, cx.listener(|this, _, _, cx| this.set_zoom(None, cx)));
+            ui::IconButton::new(
+                "preview-zoom-in",
+                self.t("library.preview.zoom_in"),
+                ui::icons::plus(),
+            )
+            .render(
+                &t,
+                cx.listener(|this, _, _, cx| this.change_zoom(1.25, cx)),
+            ),
+        );
+        let fit = super::test_control(
+            "preview-fit",
+            ui::Button::new("preview-fit", self.t("library.preview.fit"))
+                .size(ui::ControlSize::Small)
+                .variant(ui::ControlVariant::Ghost)
+                .render(
+                    &t,
+                    cx.listener(|this, _, _, cx| this.set_zoom(None, cx)),
+                ),
+        );
         let actual =
             ui::Button::new("preview-actual", self.t("library.preview.actual"))
                 .size(ui::ControlSize::Small)
@@ -507,16 +559,19 @@ impl Render for PreviewPanel {
                 cx,
             );
         }
-        let open = ui::Button::new(
+        let open = super::test_control(
             "preview-open-default",
-            self.t("library.open_default"),
-        )
-        .size(ui::ControlSize::Small)
-        .icon(ui::icons::external_link())
-        .disabled(!self.item.default_open_supported())
-        .render(
-            &t,
-            cx.listener(|_, _, _, cx| cx.emit(PreviewEvent::OpenDefault)),
+            ui::Button::new(
+                "preview-open-default",
+                self.t("library.open_default"),
+            )
+            .size(ui::ControlSize::Small)
+            .icon(ui::icons::external_link())
+            .disabled(!self.item.default_open_supported())
+            .render(
+                &t,
+                cx.listener(|_, _, _, cx| cx.emit(PreviewEvent::OpenDefault)),
+            ),
         );
         let save_as =
             ui::Button::new("preview-save-as", self.t("library.save_as"))
@@ -737,8 +792,13 @@ impl Render for PreviewPanel {
         .overflow_hidden()
         .on_key_down(cx.listener(
             |this, event: &gpui::KeyDownEvent, window, cx| {
-                let input = this.page_input.read(cx).focus_handle(cx);
-                if window.focused(cx).as_ref() == Some(&input) {
+                let page_focus = this
+                    .page_input
+                    .as_ref()
+                    .map(|input| input.read(cx).focus_handle(cx));
+                if page_focus.as_ref().is_some_and(|focus| {
+                    window.focused(cx).as_ref() == Some(focus)
+                }) {
                     return;
                 }
                 match event.keystroke.key.as_str() {
@@ -775,7 +835,7 @@ impl Render for PreviewPanel {
         })
         .child(body)
         .when(self.document.is_some(), |dialog| {
-            dialog.child(self.controls(cx))
+            dialog.child(self.controls(window, cx))
         })
     }
 }
@@ -849,7 +909,7 @@ mod tests {
     ) {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.request_render(scale, budget, window, cx)
+                panel.request_render(scale, budget, window, cx);
             });
         });
     }
@@ -910,7 +970,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.read_entity(&panel, |panel, _| {
-            assert_eq!(panel.document.as_ref().unwrap().dims.len(), 3)
+            assert_eq!(panel.document.as_ref().unwrap().dims.len(), 3);
         });
     }
 

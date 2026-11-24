@@ -158,7 +158,7 @@ impl FlowyApp {
         let feedback = self.artifact_feedback(artifact_id);
         let id = artifact_id.to_owned();
         let store = self.studio.read(cx).agent.artifact_store();
-        let job_id = id.clone();
+        let job_id = id;
         let job = cx.background_executor().spawn(async move {
             let store = store.map_err(io::Error::other)?;
             match action {

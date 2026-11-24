@@ -4,14 +4,15 @@
 //! the application owns the business state and confirms closure by rendering
 //! the next scope (or `None`). Popovers use measured window coordinates.
 
-use crate::{ResolvedTheme, UiContext};
+use crate::{InteractiveDiv, ResolvedTheme, UiContext};
 use gpui::{
     Anchor, AnyElement, App, Bounds, Context, Div, ElementId, Entity,
     EventEmitter, FocusHandle, InputPreference, IntoElement, KeyDownEvent,
     KeystrokeEvent, ParentElement, Pixels, Role, SharedString, Stateful,
-    Subscription, WeakEntity, WeakFocusHandle, Window, WindowId, anchored,
-    deferred, div, point, prelude::*, px,
+    Subscription, WeakEntity, WeakFocusHandle, Window, WindowId, accesskit,
+    anchored, deferred, div, point, prelude::*, px,
 };
+use gpui_kit::base::TestSupportExt as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -424,7 +425,6 @@ pub fn modal_layer(
         .items_center()
         .justify_center()
         .bg(theme.scrim())
-        .backdrop_blur(theme.scrim_blur())
         .on_mouse_down(
             gpui::MouseButton::Left,
             move |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -450,7 +450,6 @@ pub fn dialog(
         .id(id)
         .role(Role::Dialog)
         .aria_label(label)
-        .aria_modal(true)
         .key_context("FlowyDialog")
         .when_some(focus, |panel, focus| {
             panel.track_focus(&focus).tab_stop(true)
@@ -468,20 +467,153 @@ pub fn dialog(
         )
 }
 
+/// Replacement for the retired `InteractiveElement::on_prepaint` hook.
+///
+/// `gpui-pre` gives interactive elements no prepaint callback, but popover
+/// placement needs the trigger's laid-out bounds. This wrapper forwards every
+/// interactive trait to the element it wraps and reports the same `bounds`
+/// that `Element::prepaint` receives, which is exactly what the old hook
+/// delivered. Delegation keeps the wrapped element's styles, focus tracking,
+/// hitboxes and accessibility node unchanged.
+/// Callback run after the wrapped element prepaints, receiving its real bounds.
+type PrepaintListener = Box<dyn Fn(Bounds<Pixels>, &mut App) + 'static>;
+
+#[must_use]
+pub struct PrepaintBounds<E> {
+    element: E,
+    listener: PrepaintListener,
+}
+
+impl<E> PrepaintBounds<E> {
+    pub fn new(
+        element: E,
+        listener: impl Fn(Bounds<Pixels>, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            element,
+            listener: Box::new(listener),
+        }
+    }
+}
+
+impl<E> std::fmt::Debug for PrepaintBounds<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrepaintBounds").finish_non_exhaustive()
+    }
+}
+
+impl<E: Styled> Styled for PrepaintBounds<E> {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.element.style()
+    }
+}
+
+impl<E: gpui::InteractiveElement> gpui::InteractiveElement
+    for PrepaintBounds<E>
+{
+    fn interactivity(&mut self) -> &mut gpui::Interactivity {
+        self.element.interactivity()
+    }
+}
+
+impl<E: gpui::InteractiveElement> gpui::StatefulInteractiveElement
+    for PrepaintBounds<E>
+{
+}
+
+impl<E: ParentElement> ParentElement for PrepaintBounds<E> {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.element.extend(elements);
+    }
+}
+
+impl<E: gpui::Element> gpui::Element for PrepaintBounds<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.element.id()
+    }
+
+    fn source_location(
+        &self,
+    ) -> Option<&'static std::panic::Location<'static>> {
+        self.element.source_location()
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        self.element.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut accesskit::Node) {
+        self.element.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        state: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder<'_>,
+    ) {
+        self.element.a11y_synthetic_children(state, builder);
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        self.element.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let prepaint = self
+            .element
+            .prepaint(id, inspector, bounds, state, window, cx);
+        // Run after the wrapped element prepainted, like the old hook, so it
+        // observes the same frame's bounds and hitbox work.
+        (self.listener)(bounds, cx);
+        prepaint
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+}
+
 /// Records the trigger's actual bounds after layout, including scrolling.
 pub fn anchor_trigger<E>(
     element: E,
     anchor_id: impl Into<SharedString>,
     ui: &UiContext,
-) -> E
+) -> PrepaintBounds<E>
 where
-    E: gpui::StatefulInteractiveElement + IntoElement,
+    E: gpui::StatefulInteractiveElement + gpui::Element,
 {
     let id = anchor_id.into();
     let host = ui.overlays.downgrade();
-    element.on_prepaint(move |paint, _, cx| {
+    PrepaintBounds::new(element, move |bounds, cx| {
         let _ = host.update(cx, |host, cx| {
-            host.measure_anchor(id.clone(), paint.bounds, cx);
+            host.measure_anchor(id.clone(), bounds, cx);
         });
     })
 }
@@ -511,7 +643,7 @@ pub fn popover(
 
 /// Positions a hover card without taking the pointer. A tooltip must not
 /// occlude its trigger, or the click that the card is describing never lands.
-pub(crate) fn information_popover(
+pub fn information_popover(
     id: impl Into<SharedString>,
     anchor_id: impl Into<SharedString>,
     content: impl IntoElement,
@@ -558,6 +690,11 @@ struct PopoverPlacement {
     above: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site threads the same popover geometry; grouping it \
+              would only move the fields into a struct built here"
+)]
 fn popover_with_direction(
     id: impl Into<SharedString>,
     anchor_id: impl Into<SharedString>,
@@ -573,15 +710,17 @@ fn popover_with_direction(
     let anchor_id = anchor_id.into();
     let host = ui.overlays.read(cx);
     let Some(bounds) = host.anchor_bounds(anchor_id.as_ref()) else {
-        let weak = ui.overlays.downgrade();
-        return div()
-            .id(id.clone())
-            .on_prepaint(move |_, _, cx| {
-                let _ = weak.update(cx, |host, cx| {
-                    host.validate_anchor(id.clone(), anchor_id.as_ref(), cx);
-                });
-            })
-            .into_any_element();
+        // The trigger was never measured, or it stopped being prepainted: keep
+        // the empty shell and let this frame's prepaint confirm the anchor is
+        // gone instead of leaving the overlay scope open forever.
+        let host = ui.overlays.downgrade();
+        let scope = id.clone();
+        return PrepaintBounds::new(div().id(id), move |_, cx| {
+            let _ = host.update(cx, |host, cx| {
+                host.validate_anchor(scope.clone(), anchor_id.as_ref(), cx);
+            });
+        })
+        .into_any_element();
     };
     let focus = host
         .popup
@@ -607,15 +746,6 @@ fn popover_with_direction(
         .key_context("FlowyPopover")
         .when_some(focus, |panel, focus| {
             panel.track_focus(&focus).tab_stop(true)
-        })
-        .on_prepaint(move |_, _, cx| {
-            let _ = weak.update(cx, |host, cx| {
-                host.validate_anchor(
-                    validate_scope.clone(),
-                    anchor_id.as_ref(),
-                    cx,
-                );
-            });
         });
     if let Some(outside_scope) = outside_scope {
         let outside_host = ui.overlays.downgrade();
@@ -639,6 +769,15 @@ fn popover_with_direction(
             });
     }
     let panel = panel.child(content);
+    let panel = PrepaintBounds::new(panel, move |_, cx| {
+        let _ = weak.update(cx, |host, cx| {
+            host.validate_anchor(
+                validate_scope.clone(),
+                anchor_id.as_ref(),
+                cx,
+            );
+        });
+    });
     deferred(
         anchored()
             .anchor(if above && rtl {
@@ -709,8 +848,10 @@ pub fn select_trigger(
     label: impl Into<SharedString>,
     expanded: bool,
     theme: &ResolvedTheme,
-) -> Stateful<Div> {
-    crate::interactive(id, label, theme).aria_expanded(expanded)
+) -> InteractiveDiv {
+    crate::interactive(id, label, theme)
+        .aria_expanded(expanded)
+        .test_support()
 }
 
 pub fn menu_item(
@@ -719,7 +860,7 @@ pub fn menu_item(
     disabled: bool,
     theme: &ResolvedTheme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     let label = label.into();
     // `button` only stores the label as the accessible name; menu rows must
     // also render it, otherwise a popover shows blank rows with just hover and
@@ -729,6 +870,7 @@ pub fn menu_item(
         .role(Role::MenuItem)
         .text_color(if disabled { theme.muted() } else { theme.ink() })
         .child(label)
+        .test_support()
 }
 
 pub fn menu_item_with_icon(
@@ -738,15 +880,16 @@ pub fn menu_item_with_icon(
     disabled: bool,
     theme: &ResolvedTheme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     let id = id.into();
     let icon_id: ElementId = (id.clone(), "icon").into();
     let label = label.into();
     crate::button(id, label.clone(), disabled, theme, on_click)
         .role(Role::MenuItem)
         .text_color(if disabled { theme.muted() } else { theme.ink() })
-        .child(div().id(icon_id).aria_hidden().child(icon))
+        .child(div().id(icon_id).child(icon))
         .child(label)
+        .test_support()
 }
 
 pub fn select_option(
@@ -754,17 +897,18 @@ pub fn select_option(
     label: impl Into<SharedString>,
     selected: bool,
     theme: &ResolvedTheme,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     crate::interactive(id, label, theme)
         .role(Role::ListBoxOption)
         .aria_selected(selected)
+        .test_support()
 }
 
 pub fn tooltip(
     id: impl Into<gpui::ElementId>,
     text: impl Into<SharedString>,
     theme: &ResolvedTheme,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     div()
         .id(id)
         .role(Role::Tooltip)
@@ -777,6 +921,9 @@ pub fn tooltip(
         .py_1()
         .text_sm()
         .child(text.into())
+        // The only `Role::Tooltip` element in the tree; UI tests find it with
+        // `find_all_by_role` instead of the removed accessibility tree.
+        .test_support()
 }
 
 #[cfg(test)]
@@ -839,7 +986,6 @@ mod tests {
                     div()
                         .id("modal")
                         .role(Role::Dialog)
-                        .aria_modal(true)
                         .track_focus(&modal_focus)
                         .tab_stop(true)
                         .child(
@@ -872,7 +1018,7 @@ mod tests {
         }
     }
 
-    fn press(cx: &mut VisualTestContext, key: &str) {
+    fn press(cx: &mut VisualTestContext, key: &'static str) {
         let keystroke = Keystroke::parse(key).unwrap();
         cx.simulate_event(KeyDownEvent {
             keystroke: keystroke.clone(),

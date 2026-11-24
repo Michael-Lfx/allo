@@ -7,7 +7,7 @@ use flowy_ui as theme;
 use gpui::{
     ClipboardItem, Context, Entity, Pixels, Size, Window, div, prelude::*, px,
 };
-use gpui_ce_elements::editable_text::EditableTextState;
+use gpui_kit::base::input::{InputState, TextareaState};
 
 mod personalization;
 
@@ -22,8 +22,6 @@ pub(super) enum Tab {
     Profile,
     Knowledge,
 }
-
-const PASTE_MAX: usize = 8000;
 
 impl FlowyApp {
     pub fn more_canvas(
@@ -76,32 +74,44 @@ impl FlowyApp {
         theme::modal_layer("more-layer", &self.theme, &self.ui, content)
     }
 
+    // `InputState` can only be rewritten through a `Window`, and these run from
+    // `Context::subscribe` callbacks, which have none. The stored profile is
+    // still bounded (`persona::save` -> `bounded`), and the knowledge dialog
+    // keeps its live counter, so no keystroke clamp happens here.
     pub(super) fn touch_profile(&self, cx: &mut Context<'_, Self>) {
-        clamp_text(&self.persona.nickname, NAME_MAX, cx);
-        clamp_text(&self.persona.occupation, NAME_MAX, cx);
-        clamp_text(&self.persona.about, ABOUT_MAX, cx);
-        clamp_text(&self.persona.instructions, INSTRUCTIONS_MAX, cx);
         self.write_profile(cx);
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_paste(&self, cx: &mut Context<'_, Self>) {
-        clamp_text(&self.persona.import_paste, PASTE_MAX, cx);
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_name(&self, cx: &mut Context<'_, Self>) {
-        clamp_text(&self.persona.knowledge_name, NAME_MAX, cx);
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_usage(&self, cx: &mut Context<'_, Self>) {
-        clamp_text(&self.persona.knowledge_usage, NAME_MAX, cx);
         cx.notify();
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "these are change notifiers whose call sites read as app.touch_*"
+    )]
     pub(super) fn touch_knowledge_body(&self, cx: &mut Context<'_, Self>) {
-        clamp_text(&self.persona.knowledge_body, KNOWLEDGE_MAX, cx);
         cx.notify();
     }
 
@@ -200,13 +210,8 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let prompt = self.import_prompt();
-        let ready = !self
-            .persona
-            .import_paste
-            .read(cx)
-            .as_str()
-            .trim()
-            .is_empty();
+        let ready =
+            !self.persona.import_paste.read(cx).value().trim().is_empty();
         let mut body = dialog_fields()
             .child(
                 div()
@@ -255,15 +260,21 @@ impl FlowyApp {
                     .child(self.t("more.import_step_paste_body")),
             )
             .child(
-                theme::TextField::new(
+                theme::TextAreaField::new(
                     "import-paste",
                     paste_label,
                     self.persona.import_paste.clone(),
                 )
                 .placeholder(self.t("more.import_placeholder"))
                 .quiet()
-                .multiline_height(px(120.))
-                .render(&self.theme, cx),
+                .height(px(120.))
+                .render(&self.theme, cx)
+                .on_action(cx.listener({
+                    let state = self.persona.import_paste.clone();
+                    move |app, _: &flowy_studio::SubmitComposer, window, cx| {
+                        app.insert_line_break(&state, window, cx);
+                    }
+                })),
             );
         dialog_shell(
             self,
@@ -292,11 +303,11 @@ impl FlowyApp {
             .persona
             .knowledge_name
             .read(cx)
-            .as_str()
+            .value()
             .trim()
             .is_empty();
         let count = self.count_text(
-            self.persona.knowledge_body.read(cx).as_str(),
+            self.persona.knowledge_body.read(cx).value().as_str(),
             KNOWLEDGE_MAX,
         );
         let body = dialog_fields()
@@ -445,24 +456,16 @@ impl FlowyApp {
     fn open_import(&mut self, cx: &mut Context<'_, Self>) {
         self.activate_dialog(super::state::ActiveDialog::Import, cx);
         self.persona.status = None;
-        self.persona
-            .import_paste
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.set_textarea_text(&self.persona.import_paste, "", cx);
         cx.notify();
     }
 
     fn open_knowledge_dialog(&mut self, cx: &mut Context<'_, Self>) {
         self.activate_dialog(super::state::ActiveDialog::Knowledge, cx);
         self.persona.status = None;
-        self.persona
-            .knowledge_name
-            .update(cx, |state, cx| state.emplace("", cx));
-        self.persona
-            .knowledge_usage
-            .update(cx, |state, cx| state.emplace("", cx));
-        self.persona
-            .knowledge_body
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.set_input_text(&self.persona.knowledge_name, "", cx);
+        self.set_input_text(&self.persona.knowledge_usage, "", cx);
+        self.set_textarea_text(&self.persona.knowledge_body, "", cx);
         cx.notify();
     }
 
@@ -483,7 +486,7 @@ impl FlowyApp {
             .persona
             .import_paste
             .read(cx)
-            .as_str()
+            .value()
             .trim()
             .to_string();
         if text.is_empty() {
@@ -502,29 +505,54 @@ impl FlowyApp {
             &instructions,
             &none,
         );
-        let nickname_wrote =
-            assign_text(&self.persona.nickname, patch.nickname, NAME_MAX, cx);
-        let occupation_wrote = assign_text(
-            &self.persona.occupation,
-            patch.occupation,
-            NAME_MAX,
-            cx,
-        );
-        let about_wrote =
-            assign_text(&self.persona.about, patch.about, ABOUT_MAX, cx);
-        let instructions_wrote = assign_text(
-            &self.persona.instructions,
-            patch.instructions,
-            INSTRUCTIONS_MAX,
-            cx,
-        );
-        let wrote = nickname_wrote
-            || occupation_wrote
-            || about_wrote
-            || instructions_wrote;
-        self.persona
-            .import_paste
-            .update(cx, |state, cx| state.emplace("", cx));
+        let next_nickname =
+            patch.nickname.map(|value| limited(&value, NAME_MAX));
+        let next_occupation =
+            patch.occupation.map(|value| limited(&value, NAME_MAX));
+        let next_about = patch.about.map(|value| limited(&value, ABOUT_MAX));
+        let next_instructions = patch
+            .instructions
+            .map(|value| limited(&value, INSTRUCTIONS_MAX));
+        if let Some(value) = &next_nickname {
+            self.set_input_text(&self.persona.nickname, value.as_str(), cx);
+        }
+        if let Some(value) = &next_occupation {
+            self.set_input_text(&self.persona.occupation, value.as_str(), cx);
+        }
+        if let Some(value) = &next_about {
+            self.set_textarea_text(&self.persona.about, value.as_str(), cx);
+        }
+        if let Some(value) = &next_instructions {
+            self.set_textarea_text(
+                &self.persona.instructions,
+                value.as_str(),
+                cx,
+            );
+        }
+        let wrote = next_nickname.is_some()
+            || next_occupation.is_some()
+            || next_about.is_some()
+            || next_instructions.is_some();
+        // Queued text lands on the next frame and the editing engine emits no
+        // change event for it, so the imported profile is persisted here from
+        // the resolved values instead of from the still-stale inputs.
+        let profile = Profile {
+            nickname: next_nickname.unwrap_or_else(|| {
+                self.persona.nickname.read(cx).value().to_string()
+            }),
+            occupation: next_occupation.unwrap_or_else(|| {
+                self.persona.occupation.read(cx).value().to_string()
+            }),
+            about: next_about.unwrap_or_else(|| {
+                self.persona.about.read(cx).value().to_string()
+            }),
+            instructions: next_instructions.unwrap_or_else(|| {
+                self.persona.instructions.read(cx).value().to_string()
+            }),
+            knowledge: self.persona.knowledge.clone(),
+        };
+        save(self.store.root(), &profile);
+        self.set_textarea_text(&self.persona.import_paste, "", cx);
         self.active_dialog = super::state::ActiveDialog::None;
         self.persona.status = None;
         self.persona.page = Page::Personal;
@@ -540,30 +568,24 @@ impl FlowyApp {
 
     fn commit_knowledge(&mut self, cx: &mut Context<'_, Self>) {
         let name = limited(
-            self.persona.knowledge_name.read(cx).as_str().trim(),
+            self.persona.knowledge_name.read(cx).value().trim(),
             NAME_MAX,
         );
         if name.is_empty() {
             return;
         }
         let usage = limited(
-            self.persona.knowledge_usage.read(cx).as_str().trim(),
+            self.persona.knowledge_usage.read(cx).value().trim(),
             NAME_MAX,
         );
         let body = limited(
-            self.persona.knowledge_body.read(cx).as_str(),
+            self.persona.knowledge_body.read(cx).value().as_str(),
             KNOWLEDGE_MAX,
         );
         self.persona.knowledge.push(Knowledge { name, usage, body });
-        self.persona
-            .knowledge_name
-            .update(cx, |state, cx| state.emplace("", cx));
-        self.persona
-            .knowledge_usage
-            .update(cx, |state, cx| state.emplace("", cx));
-        self.persona
-            .knowledge_body
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.set_input_text(&self.persona.knowledge_name, "", cx);
+        self.set_input_text(&self.persona.knowledge_usage, "", cx);
+        self.set_textarea_text(&self.persona.knowledge_body, "", cx);
         self.active_dialog = super::state::ActiveDialog::None;
         self.write_profile(cx);
         self.notice = Some("more.knowledge_saved");
@@ -581,14 +603,14 @@ impl FlowyApp {
 
     fn write_profile(&self, cx: &Context<'_, Self>) {
         let profile = Profile {
-            nickname: self.persona.nickname.read(cx).as_str().to_string(),
-            occupation: self.persona.occupation.read(cx).as_str().to_string(),
-            about: self.persona.about.read(cx).as_str().to_string(),
+            nickname: self.persona.nickname.read(cx).value().to_string(),
+            occupation: self.persona.occupation.read(cx).value().to_string(),
+            about: self.persona.about.read(cx).value().to_string(),
             instructions: self
                 .persona
                 .instructions
                 .read(cx)
-                .as_str()
+                .value()
                 .to_string(),
             knowledge: self.persona.knowledge.clone(),
         };
@@ -661,7 +683,7 @@ fn single_line(
     cx: &Context<'_, FlowyApp>,
     theme: &flowy_ui::ResolvedTheme,
     id: &'static str,
-    state: Entity<EditableTextState>,
+    state: Entity<InputState>,
     placeholder: String,
 ) -> impl IntoElement {
     theme::TextField::new(id, placeholder.clone(), state)
@@ -673,15 +695,21 @@ fn counted_area(
     cx: &Context<'_, FlowyApp>,
     theme: &flowy_ui::ResolvedTheme,
     id: &'static str,
-    state: Entity<EditableTextState>,
+    state: Entity<TextareaState>,
     placeholder: String,
     count: String,
     height: f32,
 ) -> impl IntoElement {
-    let input = theme::TextField::new(id, placeholder.clone(), state)
-        .placeholder(placeholder)
-        .multiline_height(px(height))
-        .render(theme, cx);
+    let input =
+        theme::TextAreaField::new(id, placeholder.clone(), state.clone())
+            .placeholder(placeholder)
+            .height(px(height))
+            .render(theme, cx)
+            .on_action(cx.listener(
+                move |app, _: &flowy_studio::SubmitComposer, window, cx| {
+                    app.insert_line_break(&state, window, cx);
+                },
+            ));
     div().w_full().flex().flex_col().child(input).child(
         div()
             .text_size(theme.caption_size())
@@ -743,30 +771,4 @@ fn prompt_box(theme: &flowy_ui::ResolvedTheme, text: &str) -> impl IntoElement {
         box_ = box_.child(row);
     }
     box_
-}
-
-fn assign_text(
-    field: &Entity<EditableTextState>,
-    value: Option<String>,
-    max: usize,
-    cx: &mut Context<'_, FlowyApp>,
-) -> bool {
-    let Some(value) = value else {
-        return false;
-    };
-    let value = limited(&value, max);
-    field.update(cx, |state, cx| state.emplace(&value, cx));
-    true
-}
-
-fn clamp_text(
-    field: &Entity<EditableTextState>,
-    max: usize,
-    cx: &mut Context<'_, FlowyApp>,
-) {
-    let current = field.read(cx).as_str().to_string();
-    let next = limited(&current, max);
-    if next != current {
-        field.update(cx, |state, cx| state.emplace(&next, cx));
-    }
 }

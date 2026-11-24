@@ -6,7 +6,7 @@ use super::skills;
 use crate::prefs::FlexProvider;
 use crate::session::Session;
 use gpui::{Entity, Task, WindowAppearance};
-use gpui_ce_elements::editable_text::EditableTextState;
+use gpui_kit::base::input::{InputState, TextareaState};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,8 +49,8 @@ impl LegalDoc {
 
 pub(super) struct AuthState {
     pub(super) session: Option<Session>,
-    pub(super) email: Entity<EditableTextState>,
-    pub(super) code: Entity<EditableTextState>,
+    pub(super) email: Entity<InputState>,
+    pub(super) code: Entity<InputState>,
     pub(super) step: LoginStep,
     pub(super) phase: LoginPhase,
     pub(super) message: Option<&'static str>,
@@ -70,17 +70,17 @@ pub(super) struct GalleryState {
 
 pub(super) struct SkillsState {
     pub(super) filter: skills::Category,
-    pub(super) query: Entity<EditableTextState>,
+    pub(super) query: Entity<InputState>,
 }
 
 pub struct SettingsState {
     pub(super) page: settings::Page,
     pub(super) picker: settings::Picker,
-    pub(super) query: Entity<EditableTextState>,
+    pub(super) query: Entity<InputState>,
 }
 
 pub struct ProjectCreateState {
-    pub(super) name: Entity<EditableTextState>,
+    pub(super) name: Entity<InputState>,
     pub(super) folder: Option<PathBuf>,
     pub(super) status: Option<&'static str>,
     pub(super) title_key: &'static str,
@@ -95,7 +95,7 @@ pub struct InviteState {
     pub(super) code: String,
     pub(super) inbound_code: Option<String>,
     pub(super) emails: Vec<String>,
-    pub(super) email: Entity<EditableTextState>,
+    pub(super) email: Entity<InputState>,
 }
 
 pub struct PersonaState {
@@ -103,27 +103,27 @@ pub struct PersonaState {
     pub(super) tab: more::Tab,
     pub(super) status: Option<&'static str>,
     pub(super) knowledge: Vec<crate::persona::Knowledge>,
-    pub(super) nickname: Entity<EditableTextState>,
-    pub(super) occupation: Entity<EditableTextState>,
-    pub(super) about: Entity<EditableTextState>,
-    pub(super) instructions: Entity<EditableTextState>,
-    pub(super) import_paste: Entity<EditableTextState>,
-    pub(super) knowledge_name: Entity<EditableTextState>,
-    pub(super) knowledge_usage: Entity<EditableTextState>,
-    pub(super) knowledge_body: Entity<EditableTextState>,
+    pub(super) nickname: Entity<InputState>,
+    pub(super) occupation: Entity<InputState>,
+    pub(super) about: Entity<TextareaState>,
+    pub(super) instructions: Entity<TextareaState>,
+    pub(super) import_paste: Entity<TextareaState>,
+    pub(super) knowledge_name: Entity<InputState>,
+    pub(super) knowledge_usage: Entity<InputState>,
+    pub(super) knowledge_body: Entity<TextareaState>,
 }
 
 pub struct AppearanceChrome {
     pub(super) known: bool,
     pub(super) forced: Option<WindowAppearance>,
-    pub(super) font_size_field: Entity<EditableTextState>,
+    pub(super) font_size_field: Entity<InputState>,
 }
 
 pub struct FlexState {
     pub(super) provider_menu: bool,
     pub(super) draft_provider: Option<FlexProvider>,
     /// Field contents (plaintext when visible, `*` mask when hidden).
-    pub(super) api_key: Entity<EditableTextState>,
+    pub(super) api_key: Entity<InputState>,
     /// Real API key while the field shows a mask.
     pub(super) secret: String,
     pub(super) key_visible: bool,

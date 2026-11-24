@@ -9,7 +9,7 @@ use gpui::{
     Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled,
     Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
-use gpui_ce_elements::editable_text::{EditableTextState, StringStorage};
+use gpui_kit::base::input::InputState;
 
 #[allow(clippy::derive_partial_eq_without_eq)]
 mod bindings {
@@ -19,8 +19,8 @@ use bindings::{Next, Previous};
 
 struct Catalogue {
     theme: ResolvedTheme,
-    input: Entity<EditableTextState>,
-    readonly: Entity<EditableTextState>,
+    input: Entity<InputState>,
+    readonly: Entity<InputState>,
     enabled: bool,
     selected: gpui::SharedString,
 }
@@ -45,11 +45,6 @@ impl Render for Catalogue {
             .id("catalogue")
             .on_action(|_: &Next, window, cx| window.focus_next(cx))
             .on_action(|_: &Previous, window, cx| window.focus_prev(cx))
-            .on_action(
-                |_: &gpui_ce_elements::editable_text::actions::Tab,
-                 window,
-                 cx| window.focus_next(cx),
-            )
             .size_full()
             .bg(t.canvas())
             .text_color(t.ink())
@@ -205,16 +200,17 @@ impl Render for Catalogue {
 }
 fn main() {
     gpui_platform::application().run(|cx| {
+        // GPUI Kit owns the editing keymap for the `"Input"` context its
+        // fields render with. Install it first so the demo's own bindings win
+        // at the same context depth.
+        gpui_kit::base::init(cx);
         cx.bind_keys([
+            // Tab moves focus instead of inserting an indent in a field.
+            gpui::KeyBinding::new("tab", Next, Some("Input")),
+            gpui::KeyBinding::new("shift-tab", Previous, Some("Input")),
             gpui::KeyBinding::new("tab", Next, None),
             gpui::KeyBinding::new("shift-tab", Previous, None),
         ]);
-        cx.bind_keys(
-            gpui_ce_elements::editable_text::actions::default_bindings()
-                .as_keybindings(Some(
-                gpui_ce_elements::editable_text::actions::DEFAULT_INPUT_CONTEXT,
-            )),
-        );
         flowy_ui::install_initial_tab_focus(cx).detach();
         let bounds = Bounds::centered(None, size(px(960.), px(760.)), cx);
         cx.open_window(
@@ -222,8 +218,13 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..WindowOptions::default()
             },
-            |_, cx| {
-                cx.new(|cx| Catalogue {
+            |window, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx));
+                let readonly = cx.new(|cx| InputState::new(window, cx));
+                readonly.update(cx, |state, cx| {
+                    state.set_value("Read-only preview", window, cx);
+                });
+                cx.new(|_| Catalogue {
                     theme: ResolvedTheme::resolve(
                         ThemeOptions {
                             mode: ThemeMode::Light,
@@ -233,15 +234,8 @@ fn main() {
                         },
                         false,
                     ),
-                    input: cx.new(|cx| {
-                        EditableTextState::new(StringStorage::default(), cx)
-                    }),
-                    readonly: cx.new(|cx| {
-                        EditableTextState::new(
-                            StringStorage::from("Read-only preview"),
-                            cx,
-                        )
-                    }),
+                    input,
+                    readonly,
                     enabled: true,
                     selected: "first".into(),
                 })

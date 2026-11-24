@@ -208,7 +208,7 @@ impl FlowyApp {
     }
 
     fn settings_nav(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let query = self.settings.query.read(cx).as_str().trim().to_string();
+        let query = self.settings.query.read(cx).value().trim().to_string();
         let name = self.auth.session.as_ref().map_or_else(
             || self.t("dock.user_fallback"),
             |session| session.display_name.clone(),

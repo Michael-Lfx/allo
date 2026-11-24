@@ -1,10 +1,9 @@
 //! Toolbar chrome whose label metrics live with the control.
-use crate::{ResolvedTheme, TypeMetrics, interactive, ui_font};
+use crate::{InteractiveDiv, ResolvedTheme, TypeMetrics, interactive, ui_font};
 use gpui::{
-    App, ClickEvent, ColorExt, Div, ElementId, FontWeight, IntoElement,
+    AnyElement, App, ClickEvent, Div, ElementId, FontWeight, IntoElement,
     ParentElement, Role, SharedString, Stateful, Window, div, prelude::*, px,
 };
-use gpui_ce_elements::editable_text::EditableTextState;
 
 fn control_text(element: Div, metrics: TypeMetrics) -> Div {
     element
@@ -18,14 +17,14 @@ fn control_text(element: Div, metrics: TypeMetrics) -> Div {
 pub struct ToolbarSearch {
     id: ElementId,
     placeholder: SharedString,
-    state: gpui::Entity<EditableTextState>,
+    state: gpui::Entity<gpui_kit::base::input::InputState>,
 }
 
 impl ToolbarSearch {
     pub fn new(
         id: impl Into<ElementId>,
         placeholder: impl Into<SharedString>,
-        state: gpui::Entity<EditableTextState>,
+        state: gpui::Entity<gpui_kit::base::input::InputState>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -58,21 +57,8 @@ impl ToolbarSearch {
                     .font_weight(FontWeight::NORMAL)
                     .text_color(theme.ink())
                     .child(
-                        crate::text_input(self.id)
-                            .state(self.state.downgrade())
-                            .aria_label(self.placeholder.clone())
-                            .placeholder(self.placeholder)
-                            .placeholder_color(theme.placeholder())
-                            .caret_color(gpui::rgb_to_hsla(theme.ink()))
-                            .caret_blink_interval_500ms()
-                            .w_full()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .font(ui_font())
-                            .text_size(metrics.size)
-                            .line_height(metrics.line_height)
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.ink()),
+                        crate::text_input(self.id, &self.state)
+                            .into_any_element(),
                     ),
             )
     }
@@ -93,7 +79,7 @@ pub fn filter_chip(
     label: impl Into<SharedString>,
     selected: bool,
     theme: &ResolvedTheme,
-) -> Stateful<Div> {
+) -> InteractiveDiv {
     let label = label.into();
     let metrics = theme.control_metrics();
     let selected_bg = theme.tab_selected_bg();
@@ -197,7 +183,7 @@ pub fn icon_segment(
     selected: bool,
     theme: &ResolvedTheme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> crate::A11yElement<Div> {
+) -> AnyElement {
     let hover = theme.chrome_line();
     let mut segment = interactive(id, label, theme)
         .h_full()
@@ -222,5 +208,5 @@ pub fn icon_segment(
     if !selected {
         segment = segment.hover(move |style| style.bg(hover));
     }
-    crate::A11yElement::new(segment.into_element())
+    crate::A11yElement::new(segment.into_element()).into_any_element()
 }

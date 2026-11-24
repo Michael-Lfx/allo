@@ -5,6 +5,8 @@
 mod autostart;
 mod deep_link;
 mod notify;
+// System tray is parked while `gpui-tray` targets the retired community fork; its
+// `MenuItem`/`App`/`Action` types do not unify with `gpui-pre`.
 mod tray;
 
 use gpui::{App, actions};
@@ -14,7 +16,8 @@ use std::sync::OnceLock;
 actions!(shell, [ShowMainWindow, QuitApp]);
 
 thread_local! {
-    static TRAY: RefCell<Option<gpui_tray::Tray>> = const { RefCell::new(None) };
+    static TRAY: RefCell<Option<gpui_tray::Tray>> =
+        const { RefCell::new(None) };
 }
 
 static BRAND: OnceLock<Brand> = OnceLock::new();

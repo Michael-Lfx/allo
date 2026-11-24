@@ -23,7 +23,7 @@ flowy-ui = { workspace = true }
 tracing = { workspace = true }
 getrandom = { workspace = true }
 gpui = { workspace = true }
-gpui_ce_elements = { workspace = true }
+gpui-kit = { workspace = true }
 open = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,6 +31,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -3,6 +3,36 @@ use std::sync::{Arc, OnceLock};
 
 static LOG_GUARDS: OnceLock<LogGuards> = OnceLock::new();
 
+/// Exclusive lock on the data directory, one per running instance.
+///
+/// Two instances would each write `preferences.json`, each hold their own
+/// session list, and each add a tray icon, so the second one exits instead.
+/// The lock is an advisory file lock rather than a sentinel file: the OS drops
+/// it when the process dies, so a crash never leaves the app unable to start.
+struct InstanceLock {
+    _file: std::fs::File,
+}
+
+impl InstanceLock {
+    fn acquire(data_root: &std::path::Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(data_root)?;
+        let path = data_root.join("instance.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        file.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} is locked by another instance", path.display()),
+            ),
+            std::fs::TryLockError::Error(error) => error,
+        })?;
+        Ok(Self { _file: file })
+    }
+}
+
 /// Point pi-rust's temp staging and child shells at the app runtime directory.
 ///
 /// SAFETY: called from `main` before GPUI, tracing, telemetry, or any worker
@@ -27,15 +57,25 @@ fn main() {
             data_root.display()
         ),
     );
+    // Held for the whole process. Dropping it releases the lock, and the OS
+    // releases it anyway when the process dies, so a crash cannot leave a
+    // stale lock behind.
+    let _instance = match InstanceLock::acquire(&data_root) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!(
+                "{} is already running ({error}).",
+                flowy_app::brand_api::product()
+            );
+            return;
+        }
+    };
     let runtime_temp = flowy_app::session::ensure_runtime_temp(&data_root);
     if let Ok(dir) = &runtime_temp {
         set_temp_env(dir);
         flowy_obs::record_boot_note(
             BootNoteLevel::Info,
-            format!(
-                "stage=main::ensure_runtime_temp path={}",
-                dir.display()
-            ),
+            format!("stage=main::ensure_runtime_temp path={}", dir.display()),
         );
     } else if let Err(error) = &runtime_temp {
         flowy_obs::record_boot_note(

@@ -52,7 +52,7 @@ pub fn path(root: &Path) -> PathBuf {
     root.join(FILE_NAME)
 }
 
-pub(crate) fn root_available(root: &Path) -> bool {
+pub fn root_available(root: &Path) -> bool {
     root.is_dir() && fs::read_dir(root).is_ok()
 }
 
@@ -116,7 +116,7 @@ pub fn update(
         return Err(ProjectError::Storage);
     }
     let mut next = projects.clone();
-    next[index].name = name.to_owned();
+    name.clone_into(&mut next[index].name);
     next[index].root = root;
     save(app_root, &next).map_err(|_| ProjectError::Storage)?;
     *projects = next;
@@ -306,7 +306,7 @@ mod tests {
     fn saves_empty_registry_and_rejects_unsupported_version() {
         let scratch = Scratch::new();
         save(&scratch.0, &[]).unwrap();
-        assert!(load(&scratch.0).unwrap().is_empty());
+        assert_eq!(load(&scratch.0).unwrap().len(), 0);
 
         fs::write(
             path(&scratch.0),
@@ -337,7 +337,7 @@ mod tests {
         assert!(updated.pinned);
 
         remove(&scratch.0, &mut projects, &project.id).unwrap();
-        assert!(load(&scratch.0).unwrap().is_empty());
+        assert_eq!(load(&scratch.0).unwrap().len(), 0);
         assert!(
             folder.is_dir(),
             "unregistering a project must keep its local files"

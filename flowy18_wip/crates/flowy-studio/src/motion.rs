@@ -12,34 +12,34 @@
 use std::time::Duration;
 
 /// High-frequency state change, such as selecting a chip.
-pub(crate) const FAST: Duration = Duration::from_millis(150);
+pub const FAST: Duration = Duration::from_millis(150);
 /// Medium change, such as swapping the example cards.
-pub(crate) const MODERATE: Duration = Duration::from_millis(240);
+pub const MODERATE: Duration = Duration::from_millis(240);
 /// Large travel, such as opening or closing the deliverables drawer.
-pub(crate) const SLOW: Duration = Duration::from_millis(320);
+pub const SLOW: Duration = Duration::from_millis(320);
 
 /// Entrance travel in pixels. Fading alone is invisible on a dark surface;
 /// movement is what the eye actually catches.
-pub(crate) const ENTER_OFFSET: f32 = 8.;
+pub const ENTER_OFFSET: f32 = 8.;
 
 /// Carbon standard easing, `cubic-bezier(0.2, 0, 0.38, 0.9)`.
-pub(crate) fn standard() -> impl Fn(f32) -> f32 + 'static {
+pub fn standard() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.2, 0.0, 0.38, 0.9)
 }
 
 /// Carbon entrance easing, `cubic-bezier(0, 0, 0.38, 0.9)`.
-pub(crate) fn entrance() -> impl Fn(f32) -> f32 + 'static {
+pub fn entrance() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.0, 0.0, 0.38, 0.9)
 }
 
 /// Carbon exit easing, `cubic-bezier(0.2, 0, 1, 0.9)`.
-pub(crate) fn exit() -> impl Fn(f32) -> f32 + 'static {
+pub fn exit() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.2, 0.0, 1.0, 0.9)
 }
 
 /// Samples a CSS-style cubic-bezier curve: solves x for the requested `t`,
 /// then evaluates y at that parameter.
-pub(crate) fn cubic_bezier(
+pub fn cubic_bezier(
     x1: f32,
     y1: f32,
     x2: f32,
@@ -51,26 +51,26 @@ pub(crate) fn cubic_bezier(
         let mut high = 1.0;
         // 12 bisection steps resolve the parameter to about 1/4096.
         for _ in 0..12 {
-            let mid = (low + high) * 0.5;
+            let mid = f32::midpoint(low, high);
             if axis(mid, x1, x2) < t {
                 low = mid;
             } else {
                 high = mid;
             }
         }
-        axis((low + high) * 0.5, y1, y2)
+        axis(f32::midpoint(low, high), y1, y2)
     }
 }
 
 /// One axis of a cubic bezier whose endpoints are fixed at 0 and 1.
 fn axis(t: f32, p1: f32, p2: f32) -> f32 {
     let u = 1.0 - t;
-    3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t
+    (t * t).mul_add(t, (3.0 * u * t * t).mul_add(p2, 3.0 * u * u * t * p1))
 }
 
 /// Holds the curve at 0 for the first `share` of the run, then plays it. This
 /// is how siblings stagger: GPUI's [`gpui::Animation`] has no delay field.
-pub(crate) fn delayed(
+pub fn delayed(
     share: f32,
     ease: impl Fn(f32) -> f32 + 'static,
 ) -> impl Fn(f32) -> f32 + 'static {
@@ -86,7 +86,7 @@ pub(crate) fn delayed(
 
 /// Delay share for the `index`-th sibling, expressed in milliseconds against
 /// the run's total so callers do not hand-tune fractions.
-pub(crate) fn stagger(index: u64, step_ms: u64, total: Duration) -> f32 {
+pub fn stagger(index: u64, step_ms: u64, total: Duration) -> f32 {
     let delay = index as f32 * step_ms as f32;
     (delay / total.as_millis().max(1) as f32).min(0.75)
 }
