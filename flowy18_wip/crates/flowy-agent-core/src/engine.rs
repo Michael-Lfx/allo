@@ -7,16 +7,18 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
 use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
-use crate::run_fence::{RunFence, RunTicket};
+use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
     DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, TurnState,
+    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
+    WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -73,6 +75,9 @@ pub struct EngineConfig {
     pub todos: Option<Arc<dyn TodoSink>>,
     /// Store-side second commit barrier for prepared artifact groups.
     pub delivery_committer: Option<Arc<dyn DeliveryCommitter>>,
+    /// Optional work contract to persist atomically once the session run fence
+    /// is acquired in [`Engine::prepare`].
+    pub work_contract: Option<WorkContract>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -121,7 +126,7 @@ struct Inner {
 }
 
 struct PreparedTurn {
-    ticket: Arc<RunTicket>,
+    ticket: RunTicket,
     history: Vec<Message>,
     config: EngineConfig,
     submission_id: Option<String>,
@@ -175,12 +180,46 @@ impl Engine {
 
     #[must_use]
     pub fn sessions(&self) -> Vec<SessionRecord> {
-        self.inner.lock().unwrap().index.sessions.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .sessions
+            .clone()
     }
 
     #[must_use]
     pub fn session(&self, id: &str) -> Option<SessionRecord> {
-        self.inner.lock().unwrap().index.get(id).cloned()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .get(id)
+            .cloned()
+    }
+
+    /// Borrows a single session record under the engine lock without cloning
+    /// its full message history.
+    pub fn with_session<R>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&SessionRecord) -> R,
+    ) -> Option<R> {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.index.get(id).map(f)
+    }
+
+    /// Borrows all session records under the engine lock for zero-clone batch
+    /// projections (e.g. Work Board snapshots).
+    pub fn with_sessions<R>(&self, f: impl FnOnce(&[SessionRecord]) -> R) -> R {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&guard.index.sessions)
     }
 
     #[must_use]
@@ -256,6 +295,73 @@ impl Engine {
         })?;
         record.origin = origin;
         record.workspace = workspace;
+        inner.index.save(&self.root)
+    }
+
+    /// Persist the active versioned work contract for a session and optionally
+    /// record its revision for a specific submission.
+    pub fn set_session_work_contract(
+        &self,
+        id: &str,
+        contract: WorkContract,
+        submission_id: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        if let Some(sub_id) = submission_id {
+            record
+                .submission_revisions
+                .insert(sub_id.to_owned(), contract.revision);
+        }
+        record.work_contract = Some(contract);
+        inner.index.save(&self.root)
+    }
+
+    /// Record the contract revision for an auxiliary submission (such as an
+    /// explicit override delivery or conversation auto-import) without changing
+    /// the session's active `work_contract`.
+    pub fn record_submission_revision(
+        &self,
+        id: &str,
+        submission_id: &str,
+        revision: u32,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record
+            .submission_revisions
+            .insert(submission_id.to_owned(), revision);
+        inner.index.save(&self.root)
+    }
+
+    /// Persist a submission outcome directly (for example after an explicit
+    /// user override completes a previously partial work revision).
+    pub fn set_submission_outcome(
+        &self,
+        id: &str,
+        submission_id: &str,
+        outcome: SubmissionOutcome,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record
+            .submission_outcomes
+            .insert(submission_id.to_owned(), outcome);
         inner.index.save(&self.root)
     }
 
@@ -367,6 +473,62 @@ impl Engine {
         self.request_cancel(id).map(|_| ())
     }
 
+    /// True while a cancelled run for `id` is still unwinding and reaping its
+    /// child tools.
+    #[must_use]
+    pub fn is_cancelling(&self, id: &str) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_some_and(|fence| fence.is_cancelling())
+    }
+
+    /// True while session `id` holds an active run fence (either running or
+    /// cancelling/reaping child tools).
+    #[must_use]
+    pub fn is_active(&self, id: &str) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_some_and(|fence| fence.is_active())
+    }
+
+    /// IDs of all sessions whose run fence is currently active (running or
+    /// cancelling/reaping).
+    #[must_use]
+    pub fn active_session_ids(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fences
+            .iter()
+            .filter(|(_, fence)| fence.is_active())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Defensively cancel every active run fence (for process shutdown / handle
+    /// teardown) so child tool processes are signaled to exit immediately.
+    pub fn cancel_all_active(&self) {
+        let fences: Vec<Arc<RunFence>> = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fences
+            .values()
+            .cloned()
+            .collect();
+        for fence in fences {
+            if fence.is_active() {
+                fence.cancel_active();
+            }
+        }
+    }
+
+    /// Wait up to `timeout` for session `id`'s active/cancelling run to finish
+    /// reaping and release its fence. Returns `true` if idle.
+    #[must_use]
+    pub fn wait_until_idle(&self, id: &str, timeout: Duration) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_none_or(|fence| fence.wait_until_idle(timeout))
+    }
+
     /// Request cancellation before a successful delivery history commit.
     /// `false` means the delivery crossed its durable linearization point and
     /// is completing its independent store marker; callers must keep the
@@ -383,6 +545,22 @@ impl Engine {
             && record.status.is_busy()
         {
             record.status = TurnState::Stopped;
+            if let Some(sub_id) = record
+                .messages
+                .iter()
+                .rev()
+                .find(|msg| {
+                    msg.role == Role::User
+                        && matches!(msg.source, MessageSource::User)
+                        && msg.id.starts_with("submission-")
+                })
+                .map(|msg| msg.id.clone())
+            {
+                record
+                    .submission_outcomes
+                    .entry(sub_id)
+                    .or_insert(SubmissionOutcome::Aborted);
+            }
         }
         inner.index.save(&self.root).map(|()| true)
     }
@@ -507,7 +685,20 @@ impl Engine {
                     workspace.root.join("outputs").join(submission)
                 })
             });
-            let previous = (record.status.clone(), record.updated_at);
+            let previous = (
+                record.status.clone(),
+                record.updated_at,
+                record.work_contract.clone(),
+                record.submission_revisions.clone(),
+            );
+            if let Some(contract) = &config.work_contract {
+                if let Some(sub_id) = submission_id.as_deref() {
+                    record
+                        .submission_revisions
+                        .insert(sub_id.to_owned(), contract.revision);
+                }
+                record.work_contract = Some(contract.clone());
+            }
             record.messages.push(Message {
                 id: submission.map_or_else(
                     || format!("u-{now}"),
@@ -527,13 +718,18 @@ impl Engine {
                 let record =
                     inner.index.get_mut(session_id).expect("record exists");
                 record.messages.pop();
-                (record.status, record.updated_at) = previous;
+                (
+                    record.status,
+                    record.updated_at,
+                    record.work_contract,
+                    record.submission_revisions,
+                ) = previous;
                 ticket.finish();
                 drop(inner);
                 return Err(RunError::Storage(error));
             }
             let prepared = PreparedTurn {
-                ticket: Arc::new(ticket),
+                ticket,
                 history,
                 config,
                 submission_id,
@@ -606,7 +802,7 @@ impl Engine {
         let emitter = Arc::new(EngineEmitter {
             session: session_id.to_owned(),
             observer: Arc::clone(&self.observer),
-            ticket: Arc::clone(&ticket),
+            publisher: ticket.publisher(),
         });
         let result = run_turn(request, stream, emitter).await;
         let stored = {
@@ -674,6 +870,7 @@ impl Engine {
                         record,
                         result.outcome,
                     );
+                    clamp_persisted_tool_outputs(&mut new_messages);
                     record.messages.extend(new_messages);
                     if let Some(commit) = &commit {
                         record.delivery_commits.retain(|previous| {
@@ -683,6 +880,32 @@ impl Engine {
                     }
                     record.status =
                         status_for(result.outcome, error.as_deref());
+                    if let Some(sub_id) = submission_id.as_ref() {
+                        let outcome_entry = match result.outcome {
+                            LoopOutcome::Completed => {
+                                let missing = missing_required_for_submission(
+                                    record, sub_id,
+                                );
+                                if missing.is_empty() {
+                                    SubmissionOutcome::Completed
+                                } else {
+                                    SubmissionOutcome::Partial { missing }
+                                }
+                            }
+                            LoopOutcome::Aborted => SubmissionOutcome::Aborted,
+                            LoopOutcome::Failed => SubmissionOutcome::Failed {
+                                message: error
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|text| !text.is_empty())
+                                    .unwrap_or("model reported an error")
+                                    .to_owned(),
+                            },
+                        };
+                        record
+                            .submission_outcomes
+                            .insert(sub_id.clone(), outcome_entry);
+                    }
                     Ok((result.outcome, commit))
                 }
                 Err(message) => {
@@ -697,6 +920,14 @@ impl Engine {
                     record.status = TurnState::Error {
                         message: message.clone(),
                     };
+                    if let Some(sub_id) = submission_id.as_ref() {
+                        record.submission_outcomes.insert(
+                            sub_id.clone(),
+                            SubmissionOutcome::Failed {
+                                message: message.clone(),
+                            },
+                        );
+                    }
                     Err(RunError::Loop(message))
                 }
             };
@@ -707,68 +938,142 @@ impl Engine {
                     message: "could not save turn history".to_owned(),
                 };
                 inner.index.upsert(before);
-                Err(RunError::Storage(error))
-            } else {
-                if matches!(&result, Ok((_, Some(_)))) {
+                if !ticket.finish() {
+                    return Ok(LoopOutcome::Aborted);
+                }
+                self.observer.storage_error(session_id);
+                self.observer.finished(session_id, LoopOutcome::Failed);
+                return Err(RunError::Storage(error));
+            }
+            match result {
+                Ok((outcome, Some(commit))) => {
                     // This lock also serializes request_cancel. The successful
                     // history save is the delivery's linearization point.
                     inner.finalizing.insert(session_id.to_owned());
+                    drop(inner);
+                    (outcome, commit)
                 }
-                result
+                Ok((outcome, None)) => {
+                    // History is durably saved; finish under the same lock so
+                    // `request_cancel` cannot split durable history from live
+                    // observer/queue state in a gap before `ticket.finish()`.
+                    if !ticket.finish() {
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    self.observer.finished(session_id, outcome);
+                    return Ok(outcome);
+                }
+                Err(error) => {
+                    if !ticket.finish() {
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    self.observer.finished(session_id, LoopOutcome::Failed);
+                    return Err(error);
+                }
             }
         };
-        let outcome = match stored {
-            Ok((outcome, Some(commit))) => {
-                self.observer.saving_files(session_id);
-                let committed = match delivery_committer {
-                    Some(committer) => committer.commit(&commit).await,
-                    None => {
-                        Err("artifact delivery store is unavailable".to_owned())
-                    }
-                };
-                match committed {
-                    Ok(()) => {
-                        ticket.publish(|| {
-                            self.observer.delivery_committed(&commit);
-                        });
-                        Ok(outcome)
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            target: "flowy.storage",
-                            operation = "commit delivered artifacts",
-                            session = %session_id,
-                            error = %error,
-                            "storage operation failed"
-                        );
-                        self.observer.delivery_failed(&commit, &error);
-                        Err(RunError::Storage(std::io::Error::other(error)))
-                    }
+        let (pending_outcome, commit) = stored;
+        let mut finalizing_guard = FinalizingGuard {
+            engine: self,
+            session_id: session_id.to_owned(),
+            armed: true,
+        };
+        self.observer.saving_files(session_id);
+        let committed = match delivery_committer {
+            Some(committer) => committer.commit(&commit).await,
+            None => Err("artifact delivery store is unavailable".to_owned()),
+        };
+        let outcome = match committed {
+            Ok(()) => {
+                // `inner.finalizing` already blocks `request_cancel`; avoid
+                // holding `RunFence::active` across `delivery_committed` disk
+                // audit/index fsyncs.
+                if ticket.is_current() {
+                    self.observer.delivery_committed(&commit);
                 }
+                Ok(pending_outcome)
             }
-            Ok((outcome, None)) => Ok(outcome),
             Err(error) => {
-                if matches!(error, RunError::Storage(_)) {
-                    self.observer.storage_error(session_id);
-                }
-                Err(error)
+                tracing::error!(
+                    target: "flowy.storage",
+                    operation = "commit delivered artifacts",
+                    session = %session_id,
+                    error = %error,
+                    "storage operation failed"
+                );
+                self.observer.delivery_failed(&commit, &error);
+                Err(RunError::Storage(std::io::Error::other(error)))
             }
         };
         // Keep the per-session flight active while the store writes its marker.
-        // The terminal notification is visible before a replacement run starts.
-        let mut inner = self.inner.lock().unwrap();
-        if !ticket.finish() {
-            inner.finalizing.remove(session_id);
-            drop(inner);
-            return Ok(LoopOutcome::Aborted);
+        // Notify observer while the RunFence still blocks replacement runs and
+        // `inner.finalizing` still blocks cancellation, without holding
+        // `self.inner` across the observer callback.
+        if ticket.is_current() {
+            self.observer.finished(
+                session_id,
+                outcome.as_ref().copied().unwrap_or(LoopOutcome::Failed),
+            );
         }
-        self.observer.finished(
-            session_id,
-            outcome.as_ref().copied().unwrap_or(LoopOutcome::Failed),
-        );
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        finalizing_guard.armed = false;
+        let clean = ticket.finish();
         inner.finalizing.remove(session_id);
         drop(inner);
+        if !clean {
+            return Ok(LoopOutcome::Aborted);
+        }
         outcome
+    }
+}
+
+/// Cap huge tool output strings (e.g., 2 MiB `read_file` dumps) before
+/// persisting them into `history.json`, preserving all normal JSON tool results.
+fn clamp_persisted_tool_outputs(messages: &mut [Message]) {
+    const MAX_PERSISTED_TOOL_CHARS: usize = 64 * 1024;
+    const SUFFIX: &str = "\n...[truncated in persisted history]";
+    for message in messages {
+        if !matches!(message.source, MessageSource::Tool { .. }) {
+            continue;
+        }
+        for block in &mut message.content {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                for inner in content {
+                    if let ContentBlock::Text { text } = inner
+                        && text.chars().count() > MAX_PERSISTED_TOOL_CHARS
+                    {
+                        let mut clipped: String = text
+                            .chars()
+                            .take(MAX_PERSISTED_TOOL_CHARS)
+                            .collect();
+                        clipped.push_str(SUFFIX);
+                        *text = clipped;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct FinalizingGuard<'a> {
+    engine: &'a Engine,
+    session_id: String,
+    armed: bool,
+}
+
+impl Drop for FinalizingGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut inner = self
+                .engine
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.finalizing.remove(&self.session_id);
+        }
     }
 }
 
@@ -805,6 +1110,52 @@ fn attach_artifact_receipts(
             }
         }
     }
+}
+
+fn missing_required_for_submission(
+    record: &SessionRecord,
+    submission_id: &str,
+) -> Vec<String> {
+    let Some(contract) = record.work_contract.as_ref() else {
+        return Vec::new();
+    };
+    if contract.required_items.is_empty() {
+        return Vec::new();
+    }
+    let current_rev = record
+        .submission_revisions
+        .get(submission_id)
+        .copied()
+        .unwrap_or(contract.revision);
+    let mut delivered: Vec<(String, String)> = Vec::new();
+    for message in &record.messages {
+        for block in &message.content {
+            if let ContentBlock::ToolResult {
+                artifact: Some(receipt),
+                ..
+            } = block
+                && receipt.session_id == record.id
+            {
+                let receipt_rev = record
+                    .submission_revisions
+                    .get(&receipt.submission_id)
+                    .copied();
+                if receipt.submission_id == submission_id
+                    || receipt_rev == Some(current_rev)
+                {
+                    delivered.push((
+                        receipt.display_name.clone(),
+                        receipt.delivery_key.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    let pairs: Vec<(&str, &str)> = delivered
+        .iter()
+        .map(|(name, key)| (name.as_str(), key.as_str()))
+        .collect();
+    contract.missing_deliverables(&pairs)
 }
 
 fn delivery_commit(
@@ -912,16 +1263,16 @@ fn now_ms() -> u64 {
 struct EngineEmitter {
     session: String,
     observer: Arc<dyn TurnObserver>,
-    ticket: Arc<RunTicket>,
+    publisher: PublishToken,
 }
 
 impl AgentEmitter for EngineEmitter {
     fn emit(&self, event: AgentEvent) -> BoxFuture<'static, ()> {
         let session = self.session.clone();
         let observer = Arc::clone(&self.observer);
-        let ticket = Arc::clone(&self.ticket);
+        let publisher = self.publisher.clone();
         Box::pin(async move {
-            ticket.publish(|| match event {
+            publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
                     assistant_message_event:
                         AssistantMessageEvent::TextDelta { delta, .. },
@@ -1071,6 +1422,54 @@ mod tests {
         }
         fn delivery_failed(&self, _commit: &DeliveryCommit, _error: &str) {
             *self.delivery_failures.lock().unwrap() += 1;
+        }
+    }
+
+    #[derive(Default)]
+    struct SequenceRecorder {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl TurnObserver for SequenceRecorder {
+        fn text(&self, _session: &str, delta: &str) {
+            self.events.lock().unwrap().push(format!("text:{delta}"));
+        }
+        fn assistant_text(&self, _session: &str, text: &str) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("assistant:{text}"));
+        }
+        fn tool_start(
+            &self,
+            _session: &str,
+            _call_id: &str,
+            name: &str,
+            _args: &serde_json::Value,
+        ) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("tool_start:{name}"));
+        }
+        fn tool_end(
+            &self,
+            _session: &str,
+            _call_id: &str,
+            name: &str,
+            _text: &str,
+            is_error: bool,
+        ) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("tool_end:{name}:{is_error}"));
+        }
+        fn finished(&self, _session: &str, outcome: LoopOutcome) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("finished:{outcome:?}"));
         }
     }
 
@@ -1244,6 +1643,7 @@ mod tests {
             cwd: None,
             todos: None,
             delivery_committer: None,
+            work_contract: None,
         }
     }
 
@@ -1579,6 +1979,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_same_prompt_replays_the_same_event_sequence() {
+        let scratch = Scratch::new("exec-replay");
+        let observer = Arc::new(SequenceRecorder::default());
+        let engine =
+            Engine::open(scratch.0.clone(), config(), observer.clone())
+                .unwrap();
+        let prompt = "write the memo";
+
+        engine.create_session("s1".into(), 1).unwrap();
+        engine
+            .run_with_stream("s1", prompt, text_stream("same reply"))
+            .await
+            .unwrap();
+        let first = observer.events.lock().unwrap().clone();
+
+        engine.create_session("s2".into(), 2).unwrap();
+        engine
+            .run_with_stream("s2", prompt, text_stream("same reply"))
+            .await
+            .unwrap();
+        let second = observer.events.lock().unwrap()[first.len()..].to_vec();
+
+        assert_ne!(first, Vec::<String>::new());
+        assert!(
+            first.iter().any(|event| event.starts_with("finished:")),
+            "the sequence must contain the terminal event"
+        );
+        assert_eq!(
+            first, second,
+            "the same prompt must replay the same event sequence"
+        );
+        // Message ids embed the wall clock; compare the durable shape
+        // (role + content), not the id.
+        let history = |session: &str| -> Vec<String> {
+            engine
+                .session(session)
+                .unwrap()
+                .messages
+                .iter()
+                .map(|message| {
+                    format!("{:?}|{:?}", message.role, message.content)
+                })
+                .collect()
+        };
+        assert_eq!(
+            history("s1"),
+            history("s2"),
+            "the persisted histories must match as well"
+        );
+    }
+
+    #[tokio::test]
     async fn reasoning_deltas_reach_the_observer() {
         let scratch = Scratch::new("reasoning");
         let recorder = Arc::new(Recorder::default());
@@ -1863,7 +2315,7 @@ mod tests {
         let emitter = EngineEmitter {
             session: "s1".into(),
             observer: recorder.clone(),
-            ticket: Arc::clone(&old.ticket),
+            publisher: old.ticket.publisher(),
         };
         let message = Arc::new(AssistantMessage::empty(
             Api::OpenaiCompletions,
@@ -1881,6 +2333,25 @@ mod tests {
             },
         });
         engine.cancel("s1").unwrap();
+        assert!(engine.is_cancelling("s1"));
+        assert!(matches!(
+            engine.prepare(
+                "s1",
+                &crate::types::PromptTurn::plain("new"),
+                None,
+                false,
+                None,
+            ),
+            Err(RunError::Busy)
+        ));
+        assert_eq!(
+            engine
+                .run_prepared("s1", "old", old, Some(text_stream("old")))
+                .await
+                .unwrap(),
+            LoopOutcome::Aborted
+        );
+        assert!(!engine.is_cancelling("s1"));
         let replacement = engine
             .prepare(
                 "s1",
@@ -1896,12 +2367,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*recorder.text.lock().unwrap(), "fresh");
+    }
+
+    #[tokio::test]
+    async fn cancel_blocks_overlapping_run_until_cancelled_turn_reaps() {
+        let scratch = Scratch::new("reap-wait");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let allow_reap = Arc::new(tokio::sync::Notify::new());
+        let entered_clone = Arc::clone(&entered);
+        let allow_reap_clone = Arc::clone(&allow_reap);
+        let slow_stream = rpi_agent::stream_fn(move |model, _, _| {
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            let entered = Arc::clone(&entered_clone);
+            let allow_reap = Arc::clone(&allow_reap_clone);
+            let mut message = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            message.stop_reason = StopReason::Aborted;
+            tokio::spawn(async move {
+                entered.notify_one();
+                allow_reap.notified().await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        let run = engine
+            .start_with_config(
+                "s1".into(),
+                "slow".into(),
+                config(),
+                Some(slow_stream),
+                None,
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        entered.notified().await;
+        engine.cancel("s1").unwrap();
+        assert!(engine.is_cancelling("s1"));
+        assert!(matches!(
+            engine
+                .run_with_stream("s1", "overlap", text_stream("nope"))
+                .await,
+            Err(RunError::Busy)
+        ));
+        allow_reap.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
+        assert!(
+            engine.wait_until_idle("s1", std::time::Duration::from_secs(1))
+        );
         assert_eq!(
             engine
-                .run_prepared("s1", "old", old, Some(text_stream("old")))
+                .run_with_stream("s1", "after-reap", text_stream("ok"))
                 .await
                 .unwrap(),
-            LoopOutcome::Aborted
+            LoopOutcome::Completed
         );
     }
 

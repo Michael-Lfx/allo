@@ -902,6 +902,10 @@ impl LibraryPanel {
                 details.push_str(&self.t("library.availability.corrupt"));
             }
         }
+        if item.override_used {
+            details.push_str(" · ");
+            details.push_str(&self.t("verify.override.badge"));
+        }
         details
     }
 
@@ -2051,6 +2055,7 @@ mod tests {
                 source_unavailable: false,
                 favorite: false,
                 availability: ArtifactAvailability::Available,
+                override_used: false,
             };
             let mut english = I18n::embedded("Flowy");
             english.set_locale(Locale::En);

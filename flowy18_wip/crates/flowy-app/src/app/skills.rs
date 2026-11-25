@@ -286,6 +286,36 @@ fn skill_by_id(id: &str) -> Option<&'static Skill> {
 }
 
 impl FlowyApp {
+    /// Publishes available built-in & loaded shelf skills into `StudioPanel`
+    /// so the composer `/` skill chip and Local Env popover use real data.
+    pub(super) fn sync_studio_skills(&self, cx: &mut Context<'_, Self>) {
+        let mut seen = HashSet::new();
+        let mut chips =
+            Vec::with_capacity(SKILLS.len() + self.skills.cards.len());
+        for skill in SKILLS {
+            if seen.insert(skill.id.to_owned()) {
+                chips.push(flowy_studio::SkillChip {
+                    id: skill.id.to_owned(),
+                    title: self.t(skill.title),
+                    summary: self.t(skill.summary),
+                    official: matches!(skill.author, Author::Official),
+                });
+            }
+        }
+        for card in &self.skills.cards {
+            if seen.insert(card.slug.clone()) {
+                chips.push(flowy_studio::SkillChip {
+                    id: card.slug.clone(),
+                    title: card.title.clone(),
+                    summary: card.summary.clone(),
+                    official: card.official,
+                });
+            }
+        }
+        self.studio
+            .update(cx, |panel, cx| panel.set_installed_skills(chips, cx));
+    }
+
     pub(super) fn skills_canvas(
         &self,
         window: &mut Window,
@@ -518,6 +548,7 @@ impl FlowyApp {
                             }
                         }
                     }
+                    app.sync_studio_skills(cx);
                     cx.notify();
                 });
                 if finished {

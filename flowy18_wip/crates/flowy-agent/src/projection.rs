@@ -67,6 +67,29 @@ pub enum ChatLine {
     Artifact {
         artifact_id: String,
     },
+    /// Verification conclusion card (§8.3): renders per-issue localized codes,
+    /// short SHA-256 fingerprint, optional non-blocking L3 semantic hint, and
+    /// explicit override confirmation state.
+    Verification {
+        report_id: String,
+        artifact_path: String,
+        artifact_hash: String,
+        ok: bool,
+        #[serde(default)]
+        issues: Vec<VerificationIssue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        semantic_hint: Option<String>,
+        #[serde(default)]
+        override_used: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        provenance_warnings: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationIssue {
+    pub code: String,
+    pub field: String,
 }
 
 /// How a file changed during one settled tool call.

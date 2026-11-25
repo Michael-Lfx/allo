@@ -57,6 +57,9 @@ struct ProviderFixture {
 enum ProviderMode {
     Delivery,
     ProjectWrite { path: String, content: String },
+    ProjectWriteThenFail { path: String, content: String },
+    StageThenFail,
+    DelayedText { delay_ms: u64, reply: String },
 }
 
 impl ProviderFixture {
@@ -68,6 +71,24 @@ impl ProviderFixture {
         Self::start_with(ProviderMode::ProjectWrite {
             path: path.into(),
             content: content.into(),
+        })
+    }
+
+    fn start_project_write_then_fail(path: &str, content: &str) -> Self {
+        Self::start_with(ProviderMode::ProjectWriteThenFail {
+            path: path.into(),
+            content: content.into(),
+        })
+    }
+
+    fn start_stage_then_fail() -> Self {
+        Self::start_with(ProviderMode::StageThenFail)
+    }
+
+    fn start_delayed_text(delay_ms: u64, reply: &str) -> Self {
+        Self::start_with(ProviderMode::DelayedText {
+            delay_ms,
+            reply: reply.into(),
         })
     }
 
@@ -164,6 +185,62 @@ impl ProviderFixture {
                                         )
                                     }
                                 }
+                                ProviderMode::ProjectWriteThenFail {
+                                    path,
+                                    content,
+                                } => {
+                                    if index == 0 {
+                                        tool_delta(
+                                            "fixture-project-write-fail",
+                                            "write_file",
+                                            json!({ "path": path, "content": content }),
+                                        )
+                                    } else {
+                                        let _ = write_http_error(&mut socket);
+                                        continue;
+                                    }
+                                }
+                                ProviderMode::StageThenFail => {
+                                    let root =
+                                        state.2.lock().unwrap().clone().expect(
+                                            "host assigned output root",
+                                        );
+                                    match index {
+                                        0 => tool_delta(
+                                            "fixture-stage-write-csv",
+                                            "write_file",
+                                            json!({
+                                                "path": root.join("sales.csv").display().to_string(),
+                                                "content": CSV
+                                            }),
+                                        ),
+                                        1 => tool_delta(
+                                            "fixture-stage-publish-csv",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sales.csv",
+                                                "delivery_key": "sales"
+                                            }),
+                                        ),
+                                        _ => {
+                                            let _ =
+                                                write_http_error(&mut socket);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                ProviderMode::DelayedText {
+                                    delay_ms,
+                                    reply,
+                                } => {
+                                    thread::sleep(Duration::from_millis(
+                                        *delay_ms,
+                                    ));
+                                    (
+                                        json!({"role":"assistant","content": reply}),
+                                        "stop",
+                                    )
+                                }
                             }
                         } else {
                             // Automatic conversation-title requests are
@@ -215,6 +292,17 @@ impl Drop for ProviderFixture {
             thread.join().unwrap();
         }
     }
+}
+
+fn write_http_error(socket: &mut TcpStream) -> std::io::Result<()> {
+    let body = r#"{"error":{"message":"simulated provider failure"}}"#;
+    write!(
+        socket,
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )?;
+    socket.flush()
 }
 
 fn tool_delta(
@@ -345,6 +433,46 @@ fn artifact_ids(handle: &AgentHandle) -> Vec<String> {
         .collect()
 }
 
+/// Windows can briefly report a sharing violation when another reader (the
+/// conversation-file import or the on-access scanner) still has the source
+/// open. The test edits files the turn just delivered, so retry the two
+/// user-simulation operations instead of making the suite timing-sensitive.
+fn write_with_retry(path: &std::path::Path, bytes: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::write(path, bytes) {
+            Ok(()) => return,
+            Err(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                panic!("write {} failed after retries: {error}", path.display())
+            }
+        }
+    }
+}
+
+fn remove_with_retry(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::remove_file(path) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return;
+            }
+            Err(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                panic!(
+                    "remove {} failed after retries: {error}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
 #[test]
 fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
 {
@@ -372,6 +500,11 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     assert!(pptx.starts_with(b"PK\x03\x04"));
     fs::write(output.join("sample.pdf"), &pdf).unwrap();
     fs::write(output.join("sample.pptx"), &pptx).unwrap();
+    // The deck enters the delivery gate through its verification report; the
+    // scripted host does not generate a deck, so the report is fixed setup.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    gate.record_report(&output.join("sample.pptx"), Vec::new(), 1)
+        .unwrap();
 
     handle.submit_chat(SUBMISSION, "Create the sales CSV and publish it with the declared PDF and PPTX fixtures.").unwrap();
     wait_for_completion(&handle, &provider, &scratch.0, &session);
@@ -412,8 +545,8 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     store.set_favorite(&csv_id, true).unwrap();
     store.trash(&csv_id).unwrap();
 
-    fs::write(output.join("sales.csv"), b"later overwritten source").unwrap();
-    fs::remove_file(output.join("sample.pdf")).unwrap();
+    write_with_retry(&output.join("sales.csv"), b"later overwritten source");
+    remove_with_retry(&output.join("sample.pdf"));
     assert_eq!(store.read_payload(&csv_id).unwrap(), CSV.as_bytes());
     assert_eq!(
         store.get(&csv_id).unwrap().unwrap().manifest.receipt.sha256,
@@ -502,4 +635,1204 @@ fn completed_project_turn_imports_successful_write_file() {
             .unwrap(),
         MARKDOWN.as_bytes()
     );
+}
+
+#[test]
+fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
+    use flowy_agent_core::{
+        AcceptanceQueue, ContentBlock, Message, MessageSource, ReceiptState,
+        Role, SessionIndex, SessionRecord, SubmissionOutcome, TurnState,
+    };
+
+    let scratch = Scratch::new();
+    let queue = AcceptanceQueue::new(scratch.0.clone());
+
+    // Case 1: Legacy-shaped Error session with an assistant error reply.
+    let err_receipt = queue
+        .accept(None, "Deliver the signed report", 1_000)
+        .unwrap();
+    assert!(
+        queue
+            .take(&err_receipt.id, "try-1", 1_001, 30)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        queue
+            .bind(
+                &err_receipt.id,
+                "try-1",
+                "session-error",
+                "submission-error",
+                1_002
+            )
+            .unwrap()
+    );
+
+    // Case 2: Session whose later turn Completed, while this earlier submission
+    // explicitly recorded SubmissionOutcome::Failed.
+    let earlier_fail = queue
+        .accept(None, "Earlier failed work in same session", 1_010)
+        .unwrap();
+    assert!(
+        queue
+            .take(&earlier_fail.id, "try-2", 1_011, 30)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        queue
+            .bind(
+                &earlier_fail.id,
+                "try-2",
+                "session-later-ok",
+                "submission-failed-first",
+                1_012
+            )
+            .unwrap()
+    );
+
+    let mut index = SessionIndex::load(&scratch.0).unwrap();
+    index.upsert(SessionRecord {
+        id: "session-error".into(),
+        status: TurnState::Error {
+            message: "provider failed".into(),
+        },
+        messages: vec![
+            Message {
+                id: "submission-error".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("Deliver the signed report")],
+                source: MessageSource::User,
+                display_text: None,
+            },
+            Message {
+                id: "response-error".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text(
+                    "Could not complete this task",
+                )],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+                display_text: None,
+            },
+        ],
+        origin: SessionOrigin::Home,
+        ..SessionRecord::default()
+    });
+    let mut outcomes = std::collections::BTreeMap::new();
+    outcomes.insert(
+        "submission-failed-first".to_owned(),
+        SubmissionOutcome::Failed {
+            message: "tool crash".to_owned(),
+        },
+    );
+    outcomes.insert(
+        "submission-second-ok".to_owned(),
+        SubmissionOutcome::Completed,
+    );
+    index.upsert(SessionRecord {
+        id: "session-later-ok".into(),
+        status: TurnState::Completed,
+        messages: vec![
+            Message {
+                id: "submission-failed-first".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text(
+                    "Earlier failed work in same session",
+                )],
+                source: MessageSource::User,
+                display_text: None,
+            },
+            Message {
+                id: "resp-failed-first".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("failed")],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+                display_text: None,
+            },
+            Message {
+                id: "submission-second-ok".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("follow up")],
+                source: MessageSource::User,
+                display_text: None,
+            },
+            Message {
+                id: "resp-second-ok".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("ok")],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+                display_text: None,
+            },
+        ],
+        submission_outcomes: outcomes,
+        origin: SessionOrigin::Home,
+        ..SessionRecord::default()
+    });
+    index.save(&scratch.0).unwrap();
+
+    let reopened = AgentHandle::with_config(
+        scratch.0.clone(),
+        LlmConfig {
+            api_key: None,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        reopened.receipt_state(&err_receipt.id),
+        Some(ReceiptState::Retrying),
+        "an Error session must never be reconciled as Completed on restart"
+    );
+    assert_eq!(
+        reopened.receipt_state(&earlier_fail.id),
+        Some(ReceiptState::Retrying),
+        "an explicitly Failed submission must stay retryable even if a later turn Completed"
+    );
+    assert!(
+        reopened
+            .artifact_store()
+            .unwrap()
+            .committed_ids()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn forced_breakpoint_1_bind_failure_and_stale_lease_never_dispatch_engine() {
+    use flowy_agent_core::AcceptanceQueue;
+
+    // Subcase A: journal write failure during `queue.bind` -> zero provider calls.
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(10, "should not run");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let _session = handle.create_home_session().unwrap();
+    let _receipt = handle
+        .accept_deferred("must not run on bind error")
+        .unwrap();
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    let orig_perms = fs::metadata(&journal_path).unwrap().permissions();
+    handle.set_before_accepted_bind_hook(Some(Arc::new(move |_| {
+        let mut perms = fs::metadata(&journal_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&journal_path, perms).unwrap();
+    })));
+    let err = handle
+        .run_accepted_once()
+        .expect_err("bind error must fail closed");
+    assert_eq!(err, "notice.session_storage_failed");
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "failed bind must result in zero engine/provider invocations"
+    );
+    assert!(!handle.has_active_claim());
+    // Restore original permissions so Scratch cleanup succeeds on Windows.
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    fs::set_permissions(&journal_path, orig_perms).unwrap();
+    drop(handle);
+    drop(provider);
+
+    // Subcase B: lease cancelled/lost before `queue.bind` -> Ok(None), zero calls.
+    let scratch_b = Scratch::new();
+    let provider_b = ProviderFixture::start_delayed_text(10, "should not run");
+    let handle_b =
+        AgentHandle::with_config(scratch_b.0.clone(), provider_b.config());
+    let _session_b = handle_b.create_home_session().unwrap();
+    let _receipt_b = handle_b.accept_deferred("cancelled before bind").unwrap();
+    let root_b = scratch_b.0.clone();
+    handle_b.set_before_accepted_bind_hook(Some(Arc::new(move |receipt_id| {
+        let queue = AcceptanceQueue::new(root_b.clone());
+        assert!(queue.cancel(receipt_id, 9_999_999_999_999).unwrap());
+    })));
+    assert!(
+        handle_b
+            .run_accepted_once()
+            .expect("stale bind returns Ok(None)")
+            .is_none()
+    );
+    assert!(
+        provider_b.requests.lock().unwrap().is_empty(),
+        "stale lease bind must result in zero engine/provider invocations"
+    );
+    assert!(!handle_b.has_active_claim());
+}
+
+#[test]
+fn concurrent_session_switch_between_bind_and_submit_keeps_work_on_session_a() {
+    use std::sync::Barrier;
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_project_write(
+        "outputs/from-session-a.md",
+        "# Bound to A\n",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session_a = handle.create_home_session().unwrap();
+    let session_b = handle.create_home_session().unwrap();
+    handle.select_session(&session_a).unwrap();
+    let receipt = handle.accept_deferred("execute strictly in A").unwrap();
+    assert_eq!(receipt.session_hint.as_deref(), Some(session_a.as_str()));
+
+    let enter_barrier = Arc::new(Barrier::new(2));
+    let resume_barrier = Arc::new(Barrier::new(2));
+    let hook_enter = Arc::clone(&enter_barrier);
+    let hook_resume = Arc::clone(&resume_barrier);
+    handle.set_before_accepted_submit_hook(Some(Arc::new(move |_bound| {
+        hook_enter.wait();
+        hook_resume.wait();
+    })));
+
+    let switcher_handle = handle.clone();
+    let target_b = session_b.clone();
+    let switcher = thread::spawn(move || {
+        enter_barrier.wait();
+        switcher_handle.select_session(&target_b).unwrap();
+        assert_eq!(
+            switcher_handle.active_session_id().as_deref(),
+            Some(target_b.as_str())
+        );
+        resume_barrier.wait();
+    });
+
+    let run = handle
+        .run_accepted_once()
+        .expect("dispatch")
+        .expect("claimed");
+    switcher.join().unwrap();
+    handle.set_before_accepted_submit_hook(None);
+
+    assert_eq!(run.session_id, session_a);
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str()),
+        "background dispatch must never hijack the user's active session B"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.has_busy_session() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!handle.has_busy_session());
+    handle.finish_accepted(true).unwrap();
+
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let rec_a = history.get(&session_a).expect("session A exists");
+    let rec_b = history.get(&session_b).expect("session B exists");
+    assert!(
+        rec_a
+            .messages
+            .iter()
+            .any(|msg| msg.text().contains("execute strictly in A")),
+        "session A must receive the bound prompt"
+    );
+    assert!(
+        rec_b.messages.is_empty(),
+        "session B must remain completely untouched, got {:?}",
+        rec_b.messages
+    );
+    let artifacts = handle.artifacts().unwrap();
+    assert!(
+        artifacts
+            .iter()
+            .all(|item| item.manifest.receipt.session_id == session_a),
+        "all artifacts must belong strictly to session A"
+    );
+}
+
+#[test]
+fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(750, "done slowly");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let _session = handle.create_home_session().unwrap();
+    handle.set_accepted_lease_ms_for_test(300);
+
+    let receipt = handle
+        .accept_deferred("slow turn needing heartbeat")
+        .unwrap();
+    let _run = handle
+        .run_accepted_once()
+        .expect("dispatch")
+        .expect("claimed");
+
+    // Wait well past the initial 300ms lease expiry while the 750ms turn runs.
+    thread::sleep(Duration::from_millis(420));
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Running),
+        "heartbeat must keep the active claim Running past initial lease expiry"
+    );
+    assert!(
+        handle.pending_acceptances().is_empty(),
+        "a heartbeated running receipt must not re-enter pending"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.has_busy_session() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!handle.has_busy_session());
+    handle.finish_accepted(true).unwrap();
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Completed)
+    );
+    let journal =
+        fs::read_to_string(AcceptanceQueue::path(&scratch.0)).unwrap();
+    assert!(
+        journal.contains(r#""event":"renewed""#),
+        "acceptance journal must contain lease renewal entries: {journal}"
+    );
+}
+
+#[test]
+fn kernel_review_missing_required_deck_marks_work_partial_until_completed() {
+    use flowy_agent_core::SubmissionOutcome;
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start();
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session = handle.create_home_session().unwrap();
+    let sub_id = format!("submission-{SUBMISSION:032x}");
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let output = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .join("outputs")
+        .join(&sub_id);
+    fs::create_dir_all(&output).unwrap();
+    *provider.output_root.lock().unwrap() = Some(output.clone());
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    for name in ["sample.pdf", "sample.pptx"] {
+        fs::copy(fixtures.join(name), output.join(name)).unwrap();
+    }
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let failed_report = gate
+        .record_report(
+            &output.join("sample.pptx"),
+            vec![crate::delivery::Issue {
+                code: "VALUE_MISMATCH".into(),
+                field: "price".into(),
+            }],
+            1,
+        )
+        .unwrap();
+
+    handle
+        .submit_chat(
+            SUBMISSION,
+            "Deliver all three required files sales.csv, sample.pdf and sample.pptx together.",
+        )
+        .unwrap();
+    wait_for_completion(&handle, &provider, &scratch.0, &session);
+
+    // Qualified files remain visible, blocked PPT is kept out, and work-level
+    // status MUST be Partial (NOT Completed) with exact missing item list.
+    let store = handle.artifact_store().unwrap();
+    let items = store.list().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .all(|i| i.manifest.receipt.display_name != "sample.pptx")
+    );
+    let status = handle.work_status(&sub_id).expect("work status");
+    assert_eq!(status.contract_revision, Some(1));
+    assert_eq!(status.delivered_artifact_ids.len(), 2);
+    assert_eq!(status.missing_items, vec!["sample.pptx".to_owned()]);
+    assert_eq!(
+        status.outcome,
+        Some(SubmissionOutcome::Partial {
+            missing: vec!["sample.pptx".to_owned()],
+        })
+    );
+
+    // Must survive restart with the exact same work status.
+    drop(store);
+    drop(handle);
+    drop(provider);
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let after_restart = reopened
+        .work_status(&sub_id)
+        .expect("work status after restart");
+    assert_eq!(after_restart.contract_revision, Some(1));
+    assert_eq!(after_restart.delivered_artifact_ids.len(), 2);
+    assert_eq!(after_restart.missing_items, vec!["sample.pptx".to_owned()]);
+    assert_eq!(
+        after_restart.outcome,
+        Some(SubmissionOutcome::Partial {
+            missing: vec!["sample.pptx".to_owned()],
+        })
+    );
+
+    // Completing the missing deck via explicit user override promotes the same
+    // work to Completed with all 3 files visible.
+    let overridden_id = reopened
+        .override_deliver_artifact(
+            &session,
+            &failed_report.id,
+            &output.join("sample.pptx").display().to_string(),
+        )
+        .expect("override missing deck");
+    assert_ne!(overridden_id, "");
+    let completed = reopened
+        .work_status(&sub_id)
+        .expect("work status after completion");
+    assert_eq!(completed.outcome, Some(SubmissionOutcome::Completed));
+    assert_eq!(completed.missing_items, Vec::<String>::new());
+    assert_eq!(completed.delivered_artifact_ids.len(), 3);
+}
+
+#[test]
+fn kernel_review_prepare_before_commit_writes_intent_only_not_deliver() {
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_stage_then_fail();
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session = handle.create_home_session().unwrap();
+    let sub_id = format!("submission-{SUBMISSION:032x}");
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let output = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .join("outputs")
+        .join(&sub_id);
+    fs::create_dir_all(&output).unwrap();
+    *provider.output_root.lock().unwrap() = Some(output);
+
+    handle
+        .submit_chat(SUBMISSION, "Write and publish sales.csv then fail.")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if matches!(handle.turn_status(), TurnStatus::Error { .. }) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert!(
+        matches!(handle.turn_status(), TurnStatus::Error { .. }),
+        "turn must settle in Error, got {:?}",
+        handle.turn_status()
+    );
+
+    // File was staged by publish_file, but turn failed before Library commit:
+    // audit MUST contain deliver_intent only, 0 deliver events, 1 in_doubt,
+    // 0 visible artifacts, and 0 delivery markers.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let events = fs::read_to_string(scratch.0.join("delivery/events.jsonl"))
+        .expect("delivery audit log");
+    assert!(events.contains("deliver_intent"));
+    assert!(
+        !events.contains("\"deliver\""),
+        "staging without Library commit must never record final deliver: {events}"
+    );
+    assert_eq!(gate.in_doubt_deliveries().unwrap().len(), 1);
+    assert_eq!(handle.artifacts().unwrap().len(), 0);
+    let markers = fs::read_dir(scratch.0.join("artifacts/deliveries"))
+        .unwrap()
+        .count();
+    assert_eq!(markers, 0);
+}
+
+#[test]
+fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_without_rerunning()
+ {
+    use flowy_agent_core::{
+        AcceptanceQueue, ContentBlock, DeliveryCommit, Message, MessageSource,
+        ReceiptState, Role, SessionIndex, SessionRecord, SessionWorkspace,
+        SubmissionOutcome, TurnState,
+    };
+
+    let scratch = Scratch::new();
+    let session_id = "s-bp3".to_owned();
+    let sub_id = format!("submission-{:032x}", 0xB303_u128);
+    let workspace_root = scratch.0.join("sessions").join(&session_id);
+    let output_dir = workspace_root.join("outputs").join(&sub_id);
+    fs::create_dir_all(&output_dir).unwrap();
+    let csv_path = output_dir.join("sales.csv");
+    fs::write(&csv_path, CSV).unwrap();
+
+    // Stage artifact through the two-phase gate (writes deliver_intent only,
+    // creates staging snapshot, NO Library marker yet).
+    let store =
+        crate::artifact_store::ArtifactStore::open(scratch.0.join("artifacts"))
+            .unwrap();
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let staged = gate
+        .stage_with(&csv_path, false, 1_000, |checked| {
+            let expected = crate::delivery::hash_bytes(checked);
+            let receipt =
+                store.prepare(crate::artifact_store::PrepareArtifact {
+                    source_root: output_dir.clone(),
+                    relative_path: "sales.csv".into(),
+                    source_relative_path: format!("outputs/{sub_id}/sales.csv"),
+                    conversation_import: false,
+                    session_id: session_id.clone(),
+                    submission_id: sub_id.clone(),
+                    tool_call_id: "call-bp3".into(),
+                    delivery_key: "sales".into(),
+                    display_name: Some("sales.csv".into()),
+                    origin: SessionOrigin::Home,
+                })?;
+            assert_eq!(receipt.sha256, expected);
+            Ok(receipt)
+        })
+        .unwrap();
+    let receipt = staged.value.expect("staged receipt");
+    assert_eq!(store.list().unwrap().len(), 0);
+    assert_eq!(gate.in_doubt_deliveries().unwrap().len(), 1);
+    drop(store);
+
+    // Persist durable history commit + Completed outcome WITHOUT Library marker
+    // and WITHOUT Completed in acceptance journal (simulated crash right after
+    // history.json save).
+    let mut record = SessionRecord {
+        id: session_id.clone(),
+        title: "Breakpoint 3".into(),
+        status: TurnState::Completed,
+        origin: SessionOrigin::Home,
+        workspace: Some(SessionWorkspace {
+            root: workspace_root,
+        }),
+        messages: vec![
+            Message {
+                id: sub_id.clone(),
+                role: Role::User,
+                content: vec![ContentBlock::text("deliver sales.csv")],
+                source: MessageSource::User,
+                display_text: None,
+            },
+            Message {
+                id: "assistant-bp3".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("Done.")],
+                source: MessageSource::Model {
+                    provider: "openai".into(),
+                    model: "fixture".into(),
+                },
+                display_text: None,
+            },
+        ],
+        delivery_commits: vec![DeliveryCommit {
+            session_id: session_id.clone(),
+            submission_id: sub_id.clone(),
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: 1_050,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Breakpoint 3".into(),
+        }],
+        ..SessionRecord::default()
+    };
+    record
+        .submission_outcomes
+        .insert(sub_id.clone(), SubmissionOutcome::Completed);
+    let mut index = SessionIndex {
+        active: Some(session_id.clone()),
+        ..SessionIndex::default()
+    };
+    index.upsert(record);
+    index.save(&scratch.0).unwrap();
+
+    let queue = AcceptanceQueue::new(&scratch.0);
+    let accepted = queue
+        .accept(Some(&session_id), "deliver sales.csv", 1_000)
+        .unwrap();
+    queue
+        .take(&accepted.id, "attempt-bp3", 1_010, 50)
+        .unwrap()
+        .unwrap();
+    assert!(
+        queue
+            .bind(&accepted.id, "attempt-bp3", &session_id, &sub_id, 1_020)
+            .unwrap()
+    );
+
+    // Restart with a live provider fixture and verify recovery writes ONLY the
+    // marker + confirms audit + reconciles receipt, with ZERO LLM calls.
+    let provider = ProviderFixture::start();
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let items = reopened.artifacts().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].manifest.receipt.artifact_id, receipt.artifact_id);
+    assert_eq!(
+        reopened.read_artifact(&receipt.artifact_id).unwrap(),
+        CSV.as_bytes()
+    );
+    assert_eq!(
+        reopened.receipt_state(&accepted.id),
+        Some(ReceiptState::Completed)
+    );
+    assert!(reopened.run_accepted_once().unwrap().is_none());
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "marker-only recovery must not invoke the model"
+    );
+    assert_eq!(gate.in_doubt_deliveries().unwrap().as_slice(), []);
+    let events_first =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events_first.matches("\"deliver\"").count(), 1);
+
+    // A second restart must be 100% idempotent (no duplicate deliver events).
+    drop(reopened);
+    let reopened_again =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    assert_eq!(reopened_again.artifacts().unwrap().len(), 1);
+    let events_second =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events_second.matches("\"deliver\"").count(), 1);
+}
+
+#[test]
+fn failed_turn_never_auto_imports_written_markdown_even_across_restart() {
+    let scratch = Scratch::new();
+    let project_root = scratch.0.join("project");
+    fs::create_dir_all(&project_root).unwrap();
+    let provider = ProviderFixture::start_project_write_then_fail(
+        "draft.md",
+        "# incomplete draft\n",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    handle.set_workspace_for_new_sessions(Some(AgentWorkspace {
+        project_id: "proj-fail".into(),
+        root: project_root.clone(),
+    }));
+    handle.set_origin_for_new_sessions(SessionOrigin::Project {
+        project_id: Some("proj-fail".into()),
+    });
+    let _session = handle.create_session().unwrap();
+
+    handle
+        .submit_chat(SUBMISSION, "Write draft.md and fail")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if matches!(handle.turn_status(), TurnStatus::Error { .. }) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert!(matches!(handle.turn_status(), TurnStatus::Error { .. }));
+    assert!(project_root.join("draft.md").exists());
+    assert_eq!(
+        handle.artifacts().unwrap().len(),
+        0,
+        "failed turn must not auto-import written files into Library"
+    );
+
+    drop(handle);
+    drop(provider);
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    assert_eq!(
+        reopened.artifacts().unwrap().len(),
+        0,
+        "startup backfill must not auto-import files from a failed turn"
+    );
+}
+
+#[test]
+fn duplicate_override_deliver_artifact_is_idempotent_without_duplicate_audit() {
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let workspace_root = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let output = workspace_root.join("outputs").join("submission-dup");
+    fs::create_dir_all(&output).unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    let deck = output.join("sample.pptx");
+    fs::copy(fixtures.join("sample.pptx"), &deck).unwrap();
+
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let report = gate
+        .record_report(
+            &deck,
+            vec![crate::delivery::Issue {
+                code: "STRUCTURE".into(),
+                field: "slides".into(),
+            }],
+            100,
+        )
+        .unwrap();
+
+    // Empty report_id must be rejected.
+    assert_eq!(
+        handle.override_deliver_artifact(
+            &session,
+            "",
+            &deck.display().to_string(),
+        ),
+        Err("chat.publish.not_verified")
+    );
+
+    let first_id = handle
+        .override_deliver_artifact(
+            &session,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("first override");
+    let second_id = handle
+        .override_deliver_artifact(
+            &session,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("second duplicate override");
+    assert_eq!(first_id, second_id);
+    assert_eq!(handle.artifacts().unwrap().len(), 1);
+    let events =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events.matches("\"deliver_override\"").count(), 1);
+    assert_eq!(events.matches("\"deliver\"").count(), 1);
+}
+
+#[test]
+fn cancel_task_stops_background_session_a_while_ui_focus_stays_on_b() {
+    use crate::{CancelOutcome, TaskTarget};
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(3_000, "slow reply");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session_a = handle.create_home_session().unwrap();
+    let session_b = handle.create_home_session().unwrap();
+    handle.select_session(&session_a).unwrap();
+    handle.submit_chat(0xC001, "long task in A").unwrap();
+    // User switches UI focus to Session B while A is still running.
+    handle.select_session(&session_b).unwrap();
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str())
+    );
+
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Session(session_a.clone()))
+            .unwrap(),
+        CancelOutcome::Cancelled
+    );
+    // Focus remains on B, and A is stopped (not busy).
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str())
+    );
+    assert!(!handle.busy_session_ids().contains(&session_a));
+    // Re-cancelling an already-settled session reports AlreadySettled.
+    assert_eq!(
+        handle.cancel_task(TaskTarget::Session(session_a)).unwrap(),
+        CancelOutcome::AlreadySettled
+    );
+}
+
+#[test]
+fn cancel_task_receipt_and_card_actions_drive_kernel_without_ui_coupling() {
+    use crate::{
+        AgentUpdate, CancelOutcome, CardAction, CardActionOutcome, TaskTarget,
+    };
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let workspace_root = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let output = workspace_root.join("outputs").join("submission-card");
+    fs::create_dir_all(&output).unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    let deck = output.join("sample.pptx");
+    fs::copy(fixtures.join("sample.pptx"), &deck).unwrap();
+
+    // 1) Cancel a queued receipt permanently via TaskTarget::Receipt.
+    let queued = handle.accept_deferred("never run me").unwrap();
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Receipt(queued.id.clone()))
+            .unwrap(),
+        CancelOutcome::Cancelled
+    );
+    assert_eq!(
+        handle.receipt_state(&queued.id),
+        Some(ReceiptState::Cancelled)
+    );
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Receipt(queued.id.clone()))
+            .unwrap(),
+        CancelOutcome::AlreadySettled
+    );
+    let updates = handle.drain_updates();
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Cancelled
+        } if id == &queued.id
+    )));
+
+    // 2) CardAction::OverrideDeliver delivers a failed verified file.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let report = gate
+        .record_report(
+            &deck,
+            vec![crate::delivery::Issue {
+                code: "STRUCTURE".into(),
+                field: "slides".into(),
+            }],
+            10,
+        )
+        .unwrap();
+    let outcome = handle
+        .apply_card_action(CardAction::OverrideDeliver {
+            session_id: session.clone(),
+            report_id: report.id,
+            artifact_path: deck.display().to_string(),
+        })
+        .expect("card override deliver");
+    let CardActionOutcome::ArtifactDelivered { artifact_id } = outcome else {
+        panic!("expected ArtifactDelivered, got {outcome:?}");
+    };
+    assert_ne!(artifact_id, "");
+
+    // 3) CardAction::RetryDeadReceipt requeues a buried receipt as a fresh ID,
+    //    closes the original dead receipt so it exits visible_acceptances(),
+    //    and rejects duplicate retries idempotently (even after restart).
+    let queue = AcceptanceQueue::new(&scratch.0);
+    let dead = queue.accept(Some(&session), "retry dead", 1_000).unwrap();
+    queue
+        .take(&dead.id, "attempt-1", 1_010, 1_000)
+        .unwrap()
+        .unwrap();
+    assert!(queue.give_up(&dead.id, "attempt-1", 1_020).unwrap());
+    let _ = handle.drain_updates();
+    let requeued = handle
+        .apply_card_action(CardAction::RetryDeadReceipt {
+            receipt_id: dead.id.clone(),
+        })
+        .expect("requeue dead receipt");
+    let CardActionOutcome::ReceiptRequeued { receipt_id } = requeued else {
+        panic!("expected ReceiptRequeued, got {requeued:?}");
+    };
+    assert_ne!(receipt_id, dead.id);
+    assert_eq!(
+        handle.receipt_state(&dead.id),
+        Some(ReceiptState::Cancelled)
+    );
+    assert_eq!(
+        handle.receipt_state(&receipt_id),
+        Some(ReceiptState::Queued)
+    );
+    let updates = handle.drain_updates();
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Cancelled
+        } if id == &dead.id
+    )));
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Queued
+        } if id == &receipt_id
+    )));
+    let visible = handle.visible_acceptances();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].0.id, receipt_id);
+    assert_eq!(visible[0].1, ReceiptState::Queued);
+    assert!(
+        handle
+            .apply_card_action(CardAction::RetryDeadReceipt {
+                receipt_id: dead.id,
+            })
+            .is_err(),
+        "retrying an already-superseded dead receipt must be rejected"
+    );
+    drop(handle);
+
+    // Simulated restart: old dead receipt must never resurrect into visible_acceptances().
+    let restarted =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let after_restart = restarted.visible_acceptances();
+    assert_eq!(after_restart.len(), 1);
+    assert_eq!(after_restart[0].0.id, receipt_id);
+    assert_eq!(after_restart[0].1, ReceiptState::Queued);
+}
+
+#[test]
+fn apply_config_wakes_autonomous_drain_after_disconnected_boot() {
+    use flowy_agent_core::ReceiptState;
+
+    let scratch = Scratch::new();
+    let disconnected = LlmConfig {
+        provider: "flowy".into(),
+        ..LlmConfig::default()
+    };
+    assert!(!disconnected.can_run_turns());
+
+    let handle = AgentHandle::with_config(scratch.0.clone(), disconnected);
+    handle.set_autonomous_drain(true);
+    let receipt = handle.accept_deferred("wake after apply_config").unwrap();
+
+    // While disconnected (`!can_run_turns()`), the receipt remains Queued.
+    thread::sleep(Duration::from_millis(80));
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Queued)
+    );
+
+    // Applying a runnable config must automatically wake autonomous drain
+    // without any extra UI polling or manual kick.
+    handle.apply_config(LlmConfig::default()).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if handle.receipt_state(&receipt.id) == Some(ReceiptState::Completed) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Completed)
+    );
+    assert_eq!(handle.visible_acceptances().len(), 0);
+    handle.prepare_shutdown();
+}
+
+#[test]
+fn visible_acceptances_surfaces_backoff_dead_and_quarantined_and_emits_quarantined_update()
+ {
+    use crate::AgentUpdate;
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let queue = AcceptanceQueue::new(&scratch.0);
+
+    // 1) Pre-corruption taken receipt whose completion line gets corrupted -> Quarantined.
+    let quarantined = queue.accept(None, "corrupt job", 1_000).unwrap();
+    queue
+        .take(&quarantined.id, "att-q", 1_010, 500)
+        .unwrap()
+        .unwrap();
+    assert!(queue.complete(&quarantined.id, "att-q", 1_020).unwrap());
+
+    // 2) Dead receipt persisted across restart.
+    let dead = queue.accept(None, "dead job", 2_000).unwrap();
+    queue.take(&dead.id, "att-d", 2_010, 500).unwrap().unwrap();
+    assert!(queue.give_up(&dead.id, "att-d", 2_020).unwrap());
+
+    // 3) Retrying receipt in a long future backoff window (hidden from pending_acceptances).
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let backoff = queue.accept(None, "backoff job", 3_000).unwrap();
+    queue
+        .take(&backoff.id, "att-b", now_epoch, 500)
+        .unwrap()
+        .unwrap();
+    assert!(
+        queue
+            .release(&backoff.id, "att-b", now_epoch, 600_000)
+            .unwrap()
+    );
+
+    // 4) Cancelled receipt (must stay excluded).
+    let cancelled = queue.accept(None, "cancelled job", 4_000).unwrap();
+    assert!(queue.cancel(&cancelled.id, 4_010).unwrap());
+
+    // Inject interior corruption on `quarantined`'s completed line while keeping later lines valid.
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    let raw = fs::read_to_string(&journal_path).unwrap();
+    let mut lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+    let idx = lines
+        .iter()
+        .position(|line| {
+            line.contains("\"completed\"") && line.contains(&quarantined.id)
+        })
+        .expect("completed line");
+    lines[idx] = r#"{"event":"completed","broken"#.to_owned();
+    fs::write(&journal_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+
+    // P2: startup reconciliation emits AgentUpdate::Receipt::Quarantined once.
+    let boot_updates = handle.drain_updates();
+    let q_count = boot_updates
+        .iter()
+        .filter(|u| {
+            matches!(
+                u,
+                AgentUpdate::Receipt {
+                    id,
+                    state: ReceiptState::Quarantined
+                } if id == &quarantined.id
+            )
+        })
+        .count();
+    assert_eq!(q_count, 1, "boot must emit Quarantined once");
+
+    // Calling run_accepted_once must not spam duplicate Quarantined events.
+    assert!(handle.run_accepted_once().unwrap().is_none());
+    let follow_updates = handle.drain_updates();
+    assert!(
+        !follow_updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::Receipt {
+                id,
+                state: ReceiptState::Quarantined
+            } if id == &quarantined.id
+        )),
+        "quarantined notification must be deduplicated"
+    );
+
+    // pending_acceptances() hides backoff/dead/quarantined, while visible_acceptances() exposes all three.
+    assert_eq!(handle.pending_acceptances().len(), 0);
+    let visible: Vec<(String, ReceiptState)> = handle
+        .visible_acceptances()
+        .into_iter()
+        .map(|(m, s)| (m.id, s))
+        .collect();
+    assert_eq!(
+        visible,
+        vec![
+            (quarantined.id, ReceiptState::Quarantined),
+            (dead.id, ReceiptState::Dead),
+            (backoff.id, ReceiptState::Retrying),
+        ]
+    );
+}
+
+#[test]
+fn session_work_status_supports_direct_submit_chat_without_hardcoded_work_id() {
+    use flowy_agent_core::SubmissionOutcome;
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    assert!(
+        handle.session_work_status(&session).is_none(),
+        "empty session before any turn has no work status"
+    );
+
+    // Direct submit_chat (no accept_deferred receipt, no UI formatting of submission-*).
+    let sid = handle
+        .submit_chat(42, "请帮我做报价表和三页汇报，一起交给我")
+        .unwrap();
+    assert_eq!(sid, session);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && handle.turn_status().is_busy() {
+        thread::sleep(Duration::from_millis(15));
+    }
+
+    let status = handle
+        .session_work_status(&session)
+        .expect("direct submit_chat must expose session_work_status");
+    assert_eq!(status.session_id.as_deref(), Some(session.as_str()));
+    assert!(status.receipt_state.is_none());
+    let expected_sub = format!("submission-{:032x}", 42_u128);
+    assert_eq!(status.submission_id.as_deref(), Some(expected_sub.as_str()));
+    assert_eq!(status.contract_revision, Some(1));
+    assert!(matches!(
+        status.outcome,
+        Some(SubmissionOutcome::Partial { .. })
+    ));
+    assert_ne!(status.missing_items.len(), 0);
+    // Must match querying `work_status` by `status.work_id` directly.
+    assert_eq!(handle.work_status(&status.work_id), Some(status));
+}
+
+#[test]
+fn autonomous_drain_processes_multiple_receipts_without_ui_polling() {
+    use crate::AgentUpdate;
+    use flowy_agent_core::ReceiptState;
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let _ = handle.drain_updates();
+    handle.set_autonomous_drain(true);
+    assert!(handle.autonomous_drain());
+
+    let r1 = handle.accept_deferred("first autonomous job").unwrap();
+    let r2 = handle.accept_deferred("second autonomous job").unwrap();
+    let r3 = handle.accept_deferred("third autonomous job").unwrap();
+
+    // Never call run_accepted_once() or finish_accepted() — the kernel drains
+    // all three receipts on its own Tokio runtime and pushes Receipt updates.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen_updates = Vec::new();
+    while Instant::now() < deadline {
+        seen_updates.extend(handle.drain_updates());
+        if !handle.has_active_claim()
+            && handle.receipt_state(&r1.id) == Some(ReceiptState::Completed)
+            && handle.receipt_state(&r2.id) == Some(ReceiptState::Completed)
+            && handle.receipt_state(&r3.id) == Some(ReceiptState::Completed)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    seen_updates.extend(handle.drain_updates());
+    for receipt in [&r1, &r2, &r3] {
+        assert_eq!(
+            handle.receipt_state(&receipt.id),
+            Some(ReceiptState::Completed),
+            "receipt {} must auto-complete",
+            receipt.id
+        );
+        assert!(seen_updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::Receipt {
+                id,
+                state: ReceiptState::Completed
+            } if id == &receipt.id
+        )));
+    }
+    handle.prepare_shutdown();
+    assert!(!handle.autonomous_drain());
 }

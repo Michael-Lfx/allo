@@ -31,11 +31,11 @@ pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
     let tool = create_bash_tool(
         &context,
         Some(BashToolOptions {
-            default_timeout: Some(120.0),
+            default_timeout: Some(DEFAULT_SHELL_TIMEOUT_SECS),
             ..BashToolOptions::default()
         }),
     );
-    agent_tool_definition(tool)
+    agent_tool_definition_with(tool, None, Some(DEFAULT_SHELL_TIMEOUT_SECS))
 }
 
 /// Production shell tool for the current platform.
@@ -54,6 +54,12 @@ pub fn pi_shell_definition(cwd: &Path) -> Arc<ToolDefinition> {
     }
 }
 
+/// Default wall-clock timeout applied to shell commands when the model omits
+/// `timeout`.
+const DEFAULT_SHELL_TIMEOUT_SECS: f64 = 120.0;
+/// Hard upper bound for any model-supplied shell timeout (10 minutes).
+const MAX_SHELL_TIMEOUT_SECS: f64 = 600.0;
+
 /// Windows-only fallback: pi-rust's PowerShell tool in `cwd`.
 #[cfg(windows)]
 #[must_use]
@@ -62,7 +68,11 @@ pub fn pi_powershell_definition(cwd: &Path) -> Arc<ToolDefinition> {
         Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
     let context = ExecutionToolContext::new(env, None);
     let tool = create_powershell_tool(&context);
-    agent_tool_definition_with(tool, Some(POWERSHELL_DESCRIPTION.to_owned()))
+    agent_tool_definition_with(
+        tool,
+        Some(POWERSHELL_DESCRIPTION.to_owned()),
+        Some(DEFAULT_SHELL_TIMEOUT_SECS),
+    )
 }
 
 #[cfg(windows)]
@@ -76,13 +86,15 @@ hosts show it in the collapsed tool row.";
 ///
 /// Kept private: the host surface is the platform shell definition. A future
 /// generic bridge must also map image content, usage, and termination metadata.
+#[cfg(test)]
 fn agent_tool_definition(tool: Arc<dyn AgentTool>) -> Arc<ToolDefinition> {
-    agent_tool_definition_with(tool, None)
+    agent_tool_definition_with(tool, None, None)
 }
 
 fn agent_tool_definition_with(
     tool: Arc<dyn AgentTool>,
     description: Option<String>,
+    default_timeout: Option<f64>,
 ) -> Arc<ToolDefinition> {
     let schema = tool.schema().clone();
     let description = description.unwrap_or(schema.description);
@@ -91,9 +103,32 @@ fn agent_tool_definition_with(
         schema.name,
         description,
         parameters,
-        move |args, run_ctx| {
+        move |mut args, run_ctx| {
             let tool = Arc::clone(&tool);
             Box::pin(async move {
+                if let Some(obj) = args.arguments.as_object_mut() {
+                    let parsed_timeout = obj
+                        .get("timeout")
+                        .and_then(serde_json::Value::as_f64)
+                        .filter(|v| v.is_finite() && *v > 0.0);
+                    match parsed_timeout {
+                        Some(v) if v > MAX_SHELL_TIMEOUT_SECS => {
+                            obj.insert(
+                                "timeout".to_owned(),
+                                serde_json::json!(MAX_SHELL_TIMEOUT_SECS),
+                            );
+                        }
+                        None => {
+                            if let Some(timeout) = default_timeout {
+                                obj.insert(
+                                    "timeout".to_owned(),
+                                    serde_json::json!(timeout),
+                                );
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
                 let signal = run_ctx.signal.inner();
                 match tool
                     .execute(
@@ -342,6 +377,67 @@ mod tests {
         } else {
             assert_eq!(name, "bash");
         }
+    }
+
+    #[tokio::test]
+    async fn default_timeout_is_injected_when_absent_and_preserved_when_set() {
+        struct CaptureTimeoutTool {
+            schema: Tool,
+            seen: Arc<std::sync::Mutex<Vec<Option<f64>>>>,
+        }
+        #[async_trait]
+        impl AgentTool for CaptureTimeoutTool {
+            fn schema(&self) -> &Tool {
+                &self.schema
+            }
+            fn label(&self) -> &str {
+                "capture"
+            }
+            async fn execute(
+                &self,
+                _tool_call_id: &str,
+                params: serde_json::Value,
+                _signal: CancellationToken,
+                _on_update: Arc<dyn Fn(ToolResultPartial) + Send + Sync>,
+            ) -> Result<AgentToolResult, AgentError> {
+                self.seen.lock().unwrap().push(
+                    params.get("timeout").and_then(serde_json::Value::as_f64),
+                );
+                Ok(AgentToolResult::default())
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let registry = ToolRegistry::new();
+        registry.register(super::agent_tool_definition_with(
+            Arc::new(CaptureTimeoutTool {
+                schema: Tool {
+                    name: "capture".into(),
+                    description: "capture".into(),
+                    parameters: Schema::empty_object(),
+                    constrained_sampling: None,
+                },
+                seen: Arc::clone(&seen),
+            }),
+            None,
+            Some(120.0),
+        ));
+        let _ = registry
+            .execute(
+                "c1".into(),
+                "capture".into(),
+                json!({ "command": "pwd" }),
+                run_ctx(),
+            )
+            .await;
+        let _ = registry
+            .execute(
+                "c2".into(),
+                "capture".into(),
+                json!({ "command": "pwd", "timeout": 15.0 }),
+                run_ctx(),
+            )
+            .await;
+        assert_eq!(*seen.lock().unwrap(), vec![Some(120.0), Some(15.0)]);
     }
 
     #[tokio::test]

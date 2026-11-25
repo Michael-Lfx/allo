@@ -71,6 +71,34 @@ pub fn openai_stream_fn(
     route: &ModelRoute,
     api_key: Option<String>,
 ) -> StreamFn {
+    openai_stream_fn_with_model(route.rpi_model(), route, api_key)
+}
+
+/// Build a one-shot stream function that pins `tool_choice` to a single named
+/// function tool via `Model::sampling_params`, used by [`crate::complete_structured`].
+pub fn openai_structured_stream_fn(
+    route: &ModelRoute,
+    api_key: Option<String>,
+    forced_tool_name: &str,
+) -> StreamFn {
+    let mut model = route.rpi_model();
+    let mut params = model.sampling_params.take().unwrap_or_default();
+    params.insert(
+        "tool_choice".to_owned(),
+        serde_json::json!({
+            "type": "function",
+            "function": { "name": forced_tool_name }
+        }),
+    );
+    model.sampling_params = Some(params);
+    openai_stream_fn_with_model(model, route, api_key)
+}
+
+fn openai_stream_fn_with_model(
+    model: rpi_ai::Model,
+    route: &ModelRoute,
+    api_key: Option<String>,
+) -> StreamFn {
     tracing::debug!(
         target: "flowy.prompt",
         stage = "openai_stream_fn::build",
@@ -80,7 +108,6 @@ pub fn openai_stream_fn(
         has_key = api_key.is_some(),
         "provider ready"
     );
-    let model = route.rpi_model();
     let provider =
         Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
             route.provider.clone(),
@@ -102,12 +129,24 @@ pub fn openai_stream_fn(
         let options = options.clone();
         let (mut producer, consumer) =
             rpi_ai::event_stream::create_assistant_message_event_stream();
+        let cancel_token = producer.cancellation_token();
         tokio::spawn(async move {
-            let mut inner =
-                provider.stream_simple(&model, &context, &options).await;
-            while let Some(event) = inner.next().await {
-                producer.push(event).await;
+            let mut inner = tokio::select! {
+                () = cancel_token.cancelled() => return,
+                stream = provider.stream_simple(&model, &context, &options) => stream,
+            };
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    maybe_event = inner.next() => {
+                        let Some(event) = maybe_event else {
+                            break;
+                        };
+                        producer.push(event).await;
+                    }
+                }
             }
+            drop(inner);
             tracing::debug!(
                 target: "flowy.prompt",
                 stage = "openai_stream_fn::invoke",

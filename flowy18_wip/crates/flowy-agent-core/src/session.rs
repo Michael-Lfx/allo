@@ -5,6 +5,7 @@
 //! [`Message`] values, including raw tool-call argument strings and tool-result
 //! pairing, so a restored session can be sent to a model unchanged.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -78,6 +79,136 @@ impl TurnState {
     }
 }
 
+/// Durable terminal outcome recorded per `submission_id` inside a session.
+///
+/// Lets crash recovery and work-status queries verify the exact outcome of an
+/// individual submission instead of guessing from the latest session status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubmissionOutcome {
+    Completed,
+    Partial { missing: Vec<String> },
+    Failed { message: String },
+    Aborted,
+}
+
+/// One required deliverable item expected by a work revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredDeliverable {
+    /// Explicit filename when requested (e.g. `sample.pptx`), matched case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Lowercase extension without leading dot (e.g. `pptx`, `xlsx`, `docx`, `pdf`, `csv`).
+    pub extension: String,
+}
+
+impl RequiredDeliverable {
+    #[must_use]
+    pub fn label(&self) -> String {
+        self.filename
+            .clone()
+            .unwrap_or_else(|| format!("*.{}", self.extension))
+    }
+}
+
+/// Host-owned, versioned work contract persisted on a session.
+///
+/// Inherited across follow-up revisions so narrow edits (such as "only update
+/// the date") retain prior slide-count, required-deliverable, and pinned-fact
+/// constraints until explicitly changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkContract {
+    #[serde(default)]
+    pub revision: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_items: Vec<RequiredDeliverable>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_slides: Option<usize>,
+    /// Factual values pinned from user briefs (e.g. `"quote"`, `"date"`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pinned_facts: BTreeMap<String, String>,
+}
+
+impl WorkContract {
+    /// Return labels of required deliverables that are not satisfied by any
+    /// distinct `(display_name, delivery_key)` pair in `delivered`.
+    #[must_use]
+    pub fn missing_deliverables(
+        &self,
+        delivered: &[(&str, &str)],
+    ) -> Vec<String> {
+        if self.required_items.is_empty() {
+            return Vec::new();
+        }
+        let mut used = vec![false; delivered.len()];
+        let mut missing = Vec::new();
+        // Match explicit filenames first so extension-only items cannot steal them.
+        for req in self
+            .required_items
+            .iter()
+            .filter(|item| item.filename.is_some())
+        {
+            let expected = req.filename.as_deref().unwrap_or("");
+            let matched =
+                delivered.iter().enumerate().find(|(idx, (name, key))| {
+                    if used[*idx] {
+                        return false;
+                    }
+                    if name.eq_ignore_ascii_case(expected) {
+                        return true;
+                    }
+                    let actual_ext = Path::new(name)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(str::to_ascii_lowercase);
+                    if actual_ext.as_deref() == Some(req.extension.as_str())
+                        && !key.is_empty()
+                    {
+                        let keyed = if key
+                            .to_ascii_lowercase()
+                            .ends_with(&format!(".{}", req.extension))
+                        {
+                            (*key).to_owned()
+                        } else {
+                            format!("{key}.{}", req.extension)
+                        };
+                        return keyed.eq_ignore_ascii_case(expected);
+                    }
+                    false
+                });
+            if let Some((idx, _)) = matched {
+                used[idx] = true;
+            } else {
+                missing.push(req.label());
+            }
+        }
+        for req in self
+            .required_items
+            .iter()
+            .filter(|item| item.filename.is_none())
+        {
+            let matched =
+                delivered.iter().enumerate().find(|(idx, (name, _))| {
+                    if used[*idx] {
+                        return false;
+                    }
+                    Path::new(name)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| {
+                            ext.eq_ignore_ascii_case(&req.extension)
+                        })
+                });
+            if let Some((idx, _)) = matched {
+                used[idx] = true;
+            } else {
+                missing.push(req.label());
+            }
+        }
+        missing
+    }
+}
+
 /// One durable session: metadata plus the full structured message history.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -100,6 +231,25 @@ pub struct SessionRecord {
     pub workspace: Option<SessionWorkspace>,
     #[serde(default)]
     pub delivery_commits: Vec<DeliveryCommit>,
+    /// Per-submission durable terminal outcomes (`submission-<id>` -> outcome).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub submission_outcomes: BTreeMap<String, SubmissionOutcome>,
+    /// Active versioned work contract inherited across revisions in this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_contract: Option<WorkContract>,
+    /// Contract revision bound to each submission (`submission-<id>` -> revision).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub submission_revisions: BTreeMap<String, u32>,
+    /// Top-level session id when spawned from a parent conversation; omitted on root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+}
+
+impl SessionRecord {
+    #[must_use]
+    pub fn effective_root_session_id(&self) -> &str {
+        self.root_session_id.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// The whole session file.
@@ -159,6 +309,9 @@ impl SessionIndex {
 
     fn save_to(&self, path: &Path) -> io::Result<()> {
         static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        // Serialize atomic rename on Windows so concurrent saves never race on
+        // the destination path.
+        static REPLACE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::other("missing sessions directory"))?;
@@ -189,6 +342,9 @@ impl SessionIndex {
             file.write_all(&bytes)?;
             file.sync_all()?;
             drop(file);
+            let _replace = REPLACE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             fs::rename(&tmp, path)
         })();
         if result.is_err() {
@@ -325,6 +481,7 @@ mod tests {
             origin: SessionOrigin::Unknown,
             workspace: None,
             delivery_commits: Vec::new(),
+            ..SessionRecord::default()
         }
     }
 
@@ -411,5 +568,28 @@ mod tests {
             result,
             ContentBlock::ToolResult { artifact: None, .. }
         ));
+    }
+
+    #[test]
+    fn root_session_id_defaults_to_self_and_omits_when_none() {
+        let root_record = SessionRecord {
+            id: "s-root".into(),
+            ..SessionRecord::default()
+        };
+        assert_eq!(root_record.effective_root_session_id(), "s-root");
+        let serialized = serde_json::to_string(&root_record).unwrap();
+        assert!(!serialized.contains("root_session_id"));
+
+        let child_record = SessionRecord {
+            id: "s-child".into(),
+            root_session_id: Some("s-root".into()),
+            ..SessionRecord::default()
+        };
+        assert_eq!(child_record.effective_root_session_id(), "s-root");
+        let roundtrip: SessionRecord = serde_json::from_str(
+            &serde_json::to_string(&child_record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(roundtrip.root_session_id.as_deref(), Some("s-root"));
     }
 }

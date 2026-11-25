@@ -4,6 +4,7 @@
 //! dependency. The loop and HTTP provider are added separately so the tool and
 //! session layer can be tested without a running model.
 
+pub mod acceptance;
 pub mod engine;
 pub mod loop_runner;
 pub mod run_fence;
@@ -12,17 +13,22 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
+pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease, ReceiptState};
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
 pub use loop_runner::{
-    LoopOutcome, ModelRoute, TurnRequest, TurnResult, complete_text,
+    LoopOutcome, ModelRoute, StructuredRequest, TurnRequest, TurnResult,
+    complete_structured, complete_structured_with_stream, complete_text,
     log_preview, run_turn,
 };
-pub use run_fence::{RunFence, RunTicket};
+pub use run_fence::{PublishToken, RunFence, RunTicket};
 pub use session::{
-    DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, TurnState,
+    DeliveryCommit, DeliveryCommitter, RequiredDeliverable, SessionIndex,
+    SessionOrigin, SessionRecord, SessionWorkspace, SubmissionOutcome,
+    TurnState, WorkContract,
 };
-pub use transport::{echo_stream_fn, openai_stream_fn};
+pub use transport::{
+    echo_stream_fn, openai_stream_fn, openai_structured_stream_fn,
+};
 
 pub use types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageId,

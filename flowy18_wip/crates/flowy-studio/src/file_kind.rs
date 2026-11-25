@@ -69,6 +69,24 @@ impl FileKind {
             Self::Archive => theme::icons::zip_file(),
         }
     }
+
+    pub(crate) const fn label_key(self) -> &'static str {
+        match self {
+            Self::Document | Self::Pdf | Self::Presentation => {
+                "deliverables.kind_document"
+            }
+            Self::Spreadsheet => "deliverables.kind_data",
+            Self::Image => "deliverables.kind_image",
+            Self::Code | Self::Java => "deliverables.kind_code",
+            Self::Audio | Self::Video | Self::Archive => {
+                "deliverables.kind_file"
+            }
+        }
+    }
+}
+
+pub fn kind_label_key(path: &str) -> &'static str {
+    from_path(path).map_or("deliverables.kind_file", FileKind::label_key)
 }
 
 #[cfg(test)]

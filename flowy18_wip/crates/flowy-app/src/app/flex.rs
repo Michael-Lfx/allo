@@ -36,7 +36,7 @@ impl FlowyApp {
         });
         self.set_input_text(&self.flex.api_key, mask, cx);
         self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
+            panel.close_all_popovers();
             cx.notify();
         });
         cx.notify();
@@ -477,6 +477,7 @@ impl FlowyApp {
         let version = self.prefs.model_info_version.clone();
         self.studio.update(cx, |panel, cx| {
             panel.sync_model(Model::Flex, plan, version, cx);
+            panel.refresh_env_status(cx);
         });
         self.notice = None;
         self.studio

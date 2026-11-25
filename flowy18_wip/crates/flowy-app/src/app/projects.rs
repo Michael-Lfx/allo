@@ -543,6 +543,7 @@ impl FlowyApp {
             .cloned();
         let pinned = project.as_ref().is_some_and(|project| project.pinned);
         let pin_id = project_id.to_owned();
+        let board_id = project_id.to_owned();
         let edit_id = project_id.to_owned();
         let copy_id = project_id.to_owned();
         let view_id = project_id.to_owned();
@@ -553,6 +554,7 @@ impl FlowyApp {
         } else {
             "project.pin"
         });
+        let board_label = self.t("project.open_board");
         let edit_label = self.t("project.edit");
         let copy_label = self.t("project.copy");
         let view_label = self.t("project.view");
@@ -567,6 +569,7 @@ impl FlowyApp {
             window,
             &[
                 pin_label.as_str(),
+                board_label.as_str(),
                 edit_label.as_str(),
                 copy_label.as_str(),
                 view_label.as_str(),
@@ -595,6 +598,14 @@ impl FlowyApp {
             false,
             cx,
             move |app, cx| app.project_pin(&pin_id, cx),
+        ))
+        .child(self.project_menu_row(
+            "project-open-board",
+            theme::icons::layout_grid(),
+            board_label,
+            false,
+            cx,
+            move |app, cx| app.open_project_board(&board_id, cx),
         ))
         .child(self.project_menu_row(
             "project-edit",

@@ -18,6 +18,7 @@ use crate::artifact_store::{
     ArtifactStore, MAX_ARTIFACT_BYTES, MAX_DELIVERY_BYTES, MAX_DELIVERY_FILES,
     PrepareArtifact,
 };
+use crate::delivery::DeliveryStore;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationWrite {
@@ -158,9 +159,23 @@ fn parse_successful_writes_filtered(
 
 /// Prepare one durable one-file commit per current source path. The caller
 /// must persist each returned commit before committing it to the store.
+#[cfg(test)]
 #[must_use]
 pub fn prepare_conversation_artifacts(
     store: &ArtifactStore,
+    session: &SessionRecord,
+    writes: &[ConversationWrite],
+) -> Vec<DeliveryCommit> {
+    prepare_conversation_artifacts_gated(store, None, session, writes)
+}
+
+/// Prepare conversation artifact commits while enforcing [`DeliveryStore`] so
+/// intermediate scripts (`.ps1`/`.py`) and unverified `.pptx`/`.docx`/`.xlsx`
+/// files cannot bypass the hard delivery gate into the Library (`最终方案.md` §6.4).
+#[must_use]
+pub fn prepare_conversation_artifacts_gated(
+    store: &ArtifactStore,
+    gate: Option<&DeliveryStore>,
     session: &SessionRecord,
     writes: &[ConversationWrite],
 ) -> Vec<DeliveryCommit> {
@@ -257,6 +272,7 @@ pub fn prepare_conversation_artifacts(
     };
     let mut commits = Vec::new();
     for (identity, (resolved, tool_call_id)) in latest {
+        let full_path = resolved.source_root.join(&resolved.identity);
         let submission_id = match submission_id() {
             Ok(id) => id,
             Err(error) => {
@@ -266,7 +282,7 @@ pub fn prepare_conversation_artifacts(
                 continue;
             }
         };
-        let receipt = match store.prepare(PrepareArtifact {
+        let prepare_args = PrepareArtifact {
             source_root: resolved.source_root,
             relative_path: identity.clone(),
             source_relative_path: identity.clone(),
@@ -277,13 +293,90 @@ pub fn prepare_conversation_artifacts(
             delivery_key: identity.clone(),
             display_name: None,
             origin: session.origin.clone(),
-        }) {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                store.record_import_diagnostic(format!(
-                    "Skipped conversation file {identity}: {error}"
-                ));
+        };
+        let receipt = if let Some(gate) = gate {
+            let file_hash = match crate::delivery::read_regular_file_bounded(
+                &full_path,
+                crate::MAX_ARTIFACT_BYTES,
+            ) {
+                Ok(bytes) => crate::delivery::hash_bytes(&bytes),
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity} after read error: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if store
+                .is_source_already_committed(
+                    &session.id,
+                    &session.origin,
+                    &identity,
+                    &file_hash,
+                )
+                .unwrap_or(false)
+            {
                 continue;
+            }
+            match gate.stage_with(
+                &full_path,
+                false,
+                now_ms(),
+                |checked_bytes| {
+                    let expected_hash =
+                        crate::delivery::hash_bytes(checked_bytes);
+                    let receipt = store.prepare(prepare_args)?;
+                    if receipt.sha256 != expected_hash {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "DELIVERY_ARTIFACT_CHANGED",
+                        ));
+                    }
+                    Ok(receipt)
+                },
+            ) {
+                Ok(result) => {
+                    if let Some(reason) = result.outcome.blocked {
+                        tracing::info!(
+                            target: "flowy.delivery",
+                            session_id = %session.id,
+                            root_session_id = %session.id,
+                            path = %full_path.display(),
+                            code = reason.code(),
+                            "conversation artifact import skipped by delivery gate"
+                        );
+                        continue;
+                    }
+                    let Some(receipt) = result.value else {
+                        continue;
+                    };
+                    if committed.contains(&receipt.artifact_id) {
+                        let _ = gate.confirm_delivered(
+                            &result.outcome.delivery_id,
+                            &full_path.display().to_string(),
+                            &receipt.sha256,
+                            now_ms(),
+                        );
+                        continue;
+                    }
+                    receipt
+                }
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity}: {error}"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            match store.prepare(prepare_args) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity}: {error}"
+                    ));
+                    continue;
+                }
             }
         };
         if committed.contains(&receipt.artifact_id) {
@@ -407,23 +500,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
+    crate::handle::now_ms()
 }
 
-#[cfg(windows)]
 fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
+    flowy_agent_core::tools::is_windows_reparse_point(metadata)
 }
 
 #[cfg(test)]
@@ -924,6 +1005,57 @@ mod tests {
         assert_eq!(
             writes[0].turn_id,
             "submission-00000000000000000000000000000001"
+        );
+    }
+
+    #[test]
+    fn gated_conversation_import_blocks_unverified_scripts_and_decks_while_keeping_exempt_markdown()
+     {
+        let scratch = Scratch::new("gated-import");
+        let workspace = scratch.0.join("home");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("build_helper.ps1"), b"Write-Host 'tmp'")
+            .unwrap();
+        fs::write(workspace.join("unverified.pptx"), b"PK\x03\x04deck")
+            .unwrap();
+        fs::write(workspace.join("notes.md"), b"# Notes\n").unwrap();
+
+        let store = ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
+        let gate = DeliveryStore::new(scratch.0.join("delivery"));
+        let record = session(
+            "session-gated-import",
+            &workspace,
+            SessionOrigin::Home,
+            vec![
+                call_message("c-ps1", "write_file", "build_helper.ps1"),
+                result_message("c-ps1", "write_file", false),
+                call_message("c-pptx", "write_file", "unverified.pptx"),
+                result_message("c-pptx", "write_file", false),
+                call_message("c-md", "write_file", "notes.md"),
+                result_message("c-md", "write_file", false),
+            ],
+        );
+        let writes = parse_successful_writes(&record.messages);
+        let commits = prepare_conversation_artifacts_gated(
+            &store,
+            Some(&gate),
+            &record,
+            &writes,
+        );
+        for commit in &commits {
+            store.commit_prepared(commit).unwrap();
+        }
+        let imported: Vec<String> = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|item| item.manifest.source_relative_path)
+            .collect();
+        assert_eq!(imported, vec!["notes.md".to_owned()]);
+        assert_eq!(
+            store.diagnostics().unwrap(),
+            Vec::<String>::new(),
+            "normal delivery-gate skips must not trigger the Library catalog error banner"
         );
     }
 }

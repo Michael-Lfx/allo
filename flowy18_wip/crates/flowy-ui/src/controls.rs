@@ -537,8 +537,9 @@ pub fn disclosure(
     let id = id.into();
     let arrow_id: ElementId = (id.clone(), "arrow").into();
     let label = label.into();
+    // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+    // `Action::Expand`, which breaks Windows UIA invocation on buttons.
     interactive(id, label.clone(), theme)
-        .aria_expanded(expanded)
         .flex()
         .items_center()
         .gap_2()
@@ -558,6 +559,7 @@ pub struct A11yElement<E> {
     element: E,
     busy: bool,
     invalid: bool,
+    disabled: bool,
 }
 impl<E> A11yElement<E> {
     pub const fn new(element: E) -> Self {
@@ -565,6 +567,7 @@ impl<E> A11yElement<E> {
             element,
             busy: false,
             invalid: false,
+            disabled: false,
         }
     }
     pub const fn busy(mut self, value: bool) -> Self {
@@ -575,12 +578,17 @@ impl<E> A11yElement<E> {
         self.invalid = value;
         self
     }
+    pub const fn disabled(mut self, value: bool) -> Self {
+        self.disabled = value;
+        self
+    }
 }
 impl<E> std::fmt::Debug for A11yElement<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("A11yElement")
             .field("busy", &self.busy)
             .field("invalid", &self.invalid)
+            .field("disabled", &self.disabled)
             .finish_non_exhaustive()
     }
 }
@@ -625,6 +633,9 @@ impl<E: gpui::Element> gpui::Element for A11yElement<E> {
         }
         if self.invalid {
             node.set_invalid(accesskit::Invalid::True);
+        }
+        if self.disabled {
+            node.set_disabled();
         }
     }
     fn a11y_synthetic_children(

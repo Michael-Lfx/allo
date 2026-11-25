@@ -59,6 +59,17 @@ impl CancelToken {
         self.inner.cancel();
     }
 
+    /// Derive a child token cancelled automatically when `self` is cancelled.
+    ///
+    /// Propagates synchronously if `self` is already cancelled while still
+    /// allowing independent child cancellation (e.g. for per-call timeouts).
+    #[must_use]
+    pub fn child_token(&self) -> Self {
+        Self {
+            inner: self.inner.child_token(),
+        }
+    }
+
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()

@@ -4,69 +4,125 @@
 //! - `?` matches exactly one character except `/`
 //! - `**` matches any sequence of characters, including `/`
 
-/// Match a glob `pattern` against a `/`-separated `path`.
-pub fn glob_match(pattern: &str, path: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let s: Vec<char> = path.chars().collect();
-    match_here(&p, 0, &s, 0)
+#[derive(Clone, Copy)]
+enum GlobToken {
+    Literal(char),
+    AnyChar,
+    Star,
+    DoubleStar,
+    DoubleStarSlash,
 }
 
-fn match_here(p: &[char], pi: usize, s: &[char], si: usize) -> bool {
-    if pi >= p.len() {
-        return si >= s.len();
-    }
-    match p[pi] {
-        '*' => {
-            // `**` — can span directory separators.
-            if pi + 1 < p.len() && p[pi + 1] == '*' {
-                let rest = pi + 2;
-                // A trailing `**` matches any suffix, including empty.
-                if rest == p.len() {
-                    return true;
+fn tokenize_glob(pattern: &str) -> Vec<GlobToken> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut tokens = Vec::with_capacity(chars.len());
+    let mut i = 0_usize;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                // Collapse consecutive `*` runs (`***` -> `**`) and fold a
+                // following `/` into `DoubleStarSlash` so `**/*.rs` matches
+                // both zero and multiple directory segments.
+                while i < chars.len() && chars[i] == '*' {
+                    i += 1;
                 }
-                // `**/` may match zero directories.
-                if p[rest] == '/' && match_here(p, rest + 1, s, si) {
-                    return true;
-                }
-                // Otherwise try matching the rest at every split point.
-                let mut k = si;
-                loop {
-                    if match_here(p, rest, s, k) {
-                        return true;
-                    }
-                    if k >= s.len() {
-                        return false;
-                    }
-                    k += 1;
+                if i < chars.len() && chars[i] == '/' {
+                    i += 1;
+                    tokens.push(GlobToken::DoubleStarSlash);
+                } else {
+                    tokens.push(GlobToken::DoubleStar);
                 }
             }
-            // Single `*` — any run of non-separator characters.
-            let mut k = si;
-            loop {
-                if match_here(p, pi + 1, s, k) {
-                    return true;
+            '*' => {
+                i += 1;
+                if !matches!(tokens.last(), Some(GlobToken::Star)) {
+                    tokens.push(GlobToken::Star);
                 }
-                if k >= s.len() || s[k] == '/' {
-                    return false;
-                }
-                k += 1;
             }
-        }
-        '?' => {
-            if si < s.len() && s[si] != '/' {
-                match_here(p, pi + 1, s, si + 1)
-            } else {
-                false
+            '?' => {
+                i += 1;
+                tokens.push(GlobToken::AnyChar);
             }
-        }
-        c => {
-            if si < s.len() && s[si] == c {
-                match_here(p, pi + 1, s, si + 1)
-            } else {
-                false
+            c => {
+                i += 1;
+                tokens.push(GlobToken::Literal(c));
             }
         }
     }
+    tokens
+}
+
+/// Match a glob `pattern` against a `/`-separated `path`.
+///
+/// Runs in polynomial time `O(|pattern| * |path|)` using iterative 2-row DP
+/// (`O(|path|)` heap, `O(1)` stack) without backtracking or stack overflow.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
+    let tokens = tokenize_glob(pattern);
+    let s: Vec<char> = path.chars().collect();
+    let n = s.len();
+    let mut cur = vec![false; n + 1];
+    let mut next = vec![false; n + 1];
+    cur[0] = true;
+
+    for token in tokens {
+        next.fill(false);
+        match token {
+            GlobToken::Literal(c) => {
+                for si in 0..n {
+                    if cur[si] && s[si] == c {
+                        next[si + 1] = true;
+                    }
+                }
+            }
+            GlobToken::AnyChar => {
+                for si in 0..n {
+                    if cur[si] && s[si] != '/' {
+                        next[si + 1] = true;
+                    }
+                }
+            }
+            GlobToken::Star => {
+                for si in 0..=n {
+                    if cur[si] {
+                        next[si] = true;
+                    }
+                }
+                for si in 0..n {
+                    if next[si] && s[si] != '/' {
+                        next[si + 1] = true;
+                    }
+                }
+            }
+            GlobToken::DoubleStar => {
+                let mut active = false;
+                for si in 0..=n {
+                    active |= cur[si];
+                    if active {
+                        next[si] = true;
+                    }
+                }
+            }
+            GlobToken::DoubleStarSlash => {
+                // Zero-segment match (`**/*.rs` matches `lib.rs`) OR consume
+                // any prefix ending at a `/` boundary (`src/lib.rs`).
+                let mut active = false;
+                for si in 0..n {
+                    if cur[si] {
+                        next[si] = true;
+                        active = true;
+                    }
+                    if active && s[si] == '/' {
+                        next[si + 1] = true;
+                    }
+                }
+                if cur[n] {
+                    next[n] = true;
+                }
+            }
+        }
+        std::mem::swap(&mut cur, &mut next);
+    }
+    cur[n]
 }
 
 #[cfg(test)]
@@ -83,9 +139,22 @@ mod tests {
         );
         assert!(glob_match("**/*.rs", "src/lib.rs"));
         assert!(glob_match("**/*.rs", "lib.rs"));
+        assert!(!glob_match("**/foo.rs", "barfoo.rs"));
         assert!(glob_match("src/**", "src/a/b/c"));
         assert!(glob_match("?.txt", "a.txt"));
         assert!(!glob_match("?.txt", "ab.txt"));
         assert!(glob_match("docs/*.md", "docs/readme.md"));
+    }
+
+    #[test]
+    fn adversarial_multi_star_pattern_finishes_in_polynomial_time() {
+        let pattern = "*a*a*a*a*a*a*a*a*a*a*a*a*b";
+        let input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert!(!glob_match(pattern, input));
+        let deep_pattern = "**a**a**a**a**a**a**a**b";
+        assert!(!glob_match(deep_pattern, "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a"));
+        // Long pattern must never overflow stack on small worker threads.
+        let long_pattern = "*".repeat(25_000);
+        assert!(glob_match(&long_pattern, "file.txt"));
     }
 }

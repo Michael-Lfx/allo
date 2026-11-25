@@ -467,6 +467,63 @@ pub fn dialog(
         )
 }
 
+/// Configuration for [`centered_modal_sheet`].
+#[derive(Clone, Debug)]
+pub struct ModalSheetConfig {
+    pub layer_id: ElementId,
+    pub panel_id: ElementId,
+    pub label: SharedString,
+    pub max_width_px: f32,
+}
+
+/// Responsive full-window centered modal sheet for wide visual content.
+///
+/// Composes [`modal_layer`] and [`dialog`] so outside-click dismissal routes
+/// through `OverlayHost::request_close(CloseReason::Outside)` with identical
+/// focus restoration to `Escape`, while flex centering reflows immediately on
+/// window resize.
+pub fn centered_modal_sheet(
+    config: ModalSheetConfig,
+    theme: &ResolvedTheme,
+    ui: &UiContext,
+    cx: &App,
+    body: impl IntoElement,
+) -> AnyElement {
+    let panel = dialog(config.panel_id.clone(), config.label, theme, ui, cx)
+        .w_full()
+        .max_w(px(config.max_width_px))
+        .max_h_full()
+        .border_1()
+        .border_color(theme.line())
+        .shadow_lg()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(body);
+
+    let animated_panel =
+        if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
+            gpui::AnimationExt::with_animation(
+                panel,
+                (config.panel_id, "enter"),
+                gpui::Animation::new(crate::motion::MODERATE)
+                    .with_easing(crate::motion::out_quint()),
+                |el, delta| {
+                    el.opacity(delta)
+                        .relative()
+                        .top(px(crate::motion::ENTER_OFFSET * (1.0 - delta)))
+                },
+            )
+            .into_any_element()
+        } else {
+            panel.into_any_element()
+        };
+
+    modal_layer(config.layer_id, theme, ui, animated_panel)
+        .p(px(24.))
+        .into_any_element()
+}
+
 /// Replacement for the retired `InteractiveElement::on_prepaint` hook.
 ///
 /// `gpui-pre` gives interactive elements no prepaint callback, but popover
@@ -846,12 +903,12 @@ pub fn menu(
 pub fn select_trigger(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
-    expanded: bool,
+    _expanded: bool,
     theme: &ResolvedTheme,
 ) -> InteractiveDiv {
-    crate::interactive(id, label, theme)
-        .aria_expanded(expanded)
-        .test_support()
+    // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+    // `Action::Expand`, which breaks Windows UIA invocation on buttons.
+    crate::interactive(id, label, theme).test_support()
 }
 
 pub fn menu_item(

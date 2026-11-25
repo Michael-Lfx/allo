@@ -10,7 +10,6 @@ use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     ArtifactReceipt, DeliveryCommit, DeliveryCommitter, SessionOrigin,
@@ -197,6 +196,65 @@ impl ArtifactStore {
     pub fn committed_ids(&self) -> io::Result<BTreeSet<String>> {
         let _guard = self.lock();
         self.committed_ids_locked()
+    }
+
+    /// Whether `(session_id, origin, source_relative_path, sha256)` already
+    /// matches the latest committed (or tombstoned) snapshot for that source.
+    pub(crate) fn is_source_already_committed(
+        &self,
+        session_id: &str,
+        origin: &SessionOrigin,
+        source_relative_path: &str,
+        sha256: &str,
+    ) -> io::Result<bool> {
+        if source_relative_path.is_empty() || sha256.is_empty() {
+            return Ok(false);
+        }
+        let _guard = self.lock();
+        let initial = self.scan_locked()?;
+        let committed = self.committed_ids_locked()?;
+        let mut latest_rank: Option<(u64, String)> = None;
+        for manifest in initial.manifests.iter().filter(|manifest| {
+            manifest.receipt.session_id == session_id
+                && manifest.source_relative_path == source_relative_path
+                && committed.contains(&manifest.receipt.artifact_id)
+                && matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                        | PublicationState::Deleted
+                )
+        }) {
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            if latest_rank.as_ref().is_none_or(|current| rank > *current) {
+                latest_rank = Some(rank);
+            }
+        }
+        let Some(latest_rank) = latest_rank else {
+            return Ok(false);
+        };
+        Ok(initial.manifests.iter().any(|manifest| {
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            manifest.receipt.session_id == session_id
+                && &manifest.origin == origin
+                && manifest.source_relative_path == source_relative_path
+                && manifest.receipt.sha256 == sha256
+                && matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                        | PublicationState::Deleted
+                )
+                && !manifest.superseded
+                && committed.contains(&manifest.receipt.artifact_id)
+                && rank == latest_rank
+        }))
     }
 
     pub fn diagnostics(&self) -> io::Result<Vec<String>> {
@@ -1324,10 +1382,63 @@ impl ArtifactStore {
 
     pub fn get(&self, artifact_id: &str) -> io::Result<Option<ArtifactRecord>> {
         validate_identifier(artifact_id)?;
-        Ok(self
-            .list_with_tombstones()?
-            .into_iter()
-            .find(|record| record.manifest.receipt.artifact_id == artifact_id))
+        let _guard = self.lock();
+        let manifest_path = self.item_dir(artifact_id).join("manifest.json");
+        let manifest = match read_manifest(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        if manifest.receipt.artifact_id != artifact_id
+            || !matches!(
+                manifest.publication_state,
+                PublicationState::Committed
+                    | PublicationState::DeletePending
+                    | PublicationState::Deleted
+            )
+        {
+            return Ok(None);
+        }
+        if self
+            .session_deletion_ids_locked()?
+            .contains(&manifest.receipt.session_id)
+        {
+            return Ok(None);
+        }
+        let marker_path = self.delivery_path(
+            &manifest.receipt.session_id,
+            &manifest.receipt.submission_id,
+        );
+        let committed = match self.read_delivery_marker(&marker_path) {
+            Ok(marker) => {
+                marker.commit.completed_successfully
+                    && marker.commit.session_id == manifest.receipt.session_id
+                    && marker.commit.submission_id
+                        == manifest.receipt.submission_id
+                    && marker
+                        .commit
+                        .artifact_ids
+                        .iter()
+                        .any(|id| id == artifact_id)
+            }
+            Err(_) => false,
+        };
+        if !committed {
+            return Ok(None);
+        }
+        let preferences = self.preferences_locked()?;
+        let (available, corrupt) = self.payload_status(&manifest);
+        Ok(Some(ArtifactRecord {
+            manifest,
+            preference: preferences
+                .get(artifact_id)
+                .cloned()
+                .unwrap_or_default(),
+            available,
+            corrupt,
+        }))
     }
 
     /// Read a committed snapshot after verifying its declared size and SHA-256.
@@ -2160,7 +2271,12 @@ pub struct SessionDeletionPlan {
 #[async_trait::async_trait]
 impl DeliveryCommitter for ArtifactStore {
     async fn commit(&self, commit: &DeliveryCommit) -> Result<(), String> {
-        Self::commit_delivery(self, commit).map_err(|error| error.to_string())
+        let store = self.clone();
+        let commit = commit.clone();
+        tokio::task::spawn_blocking(move || store.commit_delivery(&commit))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -2255,16 +2371,8 @@ fn reject_link(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
+    flowy_agent_core::tools::is_windows_reparse_point(metadata)
 }
 
 fn validate_identifier(value: &str) -> io::Result<()> {
@@ -2500,11 +2608,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
+    crate::handle::now_ms()
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

@@ -356,6 +356,76 @@ impl ResolvedTheme {
     pub fn auth_brand_canvas(self) -> Rgba {
         rgb(if self.dark { 0x0024_2422 } else { 0x00e8_e6e1 })
     }
+    /// Warm-ink surface behind the Chief Assistant / Router geometric mark.
+    pub fn assistant_badge_bg(self) -> Rgba {
+        rgb(if self.dark { 0x0038_3530 } else { 0x0023_211e })
+    }
+    /// High-contrast warm ivory glyph on top of [`Self::assistant_badge_bg`].
+    pub fn assistant_badge_fg(self) -> Rgba {
+        rgb(if self.dark { 0x00f4_f1ea } else { 0x00f7_f5f0 })
+    }
+    /// Calm live/running accent dot and indicator tint.
+    pub fn status_active(self) -> Rgba {
+        rgb(if self.dark { 0x002d_d4bf } else { 0x000f_766e })
+    }
+    /// Soft translucent fill paired with [`Self::status_active`].
+    pub fn status_active_bg(self) -> Rgba {
+        self.status_active()
+            .opacity(if self.dark { 0.16 } else { 0.11 })
+    }
+    /// Subtle verified-receipt accent tint.
+    pub fn status_verified(self) -> Rgba {
+        rgb(if self.dark { 0x0034_d399 } else { 0x0015_803d })
+    }
+    /// Soft translucent fill paired with [`Self::status_verified`].
+    pub fn status_verified_bg(self) -> Rgba {
+        self.status_verified()
+            .opacity(if self.dark { 0.16 } else { 0.11 })
+    }
+    /// Warm amber tint for attention states and override audit records.
+    pub fn status_attention(self) -> Rgba {
+        rgb(if self.dark { 0x00fb_bf24 } else { 0x00b4_5309 })
+    }
+    /// Soft translucent fill paired with [`Self::status_attention`].
+    pub fn status_attention_bg(self) -> Rgba {
+        self.status_attention()
+            .opacity(if self.dark { 0.18 } else { 0.12 })
+    }
+    /// Soft translucent fill paired with [`Self::danger`].
+    pub fn danger_bg(self) -> Rgba {
+        self.danger().opacity(if self.dark { 0.18 } else { 0.11 })
+    }
+    /// Elevated capsule surface for floating pills above the composer.
+    pub fn pill_surface(self) -> Rgba {
+        rgb(if self.dark { 0x0028_2826 } else { 0x00ff_ffff })
+    }
+    /// Identity tint for spreadsheet deliverables (XLSX / CSV).
+    pub fn file_kind_sheet(self) -> Rgba {
+        rgb(if self.dark { 0x0034_d399 } else { 0x0015_803d })
+    }
+    /// Identity tint for presentation deliverables (PPTX). Light mode uses
+    /// `#b45309` (≥ 5.0:1 against white) to meet WCAG AA contrast.
+    pub fn file_kind_slides(self) -> Rgba {
+        rgb(if self.dark { 0x00fb_bf24 } else { 0x00b4_5309 })
+    }
+    /// Identity tint for document deliverables (DOCX / PDF / MD).
+    pub fn file_kind_doc(self) -> Rgba {
+        rgb(if self.dark { 0x0060_a5fa } else { 0x0025_63eb })
+    }
+    /// Neutral identity tint for other local deliverables.
+    pub fn file_kind_other(self) -> Rgba {
+        self.muted()
+    }
+    /// Active motion policy for animations. Respects `FLOWY_REDUCED_MOTION=1`.
+    pub fn motion_policy(self) -> MotionPolicy {
+        if std::env::var_os("FLOWY_REDUCED_MOTION")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        {
+            MotionPolicy::Reduced
+        } else {
+            MotionPolicy::Full
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -638,5 +708,39 @@ mod reference_tests {
         );
         assert_ne!(dark.dock_selected(), dark.dock());
         assert_ne!(dark.dock_hover(), dark.dock());
+    }
+
+    #[test]
+    fn super_agent_semantic_tokens_adapt_across_light_and_dark() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_ne!(light.assistant_badge_bg(), dark.assistant_badge_bg());
+        assert_ne!(light.pill_surface(), dark.pill_surface());
+        assert!(
+            light.status_active_bg().a > 0.05
+                && light.status_active_bg().a < 0.25
+        );
+        assert!(dark.status_active_bg().a > light.status_active_bg().a);
+        assert!(
+            light.status_verified_bg().a > 0.05
+                && light.status_verified_bg().a < 0.25
+        );
+        assert!(
+            light.status_attention_bg().a > 0.05
+                && light.status_attention_bg().a < 0.25
+        );
+        assert!(light.danger_bg().a > 0.05 && light.danger_bg().a < 0.25);
     }
 }

@@ -2222,6 +2222,8 @@ dependencies = [
  "flowy-agent-core",
  "flowy-skills",
  "getrandom 0.3.4",
+ "roxmltree 0.21.2",
+ "rpptx",
  "rustix",
  "serde",
  "serde_json",
@@ -2229,6 +2231,7 @@ dependencies = [
  "similar",
  "tokio",
  "tracing",
+ "zip 2.6.1",
 ]
 
 [[package]]
