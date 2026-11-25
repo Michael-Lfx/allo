@@ -47,8 +47,8 @@ pub use flowy_agent_core::{
 pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
-    CardAction, CardActionOutcome, CardSelection, SessionSummary, TaskTarget,
-    WorkStatus,
+    CardAction, CardActionOutcome, CardSelection, ReviseOutcome,
+    SessionSummary, TaskTarget, WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{

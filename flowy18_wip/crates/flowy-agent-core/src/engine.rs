@@ -62,6 +62,9 @@ pub trait TurnObserver: Send + Sync {
     /// The history commit is durable, but the independent artifact-store marker
     /// failed. The host may retry this same commit without rerunning the turn.
     fn delivery_failed(&self, _commit: &DeliveryCommit, _error: &str) {}
+    /// A cancelled run finished unwinding and reaping child tools, persisted
+    /// its 5-element [`StopHandoffManifest`], and transitioned to `Stopped`.
+    fn stop_settled(&self, _session: &str, _manifest: &StopHandoffManifest) {}
 }
 
 /// Everything needed to run a turn in this engine.
@@ -671,13 +674,33 @@ impl Engine {
         if inner.finalizing.contains(id) {
             return Ok(false);
         }
+        let fence_active =
+            inner.fences.get(id).is_some_and(|fence| fence.is_active());
         if let Some(fence) = inner.fences.get(id) {
             fence.cancel_active();
         }
         if let Some(record) = inner.index.get_mut(id)
             && record.status.is_busy()
         {
-            record.status = TurnState::Stopped;
+            if fence_active {
+                // Keep durable status at `Stopping` until the worker finishes
+                // unwinding/reaping and persists its StopHandoffManifest.
+                record.status = TurnState::Stopping;
+            } else {
+                let prompt = record
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|msg| {
+                        msg.role == Role::User
+                            && matches!(msg.source, MessageSource::User)
+                    })
+                    .map_or_default(Message::text);
+                let manifest =
+                    CancelTrace::default().build_manifest(record, &prompt);
+                record.last_stop_handoff = Some(manifest);
+                record.status = TurnState::Stopped;
+            }
             if let Some(sub_id) = record
                 .messages
                 .iter()
@@ -696,6 +719,41 @@ impl Engine {
             }
         }
         inner.index.save(&self.root).map(|()| true)
+    }
+
+    fn settle_cancelled_run(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        trace: &Mutex<CancelTrace>,
+        ticket: &RunTicket,
+    ) {
+        let (manifest, save_failed) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(record) = inner.index.get_mut(session_id) else {
+                drop(inner);
+                let _ = ticket.finish();
+                return;
+            };
+            let manifest = trace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .build_manifest(record, prompt);
+            record.status = TurnState::Stopped;
+            record.last_stop_handoff = Some(manifest.clone());
+            record.updated_at = now_ms();
+            let save_failed = inner.index.save(&self.root).is_err();
+            drop(inner);
+            (manifest, save_failed)
+        };
+        if save_failed {
+            self.observer.storage_error(session_id);
+        }
+        self.observer.stop_settled(session_id, &manifest);
+        let _ = ticket.finish();
     }
 
     /// Run one turn against the configured provider. The caller spawns this;
@@ -893,7 +951,14 @@ impl Engine {
             origin,
             output_root,
         } = prepared;
+        let cancel_trace = Arc::new(Mutex::new(CancelTrace::default()));
         if !ticket.is_current() {
+            self.settle_cancelled_run(
+                session_id,
+                prompt,
+                &cancel_trace,
+                &ticket,
+            );
             return Ok(LoopOutcome::Aborted);
         }
         let stream = stream.unwrap_or_else(|| {
@@ -936,11 +1001,19 @@ impl Engine {
             session: session_id.to_owned(),
             observer: Arc::clone(&self.observer),
             publisher: ticket.publisher(),
+            trace: Some(Arc::clone(&cancel_trace)),
         });
         let result = run_turn(request, stream, emitter).await;
         let stored = {
             let mut inner = self.inner.lock().unwrap();
             if !ticket.is_current() {
+                drop(inner);
+                self.settle_cancelled_run(
+                    session_id,
+                    prompt,
+                    &cancel_trace,
+                    &ticket,
+                );
                 return Ok(LoopOutcome::Aborted);
             }
             let Some(record) = inner.index.get_mut(session_id) else {
@@ -1071,9 +1144,20 @@ impl Engine {
                     message: "could not save turn history".to_owned(),
                 };
                 inner.index.upsert(before);
+                if !ticket.is_current() {
+                    drop(inner);
+                    self.settle_cancelled_run(
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                    );
+                    return Ok(LoopOutcome::Aborted);
+                }
                 if !ticket.finish() {
                     return Ok(LoopOutcome::Aborted);
                 }
+                drop(inner);
                 self.observer.storage_error(session_id);
                 self.observer.finished(session_id, LoopOutcome::Failed);
                 return Err(RunError::Storage(error));
@@ -1090,16 +1174,38 @@ impl Engine {
                     // History is durably saved; finish under the same lock so
                     // `request_cancel` cannot split durable history from live
                     // observer/queue state in a gap before `ticket.finish()`.
+                    if !ticket.is_current() {
+                        drop(inner);
+                        self.settle_cancelled_run(
+                            session_id,
+                            prompt,
+                            &cancel_trace,
+                            &ticket,
+                        );
+                        return Ok(LoopOutcome::Aborted);
+                    }
                     if !ticket.finish() {
                         return Ok(LoopOutcome::Aborted);
                     }
+                    drop(inner);
                     self.observer.finished(session_id, outcome);
                     return Ok(outcome);
                 }
                 Err(error) => {
+                    if !ticket.is_current() {
+                        drop(inner);
+                        self.settle_cancelled_run(
+                            session_id,
+                            prompt,
+                            &cancel_trace,
+                            &ticket,
+                        );
+                        return Ok(LoopOutcome::Aborted);
+                    }
                     if !ticket.finish() {
                         return Ok(LoopOutcome::Aborted);
                     }
+                    drop(inner);
                     self.observer.finished(session_id, LoopOutcome::Failed);
                     return Err(error);
                 }
@@ -1393,10 +1499,128 @@ fn now_ms() -> u64 {
         })
 }
 
+#[derive(Default)]
+struct CancelTrace {
+    last_command: Option<String>,
+    in_flight_tools: HashMap<String, (String, Option<String>)>,
+    modified_files: Vec<String>,
+    verified_effects: Vec<String>,
+}
+
+impl CancelTrace {
+    fn record_tool_start(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        args: &serde_json::Value,
+    ) {
+        let target = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("command"))
+            .or_else(|| args.get("cmd"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| crate::loop_runner::log_preview(s, 120));
+        let summary = match &target {
+            Some(t) => format!("{name}: {t}"),
+            None => name.to_owned(),
+        };
+        self.last_command = Some(summary);
+        self.in_flight_tools
+            .insert(call_id.to_owned(), (name.to_owned(), target));
+    }
+
+    fn record_tool_end(&mut self, call_id: &str, name: &str, is_error: bool) {
+        let entry = self.in_flight_tools.remove(call_id);
+        if is_error {
+            return;
+        }
+        let target = entry.and_then(|(_, target)| target);
+        if matches!(
+            name,
+            "write_file" | "edit_file" | "create_deck" | "publish_file"
+        ) && let Some(path) = target.as_ref()
+        {
+            if !self.modified_files.contains(path) {
+                self.modified_files.push(path.clone());
+            }
+            let effect = format!("{name} -> {path}");
+            if !self.verified_effects.contains(&effect) {
+                self.verified_effects.push(effect);
+            }
+        } else if matches!(name, "verify_deck" | "verify_artifact") {
+            let effect = match target {
+                Some(path) => format!("{name} ({path})"),
+                None => name.to_owned(),
+            };
+            if !self.verified_effects.contains(&effect) {
+                self.verified_effects.push(effect);
+            }
+        }
+    }
+
+    fn build_manifest(
+        &self,
+        record: &SessionRecord,
+        prompt: &str,
+    ) -> StopHandoffManifest {
+        let input_revision = record
+            .work_contract
+            .as_ref()
+            .map_or(0, |contract| contract.revision);
+        let command_summary = self.last_command.clone().unwrap_or_else(|| {
+            let trimmed = prompt.trim();
+            if trimmed.is_empty() {
+                "cancelled idle turn".to_owned()
+            } else {
+                crate::loop_runner::log_preview(trimmed, 160)
+            }
+        });
+        let mut pending_checks: Vec<String> = self
+            .in_flight_tools
+            .values()
+            .map(|(name, target)| match target {
+                Some(t) => format!("interrupted:{name}:{t}"),
+                None => format!("interrupted:{name}"),
+            })
+            .collect();
+        pending_checks.sort();
+        if let Some(contract) = &record.work_contract {
+            for obj in contract.writable_deliverables() {
+                if !matches!(
+                    obj.verify_state,
+                    ObjectVerifyState::Passed { .. }
+                        | ObjectVerifyState::Overridden { .. }
+                ) {
+                    pending_checks
+                        .push(format!("unverified:{}", obj.display_label()));
+                }
+            }
+        }
+        let rollback_hint = if self.modified_files.is_empty() {
+            "本轮尚未写入工作区文件，可直接重新发送指令。".to_owned()
+        } else {
+            "已修改文件位于会话工作目录且未对外发布，可检查并回退后重跑。"
+                .to_owned()
+        };
+        StopHandoffManifest {
+            input_revision,
+            command_summary,
+            modified_files: self.modified_files.clone(),
+            verified_effects: self.verified_effects.clone(),
+            pending_checks,
+            rollback_hint,
+        }
+    }
+}
+
 struct EngineEmitter {
     session: String,
     observer: Arc<dyn TurnObserver>,
     publisher: PublishToken,
+    trace: Option<Arc<Mutex<CancelTrace>>>,
 }
 
 impl AgentEmitter for EngineEmitter {
@@ -1404,7 +1628,21 @@ impl AgentEmitter for EngineEmitter {
         let session = self.session.clone();
         let observer = Arc::clone(&self.observer);
         let publisher = self.publisher.clone();
+        let trace = self.trace.clone();
         Box::pin(async move {
+            if let AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                is_error,
+                ..
+            } = &event
+                && let Some(trace) = &trace
+            {
+                trace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record_tool_end(tool_call_id, tool_name, *is_error);
+            }
             publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
                     assistant_message_event:
@@ -1444,12 +1682,24 @@ impl AgentEmitter for EngineEmitter {
                     tool_call_id,
                     tool_name,
                     args,
-                } => observer.tool_start(
-                    &session,
-                    &tool_call_id,
-                    &tool_name,
-                    &args,
-                ),
+                } => {
+                    if let Some(trace) = &trace {
+                        trace
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .record_tool_start(
+                                &tool_call_id,
+                                &tool_name,
+                                &args,
+                            );
+                    }
+                    observer.tool_start(
+                        &session,
+                        &tool_call_id,
+                        &tool_name,
+                        &args,
+                    );
+                }
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
                     tool_name,
@@ -2449,6 +2699,7 @@ mod tests {
             session: "s1".into(),
             observer: recorder.clone(),
             publisher: old.ticket.publisher(),
+            trace: None,
         };
         let message = Arc::new(AssistantMessage::empty(
             Api::OpenaiCompletions,
@@ -2670,5 +2921,176 @@ mod tests {
         // The async refusal path is covered by `run`; this keeps the error
         // variant exercised without a live provider.
         assert!(matches!(RunError::NoCredential, RunError::NoCredential));
+    }
+
+    #[tokio::test]
+    async fn cancel_stays_stopping_while_tool_reaps_then_settles_with_handoff_manifest()
+     {
+        #[derive(Default)]
+        struct StopObserver {
+            settled: Mutex<Vec<crate::session::StopHandoffManifest>>,
+        }
+        impl TurnObserver for StopObserver {
+            fn stop_settled(
+                &self,
+                _session: &str,
+                manifest: &crate::session::StopHandoffManifest,
+            ) {
+                self.settled.lock().unwrap().push(manifest.clone());
+            }
+        }
+
+        let scratch = Scratch::new("s2-stopping-handoff");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let entered_tool = Arc::clone(&entered);
+        let release_tool = Arc::clone(&release);
+
+        let mut cfg = config();
+        cfg.registry.register(Arc::new(ToolDefinition::new(
+            "write_file",
+            "records file modification",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text(
+                        "written",
+                        serde_json::json!({"ok": true}),
+                    )
+                })
+            },
+        )));
+        cfg.registry.register(Arc::new(ToolDefinition::new(
+            "slow_reap",
+            "simulates a child process taking time to reap after cancel",
+            serde_json::json!({"type": "object"}),
+            move |_args, _ctx| {
+                let entered = Arc::clone(&entered_tool);
+                let release = Arc::clone(&release_tool);
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    ToolExecutionResult::error("CANCELLED", "reaped")
+                })
+            },
+        )));
+        cfg.work_contract = Some(crate::session::WorkContract {
+            revision: 3,
+            min_slides: Some(3),
+            required_items: vec![crate::session::RequiredDeliverable {
+                extension: "pptx".into(),
+                filename: Some("青禾项目报价汇报.pptx".into()),
+            }],
+            pinned_facts: std::collections::BTreeMap::new(),
+            objects: vec![crate::session::TrackedObject {
+                object_id: "obj-pptx-1".into(),
+                kind: crate::session::TrackedObjectKind::Deliverable,
+                filename: Some("青禾项目报价汇报.pptx".into()),
+                extension: "pptx".into(),
+                anchor_summary: "青禾项目报价汇报.pptx · 2026-12-02".into(),
+                overrides: std::collections::BTreeMap::new(),
+                verify_state: crate::session::ObjectVerifyState::Unverified,
+            }],
+        });
+
+        let observer = Arc::new(StopObserver::default());
+        let observer_dyn: Arc<dyn TurnObserver> = observer.clone();
+        let engine = Arc::new(
+            Engine::open(scratch.0.clone(), cfg.clone(), observer_dyn).unwrap(),
+        );
+        engine.create_session("s-stop".into(), 1).unwrap();
+
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stream = rpi_agent::stream_fn(move |model, _, _| {
+            let n = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut msg = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = match n {
+                0 => vec![rpi_ai::types::Content::ToolCall(
+                    rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: "call-write".into(),
+                        name: "write_file".into(),
+                        arguments: serde_json::json!({"path": "draft.txt"}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    },
+                )],
+                _ => vec![rpi_ai::types::Content::ToolCall(
+                    rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: "call-reap".into(),
+                        name: "slow_reap".into(),
+                        arguments: serde_json::json!({"command": "render-deck"}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    },
+                )],
+            };
+            msg.stop_reason = StopReason::ToolUse;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::ToolUse,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+
+        let run = engine
+            .start_with_config(
+                "s-stop".into(),
+                crate::types::PromptTurn::plain("generate deck"),
+                cfg,
+                Some(stream),
+                Some(42),
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        entered.notified().await;
+
+        assert!(engine.request_cancel("s-stop").unwrap());
+        // While `slow_reap` is still holding RunTicket, durable status MUST be
+        // `Stopping` (NOT `Stopped`) and `stop_settled` must NOT have fired yet.
+        assert_eq!(
+            engine.session("s-stop").unwrap().status,
+            TurnState::Stopping
+        );
+        assert!(engine.is_active("s-stop"));
+        assert!(engine.is_cancelling("s-stop"));
+        assert_eq!(observer.settled.lock().unwrap().len(), 0);
+
+        // Allow child tool to finish reaping.
+        release.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
+
+        let rec = engine.session("s-stop").unwrap();
+        assert_eq!(rec.status, TurnState::Stopped);
+        assert!(!engine.is_active("s-stop"));
+        let manifest = rec
+            .last_stop_handoff
+            .expect("StopHandoffManifest persisted on settle");
+        assert_eq!(manifest.input_revision, 3);
+        assert!(manifest.command_summary.contains("slow_reap"));
+        assert_eq!(manifest.modified_files, vec!["draft.txt".to_owned()]);
+        assert!(!manifest.verified_effects.is_empty());
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
+                .any(|item| item.contains("青禾项目报价汇报.pptx"))
+        );
+        assert!(!manifest.rollback_hint.is_empty());
+        assert_eq!(observer.settled.lock().unwrap().len(), 1);
     }
 }

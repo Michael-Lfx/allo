@@ -4,6 +4,7 @@
 //! converts between the stored [`Message`] vocabulary and pi's agent messages.
 //! Tool execution is wired by the embedding host (see `tools`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rpi_agent::hooks::AgentLoopConfig;
@@ -182,7 +183,23 @@ pub async fn run_turn(
                     "max tool turns reached; stopping submission loop"
                 );
             }
-            Box::pin(async move { hit_cap })
+            let same_error_trip =
+                should_trip_same_error_breaker(ctx.new_messages);
+            if let Some(trip) = &same_error_trip {
+                tracing::warn!(
+                    target: "flowy.prompt",
+                    stage = "run_turn",
+                    assistant_turns,
+                    tool = %trip.tool_name,
+                    target = %log_preview(&trip.target_sig, 80),
+                    error_sig = %log_preview(&trip.error_sig, 120),
+                    streak = trip.streak,
+                    transient = trip.transient,
+                    "same-error zero-new-evidence circuit breaker tripped; stopping submission loop"
+                );
+            }
+            let stop = hit_cap || same_error_trip.is_some();
+            Box::pin(async move { stop })
         });
     let signal = request.signal.inner();
     let config = AgentLoopConfig {
@@ -489,6 +506,177 @@ fn strip_json_fence(raw: &str) -> &str {
         .unwrap_or(rest)
         .trim_start();
     rest.strip_suffix("```").map_or(trimmed, str::trim)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SameErrorTrip {
+    tool_name: String,
+    target_sig: String,
+    error_sig: String,
+    streak: usize,
+    transient: bool,
+}
+
+fn is_readonly_idempotent_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "read_file"
+            | "glob"
+            | "grep"
+            | "ls"
+            | "list_dir"
+            | "find_files"
+            | "verify_deck"
+            | "verify_artifact"
+    )
+}
+
+fn is_transient_tool_error(raw_error: &str) -> bool {
+    let lower = raw_error.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "temporary",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+        "connection reset",
+        "broken pipe",
+        "sharing violation",
+        "try again",
+        "eagain",
+        "ebusy",
+        "resource busy",
+    ]
+    .iter()
+    .any(|cue| lower.contains(cue))
+}
+
+fn normalize_signature(raw: &str, max_chars: usize) -> String {
+    let collapsed: String = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    collapsed.chars().take(max_chars).collect()
+}
+
+fn tool_target_signature(args: &serde_json::Value) -> String {
+    if let Some(obj) = args.as_object() {
+        for key in [
+            "path",
+            "file_path",
+            "command",
+            "cmd",
+            "pattern",
+            "url",
+            "query",
+        ] {
+            if let Some(val) = obj.get(key).and_then(serde_json::Value::as_str)
+                && !val.trim().is_empty()
+            {
+                return normalize_signature(val, 160);
+            }
+        }
+    }
+    normalize_signature(&args.to_string(), 160)
+}
+
+fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
+    let raw = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            Content::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+        let code = val
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let err = val
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| val.get("message").and_then(serde_json::Value::as_str))
+            .unwrap_or("");
+        if !code.is_empty() || !err.is_empty() {
+            return (normalize_signature(&format!("{code}:{err}"), 160), raw);
+        }
+    }
+    (normalize_signature(&raw, 160), raw)
+}
+
+/// Detect repeating `(tool_name, target_sig, error_sig)` failures across turns
+/// with zero intervening successful tool evidence.
+///
+/// - Non-transient errors (or any write/side-effecting tool error) trip as soon
+///   as the identical failure recurs (`streak >= 2`).
+/// - Transient errors on read-only/idempotent tools allow 1 extra retry before
+///   tripping (`streak >= 3`).
+/// - Any successful tool result (`!is_error`) provides new evidence and resets
+///   the streak.
+fn should_trip_same_error_breaker(
+    new_messages: &[AgentMessage],
+) -> Option<SameErrorTrip> {
+    let mut call_targets: HashMap<&str, String> = HashMap::new();
+    let mut last_key: Option<(String, String, String)> = None;
+    let mut streak: usize = 0;
+
+    for message in new_messages {
+        match message {
+            AgentMessage::Assistant(assistant) => {
+                for block in &assistant.content {
+                    if let Content::ToolCall(call) = block {
+                        call_targets.insert(
+                            call.id.as_str(),
+                            tool_target_signature(&call.arguments),
+                        );
+                    }
+                }
+            }
+            AgentMessage::ToolResult(result) => {
+                if !result.is_error {
+                    last_key = None;
+                    streak = 0;
+                    continue;
+                }
+                let tool_name = normalize_signature(&result.tool_name, 80);
+                let target_sig = call_targets
+                    .get(result.tool_call_id.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                let (error_sig, raw_error) = tool_error_signature(result);
+                let key =
+                    (tool_name.clone(), target_sig.clone(), error_sig.clone());
+                if last_key.as_ref() == Some(&key) {
+                    streak += 1;
+                } else {
+                    last_key = Some(key);
+                    streak = 1;
+                }
+                let transient = is_readonly_idempotent_tool(&tool_name)
+                    && is_transient_tool_error(&raw_error);
+                let limit = if transient { 3 } else { 2 };
+                if streak >= limit {
+                    return Some(SameErrorTrip {
+                        tool_name,
+                        target_sig,
+                        error_sig,
+                        streak,
+                        transient,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn message_char_len(message: &AgentMessage) -> usize {
@@ -1493,6 +1681,19 @@ mod tests {
             });
             consumer
         });
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "noop_tool",
+            "always succeeds",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    crate::types::ToolExecutionResult::success_text(
+                        "ok",
+                        serde_json::json!({"ok": true}),
+                    )
+                })
+            },
+        ));
         let (emitter, _events) = CollectorEmitter::new();
         let result = run_turn(
             TurnRequest {
@@ -1501,7 +1702,7 @@ mod tests {
                 history: Vec::new(),
                 prompt: "loop forever".into(),
                 route: route(),
-                tools: Vec::new(),
+                tools: vec![tool],
                 signal: CancelToken::new(),
             },
             stream,
@@ -1744,5 +1945,207 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    fn make_test_tool(
+        def: crate::tools::ToolDefinition,
+    ) -> Arc<dyn rpi_agent::AgentTool> {
+        let registry = crate::tools::ToolRegistry::new();
+        let def = Arc::new(def);
+        registry.register(Arc::clone(&def));
+        Arc::new(
+            crate::tools::RegistryTool::new(
+                registry,
+                def,
+                crate::types::ToolRunContext {
+                    signal: CancelToken::new(),
+                    agent_id: None,
+                    cwd: None,
+                    todos: None,
+                    submission_id: None,
+                    session_origin: crate::session::SessionOrigin::Unknown,
+                    output_root: None,
+                    artifact_delivery_available: false,
+                },
+            )
+            .unwrap(),
+        )
+    }
+
+    fn make_tool_stream(
+        tool_name: &'static str,
+        args: serde_json::Value,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> rpi_agent::StreamFn {
+        rpi_agent::stream_fn(move |model, _context, _| {
+            let idx = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut msg = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = vec![Content::ToolCall(rpi_ai::types::ToolCall {
+                kind: rpi_ai::types::ToolCallType,
+                id: format!("cb-call-{idx}"),
+                name: tool_name.into(),
+                arguments: args.clone(),
+                thought_signature: None,
+                namespace: None,
+                recorded: None,
+            })];
+            msg.stop_reason = StopReason::ToolUse;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::ToolUse,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        })
+    }
+
+    #[tokio::test]
+    async fn same_non_transient_error_trips_circuit_breaker_without_burning_24_turns()
+     {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "write_file",
+            "always returns permission denied",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    crate::types::ToolExecutionResult::error(
+                        "PERMISSION_DENIED",
+                        "cannot write outside workspace",
+                    )
+                })
+            },
+        ));
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: None,
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "write protected file".into(),
+                route: route(),
+                tools: vec![tool],
+                signal: CancelToken::new(),
+            },
+            make_tool_stream(
+                "write_file",
+                serde_json::json!({"path": "/etc/hosts"}),
+                Arc::clone(&calls),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "identical non-transient error must trip after 2 turns, never burning all 24"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_readonly_tool_error_allows_one_retry_before_tripping() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "read_file",
+            "always times out transiently",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    crate::types::ToolExecutionResult::error(
+                        "IO_ERROR",
+                        "file temporarily unavailable: sharing violation (try again)",
+                    )
+                })
+            },
+        ));
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: None,
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "read busy file".into(),
+                route: route(),
+                tools: vec![tool],
+                signal: CancelToken::new(),
+            },
+            make_tool_stream(
+                "read_file",
+                serde_json::json!({"path": "report.xlsx"}),
+                Arc::clone(&calls),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "transient read-only error gets 1 retry before circuit breaker stops"
+        );
+    }
+
+    #[tokio::test]
+    async fn intervening_successful_tool_evidence_resets_error_breaker() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let exec_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let exec_ref = Arc::clone(&exec_count);
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "write_file",
+            "fails on turns 0, 2, 3; succeeds on turn 1",
+            serde_json::json!({"type": "object"}),
+            move |_args, _ctx| {
+                let n =
+                    exec_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    if n == 1 {
+                        crate::types::ToolExecutionResult::success_text(
+                            "ok",
+                            serde_json::json!({"ok": true}),
+                        )
+                    } else {
+                        crate::types::ToolExecutionResult::error(
+                            "CONFLICT",
+                            "stale lock",
+                        )
+                    }
+                })
+            },
+        ));
+        let (emitter, _events) = CollectorEmitter::new();
+        let _ = run_turn(
+            TurnRequest {
+                session_id: None,
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "retry after evidence".into(),
+                route: route(),
+                tools: vec![tool],
+                signal: CancelToken::new(),
+            },
+            make_tool_stream(
+                "write_file",
+                serde_json::json!({"path": "out.txt"}),
+                Arc::clone(&calls),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        // Turn 0: err (streak=1) -> Turn 1: ok (streak=0) -> Turn 2: err (streak=1) -> Turn 3: err (streak=2 -> stop)
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 }

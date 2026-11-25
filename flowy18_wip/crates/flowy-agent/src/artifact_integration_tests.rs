@@ -1836,3 +1836,89 @@ fn autonomous_drain_processes_multiple_receipts_without_ui_polling() {
     handle.prepare_shutdown();
     assert!(!handle.autonomous_drain());
 }
+
+#[test]
+fn revise_active_contract_cancels_redispatches_with_new_revision_and_persists_stop_handoff()
+ {
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(1_500, "rev-reply");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session = handle.create_home_session().unwrap();
+
+    // Turn 1 starts at contract_revision = 1 against a slow provider.
+    handle
+        .submit_chat(
+            901,
+            "请做一份三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+        )
+        .unwrap();
+    let busy_deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < busy_deadline
+        && !handle.session_status(&session).is_busy()
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(handle.session_status(&session).is_busy());
+
+    // Simulate a passing report recorded under revision = 1.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let deck = scratch.0.join("青禾项目报价汇报.pptx");
+    let deck_bytes = b"PK\x03\x04rev1-deck";
+    fs::write(&deck, deck_bytes).unwrap();
+    gate.record_report_bytes_with_revision(
+        &deck,
+        deck_bytes,
+        Vec::new(),
+        Some(1),
+        100,
+    )
+    .unwrap();
+    assert_eq!(gate.check_for_revision(&deck, Some(1)).unwrap(), None);
+
+    // Mid-flight contract mutation cancels rev=1 via RunFence and redispatches rev=2.
+    let outcome = handle
+        .revise_active_contract_or_queue(
+            &session,
+            "只把汇报日期改成 2026-12-02",
+            None,
+        )
+        .expect("revise active contract");
+    assert_eq!(
+        outcome,
+        crate::ReviseOutcome::Redispatched {
+            session_id: session.clone(),
+            revision: 2,
+        }
+    );
+
+    // Cancelled rev=1 left a durable 5-element StopHandoffManifest.
+    let handoff = handle
+        .session_stop_handoff(&session)
+        .expect("StopHandoffManifest recorded for cancelled rev=1");
+    assert_eq!(handoff.input_revision, 1);
+    assert_ne!(handoff.command_summary, "");
+    assert_ne!(handoff.rollback_hint, "");
+
+    // Old rev=1 report is now hard-blocked against rev=2.
+    assert_eq!(
+        gate.check_for_revision(&deck, Some(2)).unwrap(),
+        Some(crate::delivery::BlockReason::ContractRevisionMismatch)
+    );
+
+    // Wait for rev=2 turn to finish cleanly, then verify manifest survives restart.
+    let done_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < done_deadline
+        && handle.session_status(&session).is_busy()
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(handle.session_status(&session), TurnStatus::Completed);
+    drop(handle);
+
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let persisted = reopened
+        .session_stop_handoff(&session)
+        .expect("StopHandoffManifest persists across restart");
+    assert_eq!(persisted.input_revision, 1);
+}

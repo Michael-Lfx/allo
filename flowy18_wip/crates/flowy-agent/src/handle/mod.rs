@@ -120,6 +120,23 @@ pub enum CancelOutcome {
     FinalizingNotCancellable,
 }
 
+/// Outcome of submitting a contract-revising follow-up against a session that
+/// may already have an active turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviseOutcome {
+    /// Session was idle; dispatched immediately with the evolved contract.
+    Dispatched { session_id: String },
+    /// Active turn was cancelled via `RunFence`, waited to settle, and
+    /// redispatched with the incremented `contract_revision`.
+    Redispatched { session_id: String, revision: u32 },
+    /// Active turn crossed its finalizing delivery commit point and cannot be
+    /// cancelled; follow-up was queued durably for automatic dispatch next.
+    QueuedAfterFinalizing { receipt_id: String },
+    /// Cancelled turn is still reaping child processes past the bounded wait;
+    /// follow-up was queued durably to run once the `RunFence` releases.
+    QueuedWhileStopping { receipt_id: String },
+}
+
 /// User selection submitted to resolve a persisted [`PendingCard`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardSelection {

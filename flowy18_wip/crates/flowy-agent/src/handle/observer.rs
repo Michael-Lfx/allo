@@ -5,10 +5,10 @@ use super::{
     ChatLine, ChatProjection, ContentBlock, DeliveryCommit, Engine,
     FileChangeKind, HashMap, IndexRecord, Live, LlmConfig, LoopOutcome,
     Message, MessageSource, Mutex, Path, Role, SessionDeletionState,
-    SessionIndex, SessionOrigin, SessionRecord, SubmissionOutcome,
-    TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus, UiState,
-    VerificationIssue, complete_text, lock, log_storage_io_error, model_route,
-    now_ms, title, tool_target,
+    SessionIndex, SessionOrigin, SessionRecord, StopHandoffManifest,
+    SubmissionOutcome, TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus,
+    UiState, VerificationIssue, complete_text, lock, log_storage_io_error,
+    model_route, now_ms, title, tool_target,
 };
 
 /// Maximum Unicode scalar characters kept in a sidebar session preview.
@@ -289,6 +289,45 @@ impl TurnObserver for UiObserver {
             "agent reported a storage failure"
         );
         self.state.report_storage_error();
+    }
+
+    fn stop_settled(&self, session: &str, _manifest: &StopHandoffManifest) {
+        {
+            let mut live = lock(&self.state.live);
+            if let Some(live) = live.get_mut(session) {
+                live.projection.flush();
+                live.auto_title_pending = false;
+                if matches!(
+                    live.status,
+                    TurnStatus::Running
+                        | TurnStatus::Stopping
+                        | TurnStatus::SavingFiles
+                ) {
+                    live.status = TurnStatus::Stopped;
+                    let already_stopped_line = matches!(
+                        live.projection.lines.last(),
+                        Some(ChatLine::Status { text })
+                            if text == TurnStatus::Stopped.key()
+                    );
+                    if !already_stopped_line {
+                        live.projection.lines.push(ChatLine::Status {
+                            text: TurnStatus::Stopped.key().into(),
+                        });
+                    }
+                }
+                live.turn_started_at = None;
+                live.updated_at = now_ms();
+            }
+        }
+        lock(&self.state.tool_args)
+            .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
+        }
+        self.state.push_update(AgentUpdate::Session {
+            id: session.to_owned(),
+        });
+        self.state.push_update(AgentUpdate::Sessions);
     }
 }
 
