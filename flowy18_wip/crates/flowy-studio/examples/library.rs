@@ -183,6 +183,7 @@ fn main() {
                             source_unavailable: false,
                             favorite: false,
                             availability: ArtifactAvailability::Available,
+                            override_used: false,
                         });
                     }
                     if !file_items.is_empty() {

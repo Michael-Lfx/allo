@@ -763,5 +763,12 @@
   "library.storage.clean_views": "清理查看副本",
   "library.storage.clean_views.title": "清理外部查看副本？",
   "library.storage.clean_views.body": "请先关闭正在使用这些副本的外部应用。主快照和另存的文件不受影响。",
-  "library.storage.clean_views.confirm": "已关闭外部应用，清理副本"
+  "library.storage.clean_views.confirm": "已关闭外部应用，清理副本",
+  "verify.card.passed": "核验通过",
+  "verify.card.failed": "核验未通过",
+  "verify.card.hash": "指纹 {hash}",
+  "verify.override.confirm": "我知道核验没过",
+  "verify.override.action": "强制放行交付",
+  "verify.override.badge": "未过核验强制放行",
+  "verify.semantic.hint": "语义复核提示：{hint}"
 }

@@ -31,6 +31,7 @@ pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
 use crate::projection::{
     ChatHistory, ChatLine, ChatProjection, FileChangeKind, TurnStatus,
+    VerificationIssue,
 };
 use crate::title::{self, TITLE_MAX_CHARS};
 
@@ -969,6 +970,166 @@ impl AgentHandle {
             .read_payload(artifact_id)
     }
 
+    /// Whether `sha256` was delivered through an explicit user verification
+    /// override (`deliver_override` + `deliver` in `delivery/events.jsonl`).
+    #[must_use]
+    pub fn artifact_was_overridden(&self, sha256: &str) -> bool {
+        if sha256.is_empty() {
+            return false;
+        }
+        crate::delivery::DeliveryStore::new(
+            self.inner.state.root.join("delivery"),
+        )
+        .artifact_was_overridden(sha256)
+        .unwrap_or(false)
+    }
+
+    /// Explicitly deliver an artifact whose verification failed (`ok=false`),
+    /// after the user confirmed the override in Studio (§8.3).
+    pub fn override_deliver_artifact(
+        &self,
+        session_id: &str,
+        report_id: &str,
+        artifact_path: &str,
+    ) -> Result<String, &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        let state = &self.inner.state;
+        let _dispatch = lock(&state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        let core_session =
+            engine.session(session_id).ok_or("chat.publish.context")?;
+        if core_session.origin != SessionOrigin::Home {
+            return Err("chat.publish.home_only");
+        }
+        let session_workspace = core_session
+            .workspace
+            .as_ref()
+            .ok_or("chat.publish.context")?;
+        let store = state
+            .artifact_store
+            .get()
+            .cloned()
+            .ok_or("chat.publish.unavailable")?;
+        if !confined_to(&session_workspace.root, artifact_path) {
+            return Err("chat.publish.failed");
+        }
+        let full_path = if Path::new(artifact_path).is_absolute() {
+            PathBuf::from(artifact_path)
+        } else {
+            session_workspace.root.join(artifact_path)
+        };
+        let source_root = full_path
+            .parent()
+            .ok_or("chat.publish.failed")?
+            .to_path_buf();
+        let file_name = full_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("chat.publish.failed")?
+            .to_owned();
+        let source_relative_path =
+            full_path.strip_prefix(&session_workspace.root).map_or_else(
+                |_| file_name.clone(),
+                |rel| rel.to_string_lossy().replace('\\', "/"),
+            );
+        let stamp = next_stamp();
+        let submission_id = format!("submission-override-{stamp:032x}");
+        let delivery_key = if report_id.is_empty() {
+            format!("override-{stamp}")
+        } else {
+            format!("override-{report_id}")
+        };
+        let gate =
+            crate::delivery::DeliveryStore::new(state.root.join("delivery"));
+        let now = now_ms();
+        let prepare = crate::artifact_store::PrepareArtifact {
+            source_root,
+            relative_path: file_name,
+            source_relative_path,
+            conversation_import: false,
+            session_id: session_id.to_owned(),
+            submission_id: submission_id.clone(),
+            tool_call_id: format!("override-call-{stamp}"),
+            delivery_key,
+            display_name: None,
+            origin: SessionOrigin::Home,
+        };
+        let result = gate
+            .deliver_with(&full_path, true, now, |_bytes| {
+                store.prepare(prepare)
+            })
+            .map_err(|_| "chat.publish.failed")?;
+        let receipt = result.value.ok_or("chat.publish.failed")?;
+        let root_session_id = self.root_session_id_for(session_id);
+        tracing::info!(
+            target: "flowy.delivery",
+            session_id = %session_id,
+            root_session_id = %root_session_id,
+            submission_id = %submission_id,
+            delivery_id = %result.outcome.delivery_id,
+            artifact_id = %receipt.artifact_id,
+            sha256 = %receipt.sha256,
+            override_used = result.outcome.override_used,
+            "override delivery committed by user"
+        );
+        let origin_title_snapshot = lock(&state.live)
+            .get(session_id)
+            .map_or_else(String::new, |live| live.title.clone());
+        let commit = DeliveryCommit {
+            session_id: session_id.to_owned(),
+            submission_id,
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: now,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot,
+        };
+        engine
+            .record_delivery_commit(&commit)
+            .map_err(|_| "notice.storage_error")?;
+        store
+            .commit_prepared(&commit)
+            .map_err(|_| "chat.publish.failed")?;
+        let target_key = crate::delivery::artifact_key(&full_path);
+        if let Some(live) = lock(&state.live).get_mut(session_id) {
+            for line in &mut live.projection.lines {
+                if let ChatLine::Verification {
+                    report_id: existing_id,
+                    artifact_path: existing_path,
+                    override_used,
+                    ..
+                } = line
+                    && ((!report_id.is_empty() && existing_id == report_id)
+                        || crate::delivery::artifact_key(Path::new(
+                            existing_path,
+                        )) == target_key)
+                {
+                    *override_used = true;
+                }
+            }
+            if !live.projection.lines.iter().any(|line| {
+                matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &receipt.artifact_id)
+            }) {
+                live.projection.lines.push(ChatLine::Artifact {
+                    artifact_id: receipt.artifact_id.clone(),
+                });
+            }
+            live.updated_at = now;
+        }
+        if persist_index(state).is_err() {
+            state.report_storage_error();
+        }
+        state.push_update(AgentUpdate::Artifacts);
+        state.push_update(AgentUpdate::Session {
+            id: session_id.to_owned(),
+        });
+        Ok(receipt.artifact_id)
+    }
+
     /// Return the active session's workspace, or the context for the next
     /// session when no session is active.
     #[must_use]
@@ -1655,9 +1816,19 @@ impl AgentHandle {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
-            run_config
-                .registry
-                .register(crate::verify::definition(Some(delivery.clone())));
+            let semantic = config.api_key.as_ref().map(|api_key| {
+                crate::semantic_verify::SemanticContext {
+                    brief: prompt.clone(),
+                    route: model_route(&config),
+                    api_key: api_key.clone(),
+                }
+            });
+            run_config.registry.register(
+                crate::verify::definition_with_semantic(
+                    Some(delivery.clone()),
+                    semantic,
+                ),
+            );
             run_config
                 .registry
                 .register(crate::publish_tool::definition(
@@ -2010,9 +2181,20 @@ impl TurnObserver for UiObserver {
             })
             .unwrap_or_else(|| self.state.root.join("sessions").join("cwd"));
         let display_text = tool_result_display_text(name, text);
+        let verification_line = (name == "verify_deck" && !is_error)
+            .then(|| {
+                let gate = crate::delivery::DeliveryStore::new(
+                    self.state.root.join("delivery"),
+                );
+                parse_verification_line(text, Some(&gate))
+            })
+            .flatten();
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection
                 .finish_tool_call(call_id, &display_text, is_error);
+            if let Some(card) = verification_line {
+                live.projection.lines.push(card);
+            }
             // Drop the cached arguments either way; a failed call leaves the
             // file untouched, so only settled calls get a change row.
             let change =
@@ -2450,6 +2632,8 @@ fn import_engine_sessions(
         .get()
         .and_then(|store| store.committed_ids().ok())
         .unwrap_or_default();
+    let delivery_gate =
+        crate::delivery::DeliveryStore::new(state.root.join("delivery"));
     let mut live = lock(&state.live);
     for record in records {
         if deleted_sessions.contains(&record.id) {
@@ -2462,6 +2646,17 @@ fn import_engine_sessions(
             .filter(|id| committed.contains(*id))
             .cloned()
             .collect::<BTreeSet<_>>();
+        let override_artifacts: Vec<String> = record
+            .delivery_commits
+            .iter()
+            .filter(|commit| {
+                commit.completed_successfully
+                    && commit.submission_id.starts_with("submission-override-")
+            })
+            .flat_map(|commit| &commit.artifact_ids)
+            .filter(|id| allowed.contains(*id))
+            .cloned()
+            .collect();
         let pending_delivery = record
             .delivery_commits
             .iter()
@@ -2484,8 +2679,12 @@ fn import_engine_sessions(
                 })
                 .collect::<BTreeSet<_>>();
             if existing_ids != allowed {
-                let mut projected =
-                    lines_from_messages(&record.messages, &allowed);
+                let mut projected = lines_from_messages_with_gate(
+                    &record.messages,
+                    &allowed,
+                    Some(&delivery_gate),
+                );
+                append_missing_artifacts(&mut projected, &override_artifacts);
                 projected.extend(
                     existing
                         .projection
@@ -2500,13 +2699,31 @@ fn import_engine_sessions(
                 existing.status = live_status(record.status.clone());
                 existing.updated_at = record.updated_at;
             }
-            restore_existing_history(existing, record, &allowed);
+            restore_existing_history(
+                existing,
+                record,
+                &allowed,
+                Some(&delivery_gate),
+            );
+            sync_verification_overrides(
+                &mut existing.projection.lines,
+                &delivery_gate,
+            );
+            append_missing_artifacts(
+                &mut existing.projection.lines,
+                &override_artifacts,
+            );
             if pending_delivery {
                 mark_live_delivery_failed(existing);
             }
             continue;
         }
-        let lines = lines_from_messages(&record.messages, &allowed);
+        let mut lines = lines_from_messages_with_gate(
+            &record.messages,
+            &allowed,
+            Some(&delivery_gate),
+        );
+        append_missing_artifacts(&mut lines, &override_artifacts);
         let title = if record.title.is_empty() {
             lines
                 .iter()
@@ -2559,6 +2776,7 @@ fn restore_existing_history(
     existing: &mut Live,
     record: SessionRecord,
     allowed: &BTreeSet<String>,
+    gate: Option<&crate::delivery::DeliveryStore>,
 ) {
     let lines = &mut existing.projection.lines;
     let mut visible = lines.iter().enumerate().filter_map(|(index, line)| {
@@ -2580,9 +2798,10 @@ fn restore_existing_history(
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
-                lines.extend(lines_from_messages(
+                lines.extend(lines_from_messages_with_gate(
                     &record.messages[index..],
                     allowed,
+                    gate,
                 ));
                 existing.status = live_status(record.status);
                 existing.updated_at = record.updated_at;
@@ -2616,8 +2835,11 @@ fn restore_existing_history(
             _ => None,
         })
         .peekable();
-    let mut recovered =
-        lines_from_messages(&record.messages[index + 1..], allowed);
+    let mut recovered = lines_from_messages_with_gate(
+        &record.messages[index + 1..],
+        allowed,
+        gate,
+    );
     for line in &mut recovered {
         if let ChatLine::Reasoning {
             text,
@@ -2641,9 +2863,112 @@ fn restore_existing_history(
     existing.updated_at = record.updated_at;
 }
 
+fn append_missing_artifacts(lines: &mut Vec<ChatLine>, ids: &[String]) {
+    for id in ids {
+        if !lines.iter().any(|line| {
+            matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == id)
+        }) {
+            lines.push(ChatLine::Artifact {
+                artifact_id: id.clone(),
+            });
+        }
+    }
+}
+
+fn sync_verification_overrides(
+    lines: &mut [ChatLine],
+    gate: &crate::delivery::DeliveryStore,
+) {
+    for line in lines {
+        if let ChatLine::Verification {
+            artifact_hash,
+            override_used,
+            ..
+        } = line
+            && !*override_used
+            && !artifact_hash.is_empty()
+            && gate.artifact_was_overridden(artifact_hash).unwrap_or(false)
+        {
+            *override_used = true;
+        }
+    }
+}
+
+fn parse_verification_line(
+    text: &str,
+    gate: Option<&crate::delivery::DeliveryStore>,
+) -> Option<ChatLine> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let ok = value.get("ok")?.as_bool()?;
+    let artifact_path = value
+        .get("artifact")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let report_id = value
+        .get("report_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let artifact_hash = value
+        .get("artifact_hash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let semantic_hint = value
+        .get("semantic_hint")
+        .and_then(serde_json::Value::as_str)
+        .filter(|hint| !hint.trim().is_empty())
+        .map(str::to_owned);
+    let issues = value
+        .get("issues")
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(VerificationIssue {
+                        code: item
+                            .get("code")
+                            .and_then(serde_json::Value::as_str)?
+                            .to_owned(),
+                        field: item
+                            .get("field")
+                            .and_then(serde_json::Value::as_str)?
+                            .to_owned(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+    let override_used = !artifact_hash.is_empty()
+        && gate
+            .and_then(|store| {
+                store.artifact_was_overridden(&artifact_hash).ok()
+            })
+            .unwrap_or(false);
+    Some(ChatLine::Verification {
+        report_id,
+        artifact_path,
+        artifact_hash,
+        ok,
+        issues,
+        semantic_hint,
+        override_used,
+    })
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 fn lines_from_messages(
     messages: &[Message],
     allowed: &BTreeSet<String>,
+) -> Vec<ChatLine> {
+    lines_from_messages_with_gate(messages, allowed, None)
+}
+
+fn lines_from_messages_with_gate(
+    messages: &[Message],
+    allowed: &BTreeSet<String>,
+    gate: Option<&crate::delivery::DeliveryStore>,
 ) -> Vec<ChatLine> {
     let mut lines = Vec::new();
     let mut pending_artifacts = Vec::new();
@@ -2677,13 +3002,21 @@ fn lines_from_messages(
                             .filter_map(ContentBlock::as_text)
                             .collect::<Vec<_>>()
                             .join("\n");
+                        let errored = is_error.unwrap_or(false);
                         lines.push(ChatLine::ToolResult {
                             text: tool_result_display_text(
                                 tool_name.unwrap_or_default(),
                                 &text,
                             ),
-                            is_error: is_error.unwrap_or(false),
+                            is_error: errored,
                         });
+                        if tool_name == Some("verify_deck")
+                            && !errored
+                            && let Some(card) =
+                                parse_verification_line(&text, gate)
+                        {
+                            lines.push(card);
+                        }
                         if let Some(receipt) = artifact
                             && allowed.contains(&receipt.artifact_id)
                             && !pending_artifacts.contains(&receipt.artifact_id)
@@ -2736,12 +3069,20 @@ fn lines_from_messages(
                                 MessageSource::Tool { tool } => tool.as_str(),
                                 _ => "",
                             };
+                            let errored = is_error.unwrap_or(false);
                             lines.push(ChatLine::ToolResult {
                                 text: tool_result_display_text(
                                     tool_name, &text,
                                 ),
-                                is_error: is_error.unwrap_or(false),
+                                is_error: errored,
                             });
+                            if tool_name == "verify_deck"
+                                && !errored
+                                && let Some(card) =
+                                    parse_verification_line(&text, gate)
+                            {
+                                lines.push(card);
+                            }
                         }
                     }
                 }
@@ -2761,6 +3102,14 @@ fn tool_result_display_text(tool_name: &str, text: &str) -> String {
         && key.starts_with("chat.publish.")
     {
         return key.to_owned();
+    }
+    if tool_name == "verify_deck"
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+        && let Some(summary) =
+            value.get("summary").and_then(|value| value.as_str())
+        && !summary.is_empty()
+    {
+        return summary.to_owned();
     }
     text.to_owned()
 }

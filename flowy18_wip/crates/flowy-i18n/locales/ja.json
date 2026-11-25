@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "検証通過",
+  "verify.card.failed": "検証失敗",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "検証未通過を承知しています",
+  "verify.override.action": "強制納品する",
+  "verify.override.badge": "検証未通過のまま強制納品",
+  "verify.semantic.hint": "意味確認メモ：{hint}"
 }

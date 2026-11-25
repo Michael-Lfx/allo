@@ -122,6 +122,17 @@ fn main() {
             ChatLine::Artifact { artifact_id } => {
                 println!("[{index}] artifact: {artifact_id}");
             }
+            ChatLine::Verification {
+                artifact_path,
+                ok,
+                issues,
+                ..
+            } => {
+                println!(
+                    "[{index}] verification: path={artifact_path} ok={ok} issues={}",
+                    issues.len()
+                );
+            }
         }
     }
     match status {

@@ -42,10 +42,20 @@ impl FlowyApp {
                 })
                 .cloned()
                 .collect::<HashSet<_>>();
+            let overridden_ids = records
+                .iter()
+                .filter(|record| {
+                    agent.artifact_was_overridden(
+                        &record.manifest.receipt.sha256,
+                    )
+                })
+                .map(|record| record.manifest.receipt.artifact_id.clone())
+                .collect::<HashSet<_>>();
             let mut items = crate::library::items(records, &sessions, &deleted);
             for item in &mut items {
                 item.source_unavailable |=
                     unavailable.contains(&item.source_session_id);
+                item.override_used |= overridden_ids.contains(&item.id);
             }
             let usage = store.usage().ok().map(|usage| LibraryUsage {
                 staging_bytes: usage.staging_bytes,

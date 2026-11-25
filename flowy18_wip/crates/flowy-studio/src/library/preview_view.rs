@@ -878,6 +878,7 @@ mod tests {
                         source_unavailable: false,
                         favorite: false,
                         availability: ArtifactAvailability::Available,
+                        override_used: false,
                     },
                     1,
                     I18n::embedded("Flowy"),

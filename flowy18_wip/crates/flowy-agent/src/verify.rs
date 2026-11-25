@@ -14,9 +14,13 @@ use flowy_agent_core::ToolExecutionResult;
 use flowy_agent_core::tools::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::delivery::{self, DeliveryStore};
 use crate::pptx::resolve_turn_path;
+use crate::semantic_verify::{
+    SemanticContext, SemanticOutcome, probe_deck_semantics,
+};
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -40,11 +44,21 @@ pub struct VerifyReport {
 
 impl VerifyReport {
     #[must_use]
-    pub fn to_value(&self) -> Value {
+    pub fn to_value_with_meta(
+        &self,
+        summary: &str,
+        report_id: &str,
+        artifact_hash: &str,
+        semantic_hint: Option<&str>,
+    ) -> Value {
         json!({
+            "summary": summary,
+            "report_id": report_id,
             "artifact": self.artifact,
+            "artifact_hash": artifact_hash,
             "anchor": self.anchor,
             "ok": self.ok,
+            "semantic_hint": semantic_hint,
             "issues": self.issues.iter().map(|issue| json!({
                 "code": issue.code,
                 "field": issue.field,
@@ -126,11 +140,21 @@ fn evaluate(
 }
 
 /// Read the deck and verify its anchors by shape name.
-pub fn verify_deck_file(
+#[cfg(test)]
+fn verify_deck_file(
     path: &Path,
     expected_slides: usize,
     expected: &[DeckAnchor],
 ) -> Result<VerifyReport, String> {
+    verify_deck_file_with_shapes(path, expected_slides, expected)
+        .map(|(report, _)| report)
+}
+
+fn verify_deck_file_with_shapes(
+    path: &Path,
+    expected_slides: usize,
+    expected: &[DeckAnchor],
+) -> Result<(VerifyReport, Vec<(String, String)>), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let presentation = rpptx::Presentation::from_bytes(&bytes)
         .map_err(|error| error.to_string())?;
@@ -148,13 +172,14 @@ pub fn verify_deck_file(
             }
         }
     }
-    Ok(evaluate(
+    let report = evaluate(
         &path.display().to_string(),
         slides.len(),
         expected_slides,
         &deck,
         expected,
-    ))
+    );
+    Ok((report, deck))
 }
 
 fn now_ms() -> u64 {
@@ -165,13 +190,11 @@ fn now_ms() -> u64 {
         })
 }
 
-fn execute(
+async fn execute(
     arguments: Value,
-    cwd: Option<&str>,
-    output_root: Option<&Path>,
-    session_id: Option<&str>,
-    submission_id: Option<&str>,
+    context: &flowy_agent_core::ToolRunContext,
     store: Option<&DeliveryStore>,
+    semantic: Option<&SemanticContext>,
 ) -> ToolExecutionResult {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -186,11 +209,22 @@ fn execute(
             "expected path, slides and anchors",
         );
     };
-    let path = resolve_turn_path(cwd, output_root, &args.path);
-    match verify_deck_file(&path, args.slides, &args.anchors) {
-        Ok(report) => {
+    let path = resolve_turn_path(
+        context.cwd.as_deref(),
+        context.output_root.as_deref(),
+        &args.path,
+    );
+    match verify_deck_file_with_shapes(&path, args.slides, &args.anchors) {
+        Ok((report, shapes)) => {
             let mut report_id = String::new();
-            let mut artifact_hash = String::new();
+            let mut artifact_hash = std::fs::read(&path).map_or_else(
+                |_| String::new(),
+                |bytes| {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    format!("{:x}", hasher.finalize())
+                },
+            );
             if let Some(store) = store {
                 let issues = report
                     .issues
@@ -215,19 +249,32 @@ fn execute(
                     }
                 }
             }
+            let (l3_outcome, l3_duration_ms) = if report.ok
+                && let Some(semantic_ctx) = semantic
+            {
+                probe_deck_semantics(semantic_ctx, &shapes, &context.signal)
+                    .await
+            } else {
+                (SemanticOutcome::Skipped, 0)
+            };
+            let semantic_hint = l3_outcome.hint_text();
+            let session_id = context.agent_id.as_deref().unwrap_or("");
+            let submission_id = context.submission_id.as_deref().unwrap_or("");
             tracing::info!(
                 target: "flowy.verify",
-                session_id = session_id.unwrap_or(""),
-                root_session_id = session_id.unwrap_or(""),
-                submission_id = submission_id.unwrap_or(""),
+                session_id,
+                root_session_id = session_id,
+                submission_id,
                 report_id = %report_id,
                 artifact_hash = %artifact_hash,
                 ok = report.ok,
                 issue_count = report.issues.len(),
+                l3_status = l3_outcome.status_code(),
+                l3_issue_count = l3_outcome.issue_count(),
+                l3_duration_ms,
                 "deck verification completed"
             );
-            let value = report.to_value();
-            let text = if report.ok {
+            let summary = if report.ok {
                 "verification passed".to_owned()
             } else {
                 format!(
@@ -240,7 +287,14 @@ fn execute(
                         .join(", ")
                 )
             };
-            ToolExecutionResult::success_text(text, value)
+            let value = report.to_value_with_meta(
+                &summary,
+                &report_id,
+                &artifact_hash,
+                semantic_hint.as_deref(),
+            );
+            let content = serde_json::to_string(&value).unwrap_or(summary);
+            ToolExecutionResult::success_text(content, value)
         }
         Err(error) => ToolExecutionResult::error(
             "VERIFY_FAILED",
@@ -250,6 +304,13 @@ fn execute(
 }
 
 pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
+    definition_with_semantic(store, None)
+}
+
+pub fn definition_with_semantic(
+    store: Option<DeliveryStore>,
+    semantic: Option<SemanticContext>,
+) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_deck",
         "Verify a generated deck before delivery. Checks the slide count and each named shape against the expected text. Returns ok plus ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH issues; a failed report is not a tool error.",
@@ -276,15 +337,15 @@ pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
         }),
         move |args: ToolCallArgs, context: flowy_agent_core::ToolRunContext| {
             let store = store.clone();
+            let semantic = semantic.clone();
             Box::pin(async move {
                 execute(
                     args.arguments,
-                    context.cwd.as_deref(),
-                    context.output_root.as_deref(),
-                    context.agent_id.as_deref(),
-                    context.submission_id.as_deref(),
+                    &context,
                     store.as_ref(),
+                    semantic.as_ref(),
                 )
+                .await
             })
         },
     ))

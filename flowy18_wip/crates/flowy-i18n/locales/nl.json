@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "Verificatie geslaagd",
+  "verify.card.failed": "Verificatie mislukt",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "Ik weet dat de verificatie is mislukt",
+  "verify.override.action": "Toch leveren",
+  "verify.override.badge": "Geleverd met override",
+  "verify.semantic.hint": "Semantische opmerking: {hint}"
 }

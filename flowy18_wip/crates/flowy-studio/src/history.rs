@@ -41,7 +41,9 @@ impl Projection {
             let last_turn_row = lines[start..end].iter().rfind(|line| {
                 !matches!(
                     line,
-                    ChatLine::TaskReceipt { .. } | ChatLine::Artifact { .. }
+                    ChatLine::TaskReceipt { .. }
+                        | ChatLine::Artifact { .. }
+                        | ChatLine::Verification { .. }
                 )
             });
             let complete = (end < lines.len() || latest_completed)

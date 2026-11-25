@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "सत्यापन सफल",
+  "verify.card.failed": "सत्यापन विफल",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "मुझे पता है कि सत्यापन विफल रहा",
+  "verify.override.action": "ओवरराइड के साथ डिलीवर करें",
+  "verify.override.badge": "ओवरराइड के साथ डिलीवर किया गया",
+  "verify.semantic.hint": "अर्थगत समीक्षा नोट: {hint}"
 }

@@ -273,3 +273,222 @@ fn save_picker_reports_a_locked_destination_without_truncating_it(
     drop(app);
     cx.run_until_parked();
 }
+
+#[gpui::test]
+fn app_startup_guards_pending_queue_and_hydrates_library_override_badge(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let root = fixture.root.join("app-override-e2e");
+    fs::create_dir_all(&root).unwrap();
+    let queue = flowy_agent::AcceptanceQueue::new(root.clone());
+    let seeded = queue
+        .accept(None, "startup guard must not drain into mock", 10)
+        .unwrap();
+
+    let (app, _cx) = cx.add_window_view(|window, cx| {
+        let mut app =
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx);
+        app.screen = Screen::Main;
+        app.section = Section::Studio;
+        app.active_dialog = ActiveDialog::None;
+        app.ota.checked = true;
+        app
+    });
+    for _ in 0..8 {
+        cx.run_until_parked();
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(40));
+        cx.run_until_parked();
+    }
+    let still_pending = queue.pending().unwrap();
+    assert_eq!(still_pending.len(), 1);
+    assert_eq!(still_pending[0].id, seeded.id);
+
+    let artifact_id = cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                let session_id = panel.agent.create_session().unwrap();
+                panel.open_session(&session_id, cx);
+                let output_dir = root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&session_id)
+                    .join("outputs/submission-app-override");
+                fs::create_dir_all(&output_dir).unwrap();
+                let deck = output_dir.join("sales.pptx");
+                fs::write(
+                    &deck,
+                    include_bytes!(
+                        "../../../flowy-studio/examples/fixtures/preview/sample.pptx"
+                    ),
+                )
+                .unwrap();
+                let gate = flowy_agent::delivery::DeliveryStore::new(
+                    root.join("delivery"),
+                );
+                let report = gate
+                    .record_report(
+                        &deck,
+                        vec![flowy_agent::delivery::Issue {
+                            code: "ANCHOR_MISSING".into(),
+                            field: "S2-target".into(),
+                        }],
+                        20,
+                    )
+                    .unwrap();
+                let _ = gate
+                    .deliver_with(&deck, false, 21, |_bytes| Ok(()))
+                    .unwrap();
+                panel
+                    .agent
+                    .override_deliver_artifact(
+                        &session_id,
+                        &report.id,
+                        &deck.display().to_string(),
+                    )
+                    .expect("override deliver artifact")
+            })
+        })
+    });
+    for _ in 0..6 {
+        cx.run_until_parked();
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(40));
+        cx.run_until_parked();
+    }
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let items = &app.library.read(cx).model.items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, artifact_id);
+        assert!(
+            items[0].override_used,
+            "LibraryPanel must hydrate permanent override badge from delivery audit"
+        );
+    });
+    drop(app);
+    cx.run_until_parked();
+}
+
+#[test]
+fn default_info_log_records_acceptance_verify_and_delivery_without_secrets() {
+    let fixture = Fixture::new();
+    let root = fixture.root.join("obs-info-audit");
+    let log_dir = root.join("logs");
+    fs::create_dir_all(&log_dir).unwrap();
+    let guards = flowy_obs::init_tracing(&log_dir, None);
+
+    let secret = "sk-live-secret-token-must-never-appear-in-logs";
+    let handle = flowy_agent::AgentHandle::with_config(
+        root.clone(),
+        flowy_agent::LlmConfig {
+            api_key: Some(secret.into()),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            model: "audit-model".into(),
+            provider: "openai".into(),
+            ..flowy_agent::LlmConfig::default()
+        },
+    );
+    let boot_deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while handle.is_initializing() && std::time::Instant::now() < boot_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    handle.set_origin_for_new_sessions(flowy_agent::SessionOrigin::Home);
+
+    let receipt = handle
+        .accept_deferred("audit acceptance info log")
+        .expect("accept deferred");
+    let claimed = handle
+        .run_accepted_once()
+        .expect("claim receipt")
+        .expect("one pending receipt");
+    let run_deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(
+        handle.turn_status(),
+        flowy_agent::TurnStatus::Running | flowy_agent::TurnStatus::SavingFiles
+    ) && std::time::Instant::now() < run_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    handle.finish_accepted(true).expect("finish accepted");
+
+    let session_id = claimed.session_id;
+    let output_dir = root
+        .join("sessions")
+        .join("workspaces")
+        .join(&session_id)
+        .join("outputs/submission-obs-audit");
+    fs::create_dir_all(&output_dir).unwrap();
+    let deck = output_dir.join("audit.pptx");
+    fs::write(
+        &deck,
+        include_bytes!(
+            "../../../flowy-studio/examples/fixtures/preview/sample.pptx"
+        ),
+    )
+    .unwrap();
+    let gate = flowy_agent::delivery::DeliveryStore::new(root.join("delivery"));
+    let report = gate
+        .record_report(
+            &deck,
+            vec![flowy_agent::delivery::Issue {
+                code: "VALUE_MISMATCH".into(),
+                field: "S0-title".into(),
+            }],
+            100,
+        )
+        .unwrap();
+    let _ = gate
+        .deliver_with(&deck, false, 101, |_bytes| Ok(()))
+        .unwrap();
+    let csv = output_dir.join("summary.csv");
+    fs::write(&csv, CSV).unwrap();
+    let _ = gate
+        .deliver_with(&csv, false, 102, |_bytes| Ok(()))
+        .unwrap();
+    let delivered_id = handle
+        .override_deliver_artifact(
+            &session_id,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("override deliver");
+    assert_ne!(delivered_id, "");
+
+    drop(guards);
+
+    let mut combined_logs = String::new();
+    for entry in fs::read_dir(&log_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with("flowy.log"))
+        {
+            combined_logs.push_str(&fs::read_to_string(&path).unwrap());
+        }
+    }
+    assert!(
+        combined_logs.contains("\"target\":\"flowy.acceptance\""),
+        "default INFO log must include flowy.acceptance: {combined_logs}"
+    );
+    assert!(
+        combined_logs.contains(&receipt.id),
+        "acceptance log must carry receipt_id: {combined_logs}"
+    );
+    assert!(
+        combined_logs.contains("\"target\":\"flowy.delivery\""),
+        "default INFO log must include flowy.delivery: {combined_logs}"
+    );
+    assert!(
+        combined_logs.contains("\"root_session_id\""),
+        "INFO business logs must carry root_session_id: {combined_logs}"
+    );
+    assert!(
+        !combined_logs.contains(secret),
+        "secret credentials must never appear in logs"
+    );
+}

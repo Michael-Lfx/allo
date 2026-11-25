@@ -113,6 +113,10 @@ pub struct LibraryItem {
     pub favorite: bool,
     #[serde(default)]
     pub availability: ArtifactAvailability,
+    /// Permanent marker set when the file bypassed a failed verification check
+    /// via explicit user override (§8.3).
+    #[serde(default)]
+    pub override_used: bool,
 }
 
 impl LibraryItem {
@@ -321,6 +325,7 @@ mod tests {
             source_unavailable: false,
             favorite: false,
             availability: ArtifactAvailability::Available,
+            override_used: false,
         }
     }
 

@@ -70,6 +70,7 @@ pub fn items(
                 } else {
                     ArtifactAvailability::Missing
                 },
+                override_used: false,
             }
         })
         .collect()

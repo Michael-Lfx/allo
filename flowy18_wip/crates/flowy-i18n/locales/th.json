@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "การตรวจสอบผ่านแล้ว",
+  "verify.card.failed": "การตรวจสอบไม่ผ่าน",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "ฉันทราบว่าการตรวจสอบไม่ผ่าน",
+  "verify.override.action": "ส่งมอบแบบบังคับ",
+  "verify.override.badge": "ส่งมอบโดยข้ามการตรวจสอบ",
+  "verify.semantic.hint": "หมายเหตุการตรวจความหมาย: {hint}"
 }

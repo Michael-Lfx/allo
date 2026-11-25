@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "Verificación aprobada",
+  "verify.card.failed": "Verificación fallida",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "Sé que la verificación falló",
+  "verify.override.action": "Entregar con excepción",
+  "verify.override.badge": "Entregado con excepción",
+  "verify.semantic.hint": "Nota de revisión semántica: {hint}"
 }

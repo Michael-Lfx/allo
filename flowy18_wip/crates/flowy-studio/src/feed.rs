@@ -20,6 +20,9 @@ pub struct ChatFeed {
     row_focus: HashMap<u64, gpui::FocusHandle>,
     artifacts: HashMap<String, LibraryItem>,
     pending_artifact_focus: Option<String>,
+    /// Verification cards whose explicit override checkbox has been ticked by
+    /// the user; always starts empty so override is never pre-checked (§8.3).
+    override_checked: HashSet<String>,
     list: ListState,
     expanded_rows: HashSet<u64>,
     history: ChatHistory,
@@ -42,6 +45,10 @@ pub enum ArtifactAction {
     LocateSource {
         session_id: String,
         artifact_id: String,
+    },
+    OverrideDeliver {
+        report_id: String,
+        artifact_path: String,
     },
 }
 
@@ -91,6 +98,18 @@ fn same_row_kind(old: &ChatLine, new: &ChatLine) -> bool {
             ChatLine::Artifact { artifact_id: old },
             ChatLine::Artifact { artifact_id: new },
         ) => old == new,
+        (
+            ChatLine::Verification {
+                report_id: old_id,
+                artifact_path: old_path,
+                ..
+            },
+            ChatLine::Verification {
+                report_id: new_id,
+                artifact_path: new_path,
+                ..
+            },
+        ) => old_id == new_id && old_path == new_path,
         _ => std::mem::discriminant(old) == std::mem::discriminant(new),
     }
 }
@@ -120,6 +139,7 @@ impl ChatFeed {
             row_focus: HashMap::new(),
             artifacts: HashMap::new(),
             pending_artifact_focus: None,
+            override_checked: HashSet::new(),
             session: session.unwrap_or_default(),
             states: HashMap::new(),
             list,
@@ -646,6 +666,27 @@ impl ChatFeed {
             ChatLine::Artifact { artifact_id } => self
                 .artifact_card(index, artifact_id, cx)
                 .into_any_element(),
+            ChatLine::Verification {
+                report_id,
+                artifact_path,
+                artifact_hash,
+                ok,
+                issues,
+                semantic_hint,
+                override_used,
+            } => self
+                .verification_card(
+                    index,
+                    report_id,
+                    artifact_path,
+                    artifact_hash,
+                    *ok,
+                    issues,
+                    semantic_hint.as_deref(),
+                    *override_used,
+                    cx,
+                )
+                .into_any_element(),
         }
     }
 
@@ -809,6 +850,10 @@ impl ChatFeed {
                         }
                     }));
                 }
+                if item.override_used {
+                    details.push_str(" · ");
+                    details.push_str(&self.t("verify.override.badge"));
+                }
                 details
             },
         );
@@ -868,7 +913,8 @@ impl ChatFeed {
                     cx.emit(ArtifactAction::Preview(id.clone()));
                 })),
             )
-            .child(
+            .child(crate::library::test_control(
+                "chat-artifact-save-as",
                 theme::IconButton::new(
                     ("artifact-save-as", self.row_ids[index]),
                     self.t("library.save_as"),
@@ -881,7 +927,7 @@ impl ChatFeed {
                         cx.emit(ArtifactAction::SaveAs(save_id.clone()));
                     }),
                 ),
-            )
+            ))
             .when_some(source, |card, session_id| {
                 let artifact_id = artifact_id.to_owned();
                 card.child(
@@ -901,6 +947,300 @@ impl ChatFeed {
                     ),
                 )
             })
+    }
+
+    fn toggle_override_check(
+        &mut self,
+        key: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.override_checked.remove(&key) {
+            self.override_checked.insert(key);
+        }
+        self.list.remeasure_items(0..self.lines.len());
+        cx.notify();
+    }
+
+    fn format_verification_issues(
+        &self,
+        issues: &[flowy_agent::VerificationIssue],
+    ) -> Vec<String> {
+        issues
+            .iter()
+            .map(|issue| {
+                format!(
+                    "{} · {}",
+                    self.t(flowy_agent::verify_ui_key(&issue.code)),
+                    issue.field
+                )
+            })
+            .collect()
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "verification card fields map 1:1 from ChatLine::Verification"
+    )]
+    fn verification_card(
+        &self,
+        index: usize,
+        report_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+        ok: bool,
+        issues: &[flowy_agent::VerificationIssue],
+        semantic_hint: Option<&str>,
+        override_used: bool,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let row_id = self.row_ids[index];
+        let name = artifact_path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(artifact_path)
+            .to_owned();
+        let short_hash: String = artifact_hash.chars().take(8).collect();
+        let status_label = if ok {
+            self.t("verify.card.passed")
+        } else {
+            self.t("verify.card.failed")
+        };
+        let check_key = format!("{report_id}:{artifact_path}");
+        let checked = self.override_checked.contains(&check_key);
+        let border = if ok || override_used {
+            self.theme.line()
+        } else {
+            self.theme.danger()
+        };
+
+        let mut header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .child(if ok {
+                theme::icons::check()
+                    .size(px(16.))
+                    .text_color(self.theme.accent())
+            } else {
+                theme::icons::circle_alert()
+                    .size(px(16.))
+                    .text_color(self.theme.danger())
+            })
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if ok {
+                        self.theme.ink()
+                    } else {
+                        self.theme.danger()
+                    })
+                    .child(status_label.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(name),
+            );
+        if !short_hash.is_empty() {
+            header = header.child(
+                div()
+                    .px(self.theme.space(6.))
+                    .py(px(1.))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .child(
+                        self.tf("verify.card.hash", &[("hash", &short_hash)]),
+                    ),
+            );
+        }
+        if override_used {
+            let badge = self.t("verify.override.badge");
+            header = header.child(
+                div()
+                    .id(("verify-override-badge", row_id))
+                    .debug_selector(|| "chat-verify-override-badge".to_owned())
+                    .role(gpui::Role::Status)
+                    .aria_label(badge.clone())
+                    .px(self.theme.space(6.))
+                    .py(px(1.))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.danger())
+                    .child(badge),
+            );
+        }
+
+        let mut card = div()
+            .id(("verification-card", row_id))
+            .debug_selector(|| "chat-verification-card".to_owned())
+            .role(if ok {
+                gpui::Role::Status
+            } else {
+                gpui::Role::Alert
+            })
+            .aria_label(status_label)
+            .w_full()
+            .max_w(px(540.))
+            .min_w_0()
+            .rounded_xl()
+            .border_1()
+            .border_color(border)
+            .bg(self.theme.card())
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
+            .px(self.theme.space(12.))
+            .py(self.theme.space(10.))
+            .child(header);
+
+        if !issues.is_empty() {
+            let mut list = div().w_full().flex().flex_col().gap(px(4.));
+            for (issue_ix, line_text) in self
+                .format_verification_issues(issues)
+                .into_iter()
+                .enumerate()
+            {
+                list = list.child(
+                    div()
+                        .id(("verify-issue", row_id * 100 + issue_ix as u64))
+                        .role(gpui::Role::Status)
+                        .aria_label(line_text.clone())
+                        .text_xs()
+                        .text_color(self.theme.ink())
+                        .whitespace_normal()
+                        .child(line_text),
+                );
+            }
+            card = card.child(list);
+        }
+
+        if let Some(hint) = semantic_hint
+            && !hint.trim().is_empty()
+        {
+            let hint_label = self.tf("verify.semantic.hint", &[("hint", hint)]);
+            card = card.child(
+                div()
+                    .id(("verify-semantic-hint", row_id))
+                    .role(gpui::Role::Status)
+                    .aria_label(hint_label.clone())
+                    .px(self.theme.space(8.))
+                    .py(self.theme.space(4.))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(hint_label),
+            );
+        }
+
+        // §8.3: Never render an ordinary "Send / Deliver" primary button when
+        // verification fails. Only an explicit unchecked-by-default checkbox
+        // unlocks the override action, leaving a permanent audit mark.
+        if !ok && !override_used {
+            let confirm_label = self.t("verify.override.confirm");
+            let toggle_key = check_key;
+            let action_report = report_id.to_owned();
+            let action_path = artifact_path.to_owned();
+            let checkbox = theme::interactive(
+                ("verify-override-check", row_id),
+                confirm_label.clone(),
+                &self.theme,
+            )
+            .debug_selector(|| "chat-verify-override-check".to_owned())
+            .role(gpui::Role::CheckBox)
+            .aria_toggled(if checked {
+                gpui::accesskit::Toggled::True
+            } else {
+                gpui::accesskit::Toggled::False
+            })
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .cursor_pointer()
+            .child(
+                div()
+                    .size(px(16.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if checked {
+                        self.theme.accent()
+                    } else {
+                        self.theme.border_strong()
+                    })
+                    .bg(if checked {
+                        self.theme.fill()
+                    } else {
+                        self.theme.canvas()
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(checked, |mark| {
+                        mark.child(
+                            theme::icons::check()
+                                .size(px(12.))
+                                .text_color(self.theme.on_fill()),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.ink())
+                    .child(confirm_label),
+            )
+            .on_click(cx.listener(move |feed, _, _, cx| {
+                feed.toggle_override_check(toggle_key.clone(), cx);
+            }));
+
+            let action_btn = theme::Button::new(
+                ("verify-override-submit", row_id),
+                self.t("verify.override.action"),
+            )
+            .variant(theme::ControlVariant::Secondary)
+            .size(theme::ControlSize::Small)
+            .disabled(!checked)
+            .render(
+                &self.theme,
+                cx.listener(move |_, _, _, cx| {
+                    cx.emit(ArtifactAction::OverrideDeliver {
+                        report_id: action_report.clone(),
+                        artifact_path: action_path.clone(),
+                    });
+                }),
+            );
+
+            card = card.child(
+                div()
+                    .w_full()
+                    .pt(self.theme.space(4.))
+                    .border_t_1()
+                    .border_color(self.theme.line())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(self.theme.space(8.))
+                    .child(checkbox)
+                    .child(crate::library::test_control(
+                        "chat-verify-override-submit",
+                        action_btn,
+                    )),
+            );
+        }
+
+        card
     }
     fn reasoning_block(
         &self,
@@ -1672,5 +2012,121 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn verification_card_renders_four_codes_hides_default_save_and_requires_checkbox(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::{Arc, Mutex};
+
+        let i18n = I18n::embedded("Flowy");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let issues = vec![
+            flowy_agent::VerificationIssue {
+                code: "ANCHOR_MISSING".into(),
+                field: "S0-title".into(),
+            },
+            flowy_agent::VerificationIssue {
+                code: "ANCHOR_DUPLICATE".into(),
+                field: "S0-body".into(),
+            },
+            flowy_agent::VerificationIssue {
+                code: "ANCHOR_INVALID".into(),
+                field: "S0-extra".into(),
+            },
+            flowy_agent::VerificationIssue {
+                code: "VALUE_MISMATCH".into(),
+                field: "S1-body".into(),
+            },
+        ];
+        let sample_issues = issues.clone();
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed =
+                ChatFeed::new(ui, i18n.clone(), Some("verify".into()), cx);
+            feed.sync_rows(
+                Some("verify".into()),
+                vec![ChatLine::Verification {
+                    report_id: "report-42".into(),
+                    artifact_path: "outputs/sub/deck.pptx".into(),
+                    artifact_hash: "a1b2c3d4e5f60000".into(),
+                    ok: false,
+                    issues: sample_issues,
+                    semantic_hint: Some("标题与正文一致".into()),
+                    override_used: false,
+                }],
+                cx,
+            );
+            feed
+        });
+        let sink = Arc::clone(&events);
+        let _sub = cx.update(|_, cx| {
+            cx.subscribe(&feed, move |_, action: &ArtifactAction, _| {
+                sink.lock().unwrap().push(action.clone());
+            })
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        // Verify distinct localized copy across both zh-CN and en.
+        cx.read_entity(&feed, |feed, _| {
+            let zh = feed.format_verification_issues(&issues);
+            let unique_zh: std::collections::HashSet<&String> =
+                zh.iter().collect();
+            assert_eq!(unique_zh.len(), 4);
+            assert!(zh[0].contains(&i18n.t("verify.anchor_missing")));
+            assert!(zh[3].contains(&i18n.t("verify.value_mismatch")));
+        });
+        cx.update(|_, cx| {
+            feed.update(cx, |feed, cx| {
+                let mut en = I18n::embedded("Flowy");
+                en.set_locale(flowy_i18n::Locale::En);
+                feed.sync_i18n(en, cx);
+                let formatted = feed.format_verification_issues(&issues);
+                let unique_en: std::collections::HashSet<&String> =
+                    formatted.iter().collect();
+                assert_eq!(unique_en.len(), 4);
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            cx.debug_bounds("chat-verification-card").is_some(),
+            "verification card must render"
+        );
+        assert!(
+            cx.debug_bounds("chat-artifact-save-as").is_none(),
+            "failed verification card must never render ordinary save/deliver button"
+        );
+
+        // Clicking submit before checking the override box does nothing.
+        let submit = cx
+            .debug_bounds("chat-verify-override-submit")
+            .expect("override submit control rendered");
+        cx.simulate_click(submit.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(events.lock().unwrap().len(), 0);
+
+        // Checking the override box unlocks the explicit override action.
+        let check = cx
+            .debug_bounds("chat-verify-override-check")
+            .expect("override checkbox rendered");
+        cx.simulate_click(check.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let submit = cx
+            .debug_bounds("chat-verify-override-submit")
+            .expect("override submit control rendered");
+        cx.simulate_click(submit.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [ArtifactAction::OverrideDeliver {
+                report_id,
+                artifact_path,
+            }] if report_id == "report-42" && artifact_path == "outputs/sub/deck.pptx"
+        ));
     }
 }

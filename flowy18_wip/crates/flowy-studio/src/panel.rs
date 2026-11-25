@@ -347,24 +347,34 @@ impl StudioPanel {
             cx.subscribe(&feed, |panel, _, event: &OpenDeliverables, cx| {
                 panel.open_deliverables(event.0.clone(), cx);
             });
-        let artifact_sub = cx.subscribe(
-            &feed,
-            |_, _, event: &ArtifactAction, cx| match event {
-                ArtifactAction::Preview(id) => {
-                    cx.emit(StudioEvent::PreviewArtifact(id.clone()));
+        let artifact_sub =
+            cx.subscribe(&feed, |panel, _, event: &ArtifactAction, cx| {
+                match event {
+                    ArtifactAction::Preview(id) => {
+                        cx.emit(StudioEvent::PreviewArtifact(id.clone()));
+                    }
+                    ArtifactAction::SaveAs(id) => {
+                        cx.emit(StudioEvent::SaveArtifact(id.clone()));
+                    }
+                    ArtifactAction::LocateSource {
+                        session_id,
+                        artifact_id,
+                    } => cx.emit(StudioEvent::LocateArtifactSource {
+                        session_id: session_id.clone(),
+                        artifact_id: artifact_id.clone(),
+                    }),
+                    ArtifactAction::OverrideDeliver {
+                        report_id,
+                        artifact_path,
+                    } => {
+                        panel.confirm_override_delivery(
+                            report_id,
+                            artifact_path,
+                            cx,
+                        );
+                    }
                 }
-                ArtifactAction::SaveAs(id) => {
-                    cx.emit(StudioEvent::SaveArtifact(id.clone()));
-                }
-                ArtifactAction::LocateSource {
-                    session_id,
-                    artifact_id,
-                } => cx.emit(StudioEvent::LocateArtifactSource {
-                    session_id: session_id.clone(),
-                    artifact_id: artifact_id.clone(),
-                }),
-            },
-        );
+            });
         let composer = cx.new(|cx| {
             ChatComposer::new(
                 ui.clone(),
@@ -986,6 +996,78 @@ impl StudioPanel {
     ) {
         self.feed
             .update(cx, |feed, cx| feed.set_artifacts(artifacts, cx));
+    }
+
+    pub(crate) fn confirm_override_delivery(
+        &mut self,
+        report_id: &str,
+        artifact_path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(session_id) = self.agent.active_session_id() else {
+            self.emit_notice(Some("chat.publish.context"), cx);
+            return;
+        };
+        match self.agent.override_deliver_artifact(
+            &session_id,
+            report_id,
+            artifact_path,
+        ) {
+            Ok(_) => {
+                if let Ok(store) = self.agent.artifact_store()
+                    && let Ok(records) = store.list()
+                {
+                    let items = records
+                        .into_iter()
+                        .map(|record| {
+                            let receipt = record.manifest.receipt;
+                            let extension = std::path::Path::new(&receipt.display_name)
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .unwrap_or_default()
+                                .to_ascii_lowercase();
+                            let override_used =
+                                self.agent.artifact_was_overridden(&receipt.sha256);
+                            crate::library::LibraryItem {
+                                id: receipt.artifact_id,
+                                title: receipt.display_name,
+                                original_name: record.manifest.original_basename,
+                                description: String::new(),
+                                category: crate::library::Category::Other,
+                                date: String::new(),
+                                time: String::new(),
+                                pending: false,
+                                preview: None,
+                                size_bytes: Some(receipt.size_bytes),
+                                extension,
+                                media_type: receipt.media_type,
+                                delivered_at_ms: receipt.created_at_ms,
+                                delivered_date: String::new(),
+                                delivered_time: String::new(),
+                                source_session_id: receipt.session_id,
+                                source_title: record.manifest.origin_title_snapshot,
+                                source_deleted: false,
+                                source_unavailable: false,
+                                favorite: record.preference.favorite,
+                                availability: if record.corrupt {
+                                    crate::library::ArtifactAvailability::Corrupt
+                                } else if record.available {
+                                    crate::library::ArtifactAvailability::Available
+                                } else {
+                                    crate::library::ArtifactAvailability::Missing
+                                },
+                                override_used,
+                            }
+                        })
+                        .collect();
+                    self.set_artifacts(items, cx);
+                }
+                self.refresh_chat(cx);
+                self.emit_notice(None, cx);
+                cx.emit(StudioEvent::ArtifactsChanged);
+            }
+            Err(error) => self.emit_notice(Some(error), cx),
+        }
     }
 
     /// Resolve a durable artifact anchor only after the session projection is
@@ -2820,6 +2902,115 @@ mod tests {
             assert_eq!(panel.pending_receipts.len(), 0);
         });
         drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn override_delivery_writes_audit_chain_and_persists_badge_across_reopen(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "override-persist");
+        let (session_id, artifact_id) = panel.update(cx, |panel, cx| {
+            let session_id = panel.agent.create_home_session().unwrap();
+            panel.open_session(&session_id, cx);
+            let workspace =
+                root.join("sessions").join("workspaces").join(&session_id);
+            let output_dir = workspace.join("outputs/submission-override-test");
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let deck = output_dir.join("deck.pptx");
+            std::fs::write(
+                &deck,
+                include_bytes!("../examples/fixtures/preview/sample.pptx"),
+            )
+            .unwrap();
+
+            let gate = flowy_agent::delivery::DeliveryStore::new(
+                root.join("delivery"),
+            );
+            let report = gate
+                .record_report(
+                    &deck,
+                    vec![flowy_agent::delivery::Issue {
+                        code: "VALUE_MISMATCH".into(),
+                        field: "S0-title".into(),
+                    }],
+                    100,
+                )
+                .unwrap();
+            assert!(!report.ok);
+
+            panel.confirm_override_delivery(
+                &report.id,
+                "outputs/submission-override-test/deck.pptx",
+                cx,
+            );
+            assert_eq!(panel.notice, None);
+            let artifact_id = panel
+                .agent
+                .chat_history()
+                .rows
+                .iter()
+                .find_map(|line| {
+                    if let flowy_agent::ChatLine::Artifact { artifact_id } =
+                        line
+                    {
+                        Some(artifact_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .expect("override delivery appends artifact card");
+            (session_id, artifact_id)
+        });
+
+        let events =
+            std::fs::read_to_string(root.join("delivery/events.jsonl"))
+                .unwrap();
+        let blocked_pos =
+            events.find("deliver_blocked").expect("blocked event");
+        let override_pos =
+            events.find("deliver_override").expect("override event");
+        let deliver_pos = events.find("\"deliver\"").expect("deliver event");
+        assert!(blocked_pos < override_pos && override_pos < deliver_pos);
+
+        drop(panel);
+
+        // Reopen over the same root and confirm both the artifact record and
+        // the override marker survive restart.
+        let reopened = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        reopened.update(cx, |panel, cx| {
+            panel.open_session(&session_id, cx);
+            let store = panel.agent.artifact_store().unwrap();
+            let record = store.get(&artifact_id).unwrap().unwrap();
+            assert!(
+                panel
+                    .agent
+                    .artifact_was_overridden(&record.manifest.receipt.sha256),
+                "permanent override mark must survive panel reopen"
+            );
+            assert!(panel.agent.chat_history().rows.iter().any(|line| {
+                matches!(line, flowy_agent::ChatLine::Artifact { artifact_id: id } if id == &artifact_id)
+            }));
+        });
+        drop(reopened);
         let _ = std::fs::remove_dir_all(root);
     }
 }

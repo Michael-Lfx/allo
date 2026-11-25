@@ -763,5 +763,12 @@
   "library.storage.clean_views": "Clean viewing copies",
   "library.storage.clean_views.title": "Clean external viewing copies?",
   "library.storage.clean_views.body": "Close external apps using these copies first. Saved artifacts and exported files are kept.",
-  "library.storage.clean_views.confirm": "Apps are closed, clean copies"
+  "library.storage.clean_views.confirm": "Apps are closed, clean copies",
+  "verify.card.passed": "검증 통과",
+  "verify.card.failed": "검증 실패",
+  "verify.card.hash": "SHA-256 {hash}",
+  "verify.override.confirm": "검증 미통과를 인지했습니다",
+  "verify.override.action": "강제 전달",
+  "verify.override.badge": "검증 미통과 강제 전달",
+  "verify.semantic.hint": "의미 검토 참고: {hint}"
 }

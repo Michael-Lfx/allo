@@ -19,6 +19,7 @@ mod model_directory;
 mod pptx;
 mod projection;
 mod publish_tool;
+pub mod semantic_verify;
 mod title;
 mod verify;
 
@@ -45,8 +46,10 @@ pub use model_directory::{
 };
 pub use projection::{
     ChatHistory, ChatLine, FileChangeKind, FileEntry, TurnStatus,
+    VerificationIssue,
 };
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
+pub use verify::ui_key as verify_ui_key;
 
 #[cfg(test)]
 mod perf_tests;
