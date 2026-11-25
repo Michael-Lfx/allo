@@ -7225,8 +7225,9 @@ mod review_replay_tests {
             Ok(reject),
             Ok(truncated.to_owned()),
             Ok("好的，我来评审这一批。".into()),
+            // 任意传输失败即可——本测试只断言 error 态，不依赖超时值。
             Err(nomifun_common::AppError::Timeout(
-                "json coach call exceeded 600s".into(),
+                "coach call timed out".into(),
             )),
             pass_verdict(),
         ]));

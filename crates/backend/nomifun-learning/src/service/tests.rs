@@ -6426,7 +6426,7 @@ async fn growth_coach_reads_a_coverage_folded_terrain_list() {
     insert_fresh_mount_row(&service, &course, &raw).await;
     let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 1).await;
     assert!(
-        prompt.contains("已覆盖 1 块（1 个节点）：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
+        prompt.contains("已覆盖 1 块：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
         "fresh 行：块甲折叠成一行、孤儿条目的块乙仍展开：{prompt}"
     );
     assert!(!prompt.contains(ROW_A), "已覆盖块不再展开：{prompt}");
@@ -6474,7 +6474,7 @@ async fn growth_coach_reads_a_coverage_folded_terrain_list() {
     .await;
     let prompt = coach_prompt(&service, &owner, &course, completer.as_ref(), 3).await;
     assert!(
-        prompt.contains("已覆盖 1 块（1 个节点）：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
+        prompt.contains("已覆盖 1 块：块甲\n- 块乙(block-b)|乙的主题|advanced|主干一|无前置"),
         "v1 存量行结构未变 = fresh，照常折叠：{prompt}"
     );
     assert!(!prompt.contains(STALE_MOUNTS_LINE), "v1 行不得被误判 stale：{prompt}");
@@ -17311,4 +17311,3 @@ async fn growth_wake_ignores_an_idle_batch() {
         "空手批不登记唤醒"
     );
 }
-

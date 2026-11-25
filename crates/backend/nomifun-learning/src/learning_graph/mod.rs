@@ -734,17 +734,22 @@ impl CoachContext {
         // 首批凝练纪律（g3：删 6 条规则长文，收缩为地形清单 + 门口参考 +
         // 两条纪律 + 空账本机械地板）。已教账非空时（老学习者开新课）机械地板
         // 让位给跨课程口径：账内概念可进 assumes（就绪判定本就跨课程计数）。
-        // 本块两个渲染面同文（评审同样要核对入口起点）——评审面因此也含
-        // 「地形清单」四字，「评审输入不带地形清单」的断言要钉块头。
+        // **首行按渲染面分叉**（ADR-0018 决定 1）：教练按地形清单的入门档起
+        // 步；评审面不带地形清单，不得自指缺失材料——改为只要求「入口是基线
+        // 学习者今天真能起步的最底层台阶」，判据不减。
         if self.roster.is_empty() {
             let ledger_line = if self.taught_summary.is_empty() {
                 "- 已教概念账为空 ⇒ 本批 assumes 必须全空（机械地板：空账不供给任何概念）。\n"
             } else {
                 "- 已教概念账是跨课程全局账（学习者在其他课程学会的也在里面，非空是常态）：本批 assumes 可假定账内已有概念；账内没有的才需要本批铺垫。\n"
             };
+            let entry_line = if surface == RenderSurface::Coach {
+                "- 入口从地形清单的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n"
+            } else {
+                "- 入口节点须是基线学习者今天真能起步的最底层台阶，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n"
+            };
             text.push_str(&format!(
-                "\n【首批纪律（花名册为空）】\n\
-                 - 入口从地形清单的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
+                "\n【首批纪律（花名册为空）】\n{entry_line}\
                  - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。标题以学科内容本身命名，日常经验类比只写进 purpose、不得进标题。\n\
                  {}", ledger_line));
         }
@@ -2202,10 +2207,6 @@ pub struct ReplayRawReview {
     pub verdict: String,
     /// `problems` 数组行数（缺席或不是数组 = 0）。
     pub problems: usize,
-    /// `term_provenance` 数组行数（缺席或不是数组 = 0）。
-    pub term_provenance_rows: usize,
-    /// `fragments` 数组行数（缺席或不是数组 = 0）。
-    pub fragment_rows: usize,
 }
 
 /// 档案重放的回包读数。传输失败（超时/网关/流中断）没有回包，走 `Err`。
@@ -2267,8 +2268,6 @@ fn read_raw_review_reply(raw: &str) -> ReplayRawReply {
             .unwrap_or_default()
             .to_owned(),
         problems: rows("problems"),
-        term_provenance_rows: rows("term_provenance"),
-        fragment_rows: rows("fragments"),
     })
 }
 
@@ -6224,11 +6223,15 @@ mod tests {
         );
     }
 
-    /// 验收①：同一上下文两个渲染面对比——评审输出不含块头；且逐字节等于
-    /// 「教练渲染去掉地形清单块」。独立对照 = 把清单字段清空再走教练面
-    /// 渲染（空字段整块省略是既有行为，正是「跳过结构块」的定义）——所以
-    /// 多一个空行、少一个块都会红。首批与后续批各比一次（首批纪律、门口
-    /// 框架语随花名册空与否变化，都不许按渲染面分叉）。
+    /// 验收①：同一上下文两个渲染面对比——评审输出不含地形清单；且逐字节等于
+    /// 「教练渲染去掉地形清单块、并把首批纪律入口句换成评审版」。独立对照 =
+    /// 把清单字段清空再走教练面渲染（空字段整块省略是既有行为，正是「跳过
+    /// 结构块」的定义）——多一个空行、少一个块都会红。首批与后续批各比一次。
+    ///
+    /// 两个渲染面**恰有两处**不同：①地形清单块（评审跳过）；②首批纪律的入口
+    /// 句（教练按地形清单的入门档起步；评审不带清单，不得自指缺失材料）。第
+    /// 二处是 ADR-0018 决定 1 的必然结果，测试显式钉住它——再出现第三处差异
+    /// 会红。
     #[test]
     fn review_render_is_the_coach_render_minus_the_terrain_list_block() {
         let full = CoachContext {
@@ -6255,15 +6258,23 @@ mod tests {
             let review = context.render_for_review();
             let without_list =
                 CoachContext { terrain_list: String::new(), ..context.clone() }.render();
-            assert_eq!(review, without_list, "{label}：评审面 = 教练面减地形清单块（逐字节）");
+            // 第二处差异 = 首批纪律的入口句（后续批没有该块，replace 无操作）。
+            let expected = without_list.replace(
+                "- 入口从地形清单的入门档起步，",
+                "- 入口节点须是基线学习者今天真能起步的最底层台阶，",
+            );
+            assert_eq!(review, expected, "{label}：评审面 = 教练面减地形清单块 + 入口句换评审版（逐字节）");
+            assert!(
+                !review.contains("地形清单"),
+                "{label}：评审面不得自指地形清单（首批纪律入口句已换评审版）"
+            );
             assert!(coach.contains("【地形清单"), "{label}：教练面带地形清单块头");
             assert!(coach.contains("- 块A(a)|主题描述"), "{label}：教练面带清单行");
             for header in ["【地形清单", "【结构参考材料"] {
                 assert!(!review.contains(header), "{label}：评审面不带块头 {header}");
             }
             assert!(!coach.contains("【结构参考材料"), "{label}：教练面不用旧称");
-            // 负断言钉块头不钉裸子串：首批纪律首行两渲染面同文（评审同样
-            // 要核对入口起点），它本身含「地形清单」四字。
+            // 负断言钉块头不钉裸子串。
             for block in [
                 "【学习目标】",
                 "（程度声明：能独立冲煮",
@@ -6282,17 +6293,34 @@ mod tests {
         }
         let first_batch = CoachContext { roster: String::new(), ..full.clone() };
         let first_review = first_batch.render_for_review();
+        let first_coach = first_batch.render();
         assert!(
             first_review.contains("【首批纪律（花名册为空）】"),
-            "首批纪律不按渲染面分叉"
+            "首批纪律块两渲染面都在（判据不减）"
         );
         assert!(
-            first_review.contains("入口从地形清单的入门档起步"),
-            "首批纪律首行两渲染面同文——评审面也因此含「地形清单」四字：{first_review}"
+            first_coach.contains("入口从地形清单的入门档起步"),
+            "教练面的入口句按地形清单起步"
         );
-        // 清单字段本就为空：两个渲染面逐字节相同。
-        let listless = CoachContext { terrain_list: String::new(), ..full.clone() };
-        assert_eq!(listless.render(), listless.render_for_review());
+        assert!(
+            !first_review.contains("地形清单"),
+            "评审面不得自指缺失材料——入口句须换评审版：{first_review}"
+        );
+        assert!(
+            first_review.contains("入口节点须是基线学习者今天真能起步的最底层台阶"),
+            "评审版入口句在位（判据不减）：{first_review}"
+        );
+        // 后续批没有首批纪律、清单也为空：两渲染面逐字节相同。
+        let listless_later = CoachContext {
+            roster: "在学 | 节点A".to_owned(),
+            terrain_list: String::new(),
+            ..full.clone()
+        };
+        assert_eq!(
+            listless_later.render(),
+            listless_later.render_for_review(),
+            "非首批且无清单：两渲染面逐字节相同"
+        );
     }
 
     /// 验收④：评审提示词（四个开关的全部十六个臂）不再引用知识结构——

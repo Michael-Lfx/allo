@@ -2883,7 +2883,8 @@ async fn run_learning_growth_wake_mount(
 /// sb2（ADR-0018 决定 4）另有一条唤醒臂：非空手生长批落库后登记的课程让
 /// 这里的等待立即返回，循环把每门被登记的课程 `spawn` 成一个**仅挂载**回
 /// 合（不修补、不 await）后直接回到等待，不进定时臂——定时节拍、定时臂的
-/// 代码与开关语义不变。唤醒回合同样受上面两枚开关约束。
+/// 行为与开关语义不变（等待原语从块内 `sleep` 改为块外 `sleep_until` 固定
+/// 时点，到期判定与收尾逐字节保留）。唤醒回合同样受上面两枚开关约束。
 pub fn start_learning_auto_maintenance(
     service: std::sync::Arc<nomifun_learning::LearningService>,
     pool: nomifun_db::sqlx::SqlitePool,
@@ -2910,11 +2911,12 @@ pub fn start_learning_auto_maintenance(
         loop {
             // 定时到点，或被生长唤醒（ADR-0018 决定 4）。
             let wake = wait_learning_maintenance_wake(&service, next_tick).await;
-            // 仅挂载回合逐课 spawn，循环不 await（见 spawn 文档）。两臂共用
-            // 同一排空点：登记在任何时刻到达都不会滞留到下一次唤醒。
-            spawn_learning_growth_wakes(&service);
             if wake == LearningMaintenanceWake::Growth {
-                // 唤醒臂不进定时臂：不读设置、不动 last_run。
+                // 仅挂载回合逐课 spawn，循环不 await（见 spawn 文档）。
+                spawn_learning_growth_wakes(&service);
+                // 唤醒臂不进定时臂：不读设置、不动 last_run——定时臂行为逐字
+                // 节不变（R-b）。定时臂到点时若有未排空的唤醒，`notify_one`
+                // 存下的许可让下一轮 select 立刻以 Growth 返回，不会滞留。
                 continue;
             }
             // 回合体 panic 就地记死因并吞掉（见 guarded 文档）：循环存活，

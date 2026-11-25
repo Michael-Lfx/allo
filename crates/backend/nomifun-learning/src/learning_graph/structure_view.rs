@@ -636,10 +636,11 @@ fn terrain_rows(structure: &Value) -> Vec<TerrainRow> {
 
 /// 地形清单渲染（教练上下文块 2，ADR-0018 决定 2）：`covered` 之外的块逐块
 /// 展开，行格式与呈现序见 [`terrain_rows`]；`covered` 里的块折叠成一行
-/// 「已覆盖 {k} 块（{m} 个节点）：名称、名称…」（名称同呈现序，置于清单
-/// 之前；`m` = 各块节点数之和——一个节点挂多块时每块各计一次）；
-/// `note` = 清单前的说明行。无块 = 空串（整块省略）。纯结构事实的读侧
-/// 投影：不做块名↔概念名匹配，不参与任何判定。
+/// 「已覆盖 {k} 块：名称、名称…」（名称同呈现序，置于清单之前）。折叠行
+/// **不报节点数**：`covered` 的值是各块的挂载数，一个节点挂多块时相加会
+/// 重复计，报出去容易被读成「有多少个节点已就位」；教练只需要知道哪些块
+/// 已覆盖。`note` = 清单前的说明行。无块 = 空串（整块省略）。纯结构事实的
+/// 读侧投影：不做块名↔概念名匹配，不参与任何判定。
 pub(crate) fn render_terrain_list(
     structure: &Value,
     covered: &HashMap<String, usize>,
@@ -655,19 +656,12 @@ pub(crate) fn render_terrain_list(
         .iter()
         .partition(|row| covered.get(&row.slug).is_some_and(|count| *count > 0));
     if !folded.is_empty() {
-        let mounted: usize = folded
-            .iter()
-            .map(|row| covered.get(&row.slug).copied().unwrap_or_default())
-            .sum();
         let names = folded
             .iter()
             .map(|row| row.name.as_str())
             .collect::<Vec<_>>()
             .join("、");
-        lines.push(format!(
-            "已覆盖 {} 块（{mounted} 个节点）：{names}",
-            folded.len()
-        ));
+        lines.push(format!("已覆盖 {} 块：{names}", folded.len()));
     }
     lines.extend(expanded.into_iter().map(|row| row.line.to_owned()));
     lines.join("\n")
@@ -972,22 +966,22 @@ mod tests {
             (
                 // 插入序故意打乱——折叠行仍按呈现序列名（A、D、C）。
                 coverage(&[("block-c", 1), ("block-a", 2), ("block-d", 4)]),
-                "已覆盖 3 块（7 个节点）：块A、块D、块C",
+                "已覆盖 3 块：块A、块D、块C",
                 &[2],
             ),
             (
                 coverage(&[("block-c", 1), ("block-a", 2)]),
-                "已覆盖 2 块（3 个节点）：块A、块C",
+                "已覆盖 2 块：块A、块C",
                 &[1, 2],
             ),
             (
                 coverage(&[("block-b", 3)]),
-                "已覆盖 1 块（3 个节点）：块B",
+                "已覆盖 1 块：块B",
                 &[0, 1, 3],
             ),
             (
                 coverage(&[("block-a", 1), ("block-b", 1), ("block-c", 1), ("block-d", 1)]),
-                "已覆盖 4 块（4 个节点）：块A、块D、块B、块C",
+                "已覆盖 4 块：块A、块D、块B、块C",
                 &[],
             ),
         ];
