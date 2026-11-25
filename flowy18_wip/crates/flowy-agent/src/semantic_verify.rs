@@ -16,11 +16,12 @@ use serde_json::Value;
 pub const SEMANTIC_SYSTEM_PROMPT: &str = "\
 你是交付物语义复核器（L3）。\
 只依据简报的字面要求。简报没要求的，缺了不算问题。\
-请仅返回严格 JSON 对象（不要代码块、不要额外说明）：\
+只复核文件名与幻灯片正文内容是否与简报字面要求一致；忽略流程性指令（如先核验、再交付、发送给我等，这些由程序硬门保证，不写在幻灯片正文里）。\
+请直接输出单行紧凑 JSON 对象（不要代码块、不要额外说明）：\
 {\"ok\": true|false, \"issues\": [{\"where\": \"位置\", \"what\": \"现象\", \"why\": \"依据\"}]}。\
 其中 ok 必须是 JSON 布尔值；若 ok 为 false，issues 至少包含一条带非空 where / what / why 的记录。";
 
-const SEMANTIC_TIMEOUT: Duration = Duration::from_secs(8);
+const SEMANTIC_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct SemanticContext {
@@ -67,6 +68,14 @@ impl SemanticOutcome {
         match self {
             Self::Flagged { issues } => issues.len(),
             Self::Skipped | Self::Passed | Self::Inconclusive { .. } => 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> &str {
+        match self {
+            Self::Inconclusive { reason } => reason.as_str(),
+            Self::Skipped | Self::Passed | Self::Flagged { .. } => "",
         }
     }
 
@@ -167,6 +176,7 @@ pub fn parse_semantic_response(raw: &str) -> SemanticOutcome {
 
 pub async fn probe_deck_semantics(
     ctx: &SemanticContext,
+    artifact_name: &str,
     deck_shapes: &[(String, String)],
     signal: &CancelToken,
 ) -> (SemanticOutcome, u64) {
@@ -181,7 +191,12 @@ pub async fn probe_deck_semantics(
     body.push_str("【简报字面要求】\n");
     let brief: String = ctx.brief.chars().take(2_000).collect();
     body.push_str(&brief);
-    body.push_str("\n\n【产物形状与文本】\n");
+    body.push_str("\n\n【产物信息与幻灯片文本】\n");
+    if !artifact_name.trim().is_empty() {
+        body.push_str("- 文件名: ");
+        body.push_str(artifact_name.trim());
+        body.push('\n');
+    }
     for (name, text) in deck_shapes.iter().take(64) {
         let snippet: String = text.chars().take(400).collect();
         body.push_str("- ");
@@ -221,6 +236,15 @@ mod tests {
         assert!(
             SEMANTIC_SYSTEM_PROMPT
                 .contains("只依据简报的字面要求。简报没要求的，缺了不算问题。")
+        );
+        assert!(SEMANTIC_SYSTEM_PROMPT.contains("忽略流程性指令"));
+        assert_eq!(SemanticOutcome::Passed.reason(), "");
+        assert_eq!(
+            SemanticOutcome::Inconclusive {
+                reason: "timeout".to_owned(),
+            }
+            .reason(),
+            "timeout"
         );
     }
 

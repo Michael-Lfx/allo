@@ -146,14 +146,28 @@ fn execute(
     };
     let path = resolve_turn_path(cwd, output_root, &args.path);
     match write_deck(&path, &args.title, &args.slides) {
-        Ok(count) => ToolExecutionResult::success_text(
-            format!("created a {count}-slide deck at {}", path.display()),
-            json!({
-                "status": "ready",
-                "path": path.display().to_string(),
-                "slides": count,
-            }),
-        ),
+        Ok(count) => {
+            let mut anchors = Vec::with_capacity(count * 2);
+            for (index, body) in args.slides.iter().enumerate() {
+                anchors.push(format!("S{index}-title"));
+                if !body.trim().is_empty() {
+                    anchors.push(format!("S{index}-body"));
+                }
+            }
+            let anchor_list = anchors.join(", ");
+            ToolExecutionResult::success_text(
+                format!(
+                    "created a {count}-slide deck at {} (shape anchors: {anchor_list})",
+                    path.display()
+                ),
+                json!({
+                    "status": "ready",
+                    "path": path.display().to_string(),
+                    "slides": count,
+                    "anchors": anchors,
+                }),
+            )
+        }
         Err(error) => ToolExecutionResult::error(
             "PPTX_FAILED",
             format!("could not write {}: {error}", path.display()),
@@ -164,7 +178,7 @@ fn execute(
 pub fn definition() -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "create_deck",
-        "Create a PowerPoint (.pptx) deck in one call. Use this when the user asks for slides or a deck. The generator is provided by the environment; a missing generator is reported as status=missing, not as a failure.",
+        "Create a PowerPoint (.pptx) deck in one call. Use this when the user asks for slides or a deck. Each 0-based slide index i creates named shape anchors S{i}-title (slide 0 has title, slide i>0 has '{title} · {i+1}') and S{i}-body (for non-empty body text). The generator is provided by the environment; a missing generator is reported as status=missing, not as a failure.",
         json!({
             "type": "object",
             "properties": {
@@ -222,6 +236,13 @@ mod tests {
         };
         assert_eq!(value["status"], "ready");
         assert_eq!(value["slides"], 3);
+        assert_eq!(
+            value["anchors"],
+            json!([
+                "S0-title", "S0-body", "S1-title", "S1-body", "S2-title",
+                "S2-body"
+            ])
+        );
         let bytes = std::fs::read(&path).expect("the deck is on disk");
         assert_eq!(&bytes[..2], b"PK", "a pptx is a zip container");
         let presentation =

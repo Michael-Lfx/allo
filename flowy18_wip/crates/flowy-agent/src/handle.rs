@@ -2193,7 +2193,7 @@ impl TurnObserver for UiObserver {
             live.projection
                 .finish_tool_call(call_id, &display_text, is_error);
             if let Some(card) = verification_line {
-                live.projection.lines.push(card);
+                upsert_verification_line(&mut live.projection.lines, card);
             }
             // Drop the cached arguments either way; a failed call leaves the
             // file untouched, so only settled calls get a change row.
@@ -2218,6 +2218,7 @@ impl TurnObserver for UiObserver {
             let mut live = lock(&self.state.live);
             if let Some(live) = live.get_mut(session) {
                 live.projection.flush();
+                promote_latest_turn_verifications(&mut live.projection.lines);
                 live.status = match outcome {
                     LoopOutcome::Completed => TurnStatus::Completed,
                     LoopOutcome::Aborted => TurnStatus::Stopped,
@@ -2894,6 +2895,54 @@ fn sync_verification_overrides(
     }
 }
 
+/// Keep only the latest verification conclusion card per normalized artifact
+/// path so a fixed & passing re-verification supersedes earlier failed cards.
+fn upsert_verification_line(lines: &mut Vec<ChatLine>, card: ChatLine) {
+    if let ChatLine::Verification { artifact_path, .. } = &card {
+        let key = crate::delivery::artifact_key(Path::new(artifact_path));
+        lines.retain(|existing| match existing {
+            ChatLine::Verification {
+                artifact_path: existing_path,
+                ..
+            } => crate::delivery::artifact_key(Path::new(existing_path)) != key,
+            _ => true,
+        });
+    }
+    lines.push(card);
+}
+
+/// Move the current turn's verification conclusion cards right before trailing
+/// artifact cards so the verification receipt stays paired with the deliverable
+/// in the viewport without needing to scroll past a long assistant summary.
+fn promote_latest_turn_verifications(lines: &mut Vec<ChatLine>) {
+    let start = lines
+        .iter()
+        .rposition(|line| matches!(line, ChatLine::User { .. }))
+        .map_or(0, |index| index + 1);
+    let mut verifications = Vec::new();
+    let mut kept = Vec::with_capacity(lines.len().saturating_sub(start));
+    for line in lines.drain(start..) {
+        if matches!(line, ChatLine::Verification { .. }) {
+            upsert_verification_line(&mut verifications, line);
+        } else {
+            kept.push(line);
+        }
+    }
+    let insert_at = kept
+        .iter()
+        .rposition(|line| {
+            !matches!(
+                line,
+                ChatLine::Artifact { .. } | ChatLine::TaskReceipt { .. }
+            )
+        })
+        .map_or(0, |index| index + 1);
+    let tail = kept.split_off(insert_at);
+    lines.extend(kept);
+    lines.extend(verifications);
+    lines.extend(tail);
+}
+
 fn parse_verification_line(
     text: &str,
     gate: Option<&crate::delivery::DeliveryStore>,
@@ -2971,12 +3020,14 @@ fn lines_from_messages_with_gate(
     gate: Option<&crate::delivery::DeliveryStore>,
 ) -> Vec<ChatLine> {
     let mut lines = Vec::new();
+    let mut pending_verifications = Vec::new();
     let mut pending_artifacts = Vec::new();
     for message in messages {
         match message.role {
             Role::System => {}
             Role::User => {
                 if matches!(message.source, MessageSource::User) {
+                    lines.extend(std::mem::take(&mut pending_verifications));
                     for artifact_id in std::mem::take(&mut pending_artifacts) {
                         lines.push(ChatLine::Artifact { artifact_id });
                     }
@@ -3015,7 +3066,10 @@ fn lines_from_messages_with_gate(
                             && let Some(card) =
                                 parse_verification_line(&text, gate)
                         {
-                            lines.push(card);
+                            upsert_verification_line(
+                                &mut pending_verifications,
+                                card,
+                            );
                         }
                         if let Some(receipt) = artifact
                             && allowed.contains(&receipt.artifact_id)
@@ -3081,7 +3135,10 @@ fn lines_from_messages_with_gate(
                                 && let Some(card) =
                                     parse_verification_line(&text, gate)
                             {
-                                lines.push(card);
+                                upsert_verification_line(
+                                    &mut pending_verifications,
+                                    card,
+                                );
                             }
                         }
                     }
@@ -3089,6 +3146,7 @@ fn lines_from_messages_with_gate(
             }
         }
     }
+    lines.extend(pending_verifications);
     for artifact_id in pending_artifacts {
         lines.push(ChatLine::Artifact { artifact_id });
     }
@@ -4210,11 +4268,12 @@ mod background_init_tests {
 #[cfg(test)]
 mod guard_tests {
     use super::{
-        AgentWorkspace, confined_to, path_guard, session_working_directory,
+        AgentWorkspace, confined_to, path_guard,
+        promote_latest_turn_verifications, session_working_directory,
         take_file_change, tool_arg_key, tool_registry,
-        tool_result_display_text,
+        tool_result_display_text, upsert_verification_line,
     };
-    use crate::projection::FileChangeKind;
+    use crate::projection::{ChatLine, FileChangeKind, VerificationIssue};
     use flowy_agent_core::types::ToolCallArgs;
     use serde_json::json;
     use std::collections::HashMap;
@@ -4364,5 +4423,68 @@ mod guard_tests {
             let inside = args(tool, json!({ "path": "outputs/sub/deck.pptx" }));
             assert_eq!(path_guard(root, &inside), None);
         }
+    }
+
+    #[test]
+    fn verification_cards_supersede_older_failures_and_pin_above_artifacts() {
+        let mut lines = vec![
+            ChatLine::User {
+                text: "Build Q3 deck".into(),
+            },
+            ChatLine::Verification {
+                report_id: "report-fail".into(),
+                artifact_path: "outputs/sub/q3-east.pptx".into(),
+                artifact_hash: "aaaa1111".into(),
+                ok: false,
+                issues: vec![VerificationIssue {
+                    code: "ANCHOR_MISSING".into(),
+                    field: "S0-title".into(),
+                }],
+                semantic_hint: None,
+                override_used: false,
+            },
+        ];
+        upsert_verification_line(
+            &mut lines,
+            ChatLine::Verification {
+                report_id: "report-pass".into(),
+                artifact_path: "outputs\\sub\\q3-east.pptx".into(),
+                artifact_hash: "bbbb2222".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+            },
+        );
+        lines.push(ChatLine::Assistant {
+            text: "Summary table".into(),
+        });
+        lines.push(ChatLine::Artifact {
+            artifact_id: "art-1".into(),
+        });
+
+        promote_latest_turn_verifications(&mut lines);
+
+        let verification_count = lines
+            .iter()
+            .filter(|line| matches!(line, ChatLine::Verification { .. }))
+            .count();
+        assert_eq!(
+            verification_count, 1,
+            "older failed verification must be superseded by the latest pass"
+        );
+        assert!(matches!(lines[1], ChatLine::Assistant { .. }));
+        assert!(matches!(
+            &lines[2],
+            ChatLine::Verification {
+                report_id,
+                ok: true,
+                ..
+            } if report_id == "report-pass"
+        ));
+        assert!(matches!(
+            &lines[3],
+            ChatLine::Artifact { artifact_id } if artifact_id == "art-1"
+        ));
     }
 }

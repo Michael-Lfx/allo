@@ -249,11 +249,20 @@ async fn execute(
                     }
                 }
             }
+            let artifact_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&args.path);
             let (l3_outcome, l3_duration_ms) = if report.ok
                 && let Some(semantic_ctx) = semantic
             {
-                probe_deck_semantics(semantic_ctx, &shapes, &context.signal)
-                    .await
+                probe_deck_semantics(
+                    semantic_ctx,
+                    artifact_name,
+                    &shapes,
+                    &context.signal,
+                )
+                .await
             } else {
                 (SemanticOutcome::Skipped, 0)
             };
@@ -270,6 +279,7 @@ async fn execute(
                 ok = report.ok,
                 issue_count = report.issues.len(),
                 l3_status = l3_outcome.status_code(),
+                l3_reason = l3_outcome.reason(),
                 l3_issue_count = l3_outcome.issue_count(),
                 l3_duration_ms,
                 "deck verification completed"
@@ -313,7 +323,7 @@ pub fn definition_with_semantic(
 ) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_deck",
-        "Verify a generated deck before delivery. Checks the slide count and each named shape against the expected text. Returns ok plus ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH issues; a failed report is not a tool error.",
+        "Verify a generated deck before delivery. Checks the slide count and each named shape against the expected text. Each anchor must be the slide shape name (for create_deck outputs: S0-title, S0-body, S1-title, S1-body, where slide 0 title is title and slide i>0 title is '{title} · {i+1}'). Returns ok plus ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH issues; a failed report is not a tool error.",
         json!({
             "type": "object",
             "properties": {
