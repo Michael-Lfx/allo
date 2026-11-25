@@ -17,6 +17,7 @@ mod ota;
 mod projects;
 mod settings;
 mod skills;
+mod skills_jobs;
 mod state;
 mod titlebar;
 
@@ -529,6 +530,7 @@ impl FlowyApp {
                 installed: Vec::new(),
                 install: None,
                 install_task: None,
+                script_confirm: None,
             },
             ota: ota::OtaController::new(),
             settings: SettingsState {
@@ -1912,7 +1914,7 @@ impl Render for FlowyApp {
                 }
                 root
             }
-            state::ActiveDialog::SkillScriptConfirm(_) => root
+            state::ActiveDialog::SkillScriptConfirm => root
                 .child(self.skill_layer(window, cx))
                 .child(self.skill_script_confirm_layer(window, cx)),
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),

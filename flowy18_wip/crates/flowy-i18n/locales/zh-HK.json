@@ -495,7 +495,7 @@
   "skills.scripts_confirm_title": "允許執行腳本？",
   "skills.scripts_confirm_body": "允許技能「{name}」使用 shell 工具？只應對你信任的技能開啟此項。",
   "skills.enable": "啟用",
-  "skills.uninstall": "卸載",
+  "skills.uninstall": "解除安裝",
   "skills.built_in": "內建",
   "skills.community": "社群",
   "skills.no_installed": "還沒有安裝技能。",

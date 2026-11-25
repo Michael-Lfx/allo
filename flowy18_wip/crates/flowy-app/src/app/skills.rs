@@ -62,11 +62,6 @@ pub(super) struct InstallUi {
     pub(super) phase: InstallPhase,
 }
 
-enum InstallNote {
-    Progress(flowy_skills::InstallProgress),
-    Done(Result<Vec<flowy_agent::InstalledSkill>, String>),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Category {
     Coding,
@@ -1229,7 +1224,7 @@ impl FlowyApp {
         let frame = self.theme.modal_size(window.viewport_size());
         let id = if matches!(
             self.active_dialog,
-            super::state::ActiveDialog::SkillScriptConfirm(_)
+            super::state::ActiveDialog::SkillScriptConfirm
         ) {
             "mine"
         } else {
@@ -1285,8 +1280,7 @@ impl FlowyApp {
                     .child(self.t("skills.no_installed")),
             );
         }
-        for (index, skill) in self.skills.installed.iter().cloned().enumerate()
-        {
+        for skill in self.skills.installed.iter().cloned() {
             let title = if skill.description.is_empty() {
                 skill.name.clone()
             } else {
@@ -1316,6 +1310,11 @@ impl FlowyApp {
             let slug = skill.id.slug.clone();
             let latest = skill.latest_version.clone().unwrap_or_default();
             let key = format!("{owner}/{slug}");
+            let auto_id = skill.id.clone();
+            let auto_invoke = skill.auto_invoke;
+            let scripts_id = skill.id.clone();
+            let scripts_enabled = skill.scripts_enabled;
+            let uninstall_id = skill.id.clone();
             let row = div()
                 .w_full()
                 .rounded_lg()
@@ -1356,12 +1355,11 @@ impl FlowyApp {
                                     &self.theme,
                                     cx.listener(move |app, _event, _window, cx| {
                                         cx.stop_propagation();
-                                        let value = app
-                                            .skills
-                                            .installed
-                                            .get(index)
-                                            .is_some_and(|skill| !skill.auto_invoke);
-                                        app.set_auto_invoke(index, value, cx);
+                                        app.set_auto_invoke(
+                                            auto_id.clone(),
+                                            !auto_invoke,
+                                            cx,
+                                        );
                                     }),
                                 ),
                         )
@@ -1371,16 +1369,17 @@ impl FlowyApp {
                                     &self.theme,
                                     cx.listener(move |app, _event, _window, cx| {
                                         cx.stop_propagation();
-                                        let enabled = app
-                                            .skills
-                                            .installed
-                                            .get(index)
-                                            .is_some_and(|skill| skill.scripts_enabled);
-                                        if enabled {
-                                            app.set_scripts_enabled(index, false, cx);
+                                        if scripts_enabled {
+                                            app.set_scripts_enabled(
+                                                scripts_id.clone(),
+                                                false,
+                                                cx,
+                                            );
                                         } else {
+                                            app.skills.script_confirm =
+                                                Some(scripts_id.clone());
                                             app.activate_dialog(
-                                                super::state::ActiveDialog::SkillScriptConfirm(index),
+                                                super::state::ActiveDialog::SkillScriptConfirm,
                                                 cx,
                                             );
                                         }
@@ -1417,7 +1416,7 @@ impl FlowyApp {
                                         &self.theme,
                                         cx.listener(move |app, _event, _window, cx| {
                                             cx.stop_propagation();
-                                            app.uninstall_skill(index, cx);
+                                            app.uninstall_skill(uninstall_id.clone(), cx);
                                         }),
                                     ),
                                 )
@@ -1569,14 +1568,23 @@ impl FlowyApp {
         window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let super::state::ActiveDialog::SkillScriptConfirm(index) =
-            self.active_dialog
+        if self.active_dialog != super::state::ActiveDialog::SkillScriptConfirm
+        {
+            return div().into_any_element();
+        }
+        let Some(id) = self.skills.script_confirm.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(skill) = self
+            .skills
+            .installed
+            .iter()
+            .find(|skill| &skill.id == id)
+            .cloned()
         else {
             return div().into_any_element();
         };
-        let Some(skill) = self.skills.installed.get(index).cloned() else {
-            return div().into_any_element();
-        };
+        let confirm_id = id.clone();
         let frame = self.theme.modal_size(window.viewport_size());
         theme::modal_layer(
             "skill-script-confirm-layer",
@@ -1630,6 +1638,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
+                                app.skills.script_confirm = None;
                                 app.active_dialog =
                                     super::state::ActiveDialog::Skill("mine");
                                 cx.notify();
@@ -1646,7 +1655,12 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(move |app, _event, _window, cx| {
-                                app.set_scripts_enabled(index, true, cx);
+                                app.set_scripts_enabled(
+                                    confirm_id.clone(),
+                                    true,
+                                    cx,
+                                );
+                                app.skills.script_confirm = None;
                                 app.active_dialog =
                                     super::state::ActiveDialog::Skill("mine");
                                 cx.notify();
@@ -1918,320 +1932,6 @@ impl FlowyApp {
             InstallPhase::Installing => self.t("skills.installing"),
             InstallPhase::Failed(_) => self.t("skills.install_failed"),
         }
-    }
-
-    fn run_skill_catalog_job(
-        &mut self,
-        work: impl FnOnce(&Path) -> Result<Vec<flowy_agent::InstalledSkill>, String>
-        + Send
-        + 'static,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let root = self.store.root().to_path_buf();
-        let result = Arc::new(Mutex::new(None));
-        let writer = Arc::clone(&result);
-        std::thread::spawn(move || {
-            let value = work(&root);
-            if let Ok(mut slot) = writer.lock() {
-                *slot = Some(value);
-            }
-        });
-        self.skills.install_task = Some(cx.spawn(async move |weak, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(50))
-                    .await;
-                let value = result.lock().ok().and_then(|mut slot| slot.take());
-                let Some(value) = value else {
-                    continue;
-                };
-                let _ = weak.update(cx, |app, cx| {
-                    match value {
-                        Ok(installed) => {
-                            app.skills.installed.clone_from(&installed);
-                            app.studio.update(cx, |panel, cx| {
-                                panel.set_skill_catalog(installed, cx);
-                            });
-                        }
-                        Err(error) => tracing::warn!(
-                            target: "flowy.skills",
-                            error = %error,
-                            "skill management operation failed"
-                        ),
-                    }
-                    cx.notify();
-                });
-                break;
-            }
-        }));
-        cx.notify();
-    }
-
-    fn set_auto_invoke(
-        &mut self,
-        index: usize,
-        value: bool,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(skill) = self.skills.installed.get(index).cloned() else {
-            return;
-        };
-        self.run_skill_catalog_job(
-            move |root| {
-                let store = flowy_skills::Store::open(
-                    &root.join("skills").join("market.sqlite3"),
-                )
-                .map_err(|error| error.to_string())?;
-                store
-                    .set_auto_invoke(&skill.id, value)
-                    .map_err(|error| error.to_string())?;
-                flowy_skills::load_installed(root)
-                    .map(|catalog| catalog.skills)
-                    .map_err(|error| error.to_string())
-            },
-            cx,
-        );
-    }
-
-    fn set_scripts_enabled(
-        &mut self,
-        index: usize,
-        value: bool,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(skill) = self.skills.installed.get(index).cloned() else {
-            return;
-        };
-        self.run_skill_catalog_job(
-            move |root| {
-                let store = flowy_skills::Store::open(
-                    &root.join("skills").join("market.sqlite3"),
-                )
-                .map_err(|error| error.to_string())?;
-                store
-                    .set_scripts_enabled(&skill.id, value)
-                    .map_err(|error| error.to_string())?;
-                flowy_skills::load_installed(root)
-                    .map(|catalog| catalog.skills)
-                    .map_err(|error| error.to_string())
-            },
-            cx,
-        );
-    }
-
-    fn uninstall_skill(&mut self, index: usize, cx: &mut Context<'_, Self>) {
-        let Some(skill) = self.skills.installed.get(index).cloned() else {
-            return;
-        };
-        if skill.origin == flowy_skills::InstallOrigin::Official {
-            return;
-        }
-        self.run_skill_catalog_job(
-            move |root| {
-                let store = flowy_skills::Store::open(
-                    &root.join("skills").join("market.sqlite3"),
-                )
-                .map_err(|error| error.to_string())?;
-                let record = store
-                    .installed()
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .find(|record| record.id == skill.id)
-                    .ok_or_else(|| {
-                        "installed skill record is missing".to_owned()
-                    })?;
-                let installer = flowy_skills::SkillInstaller::network(root)
-                    .map_err(|error| error.to_string())?;
-                installer
-                    .remove(&record)
-                    .map_err(|error| error.to_string())?;
-                flowy_skills::load_installed(root)
-                    .map(|catalog| catalog.skills)
-                    .map_err(|error| error.to_string())
-            },
-            cx,
-        );
-    }
-
-    fn check_skill_updates(&mut self, cx: &mut Context<'_, Self>) {
-        self.run_skill_catalog_job(
-            move |root| {
-                let store = flowy_skills::Store::open(
-                    &root.join("skills").join("market.sqlite3"),
-                )
-                .map_err(|error| error.to_string())?;
-                let installer = flowy_skills::SkillInstaller::network(root)
-                    .map_err(|error| error.to_string())?;
-                for record in
-                    store.installed().map_err(|error| error.to_string())?
-                {
-                    if record.origin == flowy_skills::InstallOrigin::Official {
-                        continue;
-                    }
-                    if let Ok(check) = installer.check_update(&record) {
-                        let latest = check
-                            .available
-                            .then(|| check.latest.version.clone());
-                        let _ = store.set_latest_version(
-                            &record.id,
-                            latest.as_deref(),
-                            unix_now(),
-                        );
-                    }
-                }
-                flowy_skills::load_installed(root)
-                    .map(|catalog| catalog.skills)
-                    .map_err(|error| error.to_string())
-            },
-            cx,
-        );
-    }
-
-    fn install_shelf_skill(
-        &mut self,
-        owner: &str,
-        slug: &str,
-        version: &str,
-        saved_key: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.skills.install.as_ref().is_some_and(|install| {
-            !matches!(install.phase, InstallPhase::Failed(_))
-        }) {
-            return;
-        }
-        let Ok(id) = flowy_skills::parse_skill_id(owner, slug, version) else {
-            return;
-        };
-        let root = self.store.root().to_path_buf();
-        let key = saved_key.to_owned();
-        let notes = Arc::new(Mutex::new(VecDeque::new()));
-        let writer = Arc::clone(&notes);
-        let thread_notes = Arc::clone(&notes);
-        self.skills.install = Some(InstallUi {
-            key: key.clone(),
-            phase: InstallPhase::Verifying,
-        });
-        std::thread::spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let previous = flowy_skills::load_installed(&root)
-                        .ok()
-                        .and_then(|catalog| {
-                            catalog.skills.into_iter().find(|skill| {
-                                skill.id.owner_handle == id.owner_handle
-                                    && skill.id.slug == id.slug
-                            })
-                        });
-                    let installer =
-                        flowy_skills::SkillInstaller::network(root.clone())
-                            .map_err(|error| error.to_string())?;
-                    let mut progress = |stage| {
-                        if let Ok(mut notes) = writer.lock() {
-                            notes.push_back(InstallNote::Progress(stage));
-                        }
-                    };
-                    let outcome = installer
-                        .install(&id, &mut progress)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(previous) = previous
-                        && previous.id.version != outcome.record.id.version
-                    {
-                        let store = flowy_skills::Store::open(
-                            &root.join("skills").join("market.sqlite3"),
-                        )
-                        .map_err(|error| error.to_string())?;
-                        store
-                            .set_auto_invoke(
-                                &outcome.record.id,
-                                previous.auto_invoke,
-                            )
-                            .map_err(|error| error.to_string())?;
-                        store
-                            .remove_install(&previous.id)
-                            .map_err(|error| error.to_string())?;
-                        let old_root =
-                            flowy_skills::install_dir(&root, &previous.id);
-                        if old_root.exists() {
-                            std::fs::remove_dir_all(old_root)
-                                .map_err(|error| error.to_string())?;
-                        }
-                    }
-                    flowy_skills::load_installed(&root)
-                        .map(|catalog| catalog.skills)
-                        .map_err(|error| error.to_string())
-                }))
-                .unwrap_or_else(|_| Err("skill installer panicked".to_owned()));
-            if let Ok(mut notes) = thread_notes.lock() {
-                notes.push_back(InstallNote::Done(result));
-            }
-        });
-        self.skills.install_task = Some(cx.spawn(async move |weak, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(40))
-                    .await;
-                let batch = notes
-                    .lock()
-                    .ok()
-                    .map(|mut notes| notes.drain(..).collect::<Vec<_>>());
-                let Some(batch) = batch else {
-                    continue;
-                };
-                if batch.is_empty() {
-                    continue;
-                }
-                let mut finished = false;
-                let _ = weak.update(cx, |app, cx| {
-                    for note in batch {
-                        match note {
-                            InstallNote::Progress(stage) => {
-                                if let Some(install) = &mut app.skills.install {
-                                    install.phase = match stage {
-                                        flowy_skills::InstallProgress::Verifying => {
-                                            InstallPhase::Verifying
-                                        }
-                                        flowy_skills::InstallProgress::Downloading => {
-                                            InstallPhase::Downloading
-                                        }
-                                        flowy_skills::InstallProgress::Validating
-                                        | flowy_skills::InstallProgress::Scanning
-                                        | flowy_skills::InstallProgress::Committing => {
-                                            InstallPhase::Installing
-                                        }
-                                    };
-                                }
-                            }
-                            InstallNote::Done(result) => {
-                                finished = true;
-                                match result {
-                                    Ok(installed) => {
-                                        app.skills.installed.clone_from(&installed);
-                                        app.skills.install = None;
-                                        app.prefs.skills.retain(|item| item != &key);
-                                        let _ = app.prefs.save_checked(app.store.root());
-                                        app.studio.update(cx, |panel, cx| {
-                                            panel.set_skill_catalog(installed, cx);
-                                        });
-                                    }
-                                    Err(error) => {
-                                        app.skills.install = Some(InstallUi {
-                                            key: key.clone(),
-                                            phase: InstallPhase::Failed(error),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    cx.notify();
-                });
-                if finished {
-                    break;
-                }
-            }
-        }));
-        cx.notify();
     }
 
     fn try_installed_skill(
@@ -2845,7 +2545,7 @@ fn present_shelf(
     }
 }
 
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

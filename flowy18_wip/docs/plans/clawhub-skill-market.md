@@ -800,3 +800,14 @@ Expected: 测试通过，clippy 无 warning。不要同时开另一个 cargo 进
 - ClawHub 下载包允许根目录 `skill-card.md`、`_meta.json` 作为包元数据，其余未列入验签回执的文件仍拒绝。
 - 自动发现技能与显式 `/skill:` 技能进入本轮 shell scope；`read_file`/`grep` 访问技能目录也会将技能标记为 active，脚本未授权时阻断 shell。
 - 官方技能新记录默认允许脚本；社区技能仍默认 `auto_invoke=false`、`scripts_enabled=false`，用户显式开关在 seed 时保留。
+## 2026-11-25 · P2 收口
+
+- 官方 seed 新建记录使用 manifest 的 `auto_invoke`，已有记录继续保留用户开关。
+- 安装器实际驱动 `Resolve → Verify → Fetch → Hash → Scan → Stage → Commit` 状态机。
+- 社区更新使用 `Store::replace_install` 在单个事务内切换版本并继承 `auto_invoke`，旧目录删除改为 best-effort。
+- 脚本确认弹窗与自动发现/脚本/卸载操作改用 `SkillId` 定位，不再依赖列表下标。
+- 技能后台任务与轮询统一到 `skills_jobs`，安装、目录刷新和更新检查复用同一套队列轮询。
+## 2026-11-25 · P3 收口
+
+- 第 19 行的 “verify 只在用户安装时调用一次” 按单次安装流程解释；用户主动检查更新时允许对每个已安装技能调用一次 verify，这是当前唯一的版本查询接口。
+- 新增技能安装、脚本授权、我的技能与 `/skill:` 文案已补齐到全部 23 个 locale，保留 `{name}`、`{command}`、`{product}` 占位符。

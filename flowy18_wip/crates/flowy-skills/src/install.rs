@@ -123,11 +123,16 @@ impl InstallRecord {
     }
 
     #[must_use]
-    pub fn official(id: SkillId, title: String, summary: String) -> Self {
+    pub fn official(
+        id: SkillId,
+        title: String,
+        summary: String,
+        auto_invoke: bool,
+    ) -> Self {
         Self {
             id,
             step: InstallStep::Commit,
-            auto_invoke: true,
+            auto_invoke,
             scripts_enabled: true,
             content_hash: String::new(),
             origin: InstallOrigin::Official,
@@ -464,10 +469,32 @@ impl<T: crate::CatalogTransport + InstallTransport> SkillInstaller<T> {
         requested: &SkillId,
         progress: &mut dyn FnMut(InstallProgress),
     ) -> Result<InstallOutcome, InstallError> {
+        self.install_with_previous(requested, None, progress)
+    }
+
+    pub fn install_update(
+        &self,
+        requested: &SkillId,
+        previous: &InstallRecord,
+        progress: &mut dyn FnMut(InstallProgress),
+    ) -> Result<InstallOutcome, InstallError> {
+        self.install_with_previous(requested, Some(previous), progress)
+    }
+
+    fn install_with_previous(
+        &self,
+        requested: &SkillId,
+        previous: Option<&InstallRecord>,
+        progress: &mut dyn FnMut(InstallProgress),
+    ) -> Result<InstallOutcome, InstallError> {
         progress(InstallProgress::Verifying);
+        let mut record = begin_community_install(requested);
         let verify = self.fetch_verify(requested)?;
+        record.id = verify.id.clone();
+        record = advance(&record, InstallEvent::Verified { ok: true })?;
         progress(InstallProgress::Downloading);
         let downloaded = self.fetch_package(&verify.id)?;
+        record = advance(&record, InstallEvent::Fetched)?;
         progress(InstallProgress::Validating);
         let staging = self.staging_path();
         let install_root = install_dir(&self.root, &verify.id);
@@ -503,18 +530,26 @@ impl<T: crate::CatalogTransport + InstallTransport> SkillInstaller<T> {
                 handoff.content_hash.clone()
             }
         };
+        record = advance(
+            &record,
+            InstallEvent::Hashed {
+                expected: content_hash.clone(),
+                actual: content_hash.clone(),
+            },
+        )?;
         let guard = StagingGuard(Some(staging.clone()));
         verify_tree(&staging, &verify.files)?;
         progress(InstallProgress::Scanning);
         scan_tree(&staging)?;
+        record = advance(&record, InstallEvent::Scanned)?;
+        record = advance(&record, InstallEvent::Staged)?;
         progress(InstallProgress::Committing);
         if let Some(parent) = install_root.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::rename(&staging, &install_root)?;
         guard.disarm();
-        let mut record = InstallRecord::community(verify.id.clone());
-        record.step = InstallStep::Commit;
+        record = advance(&record, InstallEvent::Committed)?;
         record.auto_invoke = false;
         record.scripts_enabled = false;
         record.content_hash = content_hash;
@@ -524,7 +559,15 @@ impl<T: crate::CatalogTransport + InstallTransport> SkillInstaller<T> {
         record.latest_version = Some(record.id.version.clone());
         record.checked_at = Some(unix_now());
         let store = Store::open(&self.db_path())?;
-        if let Err(error) = store.upsert_install(&record) {
+        let commit = if let Some(previous) =
+            previous.filter(|previous| previous.id != record.id)
+        {
+            record.auto_invoke = previous.auto_invoke;
+            store.replace_install(&previous.id, &record)
+        } else {
+            store.upsert_install(&record)
+        };
+        if let Err(error) = commit {
             let _ = fs::remove_dir_all(&install_root);
             return Err(error.into());
         }
@@ -1023,6 +1066,60 @@ mod tests {
             *sleeps.lock().unwrap(),
             vec![Duration::from_millis(2000), Duration::from_millis(1000)]
         );
+    }
+
+    #[test]
+    fn community_install_state_machine_advances_in_order() {
+        let id = parse_skill_id("owner", "demo", "1.0.0").unwrap();
+        let mut record = begin_community_install(&id);
+        record = advance(&record, InstallEvent::Verified { ok: true }).unwrap();
+        record = advance(&record, InstallEvent::Fetched).unwrap();
+        record = advance(
+            &record,
+            InstallEvent::Hashed {
+                expected: "abc".into(),
+                actual: "abc".into(),
+            },
+        )
+        .unwrap();
+        record = advance(&record, InstallEvent::Scanned).unwrap();
+        record = advance(&record, InstallEvent::Staged).unwrap();
+        record = advance(&record, InstallEvent::Committed).unwrap();
+        assert_eq!(record.step, InstallStep::Commit);
+        assert!(matches!(
+            advance(&record, InstallEvent::Committed),
+            Err(InstallError::Unexpected { .. })
+        ));
+    }
+
+    #[test]
+    fn install_update_swaps_versions_and_preserves_auto_invoke() {
+        let dir = TestDir::new("update");
+        let package = package();
+        let transport = FakeTransport {
+            verify: verify_body("2.0.0", &package),
+            package,
+        };
+        let installer = SkillInstaller::new(dir.0.clone(), transport);
+        let store =
+            Store::open(&dir.0.join("skills").join("market.sqlite3")).unwrap();
+        let mut previous = InstallRecord::community(
+            parse_skill_id("owner", "demo", "1.0.0").unwrap(),
+        );
+        previous.step = InstallStep::Commit;
+        previous.auto_invoke = true;
+        previous.installed_at = 1000;
+        store.upsert_install(&previous).unwrap();
+        let requested = parse_skill_id("owner", "demo", UNVERSIONED).unwrap();
+        let outcome = installer
+            .install_update(&requested, &previous, &mut |_stage| {})
+            .unwrap();
+        assert_eq!(outcome.record.id.version, "2.0.0");
+        assert!(outcome.record.auto_invoke);
+        let installed = store.installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].id.version, "2.0.0");
+        assert!(installed[0].auto_invoke);
     }
 
     #[test]

@@ -53,9 +53,16 @@ pub fn bundled_markdown(slug: &str) -> Option<&'static str> {
 /// Materialize bundled official skills and keep their install records current.
 /// User-controlled toggles survive application upgrades.
 pub fn seed_official(root: &Path) -> Result<Vec<InstallRecord>, OfficialError> {
+    seed_official_catalog(root, bundled_official()?)
+}
+
+fn seed_official_catalog(
+    root: &Path,
+    skills: Vec<OfficialSkill>,
+) -> Result<Vec<InstallRecord>, OfficialError> {
     let store = Store::open(&root.join("skills").join("market.sqlite3"))?;
     let mut records = Vec::new();
-    for skill in bundled_official()? {
+    for skill in skills {
         let markdown = bundled_markdown(&skill.id.slug).ok_or_else(|| {
             OfficialError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -82,6 +89,7 @@ pub fn seed_official(root: &Path) -> Result<Vec<InstallRecord>, OfficialError> {
                 skill.id.clone(),
                 skill.title.clone(),
                 skill.summary.clone(),
+                skill.auto_invoke,
             )
         });
         record.id = skill.id;
@@ -182,6 +190,21 @@ mod tests {
         ]
         "#;
         assert!(parse_official(body).is_err());
+    }
+
+    #[test]
+    fn seed_uses_manifest_auto_invoke_for_new_records() {
+        let dir = TestDir::new("seed-auto-off");
+        let mut excel = bundled_official()
+            .unwrap()
+            .into_iter()
+            .find(|skill| skill.id.slug == "excel")
+            .unwrap();
+        excel.auto_invoke = false;
+        let records = seed_official_catalog(&dir.0, vec![excel]).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].auto_invoke);
+        assert!(records[0].scripts_enabled);
     }
 
     #[test]

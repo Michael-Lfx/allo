@@ -90,6 +90,7 @@ pub(super) struct SkillsState {
     pub(super) installed: Vec<flowy_agent::InstalledSkill>,
     pub(super) install: Option<skills::InstallUi>,
     pub(super) install_task: Option<Task<()>>,
+    pub(super) script_confirm: Option<flowy_skills::SkillId>,
 }
 
 pub struct SettingsState {
@@ -159,7 +160,7 @@ pub(super) enum ActiveDialog {
     Skill(&'static str),
     SkillUnlock(&'static str),
     SkillDocs(&'static str),
-    SkillScriptConfirm(usize),
+    SkillScriptConfirm,
     RemoteSkill,
     Invite,
     ProjectCreate,
@@ -183,7 +184,7 @@ impl ActiveDialog {
             Self::Skill(_) => Some("skill"),
             Self::SkillUnlock(_) => Some("skill-unlock"),
             Self::SkillDocs(_) => Some("skill-docs"),
-            Self::SkillScriptConfirm(_) => Some("skill-script-confirm"),
+            Self::SkillScriptConfirm => Some("skill-script-confirm"),
             Self::RemoteSkill => Some("skill-shelf"),
             Self::Invite => Some("invite"),
             Self::ProjectCreate => Some("project-create"),

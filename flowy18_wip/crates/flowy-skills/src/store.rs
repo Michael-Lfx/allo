@@ -524,7 +524,18 @@ impl Store {
             "INSERT INTO install \
              (owner_handle, slug, version, step, auto_invoke, scripts_enabled, content_hash, \
               origin, display_name, summary, installed_at, latest_version, checked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT(owner_handle, slug, version) DO UPDATE SET \
+               step = excluded.step, \
+               auto_invoke = excluded.auto_invoke, \
+               scripts_enabled = excluded.scripts_enabled, \
+               content_hash = excluded.content_hash, \
+               origin = excluded.origin, \
+               display_name = excluded.display_name, \
+               summary = excluded.summary, \
+               installed_at = excluded.installed_at, \
+               latest_version = excluded.latest_version, \
+               checked_at = excluded.checked_at",
             params![
                 next.id.owner_handle,
                 next.id.slug,
@@ -904,6 +915,27 @@ mod tests {
         store.remove_install(&record.id).unwrap();
         assert_eq!(store.installed().unwrap(), Vec::new());
     }
+    #[test]
+    fn replace_install_swaps_versions_without_leaving_duplicates() {
+        let db = TestDb::new("install-replace");
+        let store = Store::open(&db.path).unwrap();
+        let mut old = InstallRecord::community(
+            parse_skill_id("awspace", "pdf", "1.2.3").unwrap(),
+        );
+        old.step = InstallStep::Commit;
+        old.installed_at = 1000;
+        store.upsert_install(&old).unwrap();
+        let mut next = InstallRecord::community(
+            parse_skill_id("awspace", "pdf", "1.3.0").unwrap(),
+        );
+        next.step = InstallStep::Commit;
+        next.auto_invoke = old.auto_invoke;
+        next.installed_at = 2000;
+        store.upsert_install(&next).unwrap();
+        store.replace_install(&old.id, &next).unwrap();
+        assert_eq!(store.installed().unwrap(), vec![next]);
+    }
+
     #[test]
     fn categories_are_fresh_only_inside_ttl_and_keep_order() {
         let db = TestDb::new("categories");
