@@ -753,6 +753,7 @@
   "chat.publish.context": "Deze beurt kan geen bestanden publiceren.",
   "chat.publish.invalid_args": "Het verzoek om het bestand te publiceren is ongeldig.",
   "chat.publish.failed": "Het bestand kon niet worden gepubliceerd.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Bestand voorbereid. Het wordt geleverd zodra de beurt is voltooid.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

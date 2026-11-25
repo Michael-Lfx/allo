@@ -1567,9 +1567,18 @@ impl AgentHandle {
                 );
                 "notice.storage_error"
             })?;
+            let delivery = crate::delivery::DeliveryStore::new(
+                state.root.join("delivery"),
+            );
             run_config
                 .registry
-                .register(crate::publish_tool::definition(store.clone()));
+                .register(crate::verify::definition(Some(delivery.clone())));
+            run_config
+                .registry
+                .register(crate::publish_tool::definition(
+                    store.clone(),
+                    Some(delivery),
+                ));
             run_config.delivery_committer = Some(Arc::new(store));
             run_config.system = format!(
                 "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file with a path inside that directory, then explicitly call publish_file with a path relative to the output directory. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
@@ -2848,7 +2857,7 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
-    registry.register(crate::verify::definition());
+    registry.register(crate::verify::definition(None));
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.

@@ -5,14 +5,17 @@
 //! (invalid) and value mismatch. A report is aggregated by issue code; it is a
 //! result, not a tool error, so `ok=false` is visible to the caller.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::ToolCallArgs;
 use flowy_agent_core::ToolExecutionResult;
 use flowy_agent_core::tools::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::delivery::{self, DeliveryStore};
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -153,7 +156,30 @@ pub fn verify_deck_file(
     ))
 }
 
-fn execute(arguments: Value) -> ToolExecutionResult {
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn resolve_path(cwd: Option<&str>, raw: &str) -> PathBuf {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match cwd {
+        Some(cwd) => Path::new(cwd).join(path),
+        None => path.to_path_buf(),
+    }
+}
+
+fn execute(
+    arguments: Value,
+    cwd: Option<&str>,
+    store: Option<&DeliveryStore>,
+) -> ToolExecutionResult {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Args {
@@ -167,8 +193,28 @@ fn execute(arguments: Value) -> ToolExecutionResult {
             "expected path, slides and anchors",
         );
     };
-    match verify_deck_file(Path::new(&args.path), args.slides, &args.anchors) {
+    let path = resolve_path(cwd, &args.path);
+    match verify_deck_file(&path, args.slides, &args.anchors) {
         Ok(report) => {
+            if let Some(store) = store {
+                let issues = report
+                    .issues
+                    .iter()
+                    .map(|issue| delivery::Issue {
+                        code: issue.code.to_owned(),
+                        field: issue.field.clone(),
+                    })
+                    .collect();
+                if let Err(error) = store.record_report(&path, issues, now_ms())
+                {
+                    tracing::warn!(
+                        target: "flowy.delivery",
+                        %error,
+                        path = %path.display(),
+                        "could not persist the verification report"
+                    );
+                }
+            }
             let value = report.to_value();
             let text = if report.ok {
                 "verification passed".to_owned()
@@ -192,7 +238,7 @@ fn execute(arguments: Value) -> ToolExecutionResult {
     }
 }
 
-pub fn definition() -> Arc<ToolDefinition> {
+pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_deck",
         "Verify a generated deck before delivery. Checks the slide count and each named shape against the expected text. Returns ok plus ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH issues; a failed report is not a tool error.",
@@ -217,8 +263,11 @@ pub fn definition() -> Arc<ToolDefinition> {
             "required": ["path", "slides", "anchors"],
             "additionalProperties": false
         }),
-        |args: ToolCallArgs, _context: flowy_agent_core::ToolRunContext| {
-            Box::pin(async move { execute(args.arguments) })
+        move |args: ToolCallArgs, context: flowy_agent_core::ToolRunContext| {
+            let store = store.clone();
+            Box::pin(async move {
+                execute(args.arguments, context.cwd.as_deref(), store.as_ref())
+            })
         },
     ))
 }
@@ -315,6 +364,47 @@ mod tests {
         let report = verify_deck_file(&path, 2, &wrong).unwrap();
         assert!(!report.ok);
         assert_eq!(report.issues[0].code, VALUE_MISMATCH);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_verified_deck_is_recorded_for_the_delivery_gate() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-verify-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let deck = root.join("deck.pptx");
+        crate::pptx::write_deck(&deck, "T", &["one".to_owned()]).unwrap();
+        let store = DeliveryStore::new(root.join("delivery"));
+        let tool = definition(Some(store.clone()));
+        let context = flowy_agent_core::ToolRunContext {
+            signal: flowy_agent_core::CancelToken::new(),
+            agent_id: None,
+            cwd: Some(root.display().to_string()),
+            todos: None,
+            submission_id: None,
+            session_origin: flowy_agent_core::SessionOrigin::Home,
+            output_root: None,
+            artifact_delivery_available: false,
+        };
+        let args = flowy_agent_core::ToolCallArgs {
+            call_id: "call-1".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "one"},
+                ],
+            }),
+        };
+        let result = (tool.execute)(args, context).await;
+        assert!(
+            matches!(result, ToolExecutionResult::Success { .. }),
+            "verification must succeed: {result:?}"
+        );
+        assert!(store.check(&deck).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

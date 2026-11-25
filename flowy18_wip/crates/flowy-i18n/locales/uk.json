@@ -753,6 +753,7 @@
   "chat.publish.context": "Цей хід не може публікувати файли.",
   "chat.publish.invalid_args": "Запит на публікацію файлу недійсний.",
   "chat.publish.failed": "Не вдалося опублікувати файл.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Файл підготовлено. Його буде доставлено після завершення ходу.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

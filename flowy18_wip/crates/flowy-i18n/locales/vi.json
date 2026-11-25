@@ -753,6 +753,7 @@
   "chat.publish.context": "Lượt này không thể xuất bản tệp.",
   "chat.publish.invalid_args": "Yêu cầu xuất bản tệp không hợp lệ.",
   "chat.publish.failed": "Không thể xuất bản tệp.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Tệp đã được chuẩn bị. Tệp sẽ được giao khi lượt này hoàn tất.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

@@ -10,6 +10,7 @@ mod artifact_store;
 mod catalog;
 mod config;
 mod conversation_artifacts;
+pub mod delivery;
 mod flex;
 mod handle;
 mod index;

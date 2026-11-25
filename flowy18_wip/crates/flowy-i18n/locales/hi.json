@@ -753,6 +753,7 @@
   "chat.publish.context": "यह टर्न फ़ाइलें प्रकाशित नहीं कर सकता।",
   "chat.publish.invalid_args": "फ़ाइल प्रकाशन अनुरोध अमान्य है।",
   "chat.publish.failed": "फ़ाइल प्रकाशित नहीं की जा सकी।",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "फ़ाइल तैयार है। टर्न पूरा होने पर इसे डिलीवर किया जाएगा।",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

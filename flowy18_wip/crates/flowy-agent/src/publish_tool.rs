@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::artifact_store::{ArtifactStore, PrepareArtifact};
+use crate::delivery::DeliveryStore;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +42,10 @@ fn publish_error(
     }
 }
 
-pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
+pub fn definition(
+    store: ArtifactStore,
+    gate: Option<DeliveryStore>,
+) -> Arc<ToolDefinition> {
     Arc::new(
         ToolDefinition::new(
             "publish_file",
@@ -58,6 +62,7 @@ pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
             }),
             move |args: ToolCallArgs, context: ToolRunContext| {
                 let store = store.clone();
+                let gate = gate.clone();
                 Box::pin(async move {
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
@@ -84,6 +89,30 @@ pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
                             return publish_error("INVALID_ARGS", "chat.publish.invalid_args", "The file publication request was invalid.");
                         }
                     };
+                    if let Some(gate) = &gate
+                        && parsed.path.to_ascii_lowercase().ends_with(".pptx")
+                    {
+                        let artifact = output_root.join(&parsed.path);
+                        match gate.check(&artifact) {
+                            Ok(None) => {}
+                            Ok(Some(reason)) => {
+                                tracing::warn!(
+                                    code = reason.code(),
+                                    path = %artifact.display(),
+                                    "publish_file blocked by the delivery gate"
+                                );
+                                return publish_error(
+                                    reason.code(),
+                                    "chat.publish.not_verified",
+                                    "This file has not passed verification.",
+                                );
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "publish_file could not check the delivery gate");
+                                return publish_error("PUBLISH_FAILED", "chat.publish.failed", "Couldn't publish the file.");
+                            }
+                        }
+                    }
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
                     }
@@ -155,7 +184,53 @@ pub fn definition(store: ArtifactStore) -> Arc<ToolDefinition> {
 #[cfg(test)]
 mod tests {
     use super::publish_error;
-    use flowy_agent_core::{ContentBlock, ToolExecutionResult};
+    use super::{DeliveryStore, definition};
+    use flowy_agent_core::{
+        CancelToken, ContentBlock, SessionOrigin, ToolCallArgs,
+        ToolExecutionResult, ToolRunContext,
+    };
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn a_pptx_without_a_report_is_refused_at_the_publish_entry() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let tool = definition(store, Some(gate));
+        let submission_id = format!("submission-{:032x}", 1);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(output_root.join("deck.pptx"), b"PK deck").unwrap();
+        let context = ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: Some("session-1".to_owned()),
+            cwd: Some(root.display().to_string()),
+            todos: None,
+            submission_id: Some(submission_id),
+            session_origin: SessionOrigin::Home,
+            output_root: Some(output_root),
+            artifact_delivery_available: true,
+        };
+        let args = ToolCallArgs {
+            call_id: "call-1".to_owned(),
+            name: "publish_file".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "delivery_key": "deck",
+            }),
+        };
+        let result = (tool.execute)(args, context).await;
+        let ToolExecutionResult::Error { code, .. } = result else {
+            panic!("an unverified deck must be refused, got {result:?}");
+        };
+        assert_eq!(code, "DELIVERY_NOT_VERIFIED");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn publish_failures_keep_model_copy_and_a_ui_localization_key() {

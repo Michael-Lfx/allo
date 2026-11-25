@@ -753,6 +753,7 @@
   "chat.publish.context": "当前轮次无法交付文件。",
   "chat.publish.invalid_args": "文件交付请求无效。",
   "chat.publish.failed": "无法保存交付文件。",
+  "chat.publish.not_verified": "这个文件还没通过核验",
   "chat.publish.staged": "文件已暂存，本轮成功完成后将交付。",
   "chat.delete": "删除对话",
   "chat.delete_confirm.title": "确定删除此对话？",

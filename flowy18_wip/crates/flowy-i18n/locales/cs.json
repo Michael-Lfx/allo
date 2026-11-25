@@ -753,6 +753,7 @@
   "chat.publish.context": "Toto kolo nemůže publikovat soubory.",
   "chat.publish.invalid_args": "Požadavek na publikování souboru je neplatný.",
   "chat.publish.failed": "Soubor se nepodařilo publikovat.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Soubor je připraven. Bude doručen po dokončení kola.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

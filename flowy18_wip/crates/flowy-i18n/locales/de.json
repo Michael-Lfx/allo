@@ -753,6 +753,7 @@
   "chat.publish.context": "Dieser Durchlauf kann keine Dateien veröffentlichen.",
   "chat.publish.invalid_args": "Die Dateiveröffentlichungsanfrage ist ungültig.",
   "chat.publish.failed": "Die Datei konnte nicht veröffentlicht werden.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Datei vorbereitet. Sie wird nach Abschluss des Durchlaufs geliefert.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

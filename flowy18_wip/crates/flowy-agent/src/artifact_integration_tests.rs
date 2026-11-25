@@ -412,6 +412,11 @@ fn scripted_host_delivers_real_csv_and_document_fixtures_through_publish_file()
     assert!(pptx.starts_with(b"PK\x03\x04"));
     fs::write(output.join("sample.pdf"), &pdf).unwrap();
     fs::write(output.join("sample.pptx"), &pptx).unwrap();
+    // The deck enters the delivery gate through its verification report; the
+    // scripted host does not generate a deck, so the report is fixed setup.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    gate.record_report(&output.join("sample.pptx"), Vec::new(), 1)
+        .unwrap();
 
     handle.submit_chat(SUBMISSION, "Create the sales CSV and publish it with the declared PDF and PPTX fixtures.").unwrap();
     wait_for_completion(&handle, &provider, &scratch.0, &session);

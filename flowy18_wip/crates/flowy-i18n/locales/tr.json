@@ -753,6 +753,7 @@
   "chat.publish.context": "Bu tur dosya yayınlayamaz.",
   "chat.publish.invalid_args": "Dosya yayınlama isteği geçersiz.",
   "chat.publish.failed": "Dosya yayınlanamadı.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Dosya hazırlandı. Tur tamamlandığında teslim edilecek.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

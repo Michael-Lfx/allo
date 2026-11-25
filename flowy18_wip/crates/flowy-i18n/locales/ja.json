@@ -753,6 +753,7 @@
   "chat.publish.context": "このターンではファイルを配信できません。",
   "chat.publish.invalid_args": "ファイル配信リクエストが無効です。",
   "chat.publish.failed": "ファイルを配信できませんでした。",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "ファイルをステージしました。ターン完了後に配信されます。",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

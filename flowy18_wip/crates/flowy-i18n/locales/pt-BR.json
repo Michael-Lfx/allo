@@ -753,6 +753,7 @@
   "chat.publish.context": "Este turno não pode publicar arquivos.",
   "chat.publish.invalid_args": "A solicitação de publicação do arquivo é inválida.",
   "chat.publish.failed": "Não foi possível publicar o arquivo.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Arquivo preparado. Ele será entregue quando o turno terminar.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

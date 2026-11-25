@@ -753,6 +753,7 @@
   "chat.publish.context": "이번 턴에서는 파일을 전달할 수 없습니다.",
   "chat.publish.invalid_args": "파일 전달 요청이 올바르지 않습니다.",
   "chat.publish.failed": "파일을 전달하지 못했습니다.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "파일이 준비되었습니다. 턴이 완료되면 전달됩니다.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

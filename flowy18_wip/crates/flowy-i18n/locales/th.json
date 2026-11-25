@@ -753,6 +753,7 @@
   "chat.publish.context": "รอบนี้ไม่สามารถเผยแพร่ไฟล์ได้",
   "chat.publish.invalid_args": "คำขอเผยแพร่ไฟล์ไม่ถูกต้อง",
   "chat.publish.failed": "เผยแพร่ไฟล์ไม่สำเร็จ",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "เตรียมไฟล์แล้ว จะส่งมอบเมื่อรอบนี้เสร็จสมบูรณ์",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

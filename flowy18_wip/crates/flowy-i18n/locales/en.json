@@ -753,6 +753,7 @@
   "chat.publish.context": "This turn cannot publish files.",
   "chat.publish.invalid_args": "The file publication request was invalid.",
   "chat.publish.failed": "Couldn't publish the file.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "File staged. It will be delivered when the turn completes.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

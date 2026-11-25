@@ -753,6 +753,7 @@
   "chat.publish.context": "لا يمكن لهذه الجولة نشر الملفات.",
   "chat.publish.invalid_args": "طلب نشر الملف غير صالح.",
   "chat.publish.failed": "تعذّر نشر الملف.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "تم تجهيز الملف. سيُسلّم عند اكتمال الجولة.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

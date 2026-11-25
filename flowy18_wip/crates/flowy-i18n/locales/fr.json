@@ -753,6 +753,7 @@
   "chat.publish.context": "Ce tour ne peut pas publier de fichiers.",
   "chat.publish.invalid_args": "La demande de publication du fichier est invalide.",
   "chat.publish.failed": "Impossible de publier le fichier.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "Fichier préparé. Il sera livré à la fin du tour.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

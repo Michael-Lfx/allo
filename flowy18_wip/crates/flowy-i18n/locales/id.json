@@ -753,6 +753,7 @@
   "chat.publish.context": "Giliran ini tidak dapat menerbitkan file.",
   "chat.publish.invalid_args": "Permintaan publikasi file tidak valid.",
   "chat.publish.failed": "File gagal diterbitkan.",
+  "chat.publish.not_verified": "This file has not passed verification.",
   "chat.publish.staged": "File disiapkan. File akan dikirim setelah giliran selesai.",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",

@@ -753,6 +753,7 @@
   "chat.publish.context": "目前輪次無法交付檔案。",
   "chat.publish.invalid_args": "檔案交付請求無效。",
   "chat.publish.failed": "無法儲存交付檔案。",
+  "chat.publish.not_verified": "這個檔案還沒通過核驗",
   "chat.publish.staged": "檔案已暫存，本輪成功完成後將交付。",
   "chat.delete": "Delete conversation",
   "chat.delete_confirm.title": "Delete this conversation?",
