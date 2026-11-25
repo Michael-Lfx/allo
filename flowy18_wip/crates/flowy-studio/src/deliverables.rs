@@ -3,11 +3,10 @@
 //! Kept apart from `starter` and `feed` so the drawer can be replaced without
 //! touching the chat projection or the home stage.
 
-use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
-use flowy_agent::FileEntry;
+use flowy_agent::{ChatLine, FileEntry};
 use flowy_ui as theme;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, Image,
@@ -15,61 +14,6 @@ use gpui::{
 };
 
 use crate::panel::StudioPanel;
-
-/// Classifies a deliverable path into its icon and localized file-kind key.
-fn deliverable_kind(
-    path: &str,
-    theme: theme::ResolvedTheme,
-) -> (AnyElement, &'static str) {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(OsStr::to_str)
-        .map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some("pdf") => (
-            theme::icons::pdf_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_document",
-        ),
-        Some("doc" | "docx" | "odt" | "rtf" | "md" | "markdown" | "txt") => (
-            theme::icons::docx_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_document",
-        ),
-        Some("ppt" | "pptx" | "odp" | "key") => (
-            theme::icons::ppt_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_document",
-        ),
-        Some("xls" | "xlsx" | "ods" | "csv" | "tsv" | "parquet" | "sql") => (
-            theme::icons::xls_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_data",
-        ),
-        Some(
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif",
-        ) => (
-            theme::icons::jpg_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_image",
-        ),
-        Some(
-            "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
-            | "html" | "java" | "js" | "json" | "jsx" | "kt" | "kts" | "php"
-            | "ps1" | "py" | "rb" | "rs" | "scss" | "sh" | "swift" | "toml"
-            | "ts" | "tsx" | "xml" | "yaml" | "yml",
-        ) => (
-            theme::icons::code_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_code",
-        ),
-        Some("7z" | "bz2" | "gz" | "rar" | "tar" | "tgz" | "xz" | "zip") => (
-            theme::icons::zip_file().size(px(20.)).into_any_element(),
-            "deliverables.kind_file",
-        ),
-        _ => (
-            theme::icons::document_file()
-                .size(px(18.))
-                .text_color(theme.muted())
-                .into_any_element(),
-            "deliverables.kind_file",
-        ),
-    }
-}
 
 /// Truncated parent directory path, keeping the tail legible in a narrow drawer.
 fn short_parent_path(path: &str) -> String {
@@ -84,6 +28,32 @@ fn short_parent_path(path: &str) -> String {
     }
     let tail: String = parent.chars().skip(count - (MAX - 1)).collect();
     format!("\u{2026}{tail}")
+}
+
+fn status_pill(
+    bg: gpui::Rgba,
+    fg: gpui::Rgba,
+    label: String,
+    leading: Option<AnyElement>,
+) -> AnyElement {
+    div()
+        .flex_none()
+        .px(px(8.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(bg)
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .children(leading)
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(fg)
+                .child(label),
+        )
+        .into_any_element()
 }
 
 /// Reading more than this on the UI path would stall the frame.
@@ -266,81 +236,119 @@ impl StudioPanel {
         }
     }
 
+    fn session_steps(&self, session_id: &str) -> Vec<String> {
+        let lines = self.agent.session_lines(session_id);
+        let last_user = lines
+            .iter()
+            .rposition(|line| matches!(line, ChatLine::User { .. }))
+            .unwrap_or(0);
+        let mut steps = Vec::new();
+        for line in &lines[last_user..] {
+            match line {
+                ChatLine::ToolCall {
+                    name,
+                    target,
+                    running,
+                    ..
+                } => {
+                    let prefix =
+                        if *running { "\u{25cf} " } else { "\u{2713} " };
+                    let heading = if *running {
+                        self.tf("chat.tool_live", &[("name", name)])
+                    } else {
+                        name.clone()
+                    };
+                    if target.trim().is_empty() {
+                        steps.push(format!("{prefix}{heading}"));
+                    } else {
+                        let short: String = target.chars().take(48).collect();
+                        steps.push(format!(
+                            "{prefix}{heading} \u{00b7} {short}"
+                        ));
+                    }
+                }
+                ChatLine::Reasoning {
+                    duration_secs,
+                    live,
+                    ..
+                } => {
+                    steps.push(if *live {
+                        format!("\u{25cf} {}", self.t("chat.reasoning_live"))
+                    } else {
+                        let dur = self.format_duration_secs(*duration_secs);
+                        format!(
+                            "\u{2713} {}",
+                            self.tf("chat.thought_for", &[("duration", &dur)])
+                        )
+                    });
+                }
+                ChatLine::Verification {
+                    artifact_path,
+                    ok,
+                    override_used,
+                    ..
+                } => {
+                    let name = artifact_path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(artifact_path);
+                    let status = if *ok {
+                        self.t("verify.card.passed")
+                    } else if *override_used {
+                        self.t("verify.override.badge")
+                    } else {
+                        self.t("verify.card.failed")
+                    };
+                    steps.push(format!("{status} \u{00b7} {name}"));
+                }
+                ChatLine::ToolResult { text, is_error } if *is_error => {
+                    let short: String = text.chars().take(56).collect();
+                    steps.push(format!("\u{2717} {short}"));
+                }
+                _ => {}
+            }
+        }
+        steps
+    }
+
     fn work_inspector_view(
         &self,
         work: &InspectedWork,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let animate_pulse =
-            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
         match work {
             InspectedWork::Session { id, title } => {
                 let is_running = self.agent.busy_session_ids().contains(id);
                 let needs_attention = self.agent.session_needs_attention(id);
-                let steps = self.agent.session_step_trace(id);
+                let steps = self.session_steps(id);
                 let open_id = id.clone();
                 let stop_id = id.clone();
 
                 let status_badge = if is_running {
-                    let dot = div()
-                        .size(px(6.))
-                        .flex_none()
-                        .rounded_full()
-                        .bg(self.theme.status_active());
-                    let dot_el = if animate_pulse {
-                        dot.with_animation(
+                    status_pill(
+                        self.theme.status_active_bg(),
+                        self.theme.status_active(),
+                        self.t("chat.bg_task_running"),
+                        Some(crate::motion::live_dot(
                             "inspector-running-dot",
-                            Animation::new(crate::motion::PULSE)
-                                .repeat()
-                                .with_easing(crate::motion::pulsing_sine()),
-                            |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
-                        )
-                        .into_any_element()
-                    } else {
-                        dot.into_any_element()
-                    };
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(8.))
-                        .py(px(2.))
-                        .rounded_full()
-                        .bg(self.theme.status_active_bg())
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .child(dot_el)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(self.theme.status_active())
-                                .child(self.t("chat.bg_task_running")),
-                        )
-                        .into_any_element()
+                            self.theme.status_active(),
+                            self.theme.motion_policy(),
+                        )),
+                    )
                 } else if needs_attention {
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(8.))
-                        .py(px(2.))
-                        .rounded_full()
-                        .bg(self.theme.status_attention_bg())
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.status_attention())
-                        .child(self.t("dock.attention_badge"))
-                        .into_any_element()
+                    status_pill(
+                        self.theme.status_attention_bg(),
+                        self.theme.status_attention(),
+                        self.t("dock.attention_badge"),
+                        None,
+                    )
                 } else {
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(8.))
-                        .py(px(2.))
-                        .rounded_full()
-                        .bg(self.theme.status_verified_bg())
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.status_verified())
-                        .child(self.t("verify.card.passed"))
-                        .into_any_element()
+                    status_pill(
+                        self.theme.status_verified_bg(),
+                        self.theme.status_verified(),
+                        self.t("verify.card.passed"),
+                        None,
+                    )
                 };
 
                 let mut steps_col =
@@ -523,18 +531,12 @@ impl StudioPanel {
                                             .text_color(self.theme.muted())
                                             .child(owner),
                                     )
-                                    .child(
-                                        div()
-                                            .px(self.theme.space(8.))
-                                            .py(px(2.))
-                                            .rounded_full()
-                                            .bg(self.theme.soft())
-                                            .text_xs()
-                                            .text_color(self.theme.muted())
-                                            .child(
-                                                self.t("chat.bg_task_queued"),
-                                            ),
-                                    ),
+                                    .child(status_pill(
+                                        self.theme.soft(),
+                                        self.theme.muted(),
+                                        self.t("chat.bg_task_queued"),
+                                        None,
+                                    )),
                             )
                             .child(
                                 div()
@@ -613,8 +615,18 @@ impl StudioPanel {
                 .unwrap_or(&file.path)
                 .to_owned();
             let parent = short_parent_path(&file.path);
-            let (icon, kind_key) = deliverable_kind(&file.path, self.theme);
-            let kind_label = self.t(kind_key);
+            let file_kind = crate::file_kind::from_path(&file.path);
+            let icon = file_kind.map_or_else(
+                || {
+                    theme::icons::document_file()
+                        .size(px(18.))
+                        .text_color(self.theme.muted())
+                        .into_any_element()
+                },
+                |kind| kind.icon().size(px(20.)).into_any_element(),
+            );
+            let kind_label =
+                self.t(crate::file_kind::kind_label_key(&file.path));
             let path = file.path.clone();
             column = column.child(
                 theme::interactive(

@@ -238,20 +238,24 @@ fn summarize_turn_process(
     }
 }
 
-fn last_line_snippet(text: &str, max_chars: usize) -> Option<String> {
-    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+pub fn clip_words(text: &str, max_chars: usize) -> Option<String> {
     let collapsed: String =
-        line.split_whitespace().collect::<Vec<_>>().join(" ");
+        text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;
     }
     let mut chars = collapsed.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        Some(format!("{head}\u{2026}"))
+    Some(if chars.next().is_some() {
+        format!("{head}\u{2026}")
     } else {
-        Some(head)
-    }
+        head
+    })
+}
+
+pub fn last_line_snippet(text: &str, max_chars: usize) -> Option<String> {
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    clip_words(line, max_chars)
 }
 
 #[cfg(test)]

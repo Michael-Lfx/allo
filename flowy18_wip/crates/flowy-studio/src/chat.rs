@@ -57,27 +57,11 @@ impl crate::panel::StudioPanel {
                                 "chat.bg_tasks_pill",
                                 &[("count", &count.to_string())],
                             );
-                            let dot = div()
-                                .size(px(6.))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(self.theme.status_active());
-                            let dot_el = if scale > 0.0 {
-                                dot.with_animation(
-                                    "bg-pill-dot",
-                                    Animation::new(crate::motion::PULSE)
-                                        .repeat()
-                                        .with_easing(
-                                            crate::motion::pulsing_sine(),
-                                        ),
-                                    |dot, delta| {
-                                        dot.opacity(0.6f32.mul_add(-delta, 1.0))
-                                    },
-                                )
-                                .into_any_element()
-                            } else {
-                                dot.into_any_element()
-                            };
+                            let dot_el = crate::motion::live_dot(
+                                "bg-pill-dot",
+                                self.theme.status_active(),
+                                self.theme.motion_policy(),
+                            );
                             let text_el = div()
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)

@@ -677,73 +677,14 @@ impl AgentHandle {
             })
     }
 
-    /// Returns concise recent step descriptions for `session_id` so the
-    /// right-hand work inspector can preview background progress without
-    /// pulling raw logs into the main conversation stream.
+    /// Returns the projected lines of `session_id` so UI inspectors can
+    /// render localized progress without mixing presentation copy into the
+    /// agent layer.
     #[must_use]
-    pub fn session_step_trace(&self, session_id: &str) -> Vec<String> {
-        let Some(lines) = lock(&self.inner.state.live)
+    pub fn session_lines(&self, session_id: &str) -> Vec<ChatLine> {
+        lock(&self.inner.state.live)
             .get(session_id)
-            .map(|session| session.projection.lines.clone())
-        else {
-            return Vec::new();
-        };
-        let last_user = lines
-            .iter()
-            .rposition(|line| matches!(line, ChatLine::User { .. }))
-            .unwrap_or(0);
-        let mut steps = Vec::new();
-        for line in &lines[last_user..] {
-            match line {
-                ChatLine::ToolCall {
-                    name,
-                    target,
-                    running,
-                    ..
-                } => {
-                    let prefix =
-                        if *running { "\u{25cf} " } else { "\u{2713} " };
-                    if target.trim().is_empty() {
-                        steps.push(format!("{prefix}{name}"));
-                    } else {
-                        let short: String = target.chars().take(48).collect();
-                        steps.push(format!("{prefix}{name} \u{00b7} {short}"));
-                    }
-                }
-                ChatLine::Reasoning { live, .. } => {
-                    steps.push(if *live {
-                        "\u{25cf} Thinking\u{2026}".to_owned()
-                    } else {
-                        "\u{2713} Reasoning complete".to_owned()
-                    });
-                }
-                ChatLine::Verification {
-                    artifact_path,
-                    ok,
-                    override_used,
-                    ..
-                } => {
-                    let name = artifact_path
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(artifact_path);
-                    let mark = if *ok {
-                        "\u{2713}"
-                    } else if *override_used {
-                        "\u{26a0}"
-                    } else {
-                        "\u{2717}"
-                    };
-                    steps.push(format!("{mark} verify {name}"));
-                }
-                ChatLine::ToolResult { text, is_error } if *is_error => {
-                    let short: String = text.chars().take(56).collect();
-                    steps.push(format!("\u{2717} {short}"));
-                }
-                _ => {}
-            }
-        }
-        steps
+            .map_or_default(|session| session.projection.lines.clone())
     }
 
     /// Memory-only selection revision, including empty Home/Project contexts.

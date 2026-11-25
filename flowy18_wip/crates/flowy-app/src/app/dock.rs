@@ -397,33 +397,11 @@ impl FlowyApp {
         icon: DockIcon,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::interactive(id, label.clone(), theme)
-            .px(theme.space(8.))
-            .py(theme.space(4.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(if selected {
-                theme.dock_selected()
-            } else {
-                theme.dock()
-            })
-            .text_color(if selected { theme.ink() } else { theme.muted() })
-            .hover(|row| row.bg(theme.dock_hover()).text_color(theme.ink()))
-            .child(icon.render().size(px(14.)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(theme.caption_size())
-                    .child(label),
-            )
-            .on_click(cx.listener(move |app, _event, _window, cx| {
+        quiet_row(*theme, id, label, selected, icon).on_click(cx.listener(
+            move |app, _event, _window, cx| {
                 app.select_navigation(id, section, cx);
-            }))
+            },
+        ))
     }
 
     fn nav_item(
@@ -470,41 +448,12 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let selected =
             self.section == Section::More && self.persona.page == page;
-        let label = self.t(key);
-        theme::interactive(id, label.clone(), &self.theme)
-            .px(self.theme.space(8.))
-            .py(self.theme.space(4.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(if selected {
-                self.theme.dock_selected()
-            } else {
-                self.theme.dock()
-            })
-            .text_color(if selected {
-                self.theme.ink()
-            } else {
-                self.theme.muted()
-            })
-            .hover(|row| {
-                row.bg(self.theme.dock_hover()).text_color(self.theme.ink())
-            })
-            .child(icon.render().size(px(14.)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(self.theme.caption_size())
-                    .child(label),
-            )
-            .on_click(cx.listener(move |app, _event, _window, cx| {
+        quiet_row(self.theme, id, self.t(key), selected, icon).on_click(
+            cx.listener(move |app, _event, _window, cx| {
                 app.user_menu = false;
                 app.select_more_page(page, cx);
-            }))
+            }),
+        )
     }
 
     fn project_rows(
@@ -535,7 +484,7 @@ impl FlowyApp {
             theme::motion::FlipState::default()
         });
         flip.update(cx, |state, _| state.reconcile(&project_ids, 36.0));
-        let scale = theme::motion::travel_scale(self.theme.motion_policy());
+        let policy = self.theme.motion_policy();
         let mut rows = div().mt(px(2.)).flex().flex_col().gap(px(2.));
         for project in projects {
             let project_id = project.id.clone();
@@ -690,23 +639,15 @@ impl FlowyApp {
                             &project_id,
                         ))
                     });
-            let row_el = if let Some((epoch, offset_px)) = flip_offset
-                && scale > 0.0
-            {
-                row.with_animation(
-                    SharedString::from(format!(
-                        "project-flip-{project_id}-{epoch}"
-                    )),
-                    Animation::new(theme::motion::FLIP)
-                        .with_easing(theme::motion::flip_glide()),
-                    move |el, delta| {
-                        el.relative().top(px(offset_px * scale * (1.0 - delta)))
-                    },
-                )
-                .into_any_element()
-            } else {
-                row.into_any_element()
-            };
+            let row_el = theme::motion::flip_row(
+                SharedString::from(format!(
+                    "project-flip-{project_id}-{}",
+                    flip_offset.map_or(0, |(epoch, _)| epoch)
+                )),
+                flip_offset,
+                policy,
+                row,
+            );
             rows = rows.child(row_el);
 
             if expanded {
@@ -973,7 +914,7 @@ impl FlowyApp {
             theme::motion::FlipState::default()
         });
         flip.update(cx, |state, _| state.reconcile(&session_ids, 32.0));
-        let scale = theme::motion::travel_scale(self.theme.motion_policy());
+        let policy = self.theme.motion_policy();
         let mut rows = div().flex().flex_col();
         for (index, session) in sessions.into_iter().enumerate() {
             let id = format!("task-{index}");
@@ -999,26 +940,15 @@ impl FlowyApp {
                 DockIcon::Task.render(),
                 "task-row",
             );
-            let row_el = if let Some((epoch, offset_px)) = flip_offset
-                && scale > 0.0
-            {
-                div()
-                    .child(row)
-                    .with_animation(
-                        SharedString::from(format!(
-                            "task-flip-{session_id}-{epoch}"
-                        )),
-                        Animation::new(theme::motion::FLIP)
-                            .with_easing(theme::motion::flip_glide()),
-                        move |el, delta| {
-                            el.relative()
-                                .top(px(offset_px * scale * (1.0 - delta)))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                row.into_any_element()
-            };
+            let row_el = theme::motion::flip_row(
+                SharedString::from(format!(
+                    "task-flip-{session_id}-{}",
+                    flip_offset.map_or(0, |(epoch, _)| epoch)
+                )),
+                flip_offset,
+                policy,
+                row,
+            );
             rows = rows.child(row_el);
         }
         rows
@@ -1666,6 +1596,39 @@ fn project_folder_toggle(
         .child(icon)
 }
 
+fn quiet_row(
+    theme: flowy_ui::ResolvedTheme,
+    id: &'static str,
+    label: String,
+    selected: bool,
+    icon: DockIcon,
+) -> flowy_ui::InteractiveDiv {
+    theme::interactive(id, label.clone(), &theme)
+        .px(theme.space(8.))
+        .py(theme.space(4.))
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+        .bg(if selected {
+            theme.dock_selected()
+        } else {
+            theme.dock()
+        })
+        .text_color(if selected { theme.ink() } else { theme.muted() })
+        .hover(|row| row.bg(theme.dock_hover()).text_color(theme.ink()))
+        .child(icon.render().size(px(14.)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(theme.caption_size())
+                .child(label),
+        )
+}
+
 fn item_row(
     theme: flowy_ui::ResolvedTheme,
     id: impl Into<gpui::ElementId>,
@@ -1697,23 +1660,7 @@ fn running_dot(
     id: impl Into<gpui::ElementId>,
     theme: theme::ResolvedTheme,
 ) -> gpui::AnyElement {
-    let dot = div()
-        .size(px(6.))
-        .flex_shrink_0()
-        .rounded_full()
-        .bg(theme.status_active());
-    if theme::motion::travel_scale(theme.motion_policy()) > 0.0 {
-        dot.with_animation(
-            id,
-            Animation::new(theme::motion::PULSE)
-                .repeat()
-                .with_easing(theme::motion::pulsing_sine()),
-            |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
-        )
-        .into_any_element()
-    } else {
-        dot.into_any_element()
-    }
+    theme::motion::live_dot(id, theme.status_active(), theme.motion_policy())
 }
 
 fn attention_dot(theme: theme::ResolvedTheme) -> impl IntoElement {

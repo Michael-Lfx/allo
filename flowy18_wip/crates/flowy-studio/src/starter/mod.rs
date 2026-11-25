@@ -17,18 +17,6 @@ use gpui::{
 /// Width of the whole stage, shared by the hero, composer, chips and starters.
 const STAGE_W: f32 = 760.;
 
-fn prompt_glimpse(text: &str, max_chars: usize) -> String {
-    let collapsed: String =
-        text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = collapsed.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}\u{2026}")
-    } else {
-        head
-    }
-}
-
 impl StudioPanel {
     /// Category chips and the current category's clean two-column prompt cards.
     pub fn starter_section(
@@ -132,7 +120,8 @@ impl StudioPanel {
     ) -> impl IntoElement {
         let title = self.t(starter.title_key);
         let prompt = self.t(starter.prompt_key);
-        let glimpse = prompt_glimpse(&prompt, 46);
+        let glimpse =
+            crate::history::clip_words(&prompt, 46).unwrap_or_default();
         let fill_hint = self.t("home.fill_hint");
         let scale = crate::motion::travel_scale(self.theme.motion_policy());
         let delay = crate::motion::stagger(index, 28, crate::motion::MODERATE);

@@ -4,7 +4,7 @@
 //! independently from the active Router chat timeline.
 
 use flowy_ui as theme;
-use gpui::{Animation, AnimationExt, Context, Window, div, prelude::*, px};
+use gpui::{Context, Window, div, prelude::*, px};
 
 /// Maximum width of the calm Home stage, shared with the composer and starters.
 const HOME_STAGE_W: f32 = 760.;
@@ -120,25 +120,11 @@ impl crate::panel::StudioPanel {
         let count = active_work.to_string();
         let count_label =
             self.tf("chat.bg_tasks_pill", &[("count", count.as_str())]);
-        let animate_pulse =
-            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
-        let dot = div()
-            .size(px(6.))
-            .flex_shrink_0()
-            .rounded_full()
-            .bg(self.theme.status_active());
-        let dot_el = if animate_pulse {
-            dot.with_animation(
-                "home-desk-resume-dot",
-                Animation::new(crate::motion::PULSE)
-                    .repeat()
-                    .with_easing(crate::motion::pulsing_sine()),
-                |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
-            )
-            .into_any_element()
-        } else {
-            dot.into_any_element()
-        };
+        let dot_el = crate::motion::live_dot(
+            "home-desk-resume-dot",
+            self.theme.status_active(),
+            self.theme.motion_policy(),
+        );
         theme::anchor_trigger(
             theme::interactive(
                 "home-desk-resume",

@@ -296,6 +296,52 @@ pub fn settled_collapse_reveal(
         .into_any_element()
 }
 
+/// Shared 6px live-status indicator dot with optional breathing pulse gated by
+/// [`MotionPolicy`].
+pub fn live_dot(
+    id: impl Into<ElementId>,
+    color: gpui::Rgba,
+    policy: MotionPolicy,
+) -> AnyElement {
+    let dot = div().size(px(6.)).flex_none().rounded_full().bg(color);
+    if travel_scale(policy) > 0.0 {
+        dot.with_animation(
+            id,
+            Animation::new(PULSE).repeat().with_easing(pulsing_sine()),
+            |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
+        )
+        .into_any_element()
+    } else {
+        dot.into_any_element()
+    }
+}
+
+/// Applies a FLIP vertical glide when `offset` is present and motion is active.
+pub fn flip_row(
+    id: impl Into<ElementId>,
+    offset: Option<(u64, f32)>,
+    policy: MotionPolicy,
+    content: impl IntoElement,
+) -> AnyElement {
+    let scale = travel_scale(policy);
+    if let Some((_, offset_px)) = offset
+        && scale > 0.0
+    {
+        div()
+            .child(content)
+            .with_animation(
+                id,
+                Animation::new(FLIP).with_easing(flip_glide()),
+                move |el, delta| {
+                    el.relative().top(px(offset_px * scale * (1.0 - delta)))
+                },
+            )
+            .into_any_element()
+    } else {
+        content.into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

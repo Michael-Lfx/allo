@@ -178,8 +178,6 @@ pub struct StudioPanel {
     /// Starter copy held back until the user confirms replacing the draft.
     /// Category whose examples the home stage shows.
     pub(crate) starter_category: Category,
-    /// Paging state of the example row; reset when the row's contents change.
-    pub(crate) starter_carousel: flowy_ui::CarouselState,
     /// Set once the user opens a conversation in this run. Startup initialization
     /// must not pull the app back into the last thread, but a session restored
     /// because the user asked for it should land on Chat.
@@ -480,7 +478,6 @@ impl StudioPanel {
             surface,
             notice: initial_notice,
             starter_category: Category::Website,
-            starter_carousel: flowy_ui::CarouselState::new(),
             session_opened_by_user: false,
             deliverables: None,
             inspected_work: None,
@@ -785,15 +782,19 @@ impl StudioPanel {
         });
     }
 
+    fn clear_right_sheet(&mut self) {
+        self.deliverables = None;
+        self.inspected_work = None;
+        self.preview_file = None;
+        self.preview_body = None;
+    }
+
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
-        self.deliverables = None;
-        self.inspected_work = None;
-        self.preview_file = None;
-        self.preview_body = None;
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
@@ -812,17 +813,11 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
-                self.deliverables = None;
-                self.inspected_work = None;
-                self.preview_file = None;
-                self.preview_body = None;
+                self.clear_right_sheet();
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
                 self.surface = StudioSurface::Home;
-                // A fresh task starts at the first card, not wherever the last
-                // row happened to be scrolled to.
-                self.starter_carousel.reset();
                 self.refresh_chat(cx);
                 self.emit_notice(None, cx);
                 self.set_prompt_text("", cx);
@@ -840,10 +835,7 @@ impl StudioPanel {
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
-        self.deliverables = None;
-        self.inspected_work = None;
-        self.preview_file = None;
-        self.preview_body = None;
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         self.submission = None;
@@ -882,7 +874,6 @@ impl StudioPanel {
         self.bg_tasks_open = false;
         self.model_menu_open = false;
         self.surface = StudioSurface::Home;
-        self.starter_carousel.reset();
         cx.notify();
     }
 
@@ -1549,9 +1540,6 @@ impl StudioPanel {
             return;
         }
         self.starter_category = category;
-        // Each category is a different row; carrying the old offset over would
-        // open the new one mid-scroll, potentially past its own end.
-        self.starter_carousel.reset();
         cx.notify();
     }
 
@@ -1569,11 +1557,9 @@ impl StudioPanel {
         files: Vec<FileEntry>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.clear_right_sheet();
         self.deliverables = Some(files);
-        self.inspected_work = None;
         self.bg_tasks_open = false;
-        self.preview_file = None;
-        self.preview_body = None;
         cx.notify();
     }
 
@@ -1584,11 +1570,9 @@ impl StudioPanel {
         work: crate::deliverables::InspectedWork,
         cx: &mut Context<'_, Self>,
     ) {
+        self.clear_right_sheet();
         self.inspected_work = Some(work);
-        self.deliverables = None;
         self.bg_tasks_open = false;
-        self.preview_file = None;
-        self.preview_body = None;
         cx.notify();
     }
 
@@ -1608,10 +1592,7 @@ impl StudioPanel {
     /// Closes whichever right-hand sheet is open (deliverables or single-work
     /// step inspector).
     pub(crate) fn close_right_sheet(&mut self, cx: &mut Context<'_, Self>) {
-        self.deliverables = None;
-        self.inspected_work = None;
-        self.preview_file = None;
-        self.preview_body = None;
+        self.clear_right_sheet();
         cx.notify();
     }
 

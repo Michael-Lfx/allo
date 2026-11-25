@@ -81,24 +81,6 @@ fn display_path(path: &str) -> String {
     format!("\u{2026}{tail}")
 }
 
-/// Compact single-line snippet of the most recent non-empty line, used as a
-/// quiet glimpse on collapsed reasoning blocks (especially while streaming).
-fn tail_line_preview(text: &str, max_chars: usize) -> Option<String> {
-    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
-    let collapsed: String =
-        line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        return None;
-    }
-    let mut chars = collapsed.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        Some(format!("{head}\u{2026}"))
-    } else {
-        Some(head)
-    }
-}
-
 /// Compact single-line snippet of the opening line of a tool output.
 fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
@@ -115,32 +97,6 @@ fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
         (format!("{head}\u{2026}"), true)
     } else {
         (head, false)
-    }
-}
-
-fn deliverable_kind_key(path: &str) -> &'static str {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some(
-            "pdf" | "doc" | "docx" | "odt" | "rtf" | "md" | "markdown" | "txt"
-            | "ppt" | "pptx" | "odp" | "key",
-        ) => "deliverables.kind_document",
-        Some("xls" | "xlsx" | "ods" | "csv" | "tsv" | "parquet" | "sql") => {
-            "deliverables.kind_data"
-        }
-        Some(
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif",
-        ) => "deliverables.kind_image",
-        Some(
-            "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
-            | "html" | "java" | "js" | "json" | "jsx" | "kt" | "kts" | "php"
-            | "ps1" | "py" | "rb" | "rs" | "scss" | "sh" | "swift" | "toml"
-            | "ts" | "tsx" | "xml" | "yaml" | "yml",
-        ) => "deliverables.kind_code",
-        _ => "deliverables.kind_file",
     }
 }
 
@@ -647,7 +603,6 @@ impl ChatFeed {
         let show = !fold.expanded;
         let is_live = meta.is_some_and(|m| m.live);
         let policy = self.theme.motion_policy();
-        let animate_pulse = crate::motion::travel_scale(policy) > 0.0;
 
         let summary_text = meta.map_or_else(
             || accessible_title.clone(),
@@ -672,23 +627,11 @@ impl ChatFeed {
             .and_then(|m| m.active_step.clone());
 
         let leading_indicator = if is_live {
-            let dot = div()
-                .size(px(6.))
-                .flex_none()
-                .rounded_full()
-                .bg(self.theme.status_active());
-            if animate_pulse {
-                dot.with_animation(
-                    ("turn-fold-live-dot", row_id),
-                    Animation::new(crate::motion::PULSE)
-                        .repeat()
-                        .with_easing(crate::motion::pulsing_sine()),
-                    |el, delta| el.opacity(0.55f32.mul_add(-delta, 1.0)),
-                )
-                .into_any_element()
-            } else {
-                dot.into_any_element()
-            }
+            crate::motion::live_dot(
+                ("turn-fold-live-dot", row_id),
+                self.theme.status_active(),
+                policy,
+            )
         } else {
             theme::icons::check()
                 .size(px(12.))
@@ -1010,7 +953,7 @@ impl ChatFeed {
             },
             |file_kind| file_kind.icon().size(px(20.)).into_any_element(),
         );
-        let kind_label = self.t(deliverable_kind_key(path));
+        let kind_label = self.t(crate::file_kind::kind_label_key(path));
         let target = path.to_owned();
         let _ = kind;
         theme::interactive(
@@ -1331,7 +1274,6 @@ impl ChatFeed {
         };
 
         let policy = self.theme.motion_policy();
-        let animate_pulse = crate::motion::travel_scale(policy) > 0.0;
 
         if ok || override_used {
             let expanded = self.expanded_rows.contains(&row_id);
@@ -1834,7 +1776,6 @@ impl ChatFeed {
                 )),
         );
 
-        let _ = animate_pulse;
         card.into_any_element()
     }
     fn reasoning_block(
@@ -1848,8 +1789,9 @@ impl ChatFeed {
         let row_id = self.row_ids[index];
         let expanded = self.expanded_rows.contains(&row_id);
         let has_body = !text.trim().is_empty();
-        let glimpse =
-            (!expanded).then(|| tail_line_preview(text, 56)).flatten();
+        let glimpse = (!expanded)
+            .then(|| crate::history::last_line_snippet(text, 56))
+            .flatten();
         let animate_pulse =
             crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
         let title = if live {
@@ -1988,8 +1930,6 @@ impl ChatFeed {
         let row_id = self.row_ids[index];
         let has_target = !target.is_empty();
         let expanded = has_target && self.expanded_rows.contains(&row_id);
-        let animate_pulse =
-            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
         let heading = if running {
             self.tf("chat.tool_live", &[("name", name)])
         } else {
@@ -2001,23 +1941,11 @@ impl ChatFeed {
             format!("{heading} {target}")
         };
         let status_mark = if running {
-            let dot = div()
-                .size(px(6.))
-                .flex_none()
-                .rounded_full()
-                .bg(self.theme.status_active());
-            if animate_pulse {
-                dot.with_animation(
-                    ("tool-live-dot", row_id),
-                    Animation::new(crate::motion::PULSE)
-                        .repeat()
-                        .with_easing(crate::motion::pulsing_sine()),
-                    |dot, delta| dot.opacity(0.6f32.mul_add(-delta, 1.0)),
-                )
-                .into_any_element()
-            } else {
-                dot.into_any_element()
-            }
+            crate::motion::live_dot(
+                ("tool-live-dot", row_id),
+                self.theme.status_active(),
+                self.theme.motion_policy(),
+            )
         } else {
             theme::icons::check()
                 .size(px(12.))
