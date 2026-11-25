@@ -1,57 +1,43 @@
 /* ==========================================================================
-   ClipResultPage — Video Generation Detail Page
+   Clip result — 「即刻出片」 detail
+   The shell clips overflow, so this page fills the content pane and scrolls.
    ========================================================================== */
 
 .page {
-  min-height: 100vh;
   background:
-    radial-gradient(1200px 420px at 50% -80px, rgba(var(--primary-6), 0.07), transparent 70%),
+    radial-gradient(720px 220px at 50% -140px, rgba(var(--primary-6), 0.06), transparent 70%),
     var(--color-bg-1);
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
 }
 
-.page :global(.arco-btn) {
-  display: inline-flex !important;
-  flex-wrap: nowrap !important;
-  align-items: center !important;
+:global(html[data-wallpaper='on']) .page {
+  background: transparent;
 }
-
-/* ==========================================================================
-   Sticky Header
-   ========================================================================== */
 
 .stickyHeader {
   position: sticky;
   top: 0;
-  z-index: 10;
-  background:
-    linear-gradient(to bottom, var(--color-bg-1) 60%, transparent),
-    var(--color-bg-1);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  padding: 14px 24px 8px;
-  border-bottom: 1px solid var(--color-border-2);
+  z-index: 5;
+  padding: 14px 24px 12px;
+  background: color-mix(in srgb, var(--color-bg-1) 88%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 -1px 0 var(--color-border-1);
+}
+
+:global(html[data-wallpaper='on']) .stickyHeader {
+  background: color-mix(in srgb, var(--color-bg-1) 72%, transparent);
 }
 
 .headerInner {
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 1280px;
+  width: min(100%, 880px);
   margin: 0 auto;
+  min-width: 0;
 }
 
-.backBtn {
-  flex-shrink: 0;
-  font-size: 13px !important;
-  height: 32px !important;
-  padding: 0 12px !important;
-  white-space: nowrap;
-}
-
-.headerTitle {
+.headerCopy {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -60,321 +46,133 @@
 }
 
 .title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--color-text-1);
   margin: 0;
+  min-width: 0;
   overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.011em;
+  color: var(--color-text-1);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.taskIdBadge {
-  flex-shrink: 0;
+.status {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  background: var(--color-fill-2);
-  border: 1px solid var(--color-border-1);
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--color-text-4);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  font-family: monospace;
-}
-
-.taskIdBadge:hover {
-  background: var(--color-fill-3);
+  gap: 6px;
   color: var(--color-text-3);
-  border-color: var(--color-border-2);
+  font-size: 12px;
+  line-height: 1;
 }
 
-.taskIdText {
-  letter-spacing: 0.02em;
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-4);
 }
 
-.copyIcon {
-  color: inherit;
-  opacity: 0.6;
+.status[data-tone='running'] .statusDot {
+  background: rgb(var(--primary-6));
+  box-shadow: 0 0 0 4px rgba(var(--primary-6), 0.16);
 }
 
-/* ==========================================================================
-   Main Content
-   ========================================================================== */
+.status[data-tone='ok'] .statusDot {
+  background: rgb(var(--success-6));
+}
+
+.status[data-tone='bad'] .statusDot {
+  background: rgb(var(--danger-6));
+}
 
 .content {
-  flex: 1;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 20px 24px 48px;
+}
+
+.stage {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  padding: 24px;
-  max-width: 1280px;
-  width: 100%;
+  gap: 16px;
+  width: min(100%, 880px);
   margin: 0 auto;
+}
+
+/* Shared preview size. Width is capped by the height budget times the picture
+   ratio, so a 9:16 clip stays portrait instead of sitting in a 16:9 well. */
+.playerColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, calc(var(--clip-max-h, 64vh) * var(--clip-aspect, 1.7778)));
+  margin-inline: auto;
+}
+
+.playerColumn .videoContainer {
+  width: 100%;
+  margin-inline: 0;
+}
+
+.frame,
+.videoContainer {
+  width: min(100%, calc(var(--clip-max-h, 64vh) * var(--clip-aspect, 1.7778)));
+  max-height: var(--clip-max-h, 64vh);
+  aspect-ratio: var(--clip-aspect, 1.7778);
+  margin-inline: auto;
   box-sizing: border-box;
-}
-
-/* ==========================================================================
-   Loading State
-   ========================================================================== */
-
-.loadingState {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 80px 0;
-  width: 100%;
-}
-
-.loadingIcon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 80px;
-  height: 80px;
-  border-radius: 24px;
-  background: rgba(var(--primary-6), 0.08);
-  color: rgb(var(--primary-6));
-}
-
-.loadingText {
-  color: var(--color-text-1);
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0;
-}
-
-.loadingHint {
-  color: var(--color-text-3);
-  font-size: 13px;
-  margin: 0;
-}
-
-/* ==========================================================================
-   Error State
-   ========================================================================== */
-
-.errorState {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 60px 0;
-  width: 100%;
-  text-align: center;
-}
-
-.errorIcon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 80px;
-  height: 80px;
-  border-radius: 24px;
-  background: rgba(var(--danger-6), 0.08);
-  color: rgb(var(--danger-6));
-}
-
-.errorTitle {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--color-text-1);
-  margin: 0;
-}
-
-.errorMessage {
-  font-size: 13px;
-  color: var(--color-text-3);
-  margin: 0;
-  max-width: 440px;
-  line-height: 1.6;
-}
-
-.errorActions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-  margin-top: 8px;
-}
-
-.errorPanel {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 18px 20px;
-  background: rgba(var(--danger-6), 0.08);
-  border: 1px solid rgba(var(--danger-6), 0.2);
   border-radius: 12px;
 }
 
-.errorPanelHeader {
+.frame {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  color: rgb(var(--danger-6));
+  overflow: hidden;
+  padding: 28px 24px 32px;
+  text-align: center;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(var(--primary-6), 0.07), transparent 58%),
+    var(--color-fill-1);
+  border: 1px solid var(--color-border-2);
 }
-
-.errorPanelTitle {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-text-1);
-  margin: 0;
-}
-
-.errorPanelMessage {
-  font-size: 13px;
-  color: var(--color-text-2);
-  margin: 0;
-  line-height: 1.6;
-}
-
-.errorPanelActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 4px;
-}
-
-.errorBannerIcon {
-  flex-shrink: 0;
-}
-
-/* ==========================================================================
-   Layout (Two-column: main + sidebar)
-   ========================================================================== */
-
-.layout {
-  display: flex;
-  gap: 20px;
-  width: 100%;
-  align-items: flex-start;
-}
-
-.mainColumn {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.sidebar {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  min-width: 0;
-}
-
-/* ==========================================================================
-   Video Container
-   ========================================================================== */
 
 .videoContainer {
   position: relative;
-  width: 100%;
-  /* Aspect ratio is set inline from the video's intrinsic dimensions so the
-     preview frame matches the actual footage. Until loadedMetadata fires we
-     fall back to 16/9, which is the most common video generation aspect. */
-  aspect-ratio: 16 / 9;
-  max-height: 70vh;
-  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
-  background: #0a0a0f;
-  box-shadow:
-    0 8px 32px rgba(15, 23, 42, 0.18),
-    0 2px 8px rgba(15, 23, 42, 0.1);
+  background: #0c0c0e;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--color-text-1) 10%, transparent);
 }
 
-/* Video Placeholder (during generation) */
-.videoPlaceholder {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  border-radius: 16px;
-  overflow: hidden;
-  background:
-    radial-gradient(
-      ellipse at center,
-      rgba(var(--primary-6), 0.08) 0%,
-      transparent 70%
-    ),
-    var(--color-bg-2);
-  border: 1px solid var(--color-border-2);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  text-align: center;
-  padding: 24px;
-  box-sizing: border-box;
-}
-
-.placeholderSpinner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: rgba(var(--primary-6), 0.1);
-  color: rgb(var(--primary-6));
-  flex-shrink: 0;
-}
-
-.placeholderTitle {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-text-1);
-  margin: 0;
-}
-
-.videoFullscreen {
+.videoContainer.videoFullscreen,
+.videoContainer:fullscreen,
+.videoContainer:-webkit-full-screen,
+.videoContainer.videoCssFullscreen {
   width: 100%;
   height: 100%;
   max-width: none;
   max-height: none;
   aspect-ratio: auto;
+  margin: 0;
   border-radius: 0;
   background: #000;
-}
-
-.videoContainer:fullscreen,
-.videoContainer:-webkit-full-screen {
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  aspect-ratio: auto;
-  border-radius: 0;
-  background: #000;
+  box-shadow: none;
 }
 
 .videoCssFullscreen {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  aspect-ratio: auto;
-  border-radius: 0;
 }
 
 .videoPlayer {
@@ -382,27 +180,75 @@
   width: 100%;
   height: 100%;
   background: #000;
-  /* The container is sized to the video's intrinsic aspect ratio via inline
-     style, so `contain` and `fill` look identical here. We keep `contain`
-     to be safe against any 1px rounding between the video's intrinsic size
-     and the rendered box — `fill` would stretch that single pixel. */
   object-fit: contain;
 }
 
-/* ==========================================================================
-   Video Controls
-   ========================================================================== */
+.loadingTitle,
+.generatingTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+}
+
+.loadingHint,
+.generatingHint,
+.elapsed {
+  margin: 0;
+  max-width: 36em;
+  color: var(--color-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.generatingKicker {
+  margin: 0;
+  color: rgb(var(--primary-6));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.progressTrack {
+  position: relative;
+  width: min(220px, 72%);
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-fill-3);
+}
+
+.progressBar,
+.progressIndeterminate {
+  height: 100%;
+  border-radius: inherit;
+  background: rgb(var(--primary-6));
+}
+
+.progressBar {
+  transition: width var(--flowy-motion-slow) var(--flowy-ease-move);
+}
+
+.progressIndeterminate {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  animation: clip-indet 1.15s var(--flowy-ease-move) infinite;
+}
 
 .videoControls {
   position: absolute;
+  right: 0;
   bottom: 0;
   left: 0;
-  right: 0;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-  padding: 40px 16px 12px;
+  z-index: 3;
+  padding: 36px 14px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
   opacity: 0;
-  transition: opacity 0.25s ease;
   pointer-events: none;
+  transition: opacity var(--flowy-motion-base) var(--flowy-ease-move);
 }
 
 .videoControlsVisible {
@@ -410,37 +256,46 @@
   pointer-events: auto;
 }
 
-/* Scrubber */
 .scrubber {
-  position: relative;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 999px;
+  padding: 8px 0;
   cursor: pointer;
-  margin-bottom: 10px;
-  transition: height 0.15s ease;
 }
 
-.scrubber:hover {
+.scrubber:focus-visible {
+  outline: none;
+}
+
+.scrubber:focus-visible .scrubberTrack {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+.scrubberTrack {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: height var(--flowy-motion-fast) var(--flowy-ease-move);
+}
+
+.scrubber:hover .scrubberTrack {
   height: 6px;
 }
 
-.scrubberBuffer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
-}
-
+.scrubberBuffer,
 .scrubberProgress {
   position: absolute;
   top: 0;
   left: 0;
   height: 100%;
+  border-radius: inherit;
+}
+
+.scrubberBuffer {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.scrubberProgress {
   background: rgb(var(--primary-6));
-  border-radius: 999px;
 }
 
 .scrubberThumb {
@@ -448,15 +303,16 @@
   top: 50%;
   width: 12px;
   height: 12px;
-  background: #fff;
   border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   transform: translate(-50%, -50%);
   opacity: 0;
-  transition: opacity 0.15s ease;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: opacity var(--flowy-motion-fast) var(--flowy-ease-move);
 }
 
-.scrubber:hover .scrubberThumb {
+.scrubber:hover .scrubberThumb,
+.scrubber:focus-visible .scrubberThumb {
   opacity: 1;
 }
 
@@ -468,25 +324,27 @@
 }
 
 .controlsLeft,
-.controlsRight {
+.controlsRight,
+.volumeControl {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .controlBtn {
-  display: flex;
+  display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.9);
   cursor: pointer;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
 }
 
 .controlBtn:hover {
@@ -494,229 +352,330 @@
   color: #fff;
 }
 
-.controlBtn:active {
-  transform: scale(0.92);
+.controlBtn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 
-/* Volume */
-.volumeControl {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+.controlBtn:active {
+  transform: scale(0.96);
 }
 
 .volumeSlider {
-  width: 0;
-  opacity: 0;
-  transition: width 0.2s ease, opacity 0.2s ease;
+  width: 72px;
   height: 3px;
-  appearance: none;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
-  outline: none;
-  cursor: pointer;
-}
-
-.volumeControl:hover .volumeSlider {
-  width: 60px;
-  opacity: 1;
-}
-
-.volumeSlider::-webkit-slider-thumb {
-  appearance: none;
-  width: 10px;
-  height: 10px;
-  background: #fff;
-  border-radius: 50%;
+  margin: 0 6px 0 2px;
+  accent-color: #fff;
   cursor: pointer;
 }
 
 .timeDisplay {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 4px;
+  color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.75);
   font-variant-numeric: tabular-nums;
-  padding: 0 4px;
-  font-family: monospace;
-  letter-spacing: 0.02em;
 }
 
-/* Big Play Button */
+.timeDivider {
+  opacity: 0.6;
+}
+
 .bigPlayBtn {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
-  width: 72px;
-  height: 72px;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(8px);
-  color: #fff;
-  cursor: pointer;
-  display: flex;
+  z-index: 2;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
-  z-index: 2;
+  width: 64px;
+  height: 64px;
+  padding: 0 0 0 3px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #161616;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition:
+    transform var(--flowy-motion-fast) var(--flowy-ease-move),
+    background-color var(--flowy-motion-fast) var(--flowy-ease-move);
 }
 
 .bigPlayBtn:hover {
-  background: rgba(255, 255, 255, 0.25);
-  transform: translate(-50%, -50%) scale(1.08);
+  background: #fff;
+  transform: translate(-50%, -50%) scale(1.04);
 }
 
 .bigPlayBtn:active {
-  transform: translate(-50%, -50%) scale(0.96);
+  transform: translate(-50%, -50%) scale(0.97);
 }
 
-/* ==========================================================================
-   Sidebar
-   ========================================================================== */
+.bigPlayBtn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
 
-.actionList {
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.promptBlock {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  min-width: 0;
 }
 
-.actionItem {
+.promptHead {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.promptLabel,
+.stillsLabel {
+  margin: 0;
+  color: var(--color-text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.promptBody {
+  margin: 0;
   color: var(--color-text-1);
-  font-size: 13px;
-  line-height: 1.3;
-  cursor: pointer;
-  text-align: left;
-  box-sizing: border-box;
-}
-
-.actionItem > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.actionItem > svg,
-.actionItem :global(span[role='img']),
-.actionItem :global(.i-icon) {
-  flex-shrink: 0;
-}
-
-.actionItem:hover:not(:disabled) {
-  background: var(--color-fill-2);
-}
-
-.actionItem:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.metaList {
-  margin: 0;
-  padding-top: 4px;
-  border-top: 1px solid var(--color-border-2);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.metaRow {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.metaRow dt {
-  font-size: 11px;
-  color: var(--color-text-4);
-  font-weight: 500;
-}
-
-.metaRow dd {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-text-2);
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
-.metaMono {
-  font-size: 11px !important;
-  color: var(--color-text-3) !important;
-  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  word-break: break-all;
+.textAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
 }
 
-/* ==========================================================================
-   Animations
-   ========================================================================== */
+.specButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.textAction:hover {
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+}
+
+.specButton:hover {
+  background: var(--color-fill-3);
+  color: var(--color-text-1);
+}
+
+.textAction:focus-visible,
+.specButton:focus-visible {
+  outline: 2px solid rgb(var(--primary-6));
+  outline-offset: 2px;
+}
+
+.stillsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stills img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+}
+
+.specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.specLabel {
+  color: var(--color-text-3);
+}
+
+.specMono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0 12px;
+}
+
+.errorIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(var(--danger-6), 0.1);
+  color: rgb(var(--danger-6));
+}
+
+.errorTitle,
+.errorPanelTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+}
+
+.errorMessage,
+.errorPanelMessage {
+  margin: 0;
+  max-width: 52em;
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.errorActions,
+.errorPanelActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.errorPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 18px 18px 16px;
+  border: 1px solid rgba(var(--danger-6), 0.28);
+  border-radius: 12px;
+  background: var(--color-bg-2);
+}
+
+.errorPanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(var(--danger-6));
+}
+
+.errorBannerIcon {
+  flex-shrink: 0;
+}
 
 .spinning {
-  animation: spin 1.5s linear infinite;
+  color: rgb(var(--primary-6));
+  animation: clip-spin 1.2s linear infinite;
 }
 
-@keyframes spin {
+@keyframes clip-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
-/* ==========================================================================
-   Responsive
-   ========================================================================== */
+@keyframes clip-indet {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(280%); }
+}
 
-@media (max-width: 900px) {
-  .layout {
-    flex-direction: column;
+@media (prefers-reduced-motion: reduce) {
+  .spinning,
+  .progressIndeterminate {
+    animation: none;
   }
 
-  .sidebar {
-    width: 100%;
+  .progressBar,
+  .videoControls,
+  .scrubberTrack,
+  .scrubberThumb,
+  .bigPlayBtn {
+    transition: none;
   }
 }
 
-@media (max-width: 640px) {
-  .page {
-    padding: 0;
-  }
-
-  .stickyHeader {
-    padding: 12px 16px 6px;
-  }
-
+@media (max-width: 720px) {
+  .stickyHeader,
   .content {
-    padding: 16px;
-  }
-
-  .headerInner {
-    gap: 10px;
+    padding-right: 16px;
+    padding-left: 16px;
   }
 
   .title {
     font-size: 14px;
   }
 
+  .frame,
   .videoContainer {
-    border-radius: 12px;
+    border-radius: 10px;
   }
 
-  .errorActions {
-    flex-direction: column;
-    width: 100%;
-  }
-
-  .errorActions button,
-  .errorPanelActions button {
-    width: 100%;
-    justify-content: center;
+  .volumeSlider {
+    width: 48px;
   }
 }
