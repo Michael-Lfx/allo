@@ -46,6 +46,8 @@ pub enum SystemActionTrigger {
     Settlement,
     /// 课程工作区加载时的自动补批判定（自动补批触发②）。
     AutoRefill,
+    /// 非空手生长批落库后唤醒的仅挂载维护回合（ADR-0018 决定 4）。
+    GrowthFollowup,
 }
 
 impl SystemActionTrigger {
@@ -55,17 +57,20 @@ impl SystemActionTrigger {
             Self::Manual => "manual",
             Self::Settlement => "settlement",
             Self::AutoRefill => "auto_refill",
+            Self::GrowthFollowup => "growth_followup",
         }
     }
 
-    /// 手动动作才记操作者；自动动作（timer/settlement/auto_refill）不记。
+    /// 手动动作才记操作者；自动动作（timer/settlement/auto_refill/
+    /// growth_followup）不记。
     pub fn records_actor(self) -> bool {
         matches!(self, Self::Manual)
     }
 
     /// POST grow 的可选 query `trigger=` 解析（缺省 manual，向后兼容）：
     /// `manual` / `auto_refill` 两个外部可达值；settlement 只来自结算钩子，
-    /// timer 只来自维护调度器，均不接受外部注入。
+    /// timer 只来自维护调度器，growth_followup 只来自生长唤醒，均不接受外部
+    /// 注入。
     pub fn from_grow_query(value: &str) -> Option<Self> {
         match value {
             "manual" => Some(Self::Manual),
@@ -116,6 +121,7 @@ mod tests {
         assert_eq!(SystemActionTrigger::Manual.as_str(), "manual");
         assert_eq!(SystemActionTrigger::Settlement.as_str(), "settlement");
         assert_eq!(SystemActionTrigger::AutoRefill.as_str(), "auto_refill");
+        assert_eq!(SystemActionTrigger::GrowthFollowup.as_str(), "growth_followup");
         assert_eq!(SystemActionResult::Done.as_str(), "done");
         assert_eq!(SystemActionResult::Failed.as_str(), "failed");
     }
@@ -127,6 +133,7 @@ mod tests {
             SystemActionTrigger::Timer,
             SystemActionTrigger::Settlement,
             SystemActionTrigger::AutoRefill,
+            SystemActionTrigger::GrowthFollowup,
         ] {
             assert!(!trigger.records_actor(), "{trigger} must not record an actor");
         }

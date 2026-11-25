@@ -3822,6 +3822,7 @@ export type I18nKey =
   | 'learning.learningGraphSystemActionResultFailed'
   | 'learning.learningGraphSystemActionResultUnknown'
   | 'learning.learningGraphSystemActionTriggerAutoRefill'
+  | 'learning.learningGraphSystemActionTriggerGrowthFollowup'
   | 'learning.learningGraphSystemActionTriggerManual'
   | 'learning.learningGraphSystemActionTriggerSettlement'
   | 'learning.learningGraphSystemActionTriggerTimer'

@@ -109,6 +109,14 @@ describe('buildSystemActionRow', () => {
     expect(row.resultKey).toBe(typeLabelKeys.result.unknown);
     expect(row.resultColor).toBe('gray');
   });
+
+  test('growth_followup 触发源有专属标签 key（sb2：不落 unknown 兜底显示成「自动」）', () => {
+    const row = buildSystemActionRow(
+      action({ kind: 'maintenance_mount', trigger: 'growth_followup' })
+    );
+    expect(row.triggerKey).toBe('learning.learningGraphSystemActionTriggerGrowthFollowup');
+    expect(row.triggerKey).not.toBe(typeLabelKeys.trigger.unknown);
+  });
 });
 
 describe('buildSystemActionRows', () => {

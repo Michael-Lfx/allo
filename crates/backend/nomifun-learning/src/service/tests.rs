@@ -15988,6 +15988,1327 @@ async fn auto_refill_budget_switch_zero_disables_the_budget() {
     .bind(&course_id)
     .fetch_one(service.pool_for_tests())
     .await
-    .unwrap();
+        .unwrap();
     assert!(!note.contains("预算到点落位"), "关臂零预算读数：{note}");
 }
+
+// ── sb2（ADR-0018 决定 4）：生长唤醒维护回合（仅挂载）────────────────────
+
+/// sb2 夹具 completer：按调用面分流——挂载回合（系统行 = 挂载引擎）回挂载
+/// 产物；修补回合（系统行 = 修补引擎）回空 ops；概念评审（user 带
+/// 【待审批次】）回放行结论；其余 = 教练起草。分面计数；`mount_fails` 置真
+/// 后挂载调用传输失败。
+struct WakeCompleter {
+    draft: Mutex<String>,
+    mount: Mutex<String>,
+    mount_fails: std::sync::atomic::AtomicBool,
+    drafts: AtomicUsize,
+    reviews: AtomicUsize,
+    repairs: AtomicUsize,
+    mounts: AtomicUsize,
+}
+
+impl WakeCompleter {
+    fn new(draft: impl Into<String>, mount: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            draft: Mutex::new(draft.into()),
+            mount: Mutex::new(mount.into()),
+            mount_fails: std::sync::atomic::AtomicBool::new(false),
+            drafts: AtomicUsize::new(0),
+            reviews: AtomicUsize::new(0),
+            repairs: AtomicUsize::new(0),
+            mounts: AtomicUsize::new(0),
+        })
+    }
+
+    fn set_draft(&self, draft: impl Into<String>) {
+        *self.draft.lock().unwrap() = draft.into();
+    }
+
+    fn set_mount(&self, mount: impl Into<String>) {
+        *self.mount.lock().unwrap() = mount.into();
+    }
+
+    fn set_mount_fails(&self, fails: bool) {
+        self.mount_fails
+            .store(fails, AtomicOrdering::SeqCst);
+    }
+
+    /// (起草, 评审, 修补, 挂载) 各面调用数。
+    fn counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.drafts.load(AtomicOrdering::SeqCst),
+            self.reviews.load(AtomicOrdering::SeqCst),
+            self.repairs.load(AtomicOrdering::SeqCst),
+            self.mounts.load(AtomicOrdering::SeqCst),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl LearningCompleter for WakeCompleter {
+    async fn complete(
+        &self,
+        _: Option<(&str, &str)>,
+        _: &str,
+        _: &str,
+        _: u32,
+    ) -> Result<String, AppError> {
+        unreachable!("growth / mount / repair pipelines only use the json seam")
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        _: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        _: u32,
+        _: Option<f32>,
+    ) -> Result<String, AppError> {
+        if system.starts_with("你是学习课程的结构挂载引擎") {
+            self.mounts.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.mount_fails.load(AtomicOrdering::SeqCst) {
+                return Err(AppError::Internal("model unavailable".into()));
+            }
+            return Ok(self.mount.lock().unwrap().clone());
+        }
+        if system.starts_with("你是学习课程的结构修补引擎") {
+            self.repairs.fetch_add(1, AtomicOrdering::SeqCst);
+            return Ok(r#"{"ops": []}"#.to_owned());
+        }
+        if user.contains("【待审批次】") {
+            self.reviews.fetch_add(1, AtomicOrdering::SeqCst);
+            return Ok(wake_review(&self.draft.lock().unwrap().clone()));
+        }
+        self.drafts.fetch_add(1, AtomicOrdering::SeqCst);
+        Ok(self.draft.lock().unwrap().clone())
+    }
+}
+
+/// 挂载回包：每个待挂节点恰一条（契约门要求条目与待挂集对齐）。
+fn wake_mount_artifact(entries: &[(&str, &[&str])]) -> String {
+    json!({
+        "mounts": entries
+            .iter()
+            .map(|(node, blocks)| json!({
+                "node": node,
+                "blocks": blocks,
+                "reason": "同主题"
+            }))
+            .collect::<Vec<_>>(),
+        "note": "n"
+    })
+    .to_string()
+}
+
+/// 新长出的两个节点（`wake_batch` 的标题）的挂载回包——**只含新节点**：fresh
+/// 挂载行上的增量挂载，提示词明写既有挂载「不要重复输出」。
+fn new_nodes_mount_reply() -> String {
+    wake_mount_artifact(&[("唤醒节点甲甲", &["block-a"]), ("唤醒节点甲乙", &["block-b"])])
+}
+
+/// 唤醒测试的教练稿：两节点两铸名（第二节点只假定种子已教的「向量基
+/// 础」），`tag` 区分各次生长的标题与概念名。
+fn wake_batch(tag: &str) -> String {
+    json!({
+        "nodes": [
+            {"title": format!("唤醒节点{tag}甲"), "purpose": "p", "intent": "i", "scope": "s", "est": 15,
+             "teaches": [{"name": format!("唤醒概念{tag}甲"), "tier": "know"}], "assumes": []},
+            {"title": format!("唤醒节点{tag}乙"), "purpose": "p", "intent": "i", "scope": "s", "est": 20,
+             "teaches": [{"name": format!("唤醒概念{tag}乙"), "tier": "apply"}],
+             "assumes": [{"name": "向量基础", "tier": "know"}]}
+        ],
+        "mints": [
+            {"canonical": format!("唤醒概念{tag}甲"), "aliases": [], "definition": "关于甲的方法甲"},
+            {"canonical": format!("唤醒概念{tag}乙"), "aliases": [], "definition": "关于乙的方法乙"}
+        ],
+        "note": format!("唤醒稿 {tag}")
+    })
+    .to_string()
+}
+
+/// 上述教练稿的放行结论（挂号表合规：批内两条铸名各一行常识行，术语逐字
+/// 出自各自的定义）。`draft` 是教练稿原文，行 concept 取其 `mints` 的正名。
+fn wake_review(draft: &str) -> String {
+    let batch: serde_json::Value = serde_json::from_str(draft).expect("wake_batch is valid JSON");
+    let rows: Vec<serde_json::Value> = batch["mints"]
+        .as_array()
+        .expect("wake_batch has mints")
+        .iter()
+        .zip(["方法甲", "方法乙"])
+        .map(|(mint, term)| {
+            json!({ "concept": mint["canonical"], "term": term, "source": "常识" })
+        })
+        .collect();
+    json!({ "verdict": "pass", "term_provenance": rows }).to_string()
+}
+
+/// sb2 夹具：一门带结构的图课程（种子节点 A/B）+ **非 stale 的挂载行**
+/// （先跑一次真实 `run_structure_mount`，不手插 SQL）。挂载行时刻回拨到 10
+/// 分钟前——去抖按「上次成功挂载」计时，夹具刚挂过会把自己去抖掉。
+struct WakeFixture {
+    service: LearningService,
+    owner: UserId,
+    course: LearningCourseId,
+    course_id: String,
+    module_id: String,
+    completer: Arc<WakeCompleter>,
+}
+
+/// 唤醒测试共用的课程骨架：图课程（种子节点 A/B）+ 两块的知识结构。
+struct StructuredCourse {
+    service: LearningService,
+    owner: UserId,
+    course: LearningCourseId,
+    course_id: String,
+    module_id: String,
+    completer: Arc<WakeCompleter>,
+}
+
+/// 唤醒测试用的知识结构信封（两块：块甲 `block-a` + 第二块 `second_slug`）。
+fn wake_envelope(second_slug: &str) -> String {
+    json!({
+        "version": 1,
+        "generated_at": 1,
+        "structure": {
+            "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+            "blocks": [
+                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "甲的主题" },
+                { "name": "块乙", "slug": second_slug, "spine": "主干一", "stage": "advanced", "note": "乙的主题" }
+            ],
+            "edges": []
+        },
+        "terrain": { "doors": [] }
+    })
+    .to_string()
+}
+
+async fn structured_course() -> StructuredCourse {
+    // 进程级垫一个写进 io::sink 的全局订阅者（structure_gen s6 同款）：tracing
+    // 的 callsite interest 是进程级缓存，本组用例断言的 warn 行若先在一个
+    // 没有订阅者的线程上首次触发，interest 会被永久算成 Never，捕获断言落空。
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(std::io::sink)
+            .finish(),
+    );
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = LearningCourseId::parse(&course_id).unwrap();
+    let module_id: String = sqlx::query_scalar(
+        "SELECT module_id FROM learning_modules WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let envelope = wake_envelope("block-b");
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(&envelope)
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let completer = WakeCompleter::new(String::new(), String::new());
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    StructuredCourse {
+        service,
+        owner,
+        course,
+        course_id,
+        module_id,
+        completer,
+    }
+}
+
+async fn wake_fixture() -> WakeFixture {
+    let structured = structured_course().await;
+    let course = structured.course.clone();
+    structured.completer.set_mount(wake_mount_artifact(&[
+        ("节点A", &["block-a"]),
+        ("节点B", &["block-b"]),
+    ]));
+    let mounted = structured
+        .service
+        .run_structure_mount(&structured.owner, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(mounted.status, "mounted", "夹具先挂一次，得到非 stale 的挂载行");
+    let needs = structured.service.maintenance_needs(&course).await.unwrap();
+    assert!(!needs.mounts_stale, "夹具的挂载行必须 fresh");
+    assert_eq!(needs.pending_mounts, 0);
+    backdate_mount_row(&structured.service, &structured.course_id, 10).await;
+    WakeFixture {
+        service: structured.service,
+        owner: structured.owner,
+        course_id: structured.course_id,
+        module_id: structured.module_id,
+        completer: structured.completer,
+        course,
+    }
+}
+
+/// 捕获本线程的 tracing 事件（fmt Subscriber + 共享缓冲，形状同 structure_gen
+/// 的 s6 捕获面）。线程局部订阅：调用方 `#[serial]`，被测代码跑在本线程
+/// （`#[tokio::test]` 单线程运行时）。
+fn capture_thread_logs() -> (Arc<Mutex<Vec<u8>>>, impl Drop + 'static) {
+    use std::io::Write;
+    #[derive(Clone)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let make_writer = {
+        let buffer = Arc::clone(&buffer);
+        move || SharedBuffer(Arc::clone(&buffer))
+    };
+    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(make_writer)
+        .with_ansi(false)
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (buffer, guard)
+}
+
+fn captured_log_text(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+}
+
+/// 不唤醒的 warn 行数（R-d 的断言面：按消息计数）。
+fn wake_skip_warns(captured: &str) -> usize {
+    captured
+        .lines()
+        .filter(|line| line.contains("WARN") && line.contains(WAKE_SKIP_MESSAGE))
+        .count()
+}
+
+const WAKE_SKIP_MESSAGE: &str = "growth followup mount wake skipped";
+
+/// 把挂载行「上次成功落盘」的时刻回拨若干分钟（去抖按它计时）。
+async fn backdate_mount_row(service: &LearningService, course_id: &str, minutes: i64) {
+    sqlx::query(
+        "UPDATE learning_structure_mounts SET updated_at = updated_at - ? WHERE course_id = ?",
+    )
+    .bind(minutes * 60 * 1000)
+    .bind(course_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+}
+
+/// 直接补一个未挂载节点（模拟更早批次留下的待挂节点）。
+async fn add_unmounted_node(service: &LearningService, module_id: &str, title: &str, position: i64) {
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, ?, '', 'p', ?, 10)",
+    )
+    .bind(LearningLessonId::new().into_string())
+    .bind(module_id)
+    .bind(title)
+    .bind(position)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+}
+
+async fn growth_ledger_rows(service: &LearningService, course: &LearningCourseId) -> usize {
+    system_action_rows(service, course)
+        .await
+        .iter()
+        .filter(|row| row.kind == "growth")
+        .count()
+}
+
+/// 等本课的生长 Done 账本行数超过 `before`：该行在 `growth_body` 返回之后
+/// 才落，而唤醒登记发生在 `growth_body` 内、批次提交之后——行数增加即登记
+/// 已定（批行 status 只说明事务提交了，会抢在登记之前）。
+async fn wait_for_growth_ledger(
+    service: &LearningService,
+    course: &LearningCourseId,
+    before: usize,
+) {
+    for _ in 0..500 {
+        if growth_ledger_rows(service, course).await > before {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let tasks: Vec<(String, String, Option<String>)> = service
+        .generation_task_snapshot()
+        .into_iter()
+        .map(|task| (task.kind, task.state, task.detail))
+        .collect();
+    panic!("growth did not settle in time: tasks={tasks:?}");
+}
+
+/// 触发一次指定触发源的生长并等它收尾（见 [`wait_for_growth_ledger`]）。
+async fn growth_settled(
+    service: &LearningService,
+    user: &UserId,
+    course: &LearningCourseId,
+    trigger: SystemActionTrigger,
+) {
+    let before = growth_ledger_rows(service, course).await;
+    assert!(
+        service
+            .kick_growth_with_trigger(user, course, true, None, trigger)
+            .await
+            .unwrap(),
+        "growth must start"
+    );
+    wait_for_growth_ledger(service, course, before).await;
+}
+
+/// 等这一轮生长任务收尾（空手批不落账本，只能看任务面）：先等任务入册
+/// （spawn 出的任务要到本任务让出后才起步，否则会抢在它起步前返回），再等
+/// 它离开在跑态。
+async fn wait_for_growth_task_settled(service: &LearningService) {
+    for _ in 0..500 {
+        let snapshot = service.generation_task_snapshot();
+        let growth_tasks = snapshot
+            .iter()
+            .filter(|task| task.kind == crate::service::KIND_GROWTH);
+        let active = growth_tasks
+            .clone()
+            .any(|task| matches!(task.state.as_str(), "queued" | "running"));
+        let registered = growth_tasks.count() > 0;
+        if registered && !active {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("growth task did not settle in time");
+}
+
+/// R-a / R-g：非空手的自动补批批落库后登记**恰一条**唤醒意图，携带这次
+/// 生长的身份（`engine.user_id`——不另解析安装者）；取走即清空。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_registers_once_after_an_auto_refill_batch() {
+    let fixture = wake_fixture().await;
+    // 自动补批以另一个用户身份跑（不是安装者）：唤醒意图原样携带它。
+    let learner = UserId::new();
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &learner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(
+        wakes,
+        vec![GrowthWake {
+            course_id: fixture.course.clone(),
+            user_id: learner.clone(),
+        }],
+        "一次生长恰登记一条唤醒意图，身份取自这次生长"
+    );
+    assert!(
+        fixture.service.take_growth_wakes().is_empty(),
+        "取走即清空"
+    );
+}
+
+/// ⑦ 手动触发生长不登记唤醒（只有自动补批两个触发源登记）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_ignores_a_manual_growth() {
+    let fixture = wake_fixture().await;
+    fixture.completer.set_draft(wake_batch("甲"));
+    let before = growth_ledger_rows(&fixture.service, &fixture.course).await;
+    assert!(
+        fixture
+            .service
+            .kick_growth(&fixture.owner, &fixture.course, true, None)
+            .await
+            .unwrap()
+    );
+    wait_for_growth_ledger(&fixture.service, &fixture.course, before).await;
+    assert!(
+        fixture.service.take_growth_wakes().is_empty(),
+        "手动生长不登记唤醒"
+    );
+
+    // 对照：同一夹具换自动补批触发即登记——上面不是夹具本身不准入。
+    fixture.completer.set_draft(wake_batch("乙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    assert_eq!(fixture.service.take_growth_wakes().len(), 1);
+}
+
+/// R-a 唤醒信号端点（调度器 `select!` 的被唤醒臂）：登记前等待挂起，登记
+/// 后立即放行——信号先于等待到达也不丢。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_notified_resolves_once_a_wake_is_registered() {
+    let fixture = wake_fixture().await;
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            fixture.service.growth_wake_notified(),
+        )
+        .await
+        .is_err(),
+        "没有登记就没有信号"
+    );
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.service.growth_wake_notified(),
+    )
+    .await
+    .expect("登记之后信号必到");
+}
+
+async fn findings_rows(service: &LearningService, course_id: &str) -> Vec<(String, String)> {
+    sqlx::query_as(
+        "SELECT source, issue FROM learning_structure_findings \
+         WHERE course_id = ? ORDER BY id",
+    )
+    .bind(course_id)
+    .fetch_all(service.pool_for_tests())
+    .await
+    .unwrap()
+}
+
+async fn findings_count(service: &LearningService, course_id: &str) -> i64 {
+    findings_rows(service, course_id).await.len() as i64
+}
+
+/// warn 行里 `字段=值` 的断言（fmt 层按 Debug 打印字段值，字符串带引号）。
+fn assert_warn_field(captured: &str, field: &str, value: &str) {
+    let line = captured
+        .lines()
+        .find(|line| line.contains(WAKE_SKIP_MESSAGE))
+        .unwrap_or_else(|| panic!("没有不唤醒的 warn 行：\n{captured}"));
+    assert!(
+        line.contains(&format!("{field}=\"{value}\"")),
+        "warn 行缺 {field}={value:?}：{line}"
+    );
+}
+
+/// ③ 从未挂载（默认夹具：没有挂载行 = `mounts_stale`）→ 不登记、零挂载调用、
+/// 恰一条带课程 ID 与原因的 warn（R-d：只写日志，不写 findings）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_is_not_registered_while_mounts_are_stale() {
+    // 夹具标题是人造词，评审碎片面会对它们逐条落 report-only findings（生长
+    // 自己的留痕，与唤醒无关）——关掉以便「不唤醒零 findings」可判定；写
+    // env：`#[serial]` 互斥，守卫 Drop 恢复。
+    let _fragments_off =
+        set_learning_env(crate::learning_graph::REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+    // 默认形态：课程有结构、有节点，但从未挂载过（须先手动「结构对齐」）。
+    let structured = structured_course().await;
+    let needs = structured
+        .service
+        .maintenance_needs(&structured.course)
+        .await
+        .unwrap();
+    assert!(
+        needs.eligible && needs.mounts_stale,
+        "夹具前提：从未挂载 = stale：{needs:?}"
+    );
+    assert!(needs.pending_mounts >= 1);
+    let findings_before = findings_count(&structured.service, &structured.course_id).await;
+    assert_eq!(findings_before, 0, "夹具前提：起点零 findings");
+
+    let (buffer, _logs) = capture_thread_logs();
+    structured.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &structured.service,
+        &structured.owner,
+        &structured.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+
+    assert!(
+        structured.service.take_growth_wakes().is_empty(),
+        "stale 不登记"
+    );
+    assert_eq!(
+        structured.completer.counts().3,
+        0,
+        "零挂载调用（生长只在后台任务里登记，从不内联挂载）"
+    );
+    let captured = captured_log_text(&buffer);
+    assert_eq!(wake_skip_warns(&captured), 1, "恰一条 warn：\n{captured}");
+    assert_warn_field(&captured, "course", &structured.course_id);
+    assert_warn_field(&captured, "reason", "stale");
+    // R-d：不唤醒的原因不写 findings（它是修补回合的触发条件与输入）。
+    assert_eq!(
+        findings_count(&structured.service, &structured.course_id).await,
+        findings_before,
+        "不唤醒零 findings：{:?}",
+        findings_rows(&structured.service, &structured.course_id).await
+    );
+}
+
+/// ④ 待挂 8 → 登记；待挂 9 → 不登记（恰一条 warn，原因 pending_over_
+/// threshold）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_pending_mount_threshold_is_eight() {
+    // 待挂 8 = 夹具 0 + 更早批次留下的 6 个未挂载节点 + 本次生长 2 个。
+    let fixture = wake_fixture().await;
+    for index in 0..6 {
+        add_unmounted_node(
+            &fixture.service,
+            &fixture.module_id,
+            &format!("存量节点{index}"),
+            2 + index,
+        )
+        .await;
+    }
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 8, "夹具前提：待挂恰 8");
+    assert_eq!(
+        fixture.service.take_growth_wakes().len(),
+        1,
+        "待挂 8 在阈值内（含）：登记"
+    );
+
+    // 待挂 9 = 7 + 2。
+    let fixture = wake_fixture().await;
+    for index in 0..7 {
+        add_unmounted_node(
+            &fixture.service,
+            &fixture.module_id,
+            &format!("存量节点{index}"),
+            2 + index,
+        )
+        .await;
+    }
+    let (buffer, _logs) = capture_thread_logs();
+    fixture.completer.set_draft(wake_batch("乙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 9, "夹具前提：待挂恰 9");
+    assert!(
+        fixture.service.take_growth_wakes().is_empty(),
+        "待挂 9 超阈值：不登记"
+    );
+    let captured = captured_log_text(&buffer);
+    assert_eq!(wake_skip_warns(&captured), 1, "恰一条 warn：\n{captured}");
+    assert_warn_field(&captured, "course", &fixture.course_id);
+    assert_warn_field(&captured, "reason", "pending_over_threshold");
+}
+
+/// ⑤ 去抖：距上次**成功**挂载不足 5 分钟的二次生长不登记（恰一条 warn，
+/// 原因 debounced）；窗口过后再登记。时钟不真实等待——「上次成功挂载」取挂
+/// 载行时刻：刚挂完即「窗口内」，夹具把时刻回拨 10 分钟即「窗口已过」。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_debounces_a_second_growth_within_five_minutes() {
+    let fixture = wake_fixture().await; // 上次成功挂载 = 10 分钟前
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    assert_eq!(
+        fixture.service.take_growth_wakes().len(),
+        1,
+        "窗口外：登记"
+    );
+
+    // 这一挂真的挂成功 → 挂载行时刻 = 现在。
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    fixture
+        .service
+        .run_structure_mount_with_trigger(
+            &fixture.owner,
+            &fixture.course,
+            None,
+            SystemActionTrigger::GrowthFollowup,
+        )
+        .await
+        .unwrap();
+
+    // 5 分钟内二次生长 → 去抖。
+    let (buffer, _logs) = capture_thread_logs();
+    fixture.completer.set_draft(wake_batch("乙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    assert!(
+        fixture.service.take_growth_wakes().is_empty(),
+        "去抖：不登记"
+    );
+    let captured = captured_log_text(&buffer);
+    assert_eq!(wake_skip_warns(&captured), 1, "恰一条 warn：\n{captured}");
+    assert_warn_field(&captured, "course", &fixture.course_id);
+    assert_warn_field(&captured, "reason", "debounced");
+
+    // 窗口过后 → 再登记。
+    backdate_mount_row(&fixture.service, &fixture.course_id, 10).await;
+    fixture.completer.set_draft(wake_batch("丙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    assert_eq!(
+        fixture.service.take_growth_wakes().len(),
+        1,
+        "距上次成功挂载满 5 分钟：登记"
+    );
+}
+
+/// 调度器唤醒分支在 learning crate 侧的等价动作：对每条唤醒意图，以意图里
+/// 的身份跑一个仅挂载回合。
+async fn run_wakes(
+    service: &LearningService,
+    wakes: Vec<GrowthWake>,
+) -> Vec<Option<crate::models::MountRoundSummary>> {
+    let mut rounds = Vec::new();
+    for wake in wakes {
+        rounds.push(
+            service
+                .run_growth_followup_mount(&wake.user_id, &wake.course_id, None)
+                .await
+                .unwrap(),
+        );
+    }
+    rounds
+}
+
+/// ① fresh 挂载行 + 长出两个新节点 → 自动补批落库 → 登记唤醒 → 仅挂载回合
+/// 把新节点挂上，账本行 trigger_source = growth_followup（无操作者）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_mount_round_mounts_new_nodes_as_growth_followup() {
+    let fixture = wake_fixture().await;
+    // 夹具自己挂过一次：之后的调用数都按增量算。
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 2, "夹具前提：新节点在待挂集");
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1, "登记唤醒");
+    assert_eq!(
+        fixture.completer.counts().3,
+        mounts_before,
+        "生长落库后没有内联挂载（ADR-0012）"
+    );
+
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    let summary = rounds[0].as_ref().expect("仅挂载回合已跑");
+    assert_eq!(summary.status, "mounted");
+    assert_eq!((summary.pending_nodes, summary.mounted_nodes), (2, 2));
+
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert!(!needs.mounts_stale);
+    assert_eq!(needs.pending_mounts, 0, "新节点已挂上");
+    let entries = mounted_entries(&fixture.service, &fixture.course_id).await;
+    assert_eq!(
+        entries,
+        vec![
+            ("节点A".to_owned(), vec!["block-a".to_owned()]),
+            ("节点B".to_owned(), vec!["block-b".to_owned()]),
+            ("唤醒节点甲甲".to_owned(), vec!["block-a".to_owned()]),
+            ("唤醒节点甲乙".to_owned(), vec!["block-b".to_owned()]),
+        ],
+        "既有条目保留，新节点挂上"
+    );
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    let mount = rows
+        .iter()
+        .find(|row| {
+            row.kind == "maintenance_mount" && row.trigger == "growth_followup"
+        })
+        .unwrap_or_else(|| panic!("缺 growth_followup 挂载账本行：{rows:?}"));
+    assert_eq!(mount.result, "done");
+    assert_eq!(mount.actor_user_id, None, "自动动作不记操作者");
+    assert!(
+        mount.basis.contains("pending_mount=2"),
+        "basis 带待挂读数：{}",
+        mount.basis
+    );
+    assert_eq!(
+        fixture.completer.counts().2,
+        0,
+        "仅挂载：零修补调用"
+    );
+    assert_eq!(
+        fixture.completer.counts().3,
+        mounts_before + 1,
+        "唤醒挂载恰一次 LLM 调用"
+    );
+}
+
+/// ② 仅挂载模式：有未消费 findings 的课**不跑修补**——结构逐字节不变、水
+/// 位不推进、零修补 LLM 调用；挂载照跑。对照：定时臂（先修补后挂载）对同
+/// 一门课会跑修补。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_mount_only_round_never_runs_repair() {
+    // 关掉评审碎片面，findings 计数只来自本用例手插的行（见 ③ 的说明）。
+    let _fragments_off =
+        set_learning_env(crate::learning_graph::REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+    let fixture = wake_fixture().await;
+    let now = now_ms();
+    for index in 0..2 {
+        sqlx::query(
+            "INSERT INTO learning_structure_findings \
+             (ts, course_id, seq, source, node, field, issue, advice) \
+             VALUES (?, ?, ?, 'concept-review', '块甲', 'definition', ?, '建议')",
+        )
+        .bind(now + index)
+        .bind(fixture.course_id.as_str())
+        .bind(index + 1)
+        .bind(format!("留痕 {index}"))
+        .execute(fixture.service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+    let structure_before: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(fixture.course_id.as_str())
+    .fetch_one(fixture.service.pool_for_tests())
+    .await
+    .unwrap();
+
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.unconsumed_findings, 2);
+    assert!(needs.needs_repair, "夹具前提：定时臂口径下这门课需要修补");
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1, "未消费 findings 不挡唤醒登记");
+    let findings_before = findings_rows(&fixture.service, &fixture.course_id).await;
+
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert_eq!(rounds[0].as_ref().map(|summary| summary.status.as_str()), Some("mounted"));
+
+    let structure_after: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(fixture.course_id.as_str())
+    .fetch_one(fixture.service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(structure_after, structure_before, "仅挂载不动结构");
+    assert_eq!(
+        maintenance_watermark(&fixture.service, &fixture.course).await,
+        None,
+        "未跑修补：水位不推进"
+    );
+    assert_eq!(fixture.completer.counts().2, 0, "零修补 LLM 调用");
+    assert_eq!(
+        findings_rows(&fixture.service, &fixture.course_id).await,
+        findings_before,
+        "findings 原样留着给修补回合"
+    );
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    assert!(
+        rows.iter().all(|row| row.kind != "maintenance_repair"),
+        "账本零修补行：{rows:?}"
+    );
+
+    // 对照：同一门课走定时臂（先修补后挂载）→ 修补照跑。
+    let report = fixture
+        .service
+        .run_maintenance_tick(&fixture.owner, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.courses[0].repair.as_deref(),
+        Some("noop"),
+        "定时臂口径下修补确实需要跑——上面没跑是仅挂载模式的结果"
+    );
+    assert_eq!(fixture.completer.counts().2, 1);
+}
+
+/// 挂载行里的条目（节点 → 块 slug 清单），按行内顺序。
+async fn mounted_entries(
+    service: &LearningService,
+    course_id: &str,
+) -> Vec<(String, Vec<String>)> {
+    let mounts_json: String = sqlx::query_scalar(
+        "SELECT mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+    )
+    .bind(course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    crate::learning_graph::mounting::parse_mount_entries(
+        &serde_json::from_str(&mounts_json).unwrap(),
+    )
+    .into_iter()
+    .map(|entry| (entry.node, entry.blocks))
+    .collect()
+}
+
+/// 存量缺陷修复（sb2 内，用户裁决）：fresh 挂载行上的**增量**挂载——契约门
+/// 的覆盖面按**待挂集**校验。模型照提示词只答待挂集（既有挂载「不要重复输
+/// 出」）必须首轮即过：新节点挂上、既有条目原样保留、恰一次 LLM 调用。修复
+/// 前回合把课程全量节点集传给了 `run_mount_round`，回包因「待挂节点「节点
+/// A」没有条目」被契约门打回（首轮待挂集 = 全量，所以全量挂载一直没暴露）。
+/// 手动 / 定时 / 生长唤醒三个入口共用这一回合，本用例走手动入口。
+#[tokio::test]
+#[serial_test::serial]
+async fn structure_mount_round_incremental_mount_accepts_a_pending_only_reply() {
+    let fixture = wake_fixture().await;
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    let before = growth_ledger_rows(&fixture.service, &fixture.course).await;
+    assert!(
+        fixture
+            .service
+            .kick_growth(&fixture.owner, &fixture.course, true, None)
+            .await
+            .unwrap()
+    );
+    wait_for_growth_ledger(&fixture.service, &fixture.course, before).await;
+
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    let summary = fixture
+        .service
+        .run_structure_mount(&fixture.owner, &fixture.course, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.status, "mounted");
+    assert_eq!(
+        (summary.pending_nodes, summary.mounted_nodes, summary.outside_nodes),
+        (2, 2, 0)
+    );
+    assert_eq!(summary.total_entries, 4, "既有两条 + 本轮两条");
+    assert_eq!(
+        fixture.completer.counts().3,
+        mounts_before + 1,
+        "首轮即过：恰一次挂载调用"
+    );
+    assert_eq!(
+        mounted_entries(&fixture.service, &fixture.course_id).await,
+        vec![
+            ("节点A".to_owned(), vec!["block-a".to_owned()]),
+            ("节点B".to_owned(), vec!["block-b".to_owned()]),
+            ("唤醒节点甲甲".to_owned(), vec!["block-a".to_owned()]),
+            ("唤醒节点甲乙".to_owned(), vec!["block-b".to_owned()]),
+        ],
+        "既有条目原样保留，新节点挂上"
+    );
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    let latest = rows
+        .iter()
+        .find(|row| row.kind == "maintenance_mount")
+        .expect("mount ledger row");
+    assert_eq!((latest.trigger.as_str(), latest.result.as_str()), ("manual", "done"));
+    assert!(
+        latest.basis.contains("pending_mount=2"),
+        "basis 带待挂读数：{}",
+        latest.basis
+    );
+}
+
+async fn set_auto_maintenance(service: &LearningService, enabled: bool) {
+    sqlx::query(
+        "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind("learning.maintenanceAutoEnabled")
+    .bind(if enabled { "true" } else { "false" })
+    .bind(now_ms())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+}
+
+/// 自动维护运行期关（`learning.maintenanceAutoEnabled=false`）→ 唤醒回合不
+/// 启动：零挂载调用、零账本行。唤醒回合是自动维护的一种，与调度器同一组开
+/// 关（环境闸 `NOMI_LEARNING_AUTO_MAINTENANCE=off` 本就不注册调度器）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_round_does_not_start_when_auto_maintenance_is_off() {
+    let fixture = wake_fixture().await;
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1, "登记照常：开关在回合启动时读");
+
+    set_auto_maintenance(&fixture.service, false).await;
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert!(
+        rounds[0].is_none(),
+        "自动维护关：回合不启动：{:?}",
+        rounds[0]
+    );
+    assert_eq!(fixture.completer.counts().3, mounts_before, "零挂载调用");
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    assert!(
+        rows
+            .iter()
+            .all(|row| !(row.kind == "maintenance_mount" && row.trigger == "growth_followup")),
+        "零唤醒挂载账本行：{rows:?}"
+    );
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 2, "节点仍在待挂集");
+
+    // 对照：开关打开 → 同一形态照常启动（上面不是夹具本身不准入）。
+    fixture.completer.set_draft(wake_batch("乙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1, "登记不受运行期开关影响");
+    set_auto_maintenance(&fixture.service, true).await;
+    fixture.completer.set_mount(wake_mount_artifact(&[
+        ("唤醒节点甲甲", &["block-a"]),
+        ("唤醒节点甲乙", &["block-b"]),
+        ("唤醒节点乙甲", &["block-a"]),
+        ("唤醒节点乙乙", &["block-b"]),
+    ]));
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert_eq!(
+        rounds[0].as_ref().map(|summary| summary.status.as_str()),
+        Some("mounted")
+    );
+}
+
+/// ⑥ 挂载失败只留痕：生长批仍在库、Failed 动作簿行在（trigger =
+/// growth_followup）、findings 表零新增行、不重试整链；节点仍在待挂集，下次
+/// 唤醒再试。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_mount_failure_keeps_the_batch_and_writes_no_findings() {
+    let _fragments_off =
+        set_learning_env(crate::learning_graph::REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+    let fixture = wake_fixture().await;
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(findings_count(&fixture.service, &fixture.course_id).await, 0, "夹具前提：起点零 findings");
+
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    fixture.completer.set_mount_fails(true);
+    let error = fixture
+        .service
+        .run_growth_followup_mount(&wakes[0].user_id, &wakes[0].course_id, None)
+        .await
+        .expect_err("挂载失败如实上抛（Failed 行由回合自己写）");
+    assert!(error.to_string().contains("model unavailable"), "{error}");
+    assert_eq!(
+        fixture.completer.counts().3,
+        mounts_before + 1,
+        "不重试整链：恰一次挂载调用"
+    );
+
+    // 生长批仍在库（不回滚）。
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(fixture.course_id.as_str())
+    .fetch_one(fixture.service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1);
+    let lessons: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ?",
+    )
+    .bind(fixture.course_id.as_str())
+    .fetch_one(fixture.service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(lessons, 4, "夹具 2 + 本批 2");
+
+    // Failed 动作簿行在；不额外写 findings。
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    let failed = rows
+        .iter()
+        .find(|row| row.kind == "maintenance_mount" && row.result == "failed")
+        .unwrap_or_else(|| panic!("缺 Failed 挂载账本行：{rows:?}"));
+    assert_eq!(failed.trigger, "growth_followup");
+    assert!(!failed.reason.is_empty(), "失败原因如实落账");
+    assert_eq!(
+        findings_rows(&fixture.service, &fixture.course_id).await,
+        Vec::<(String, String)>::new(),
+        "findings 表零新增行"
+    );
+
+    // 节点仍在待挂集：下次唤醒再试即挂上。
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 2);
+    assert!(!needs.mounts_stale, "失败的回合不动挂载行");
+    fixture.completer.set_mount_fails(false);
+    fixture.completer.set_draft(wake_batch("乙"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1, "失败的节点仍在待挂集：下次生长再登记");
+    fixture.completer.set_mount(wake_mount_artifact(&[
+        ("唤醒节点甲甲", &["block-a"]),
+        ("唤醒节点甲乙", &["block-b"]),
+        ("唤醒节点乙甲", &["block-a"]),
+        ("唤醒节点乙乙", &["block-b"]),
+    ]));
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert_eq!(
+        rounds[0].as_ref().map(|summary| summary.pending_nodes),
+        Some(4),
+        "下次唤醒把失败遗留的与新增的一并挂上"
+    );
+}
+
+/// 执行前复核：登记到执行之间（任务闸排队、同课其它回合）挂载失效或待挂
+/// 数越过阈值 → 回合不启动（零挂载调用、零账本行，只留一条 warn）——自动路
+/// 径的边界不在执行时被绕过，不会突然做一次全量重挂。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_round_rechecks_admission_before_mounting() {
+    // 场景一：登记之后结构变过（手动修补）→ 挂载整体失效。
+    let fixture = wake_fixture().await;
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1);
+    // 登记之后、执行之前：结构改了（块乙换 slug）。
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(wake_envelope("block-z"))
+        .bind(fixture.course_id.as_str())
+        .execute(fixture.service.pool_for_tests())
+        .await
+        .unwrap();
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert!(
+        needs.mounts_stale && needs.pending_mounts == 4,
+        "夹具前提：结构变过 = 全量待重挂：{needs:?}"
+    );
+
+    let (buffer, _logs) = capture_thread_logs();
+    fixture.completer.set_mount(new_nodes_mount_reply());
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert!(
+        rounds[0].is_none(),
+        "复核不过：回合不启动：{:?}",
+        rounds[0]
+    );
+    assert_eq!(
+        fixture.completer.counts().3,
+        mounts_before,
+        "零挂载调用：不做全量重挂"
+    );
+    let rows = system_action_rows(&fixture.service, &fixture.course).await;
+    assert!(
+        rows
+            .iter()
+            .all(|row| !(row.kind == "maintenance_mount" && row.trigger == "growth_followup")),
+        "零唤醒挂载账本行：{rows:?}"
+    );
+    let captured = captured_log_text(&buffer);
+    assert_eq!(
+        captured
+            .lines()
+            .filter(|line| line.contains("WARN") && line.contains("growth followup mount round"))
+            .count(),
+        1,
+        "复核不过恰一条 warn：\n{captured}"
+    );
+    assert!(
+        captured.contains("reason=\"stale\""),
+        "warn 带原因：{captured}"
+    );
+
+    // 场景二：登记之后待挂数越过阈值（存量补入 8 个节点 → 2 + 8 = 10）。
+    let fixture = wake_fixture().await;
+    let mounts_before = fixture.completer.counts().3;
+    fixture.completer.set_draft(wake_batch("甲"));
+    growth_settled(
+        &fixture.service,
+        &fixture.owner,
+        &fixture.course,
+        SystemActionTrigger::AutoRefill,
+    )
+    .await;
+    let wakes = fixture.service.take_growth_wakes();
+    assert_eq!(wakes.len(), 1);
+    for index in 0..8 {
+        add_unmounted_node(
+            &fixture.service,
+            &fixture.module_id,
+            &format!("存量节点{index}"),
+            4 + index,
+        )
+        .await;
+    }
+    let needs = fixture
+        .service
+        .maintenance_needs(&fixture.course)
+        .await
+        .unwrap();
+    assert_eq!(needs.pending_mounts, 10, "夹具前提：越过阈值");
+    let rounds = run_wakes(&fixture.service, wakes).await;
+    assert!(rounds[0].is_none(), "待挂超阈值：回合不启动");
+    assert_eq!(fixture.completer.counts().3, mounts_before, "零挂载调用");
+}
+
+/// 空手批不登记唤醒：没有新节点，也不经过批次提交之后的登记点。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_wake_ignores_an_idle_batch() {
+    let fixture = wake_fixture().await;
+    // 待挂集非空（更早留下的一个未挂节点）——空手批若也走登记，这里就会登记。
+    add_unmounted_node(&fixture.service, &fixture.module_id, "存量节点", 2).await;
+    fixture
+        .completer
+        .set_draft(r#"{ "nodes": [], "mints": [], "note": "无新增" }"#);
+    assert!(
+        fixture
+            .service
+            .kick_growth_with_trigger(
+                &fixture.owner,
+                &fixture.course,
+                true,
+                None,
+                SystemActionTrigger::AutoRefill,
+            )
+            .await
+            .unwrap()
+    );
+    wait_for_growth_task_settled(&fixture.service).await;
+    let detail: Vec<String> = fixture
+        .service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == crate::service::KIND_GROWTH)
+        .filter_map(|task| task.detail)
+        .collect();
+    assert!(
+        detail.iter().any(|text| text.contains("就绪已满")),
+        "夹具前提：这一批确实是空手批：{detail:?}"
+    );
+    assert!(
+        fixture.service.take_growth_wakes().is_empty(),
+        "空手批不登记唤醒"
+    );
+}
+
