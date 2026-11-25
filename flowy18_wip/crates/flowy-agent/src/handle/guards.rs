@@ -1,5 +1,7 @@
 //! Workspace tool registry, path confinement, and shell guard hooks.
 
+use flowy_agent_core::tools::evaluate_shell_command;
+
 use super::{
     AgentWorkspace, Arc, Path, PathBuf, ToolCallArgs, ToolGuard, ToolRegistry,
     log_storage_io_error, pi_shell_definition, register_builtin_tools,
@@ -31,10 +33,44 @@ pub(super) fn tool_registry(cwd: &Path) -> ToolRegistry {
     // host can satisfy instead of advertising one that always fails.
     registry.unregister("todo_write");
     let root = cwd.to_path_buf();
-    let guard: ToolGuard =
+    let file_guard: ToolGuard =
         Arc::new(move |args: &ToolCallArgs| path_guard(&root, args));
-    registry.add_guard(guard);
+    registry.add_guard(file_guard);
+    let shell_root = cwd.to_path_buf();
+    let shell_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        shell_policy_guard(&shell_root, args)
+    });
+    registry.add_guard(shell_guard);
     registry
+}
+
+/// Static cross-platform safety guard for shell commands (`powershell` / `bash`).
+///
+/// Complements `path_guard` by blocking host-wide destructive operations,
+/// credential store exfiltration, OS privilege escalation, and macOS privacy
+/// dialog tampering before `pi_shell` spawns any subprocess.
+pub(super) fn shell_policy_guard(
+    root: &Path,
+    args: &ToolCallArgs,
+) -> Option<String> {
+    if !matches!(args.name.as_str(), "powershell" | "bash") {
+        return None;
+    }
+    let command = args
+        .arguments
+        .get("command")
+        .and_then(serde_json::Value::as_str)?;
+    let decision = evaluate_shell_command(command, root);
+    if let Some(reason) = decision.denial_message() {
+        tracing::warn!(
+            target: "flowy.sandbox",
+            tool = %args.name,
+            reason = %reason,
+            "blocked shell command by static safety policy"
+        );
+        return Some(reason);
+    }
+    None
 }
 
 /// Host policy for file tools. The platform shell is intentionally exempt: it

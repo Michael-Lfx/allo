@@ -735,6 +735,14 @@ impl AgentHandle {
         Ok(())
     }
 
+    /// Honest OS sandbox availability status for the host shell layer.
+    #[must_use]
+    pub fn sandbox_availability(
+        &self,
+    ) -> flowy_agent_core::tools::SandboxAvailability {
+        flowy_agent_core::tools::detect_sandbox_availability()
+    }
+
     pub fn drain_updates(&self) -> Vec<AgentUpdate> {
         lock(&self.inner.state.updates).drain(..).collect()
     }

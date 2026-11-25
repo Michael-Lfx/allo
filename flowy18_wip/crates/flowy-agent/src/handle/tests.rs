@@ -1208,4 +1208,44 @@ mod guard_tests {
         let _ = std::fs::remove_dir(&link);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn shell_policy_guard_blocks_dangerous_commands_and_allows_workspace_work()
+    {
+        let cwd = Path::new("workspace");
+        for blocked in [
+            ("bash", "tccutil reset All com.flowy.app"),
+            ("bash", "rm -rf /"),
+            ("powershell", "Remove-Item -Recurse -Force C:\\Windows"),
+            (
+                "powershell",
+                "Get-Content $env:APPDATA\\Flowy\\Flowy\\data\\auth\\session.json",
+            ),
+        ] {
+            let args = ToolCallArgs {
+                call_id: "c-block".to_owned(),
+                name: blocked.0.to_owned(),
+                arguments: serde_json::json!({ "command": blocked.1 }),
+            };
+            assert!(
+                super::shell_policy_guard(cwd, &args).is_some(),
+                "expected shell_policy_guard to block {blocked:?}"
+            );
+        }
+        for allowed in [
+            ("powershell", "Write-Output 'ok'"),
+            ("bash", "rm -rf ./tmp_out"),
+        ] {
+            let args = ToolCallArgs {
+                call_id: "c-allow".to_owned(),
+                name: allowed.0.to_owned(),
+                arguments: serde_json::json!({ "command": allowed.1 }),
+            };
+            assert_eq!(
+                super::shell_policy_guard(cwd, &args),
+                None,
+                "expected shell_policy_guard to allow {allowed:?}"
+            );
+        }
+    }
 }

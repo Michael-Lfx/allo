@@ -36,6 +36,10 @@ pub use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, ReceiptState,
     RequiredDeliverable, SessionOrigin, SessionWorkspace, SubmissionOutcome,
     WorkContract,
+    tools::{
+        SandboxAvailability, SandboxBackend, SandboxPolicy,
+        detect_sandbox_availability,
+    },
 };
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
