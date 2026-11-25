@@ -77,8 +77,16 @@ pub fn is_windows_reserved_device_name(name: &str) -> bool {
 
 #[must_use]
 pub fn has_reserved_device_component(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
     path.components().any(|component| match component {
-        std::path::Component::Normal(part) => part.to_str().is_some_and(|s| {
+        Component::Prefix(prefix) => match prefix.kind() {
+            Prefix::DeviceNS(_) => true,
+            Prefix::Verbatim(name) => {
+                name.to_str().is_none_or(is_windows_reserved_device_name)
+            }
+            _ => false,
+        },
+        Component::Normal(part) => part.to_str().is_none_or(|s| {
             is_windows_reserved_device_name(s)
                 || (cfg!(windows) && s.contains(':'))
         }),

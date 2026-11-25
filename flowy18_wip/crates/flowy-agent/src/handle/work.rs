@@ -118,6 +118,140 @@ impl AgentHandle {
         ))
     }
 
+    /// Single-pass batch projection of work contracts for the Work Board:
+    /// avoids `O(S + R)` replays of `acceptance/journal.jsonl`, `committed_ids`,
+    /// and full `SessionRecord` clones on the UI thread.
+    ///
+    /// Returns `(by_session_id, by_work_id)`.
+    #[must_use]
+    pub fn board_work_contracts(
+        &self,
+        visible_receipts: &[(AcceptedMessage, ReceiptState)],
+    ) -> (
+        std::collections::HashMap<String, WorkStatus>,
+        std::collections::HashMap<String, WorkStatus>,
+    ) {
+        use std::collections::HashMap;
+        let store = self.inner.state.artifact_store.get();
+        let committed_ids = store
+            .and_then(|s| s.committed_ids().ok())
+            .unwrap_or_default();
+        let mut artifact_cache: HashMap<
+            String,
+            Option<(PublicationState, String, String)>,
+        > = HashMap::new();
+        let mut lookup_artifact = |id: &str| {
+            artifact_cache
+                .entry(id.to_owned())
+                .or_insert_with(|| {
+                    store.and_then(|s| s.get(id).ok()).flatten().map(|item| {
+                        (
+                            item.manifest.publication_state,
+                            item.manifest.receipt.display_name,
+                            item.manifest.receipt.delivery_key,
+                        )
+                    })
+                })
+                .clone()
+        };
+
+        let mut by_session: HashMap<String, WorkStatus> = HashMap::new();
+        let mut by_work: HashMap<String, WorkStatus> = HashMap::new();
+        let now = now_ms();
+
+        let engine = lock(&self.inner.engine).clone();
+        if let Some(engine) = &engine {
+            engine.with_sessions(|records| {
+                for rec in records {
+                    let submission_id = latest_session_submission_id(rec);
+                    if submission_id.is_none()
+                        && rec.work_contract.is_none()
+                        && rec.delivery_commits.is_empty()
+                    {
+                        continue;
+                    }
+                    let matched_receipt = visible_receipts
+                        .iter()
+                        .filter(|(receipt, _)| {
+                            receipt.target_session_id.as_deref()
+                                == Some(rec.id.as_str())
+                                && match submission_id.as_deref() {
+                                    Some(sub) => {
+                                        receipt.submission_id.as_deref()
+                                            == Some(sub)
+                                    }
+                                    None => true,
+                                }
+                        })
+                        .max_by_key(|(receipt, _)| receipt.created_at_ms);
+                    let work_id = matched_receipt
+                        .map(|(r, _)| r.id.clone())
+                        .or_else(|| submission_id.clone())
+                        .unwrap_or_else(|| rec.id.clone());
+                    let status = build_work_status_borrowed(
+                        &work_id,
+                        matched_receipt.map(|(_, st)| *st),
+                        Some(rec),
+                        Some(rec.id.clone()),
+                        submission_id,
+                        &committed_ids,
+                        &mut lookup_artifact,
+                    );
+                    by_session.insert(rec.id.clone(), status);
+                }
+
+                for (receipt, state) in visible_receipts {
+                    let session_id = receipt.target_session_id.clone();
+                    let submission_id = receipt.submission_id.clone();
+                    let rec = session_id
+                        .as_deref()
+                        .and_then(|sid| records.iter().find(|r| r.id == sid))
+                        .or_else(|| {
+                            submission_id.as_deref().and_then(|sub| {
+                                records.iter().find(|r| {
+                                    r.submission_outcomes.contains_key(sub)
+                                        || r.submission_revisions
+                                            .contains_key(sub)
+                                        || r.delivery_commits
+                                            .iter()
+                                            .any(|c| c.submission_id == sub)
+                                })
+                            })
+                        });
+                    let resolved_sid =
+                        session_id.or_else(|| rec.map(|r| r.id.clone()));
+                    let status = build_work_status_borrowed(
+                        &receipt.id,
+                        Some(*state),
+                        rec,
+                        resolved_sid,
+                        submission_id,
+                        &committed_ids,
+                        &mut lookup_artifact,
+                    );
+                    by_work.insert(receipt.id.clone(), status);
+                }
+            });
+        } else {
+            for (receipt, state) in visible_receipts {
+                let status = WorkStatus {
+                    work_id: receipt.id.clone(),
+                    session_id: receipt.target_session_id.clone(),
+                    submission_id: receipt.submission_id.clone(),
+                    contract_revision: None,
+                    receipt_state: Some(*state)
+                        .or_else(|| Some(receipt.state_at(now))),
+                    outcome: None,
+                    required_items: Vec::new(),
+                    delivered_artifact_ids: Vec::new(),
+                    missing_items: Vec::new(),
+                };
+                by_work.insert(receipt.id.clone(), status);
+            }
+        }
+        (by_session, by_work)
+    }
+
     fn build_work_status(
         &self,
         work_id: &str,
@@ -132,94 +266,24 @@ impl AgentHandle {
         let committed_ids = store
             .and_then(|s| s.committed_ids().ok())
             .unwrap_or_default();
-        let mut delivered_artifact_ids = Vec::new();
-        let mut contract_revision = None;
-        let mut required_items = Vec::new();
-        let mut outcome = None;
-        let mut missing_items = Vec::new();
-        if let Some(rec) = &record {
-            contract_revision = submission_id
-                .as_deref()
-                .and_then(|sub| rec.submission_revisions.get(sub).copied())
-                .or_else(|| rec.work_contract.as_ref().map(|c| c.revision));
-            required_items = rec
-                .work_contract
-                .as_ref()
-                .map_or_default(|c| c.required_items.clone());
-            outcome = submission_id
-                .as_deref()
-                .and_then(|sub| rec.submission_outcomes.get(sub).cloned());
-            for commit in &rec.delivery_commits {
-                let belongs = match submission_id.as_deref() {
-                    Some(sub) => {
-                        commit.submission_id == sub
-                            || contract_revision.is_some_and(|rev| {
-                                rec.submission_revisions
-                                    .get(&commit.submission_id)
-                                    .copied()
-                                    == Some(rev)
-                            })
-                    }
-                    None => true,
-                };
-                if belongs {
-                    for artifact_id in &commit.artifact_ids {
-                        if committed_ids.contains(artifact_id)
-                            && !delivered_artifact_ids.contains(artifact_id)
-                            && store
-                                .and_then(|s| s.get(artifact_id).ok())
-                                .flatten()
-                                .is_none_or(|item| {
-                                    !matches!(
-                                        item.manifest.publication_state,
-                                        PublicationState::Deleted
-                                            | PublicationState::DeletePending
-                                    )
-                                })
-                        {
-                            delivered_artifact_ids.push(artifact_id.clone());
-                        }
-                    }
-                }
-            }
-            if let Some(SubmissionOutcome::Partial { missing }) = &outcome {
-                missing_items.clone_from(missing);
-            } else if !matches!(outcome, Some(SubmissionOutcome::Completed))
-                && let Some(contract) = &rec.work_contract
-                && !contract.required_items.is_empty()
-            {
-                let delivered_meta: Vec<(String, String)> =
-                    delivered_artifact_ids
-                        .iter()
-                        .filter_map(|id| {
-                            store.and_then(|s| s.get(id).ok()).flatten().map(
-                                |item| {
-                                    (
-                                        item.manifest.receipt.display_name,
-                                        item.manifest.receipt.delivery_key,
-                                    )
-                                },
-                            )
-                        })
-                        .collect();
-                let pairs: Vec<(&str, &str)> = delivered_meta
-                    .iter()
-                    .map(|(n, k)| (n.as_str(), k.as_str()))
-                    .collect();
-                missing_items = contract.missing_deliverables(&pairs);
-            }
-        }
-        WorkStatus {
-            work_id: work_id.to_owned(),
+        let mut lookup_artifact = |id: &str| {
+            store.and_then(|s| s.get(id).ok()).flatten().map(|item| {
+                (
+                    item.manifest.publication_state,
+                    item.manifest.receipt.display_name,
+                    item.manifest.receipt.delivery_key,
+                )
+            })
+        };
+        build_work_status_borrowed(
+            work_id,
+            receipt_state,
+            record.as_ref(),
             session_id,
             submission_id,
-            contract_revision,
-            receipt_state,
-            outcome,
-            required_items,
-            delivered_artifact_ids,
-            missing_items,
-        }
+            &committed_ids,
+            &mut lookup_artifact,
+        )
     }
 
     /// Strongly-typed task cancellation decoupled from whichever session the
@@ -307,16 +371,26 @@ impl AgentHandle {
     }
 
     /// Optional graceful-close hint: pauses autonomous draining, cancels
-    /// cancellable busy turns (preserving finalizing deliveries), waits briefly
-    /// for cancelled turns/tools (including already-cancelling fences) to
-    /// finish reaping, and flushes the UI index. Crash correctness never
-    /// depends on calling this.
+    /// cancellable busy turns (preserving and waiting briefly for finalizing
+    /// deliveries), flushes the UI index before and after reaping, and returns
+    /// within the bounded timeout. Crash correctness never depends on calling
+    /// this.
     pub fn prepare_shutdown(&self) {
+        self.prepare_shutdown_with_timeout(std::time::Duration::from_secs(2));
+    }
+
+    /// Bounded variant of [`Self::prepare_shutdown`] so UI frameworks with
+    /// strict quit deadlines can align the grace wait without losing the
+    /// initial `persist_index` flush.
+    pub fn prepare_shutdown_with_timeout(&self, timeout: std::time::Duration) {
         self.inner
             .state
             .autonomous_drain
             .store(false, Ordering::Release);
         self.inner.state.drain_cancel.cancel();
+        // Persist immediately so index updates survive even if the host exits
+        // before child-process reaping completes.
+        let _ = persist_index(&self.inner.state);
         let mut to_wait: BTreeSet<String> =
             self.busy_session_ids().into_iter().collect();
         let engine = lock(&self.inner.engine).clone();
@@ -328,7 +402,12 @@ impl AgentHandle {
         let mut wait_list = Vec::new();
         for session_id in to_wait {
             match self.cancel_task(TaskTarget::Session(session_id.clone())) {
-                Ok(CancelOutcome::Cancelled) => {
+                Ok(
+                    CancelOutcome::Cancelled
+                    | CancelOutcome::FinalizingNotCancellable,
+                ) => {
+                    // Wait for both cancelled turns reaping child processes AND
+                    // finalizing deliveries finishing their atomic commit.
                     wait_list.push(session_id);
                 }
                 Ok(CancelOutcome::AlreadySettled) => {
@@ -340,14 +419,14 @@ impl AgentHandle {
                         wait_list.push(session_id);
                     }
                 }
-                Ok(CancelOutcome::FinalizingNotCancellable) | Err(_) => {}
+                Err(_) => {}
             }
         }
         if !wait_list.is_empty()
+            && !timeout.is_zero()
             && let Some(engine) = engine
         {
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + timeout;
             for session_id in wait_list {
                 let remaining = deadline
                     .saturating_duration_since(std::time::Instant::now());
@@ -723,5 +802,98 @@ fn reconcile_partial_work_inner(
             SubmissionOutcome::Partial { missing }
         };
         let _ = engine.set_submission_outcome(session_id, &sub_id, next);
+    }
+}
+
+fn build_work_status_borrowed<F>(
+    work_id: &str,
+    receipt_state: Option<ReceiptState>,
+    record: Option<&SessionRecord>,
+    session_id: Option<String>,
+    submission_id: Option<String>,
+    committed_ids: &BTreeSet<String>,
+    lookup_artifact: &mut F,
+) -> WorkStatus
+where
+    F: FnMut(&str) -> Option<(PublicationState, String, String)>,
+{
+    let mut delivered_artifact_ids = Vec::new();
+    let mut contract_revision = None;
+    let mut required_items = Vec::new();
+    let mut outcome = None;
+    let mut missing_items = Vec::new();
+    if let Some(rec) = record {
+        contract_revision = submission_id
+            .as_deref()
+            .and_then(|sub| rec.submission_revisions.get(sub).copied())
+            .or_else(|| rec.work_contract.as_ref().map(|c| c.revision));
+        required_items = rec
+            .work_contract
+            .as_ref()
+            .map_or_default(|c| c.required_items.clone());
+        outcome = submission_id
+            .as_deref()
+            .and_then(|sub| rec.submission_outcomes.get(sub).cloned());
+        for commit in &rec.delivery_commits {
+            let belongs = match submission_id.as_deref() {
+                Some(sub) => {
+                    commit.submission_id == sub
+                        || contract_revision.is_some_and(|rev| {
+                            rec.submission_revisions
+                                .get(&commit.submission_id)
+                                .copied()
+                                == Some(rev)
+                        })
+                }
+                None => true,
+            };
+            if belongs {
+                for artifact_id in &commit.artifact_ids {
+                    if committed_ids.contains(artifact_id)
+                        && !delivered_artifact_ids.contains(artifact_id)
+                        && lookup_artifact(artifact_id).is_none_or(
+                            |(pub_state, _, _)| {
+                                !matches!(
+                                    pub_state,
+                                    PublicationState::Deleted
+                                        | PublicationState::DeletePending
+                                )
+                            },
+                        )
+                    {
+                        delivered_artifact_ids.push(artifact_id.clone());
+                    }
+                }
+            }
+        }
+        if let Some(SubmissionOutcome::Partial { missing }) = &outcome {
+            missing_items.clone_from(missing);
+        } else if !matches!(outcome, Some(SubmissionOutcome::Completed))
+            && let Some(contract) = &rec.work_contract
+            && !contract.required_items.is_empty()
+        {
+            let delivered_meta: Vec<(String, String)> = delivered_artifact_ids
+                .iter()
+                .filter_map(|id| {
+                    lookup_artifact(id).map(|(_, name, key)| (name, key))
+                })
+                .collect();
+            let pairs: Vec<(&str, &str)> = delivered_meta
+                .iter()
+                .map(|(n, k)| (n.as_str(), k.as_str()))
+                .collect();
+            missing_items = contract.missing_deliverables(&pairs);
+        }
+    }
+    WorkStatus {
+        work_id: work_id.to_owned(),
+        session_id,
+        submission_id,
+        contract_revision,
+        receipt_state,
+        outcome,
+        required_items,
+        delivered_artifact_ids,
+        missing_items,
     }
 }

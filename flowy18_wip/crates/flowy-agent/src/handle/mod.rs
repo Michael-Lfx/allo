@@ -891,15 +891,26 @@ impl AgentHandle {
         let engine = lock(&self.inner.engine).clone();
         engine
             .as_ref()
-            .and_then(|engine| engine.session(session_id))
-            .is_some_and(|record| {
-                latest_session_submission_id(&record).is_some_and(|sub_id| {
-                    matches!(
-                        record.submission_outcomes.get(&sub_id),
-                        Some(SubmissionOutcome::Partial { .. })
-                    )
+            .and_then(|engine| {
+                engine.with_session(session_id, |record| {
+                    latest_session_submission_id(record).is_some_and(|sub_id| {
+                        matches!(
+                            record.submission_outcomes.get(&sub_id),
+                            Some(SubmissionOutcome::Partial { .. })
+                        )
+                    })
                 })
             })
+            .unwrap_or(false)
+    }
+
+    /// Returns the live [`TurnStatus`] of `session_id` in O(1) without disk I/O
+    /// or cloning session history.
+    #[must_use]
+    pub fn session_status(&self, session_id: &str) -> TurnStatus {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .map_or(TurnStatus::Idle, |session| session.status.clone())
     }
 
     /// Returns the projected lines of `session_id` so UI inspectors can

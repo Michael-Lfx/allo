@@ -337,7 +337,7 @@ impl Harness {
                 {
                     state.push_update(AgentUpdate::Receipt {
                         id: claimed.id.clone(),
-                        state: ReceiptState::Retrying,
+                        state: ReceiptState::Queued,
                     });
                 }
                 return Ok(None);

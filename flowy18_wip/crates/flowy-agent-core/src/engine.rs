@@ -180,12 +180,46 @@ impl Engine {
 
     #[must_use]
     pub fn sessions(&self) -> Vec<SessionRecord> {
-        self.inner.lock().unwrap().index.sessions.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .sessions
+            .clone()
     }
 
     #[must_use]
     pub fn session(&self, id: &str) -> Option<SessionRecord> {
-        self.inner.lock().unwrap().index.get(id).cloned()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .get(id)
+            .cloned()
+    }
+
+    /// Borrows a single session record under the engine lock without cloning
+    /// its full message history.
+    pub fn with_session<R>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&SessionRecord) -> R,
+    ) -> Option<R> {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.index.get(id).map(f)
+    }
+
+    /// Borrows all session records under the engine lock for zero-clone batch
+    /// projections (e.g. Work Board snapshots).
+    pub fn with_sessions<R>(&self, f: impl FnOnce(&[SessionRecord]) -> R) -> R {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&guard.index.sessions)
     }
 
     #[must_use]
