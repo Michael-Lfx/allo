@@ -79,10 +79,16 @@ pub enum PreviewBody {
 /// Reads one file for preview, classifying it by extension and size.
 pub fn load_preview(path: &str) -> PreviewBody {
     let path = Path::new(path);
-    let Ok(meta) = std::fs::metadata(path) else {
+    if flowy_agent::has_reserved_device_component(path) {
+        return PreviewBody::Notice("chat.preview_missing");
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
         return PreviewBody::Notice("chat.preview_missing");
     };
-    if !meta.is_file() {
+    if !meta.is_file()
+        || meta.file_type().is_symlink()
+        || flowy_agent::is_windows_reparse_point(&meta)
+    {
         return PreviewBody::Notice("chat.preview_missing");
     }
     if meta.len() > MAX_PREVIEW_BYTES {

@@ -996,16 +996,16 @@ impl StudioPanel {
                 cx.notify();
                 return;
             }
-            // Completed and Stopped are terminal; DeliveryFailed already
-            // produced its artifacts and has its own retry surface, so it
-            // must not rerun the whole turn. Only a plain error is retried,
-            // with the journal's backoff.
+            // Completed and DeliveryFailed already finished their LLM work
+            // (DeliveryFailed has its own Retry Delivery surface). Stopped
+            // (e.g. provider stream abort), Error, and Idle must NOT be stamped
+            // Completed so queued prompts are never silently lost.
             let attempts = self.agent.accepted_attempts().unwrap_or(0);
             let completed = claimed_status.is_some_and(|status| {
-                !matches!(
+                matches!(
                     status,
-                    flowy_agent::TurnStatus::Error { .. }
-                        | flowy_agent::TurnStatus::Idle
+                    flowy_agent::TurnStatus::Completed
+                        | flowy_agent::TurnStatus::DeliveryFailed
                 )
             });
             match self.agent.finish_accepted(completed) {
@@ -1124,6 +1124,8 @@ impl StudioPanel {
                 if let Ok(store) = self.agent.artifact_store()
                     && let Ok(records) = store.list()
                 {
+                    let overridden_hashes =
+                        self.agent.overridden_artifact_hashes();
                     let items = records
                         .into_iter()
                         .map(|record| {
@@ -1134,7 +1136,7 @@ impl StudioPanel {
                                 .unwrap_or_default()
                                 .to_ascii_lowercase();
                             let override_used =
-                                self.agent.artifact_was_overridden(&receipt.sha256);
+                                overridden_hashes.contains(&receipt.sha256);
                             crate::library::LibraryItem {
                                 id: receipt.artifact_id,
                                 title: receipt.display_name,
@@ -1654,7 +1656,8 @@ impl StudioPanel {
         let target = session_id.to_owned();
         cx.background_executor()
             .spawn(async move {
-                agent.stop_if_active(Some(&target));
+                let _ =
+                    agent.cancel_task(flowy_agent::TaskTarget::Session(target));
             })
             .detach();
         cx.notify();

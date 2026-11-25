@@ -2261,7 +2261,14 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         .expect("open main window");
     window
         .update(cx, |app, window, cx| {
-            window.on_window_should_close(cx, |window, cx| {
+            let quit_subscription = cx.on_app_quit(|app, cx| {
+                let agent = app.studio.read(cx).agent.clone();
+                cx.background_executor().spawn(async move {
+                    agent.prepare_shutdown();
+                })
+            });
+            app.subscriptions.push(quit_subscription);
+            window.on_window_should_close(cx, move |window, cx| {
                 // Hide to the tray only when a tray icon exists to bring the
                 // window back; otherwise closing would strand the process
                 // with no window and no way to quit.
