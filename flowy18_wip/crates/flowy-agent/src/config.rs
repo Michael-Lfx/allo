@@ -66,6 +66,16 @@ impl LlmConfig {
     }
 
     #[must_use]
+    pub fn requires_cloud_ready(&self) -> bool {
+        self.provider == "flowy"
+    }
+
+    #[must_use]
+    pub fn can_run_turns(&self) -> bool {
+        self.uses_live() || !self.requires_cloud_ready()
+    }
+
+    #[must_use]
     pub fn openai_section(&self) -> Option<Value> {
         let api_key = self.api_key.as_ref()?;
         Some(json!({

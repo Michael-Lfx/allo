@@ -95,6 +95,7 @@ struct Live {
 struct AcceptedClaim {
     receipt_id: String,
     attempt_id: String,
+    session_id: String,
     attempts: u32,
 }
 
@@ -1266,9 +1267,20 @@ impl AgentHandle {
         let hint = lock(&self.inner.state.active)
             .clone()
             .filter(|id| lock(&self.inner.state.live).contains_key(id));
-        AcceptanceQueue::new(self.inner.state.root.clone())
+        let receipt = AcceptanceQueue::new(self.inner.state.root.clone())
             .accept(hint.as_deref(), text, now_ms())
-            .map_err(|_| "notice.storage_error")
+            .map_err(|_| "notice.storage_error")?;
+        let root_session_id =
+            hint.as_deref().map(|id| self.root_session_id_for(id));
+        tracing::info!(
+            target: "flowy.acceptance",
+            event = "accepted",
+            receipt_id = %receipt.id,
+            session_id = hint.as_deref().unwrap_or(""),
+            root_session_id = root_session_id.as_deref().unwrap_or(""),
+            "accepted prompt into durable queue"
+        );
+        Ok(receipt)
     }
 
     /// Receipts accepted but not picked up yet, oldest first.
@@ -1277,6 +1289,18 @@ impl AgentHandle {
         AcceptanceQueue::new(self.inner.state.root.clone())
             .pending()
             .unwrap_or_default()
+    }
+
+    /// Whether the configured provider requires the cloud catalog before running.
+    #[must_use]
+    pub fn requires_cloud_ready(&self) -> bool {
+        lock(&self.inner.config).requires_cloud_ready()
+    }
+
+    /// Whether the handle has an actionable model route (or local test echo).
+    #[must_use]
+    pub fn can_run_turns(&self) -> bool {
+        lock(&self.inner.config).can_run_turns()
     }
 
     /// Claim and start the oldest accepted receipt, if any.
@@ -1288,10 +1312,14 @@ impl AgentHandle {
     pub fn run_accepted_once(
         &self,
     ) -> Result<Option<AcceptedRun>, &'static str> {
-        if self.has_active_claim() || self.turn_status().is_busy() {
+        if !self.can_run_turns()
+            || self.has_active_claim()
+            || self.has_busy_session()
+        {
             return Ok(None);
         }
         let state = &self.inner.state;
+        let previous_active = lock(&state.active).clone();
         let queue = AcceptanceQueue::new(state.root.clone());
         let Some(next) = queue
             .pending()
@@ -1378,20 +1406,37 @@ impl AgentHandle {
             .prompt()
             .map_or_else(|| claimed.text.clone(), str::to_owned);
         if let Err(error) = self.submit_chat(submission, &prompt) {
+            if let Some(prev) = &previous_active
+                && prev != &session
+            {
+                let _ = self.select_session(prev);
+            }
             let _ = queue.release(&claimed.id, &attempt_id, now_ms(), 0);
             return Err(error);
+        }
+        if let Some(prev) = &previous_active
+            && prev != &session
+        {
+            let _ = self.select_session(prev);
         }
         *lock(&state.accepted_claim) = Some(AcceptedClaim {
             receipt_id: claimed.id.clone(),
             attempt_id: attempt_id.clone(),
+            session_id: session.clone(),
             attempts: claimed.attempts,
         });
-        tracing::debug!(
-            target: "flowy.prompt",
-            stage = "AgentHandle::run_accepted_once",
-            receipt = %claimed.id,
-            session = %session,
-            "accepted receipt claimed"
+        let root_session_id = self.root_session_id_for(&session);
+        let submission_id = format!("submission-{submission:032x}");
+        tracing::info!(
+            target: "flowy.acceptance",
+            event = "claimed",
+            receipt_id = %claimed.id,
+            attempt_id = %attempt_id,
+            attempts = claimed.attempts,
+            session_id = %session,
+            root_session_id = %root_session_id,
+            submission_id = %submission_id,
+            "claimed accepted receipt"
         );
         Ok(Some(AcceptedRun {
             receipt_id: claimed.id,
@@ -1417,6 +1462,13 @@ impl AgentHandle {
         let queue = AcceptanceQueue::new(self.inner.state.root.clone());
         let now = now_ms();
         let gave_up = !completed && claim.attempts >= ACCEPTED_MAX_ATTEMPTS;
+        let outcome = if completed {
+            "completed"
+        } else if gave_up {
+            "gave_up"
+        } else {
+            "released"
+        };
         let result = if completed {
             queue.complete(&claim.receipt_id, &claim.attempt_id, now)
         } else if gave_up {
@@ -1432,6 +1484,17 @@ impl AgentHandle {
         // Only drop the claim once the journal accepted the outcome; a failed
         // write keeps it so a retry can finish the same attempt.
         if result.is_ok() {
+            let root_session_id = self.root_session_id_for(&claim.session_id);
+            tracing::info!(
+                target: "flowy.acceptance",
+                event = outcome,
+                receipt_id = %claim.receipt_id,
+                attempt_id = %claim.attempt_id,
+                attempts = claim.attempts,
+                session_id = %claim.session_id,
+                root_session_id = %root_session_id,
+                "settled accepted receipt"
+            );
             *lock(&self.inner.state.accepted_claim) = None;
         }
         result.map(|_| gave_up).map_err(|_| "notice.storage_error")
@@ -1440,6 +1503,28 @@ impl AgentHandle {
     #[must_use]
     pub fn has_active_claim(&self) -> bool {
         lock(&self.inner.state.accepted_claim).is_some()
+    }
+
+    /// Status of the session that owns the active receipt claim, independent of
+    /// whichever session the user is currently viewing.
+    #[must_use]
+    pub fn claimed_session_status(&self) -> Option<TurnStatus> {
+        let session_id = lock(&self.inner.state.accepted_claim)
+            .as_ref()
+            .map(|claim| claim.session_id.clone())?;
+        lock(&self.inner.state.live)
+            .get(&session_id)
+            .map(|session| session.status.clone())
+    }
+
+    fn root_session_id_for(&self, session_id: &str) -> String {
+        lock(&self.inner.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(session_id))
+            .map_or_else(
+                || session_id.to_owned(),
+                |record| record.effective_root_session_id().to_owned(),
+            )
     }
 
     /// The attempt number of the receipt currently claimed, if any.
@@ -1581,7 +1666,7 @@ impl AgentHandle {
                 ));
             run_config.delivery_committer = Some(Arc::new(store));
             run_config.system = format!(
-                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file with a path inside that directory, then explicitly call publish_file with a path relative to the output directory. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
+                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory, verify any .pptx file with verify_deck before publishing, then explicitly call publish_file with a path relative to the output directory. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
                 output_root.display()
             );
         }
@@ -2738,6 +2823,7 @@ fn hydrate_engine(engine: &Engine, state: &UiState, config: &LlmConfig) {
                 origin: SessionOrigin::Unknown,
                 workspace: None,
                 delivery_commits: Vec::new(),
+                ..SessionRecord::default()
             })
             .is_err()
         {
@@ -2873,7 +2959,8 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
 /// executes commands, not host file paths, and the host has no OS sandbox for it.
 fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
     let key = match args.name.as_str() {
-        "read_file" | "write_file" | "edit_file" | "glob" | "grep" => "path",
+        "read_file" | "write_file" | "edit_file" | "glob" | "grep"
+        | "create_deck" | "verify_deck" => "path",
         _ => return None,
     };
     let raw = args.arguments.get(key).and_then(|value| value.as_str())?;
@@ -3639,6 +3726,136 @@ mod background_init_tests {
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn disconnected_cloud_config_does_not_drain_receipts_into_echo() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-cloud-gate-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                base_url: String::new(),
+                model: String::new(),
+                provider: "flowy".into(),
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let receipt = handle
+            .accept_deferred("do not echo me before cloud catalog arrives")
+            .expect("accepted");
+        assert!(handle.requires_cloud_ready());
+        assert!(!handle.can_run_turns());
+        assert!(
+            handle.run_accepted_once().expect("pump").is_none(),
+            "disconnected cloud handle must keep receipts queued"
+        );
+        assert_eq!(handle.pending_acceptances().len(), 1);
+        assert_eq!(handle.pending_acceptances()[0].id, receipt.id);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn create_verify_and_publish_deck_succeed_in_one_home_turn() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-e2e-deck-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = ArtifactStore::open(root.join("artifacts")).unwrap();
+        let delivery =
+            crate::delivery::DeliveryStore::new(root.join("delivery"));
+        let create_tool = crate::pptx::definition();
+        let verify_tool = crate::verify::definition(Some(delivery.clone()));
+        let publish_tool =
+            crate::publish_tool::definition(store.clone(), Some(delivery));
+
+        let workspace = root.join("sessions/workspaces/s-home");
+        let submission_id = format!("submission-{:032x}", 7);
+        let output_root = workspace.join("outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        let context = flowy_agent_core::ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: Some("s-home".into()),
+            cwd: Some(workspace.display().to_string()),
+            todos: None,
+            submission_id: Some(submission_id),
+            session_origin: SessionOrigin::Home,
+            output_root: Some(output_root.clone()),
+            artifact_delivery_available: true,
+        };
+
+        let created = (create_tool.execute)(
+            ToolCallArgs {
+                call_id: "c1".into(),
+                name: "create_deck".into(),
+                arguments: serde_json::json!({
+                    "path": "deck.pptx",
+                    "title": "Q4 Review",
+                    "slides": ["Summary", "Next steps"],
+                }),
+            },
+            context.clone(),
+        )
+        .await;
+        assert!(
+            matches!(
+                created,
+                flowy_agent_core::ToolExecutionResult::Success { .. }
+            ),
+            "create_deck failed: {created:?}"
+        );
+        assert!(output_root.join("deck.pptx").exists());
+
+        let verified = (verify_tool.execute)(
+            ToolCallArgs {
+                call_id: "c2".into(),
+                name: "verify_deck".into(),
+                arguments: serde_json::json!({
+                    "path": "deck.pptx",
+                    "slides": 2,
+                    "anchors": [
+                        {"anchor": "S0-title", "value": "Q4 Review"},
+                        {"anchor": "S0-body", "value": "Summary"},
+                        {"anchor": "S1-title", "value": "Q4 Review · 2"},
+                        {"anchor": "S1-body", "value": "Next steps"}
+                    ],
+                }),
+            },
+            context.clone(),
+        )
+        .await;
+        let flowy_agent_core::ToolExecutionResult::Success { value, .. } =
+            verified
+        else {
+            panic!("verify_deck failed: {verified:?}");
+        };
+        assert_eq!(value["ok"], true);
+
+        let published = (publish_tool.execute)(
+            ToolCallArgs {
+                call_id: "c3".into(),
+                name: "publish_file".into(),
+                arguments: serde_json::json!({
+                    "path": "deck.pptx",
+                    "delivery_key": "deck",
+                }),
+            },
+            context,
+        )
+        .await;
+        assert!(
+            matches!(
+                published,
+                flowy_agent_core::ToolExecutionResult::Success {
+                    delivery: Some(_),
+                    ..
+                }
+            ),
+            "publish_file must succeed after create_deck + verify_deck, got {published:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(test)]
@@ -3784,5 +4001,19 @@ mod guard_tests {
         assert!(
             take_file_change(&args, "s", "c4", Path::new("/work")).is_none()
         );
+    }
+
+    #[test]
+    fn deck_tools_cannot_escape_the_working_directory() {
+        let root = Path::new("/work");
+        for tool in ["create_deck", "verify_deck"] {
+            let escaped = args(tool, json!({ "path": "../outside.pptx" }));
+            assert!(
+                path_guard(root, &escaped).is_some(),
+                "{tool} must reject parent traversal"
+            );
+            let inside = args(tool, json!({ "path": "outputs/sub/deck.pptx" }));
+            assert_eq!(path_guard(root, &inside), None);
+        }
     }
 }

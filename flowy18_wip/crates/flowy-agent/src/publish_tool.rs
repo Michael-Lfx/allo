@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{
@@ -13,6 +14,14 @@ use serde_json::json;
 
 use crate::artifact_store::{ArtifactStore, PrepareArtifact};
 use crate::delivery::DeliveryStore;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,30 +98,6 @@ pub fn definition(
                             return publish_error("INVALID_ARGS", "chat.publish.invalid_args", "The file publication request was invalid.");
                         }
                     };
-                    if let Some(gate) = &gate
-                        && parsed.path.to_ascii_lowercase().ends_with(".pptx")
-                    {
-                        let artifact = output_root.join(&parsed.path);
-                        match gate.check(&artifact) {
-                            Ok(None) => {}
-                            Ok(Some(reason)) => {
-                                tracing::warn!(
-                                    code = reason.code(),
-                                    path = %artifact.display(),
-                                    "publish_file blocked by the delivery gate"
-                                );
-                                return publish_error(
-                                    reason.code(),
-                                    "chat.publish.not_verified",
-                                    "This file has not passed verification.",
-                                );
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "publish_file could not check the delivery gate");
-                                return publish_error("PUBLISH_FAILED", "chat.publish.failed", "Couldn't publish the file.");
-                            }
-                        }
-                    }
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
                     }
@@ -134,22 +119,98 @@ pub fn definition(
                                     .replace('\\', "/")
                             },
                         );
-                    let receipt = match store.prepare(PrepareArtifact {
-                        source_root: output_root,
-                        relative_path: parsed.path,
+                    let prepare_args = PrepareArtifact {
+                        source_root: output_root.clone(),
+                        relative_path: parsed.path.clone(),
                         source_relative_path,
                         conversation_import: false,
-                        session_id,
-                        submission_id,
+                        session_id: session_id.clone(),
+                        submission_id: submission_id.clone(),
                         tool_call_id: args.call_id,
                         delivery_key: parsed.delivery_key,
                         display_name: parsed.display_name,
                         origin: context.session_origin,
-                    }) {
-                        Ok(receipt) => receipt,
-                        Err(error) => {
-                            tracing::warn!(%error, "publish_file could not stage the file");
-                            return publish_error("PUBLISH_FAILED", "chat.publish.failed", "Couldn't publish the file.");
+                    };
+                    let receipt = if let Some(gate) = &gate {
+                        // Validate relative path safety through ArtifactStore
+                        // only after passing the delivery gate; reject parent
+                        // traversal before reading bytes for the gate.
+                        if Path::new(&parsed.path).is_absolute()
+                            || Path::new(&parsed.path).components().any(|c| {
+                                matches!(c, std::path::Component::ParentDir)
+                            })
+                        {
+                            return publish_error(
+                                "PUBLISH_FAILED",
+                                "chat.publish.failed",
+                                "Couldn't publish the file.",
+                            );
+                        }
+                        let artifact = output_root.join(&parsed.path);
+                        match gate.deliver_with(
+                            &artifact,
+                            false,
+                            now_ms(),
+                            |_bytes| store.prepare(prepare_args),
+                        ) {
+                            Ok(result) => {
+                                if let Some(reason) = result.outcome.blocked {
+                                    tracing::info!(
+                                        target: "flowy.delivery",
+                                        session_id = %session_id,
+                                        root_session_id = %session_id,
+                                        submission_id = %submission_id,
+                                        delivery_id = %result.outcome.delivery_id,
+                                        code = reason.code(),
+                                        path = %artifact.display(),
+                                        "publish_file blocked by the delivery gate"
+                                    );
+                                    return publish_error(
+                                        reason.code(),
+                                        "chat.publish.not_verified",
+                                        "This file has not passed verification.",
+                                    );
+                                }
+                                let Some(receipt) = result.value else {
+                                    return publish_error(
+                                        "PUBLISH_FAILED",
+                                        "chat.publish.failed",
+                                        "Couldn't publish the file.",
+                                    );
+                                };
+                                tracing::info!(
+                                    target: "flowy.delivery",
+                                    session_id = %session_id,
+                                    root_session_id = %session_id,
+                                    submission_id = %submission_id,
+                                    delivery_id = %result.outcome.delivery_id,
+                                    artifact_id = %receipt.artifact_id,
+                                    sha256 = %receipt.sha256,
+                                    exemption_code = result.outcome.exemption_code.unwrap_or(""),
+                                    "publish_file staged through delivery gate"
+                                );
+                                receipt
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "publish_file failed in delivery gate or staging");
+                                return publish_error(
+                                    "PUBLISH_FAILED",
+                                    "chat.publish.failed",
+                                    "Couldn't publish the file.",
+                                );
+                            }
+                        }
+                    } else {
+                        match store.prepare(prepare_args) {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                tracing::warn!(%error, "publish_file could not stage the file");
+                                return publish_error(
+                                    "PUBLISH_FAILED",
+                                    "chat.publish.failed",
+                                    "Couldn't publish the file.",
+                                );
+                            }
                         }
                     };
                     if context.signal.is_cancelled() {
@@ -201,7 +262,7 @@ mod tests {
             crate::artifact_store::ArtifactStore::open(root.join("store"))
                 .unwrap();
         let gate = DeliveryStore::new(root.join("delivery"));
-        let tool = definition(store, Some(gate));
+        let tool = definition(store.clone(), Some(gate));
         let submission_id = format!("submission-{:032x}", 1);
         let output_root = root.join("workspace/outputs").join(&submission_id);
         std::fs::create_dir_all(&output_root).unwrap();
@@ -229,6 +290,139 @@ mod tests {
             panic!("an unverified deck must be refused, got {result:?}");
         };
         assert_eq!(code, "DELIVERY_NOT_VERIFIED");
+        let events = std::fs::read_to_string(
+            root.join("delivery/events.jsonl"),
+        )
+        .expect("ordinary publish_file refusal must write events.jsonl");
+        assert!(events.contains("deliver_blocked"));
+        assert!(events.contains("DELIVERY_NOT_VERIFIED"));
+        assert_eq!(store.usage().unwrap().staging_bytes, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn non_exempt_unknown_extension_is_refused_and_audited_while_exempt_csv_passes()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-alltypes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let tool = definition(store.clone(), Some(gate));
+        let submission_id = format!("submission-{:032x}", 2);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(output_root.join("bundle.zip"), b"PK\x03\x04archive")
+            .unwrap();
+        std::fs::write(output_root.join("sales.csv"), b"col\n1\n").unwrap();
+        let make_ctx = || ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: Some("session-2".to_owned()),
+            cwd: Some(root.display().to_string()),
+            todos: None,
+            submission_id: Some(submission_id.clone()),
+            session_origin: SessionOrigin::Home,
+            output_root: Some(output_root.clone()),
+            artifact_delivery_available: true,
+        };
+
+        let refused = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-zip".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": "bundle.zip",
+                    "delivery_key": "zip",
+                }),
+            },
+            make_ctx(),
+        )
+        .await;
+        let ToolExecutionResult::Error { code, .. } = refused else {
+            panic!("unknown unverified extension must be refused: {refused:?}");
+        };
+        assert_eq!(code, "DELIVERY_NOT_VERIFIED");
+        assert_eq!(store.usage().unwrap().staging_bytes, 0);
+
+        let allowed = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-csv".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": "sales.csv",
+                    "delivery_key": "csv",
+                }),
+            },
+            make_ctx(),
+        )
+        .await;
+        assert!(matches!(
+            allowed,
+            ToolExecutionResult::Success {
+                delivery: Some(_),
+                ..
+            }
+        ));
+        let events =
+            std::fs::read_to_string(root.join("delivery/events.jsonl"))
+                .unwrap();
+        assert!(events.contains("deliver_blocked"));
+        assert!(events.contains("deliver_exempt"));
+        assert!(events.contains(crate::delivery::EXEMPT_NO_VERIFIER_V0));
+        assert!(events.contains("deliver_intent"));
+        assert!(events.contains("\"deliver\""));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn tampered_pptx_after_verification_is_refused_with_artifact_changed()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-tampered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let submission_id = format!("submission-{:032x}", 3);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        let deck = output_root.join("deck.pptx");
+        std::fs::write(&deck, b"PK original").unwrap();
+        gate.record_report(&deck, Vec::new(), 10).unwrap();
+        std::fs::write(&deck, b"PK modified-after-report").unwrap();
+
+        let tool = definition(store.clone(), Some(gate));
+        let result = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-tampered".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": "deck.pptx",
+                    "delivery_key": "deck",
+                }),
+            },
+            ToolRunContext {
+                signal: CancelToken::new(),
+                agent_id: Some("session-3".to_owned()),
+                cwd: Some(root.display().to_string()),
+                todos: None,
+                submission_id: Some(submission_id),
+                session_origin: SessionOrigin::Home,
+                output_root: Some(output_root),
+                artifact_delivery_available: true,
+            },
+        )
+        .await;
+        let ToolExecutionResult::Error { code, .. } = result else {
+            panic!("tampered deck must be refused: {result:?}");
+        };
+        assert_eq!(code, "DELIVERY_ARTIFACT_CHANGED");
+        assert_eq!(store.usage().unwrap().staging_bytes, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 

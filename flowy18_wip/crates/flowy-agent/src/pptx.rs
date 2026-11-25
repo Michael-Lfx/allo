@@ -32,10 +32,24 @@ fn generator_available() -> bool {
     !matches!(std::env::var("FLOWY_PPTX").ok().as_deref(), Some("missing"))
 }
 
-fn resolve_path(cwd: Option<&str>, raw: &str) -> PathBuf {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn resolve_turn_path(
+    cwd: Option<&str>,
+    output_root: Option<&Path>,
+    raw: &str,
+) -> PathBuf {
     let path = Path::new(raw);
     if path.is_absolute() {
         return path.to_path_buf();
+    }
+    if let Some(output_root) = output_root {
+        if let Some(cwd) = cwd {
+            let from_cwd = Path::new(cwd).join(path);
+            if from_cwd.starts_with(output_root) {
+                return from_cwd;
+            }
+        }
+        return output_root.join(path);
     }
     match cwd {
         Some(cwd) => Path::new(cwd).join(path),
@@ -119,6 +133,7 @@ fn execute(
     available: bool,
     arguments: Value,
     cwd: Option<&str>,
+    output_root: Option<&Path>,
 ) -> ToolExecutionResult {
     if !available {
         return missing_result();
@@ -129,7 +144,7 @@ fn execute(
             "expected path, title and a non-empty slides array",
         );
     };
-    let path = resolve_path(cwd, &args.path);
+    let path = resolve_turn_path(cwd, output_root, &args.path);
     match write_deck(&path, &args.title, &args.slides) {
         Ok(count) => ToolExecutionResult::success_text(
             format!("created a {count}-slide deck at {}", path.display()),
@@ -153,7 +168,7 @@ pub fn definition() -> Arc<ToolDefinition> {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "minLength": 1, "description": "Output path, relative to the working directory."},
+                "path": {"type": "string", "minLength": 1, "description": "Output path, relative to the current turn output directory (or working directory)."},
                 "title": {"type": "string", "minLength": 1, "description": "Deck title, repeated on every slide."},
                 "slides": {
                     "type": "array",
@@ -172,6 +187,7 @@ pub fn definition() -> Arc<ToolDefinition> {
                     generator_available(),
                     args.arguments,
                     context.cwd.as_deref(),
+                    context.output_root.as_deref(),
                 )
             })
         },
@@ -199,7 +215,8 @@ mod tests {
             "title": "Quarterly review",
             "slides": ["one", "two", "three"],
         });
-        let outcome = execute(true, arguments, Some(root.to_str().unwrap()));
+        let outcome =
+            execute(true, arguments, Some(root.to_str().unwrap()), None);
         let ToolExecutionResult::Success { value, .. } = outcome else {
             panic!("expected a created deck, got {outcome:?}");
         };
@@ -219,11 +236,33 @@ mod tests {
             false,
             json!({"path": "deck.pptx", "title": "T", "slides": ["one"]}),
             None,
+            None,
         );
         let ToolExecutionResult::Success { value, .. } = outcome else {
             panic!("missing must not be a tool error");
         };
         assert_eq!(value["status"], "missing");
         assert_eq!(value["need"], "pptx generator");
+    }
+
+    #[test]
+    fn turn_output_root_resolves_relative_and_cwd_prefixed_paths_consistently()
+    {
+        let root = scratch("output-root");
+        let output = root.join("outputs").join("submission-1");
+        let cwd = root.to_str().unwrap();
+        assert_eq!(
+            resolve_turn_path(Some(cwd), Some(&output), "deck.pptx"),
+            output.join("deck.pptx")
+        );
+        assert_eq!(
+            resolve_turn_path(
+                Some(cwd),
+                Some(&output),
+                "outputs/submission-1/deck.pptx"
+            ),
+            root.join("outputs/submission-1/deck.pptx")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

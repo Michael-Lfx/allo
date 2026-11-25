@@ -798,11 +798,11 @@ impl FlowyApp {
                 self.studio.update(cx, |panel, cx| {
                     panel.catalog.select(selected_id);
                     panel.model = tier;
-                    panel.cloud_ready = true;
                     panel.set_notice(
                         save_failed.then_some("notice.session_storage_failed"),
                         cx,
                     );
+                    panel.notify_cloud_ready(cx);
                 });
                 self.publish_tier_state(cx);
             }

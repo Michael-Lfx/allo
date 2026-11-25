@@ -12,6 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Explicit V0 exemption code for known non-deck formats whose dedicated
+/// structural verifiers have not been wired yet (`BLOCKED.md` §4).
+pub const EXEMPT_NO_VERIFIER_V0: &str = "EXEMPT_NO_VERIFIER_V0";
+
 /// One verification finding, as reported by `verify_deck`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
@@ -49,6 +53,17 @@ impl BlockReason {
     }
 }
 
+/// Crash-recovery state reconstructed from `delivery/events.jsonl`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryRecoveryState {
+    None,
+    Blocked,
+    /// `deliver_intent` was persisted before the crash/error, without a final
+    /// `deliver` event; callers must surface rather than blindly re-sending.
+    InDoubt,
+    Delivered,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeliveryOutcome {
     pub delivery_id: String,
@@ -56,6 +71,13 @@ pub struct DeliveryOutcome {
     pub blocked: Option<BlockReason>,
     pub report_id: Option<String>,
     pub override_used: bool,
+    pub exemption_code: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryResult<T> {
+    pub outcome: DeliveryOutcome,
+    pub value: Option<T>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,15 +96,28 @@ enum AuditEvent {
         delivery_id: String,
         artifact_path: String,
         artifact_hash: String,
-        code: &'static str,
+        code: String,
         issues: Vec<Issue>,
+        at_ms: u64,
+    },
+    DeliverExempt {
+        delivery_id: String,
+        artifact_path: String,
+        artifact_hash: String,
+        exemption_code: String,
         at_ms: u64,
     },
     DeliverOverride {
         delivery_id: String,
         artifact_path: String,
         artifact_hash: String,
-        code: &'static str,
+        code: String,
+        at_ms: u64,
+    },
+    DeliverIntent {
+        delivery_id: String,
+        artifact_path: String,
+        artifact_hash: String,
         at_ms: u64,
     },
     Deliver {
@@ -91,6 +126,22 @@ enum AuditEvent {
         artifact_hash: String,
         at_ms: u64,
     },
+}
+
+/// Known formats that explicitly pass under [`EXEMPT_NO_VERIFIER_V0`] when no
+/// verification report exists yet. `.pptx` and unknown extensions return `None`.
+#[must_use]
+pub fn exemption_code_for_path(artifact: &Path) -> Option<&'static str> {
+    let ext = artifact
+        .extension()
+        .and_then(|ext| ext.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "csv" | "pdf" | "md" | "txt" | "json" | "html" => {
+            Some(EXEMPT_NO_VERIFIER_V0)
+        }
+        _ => None,
+    }
 }
 
 /// Append-only store for reports and delivery events, rooted at the store
@@ -161,8 +212,9 @@ impl DeliveryStore {
         Ok(report)
     }
 
-    fn latest_report(&self, artifact: &Path) -> io::Result<Option<Report>> {
-        let key = artifact.display().to_string();
+    /// Latest persisted report for `artifact`, if any.
+    pub fn latest_report(&self, artifact: &Path) -> io::Result<Option<Report>> {
+        let key = artifact_key(artifact);
         let bytes = match std::fs::read(self.reports_path()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -176,11 +228,140 @@ impl DeliveryStore {
             let Ok(report) = serde_json::from_str::<Report>(line) else {
                 continue;
             };
-            if report.artifact_path == key {
+            if artifact_key(Path::new(&report.artifact_path)) == key {
                 latest = Some(report);
             }
         }
         Ok(latest)
+    }
+
+    /// All latest reports keyed by normalized artifact path (preserving order of
+    /// last write), used to project verification cards into Studio.
+    pub fn all_latest_reports(&self) -> io::Result<Vec<Report>> {
+        let bytes = match std::fs::read(self.reports_path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut by_key: std::collections::BTreeMap<String, Report> =
+            std::collections::BTreeMap::new();
+        for line in text.lines() {
+            let Ok(report) = serde_json::from_str::<Report>(line) else {
+                continue;
+            };
+            by_key
+                .insert(artifact_key(Path::new(&report.artifact_path)), report);
+        }
+        let mut reports: Vec<Report> = by_key.into_values().collect();
+        reports.sort_by_key(|report| report.at_ms);
+        Ok(reports)
+    }
+
+    /// Latest report matching a content `artifact_hash`.
+    pub fn latest_report_by_hash(
+        &self,
+        artifact_hash: &str,
+    ) -> io::Result<Option<Report>> {
+        let bytes = match std::fs::read(self.reports_path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut latest = None;
+        for line in text.lines() {
+            let Ok(report) = serde_json::from_str::<Report>(line) else {
+                continue;
+            };
+            if report.artifact_hash == artifact_hash {
+                latest = Some(report);
+            }
+        }
+        Ok(latest)
+    }
+
+    fn read_events(&self) -> io::Result<Vec<AuditEvent>> {
+        let bytes = match std::fs::read(self.events_path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        Ok(text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<AuditEvent>(line).ok())
+            .collect())
+    }
+
+    /// Reconstruct the terminal or crash-window state of `delivery_id`.
+    pub fn recovery_state(
+        &self,
+        delivery_id: &str,
+    ) -> io::Result<DeliveryRecoveryState> {
+        let mut state = DeliveryRecoveryState::None;
+        for event in self.read_events()? {
+            match event {
+                AuditEvent::DeliverBlocked {
+                    delivery_id: id, ..
+                } if id == delivery_id => {
+                    state = DeliveryRecoveryState::Blocked;
+                }
+                AuditEvent::DeliverIntent {
+                    delivery_id: id, ..
+                } if id == delivery_id => {
+                    state = DeliveryRecoveryState::InDoubt;
+                }
+                AuditEvent::Deliver {
+                    delivery_id: id, ..
+                } if id == delivery_id => {
+                    state = DeliveryRecoveryState::Delivered;
+                }
+                _ => {}
+            }
+        }
+        Ok(state)
+    }
+
+    /// Whether any completed delivery for `artifact_hash` bypassed verification
+    /// through an explicit user override (`deliver_override` + `deliver`).
+    pub fn artifact_was_overridden(
+        &self,
+        artifact_hash: &str,
+    ) -> io::Result<bool> {
+        let events = self.read_events()?;
+        let mut overridden_ids = std::collections::BTreeSet::new();
+        for event in &events {
+            if let AuditEvent::DeliverOverride {
+                delivery_id,
+                artifact_hash: hash,
+                ..
+            } = event
+                && hash == artifact_hash
+            {
+                overridden_ids.insert(delivery_id.as_str());
+            }
+        }
+        if overridden_ids.is_empty() {
+            return Ok(false);
+        }
+        Ok(events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::Deliver {
+                    delivery_id,
+                    artifact_hash: hash,
+                    ..
+                } if hash == artifact_hash
+                    && overridden_ids.contains(delivery_id.as_str())
+            )
+        }))
     }
 
     /// Check a report without sending anything. `None` means the artifact is
@@ -189,12 +370,145 @@ impl DeliveryStore {
         let bytes = std::fs::read(artifact)?;
         let artifact_hash = hash_bytes(&bytes);
         Ok(match self.latest_report(artifact)? {
+            None if exemption_code_for_path(artifact).is_some() => None,
             None => Some(BlockReason::MissingReport),
             Some(report) if !report.ok => Some(BlockReason::VerificationFailed),
             Some(report) if report.artifact_hash != artifact_hash => {
                 Some(BlockReason::HashMismatch)
             }
             Some(_) => None,
+        })
+    }
+
+    /// Deliver `artifact` through `send`, after checking the report, hash, or
+    /// explicit exemption table, recording `deliver_intent` before `send` and
+    /// `deliver` after `send` succeeds.
+    pub fn deliver_with<T, F>(
+        &self,
+        artifact: &Path,
+        allow_override: bool,
+        now_ms: u64,
+        send: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        let delivery_id = format!("delivery-{}-{}", now_ms, next_id());
+        let bytes = std::fs::read(artifact)?;
+        let artifact_hash = hash_bytes(&bytes);
+        let report = self.latest_report(artifact)?;
+        let exemption = if report.is_none() {
+            exemption_code_for_path(artifact)
+        } else {
+            None
+        };
+        let blocked = match &report {
+            None if exemption.is_some() => None,
+            None => Some(BlockReason::MissingReport),
+            Some(report) if !report.ok => Some(BlockReason::VerificationFailed),
+            Some(report) if report.artifact_hash != artifact_hash => {
+                Some(BlockReason::HashMismatch)
+            }
+            Some(_) => None,
+        };
+        let issues = report
+            .as_ref()
+            .map_or_else(Vec::new, |report| report.issues.clone());
+        let report_id = report.as_ref().map(|report| report.id.clone());
+        let path_display = artifact.display().to_string();
+        if let Some(reason) = blocked {
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverBlocked {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display.clone(),
+                    artifact_hash: artifact_hash.clone(),
+                    code: reason.code().to_owned(),
+                    issues,
+                    at_ms: now_ms,
+                },
+            )?;
+            if !allow_override {
+                tracing::info!(
+                    target: "flowy.delivery",
+                    delivery_id = %delivery_id,
+                    artifact_hash = %artifact_hash,
+                    outcome = "blocked",
+                    code = reason.code(),
+                    "delivery blocked"
+                );
+                return Ok(DeliveryResult {
+                    outcome: DeliveryOutcome {
+                        delivery_id,
+                        delivered: false,
+                        blocked: Some(reason),
+                        report_id,
+                        override_used: false,
+                        exemption_code: None,
+                    },
+                    value: None,
+                });
+            }
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverOverride {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display.clone(),
+                    artifact_hash: artifact_hash.clone(),
+                    code: reason.code().to_owned(),
+                    at_ms: now_ms,
+                },
+            )?;
+        } else if let Some(exemption_code) = exemption {
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverExempt {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display.clone(),
+                    artifact_hash: artifact_hash.clone(),
+                    exemption_code: exemption_code.to_owned(),
+                    at_ms: now_ms,
+                },
+            )?;
+        }
+        Self::append_json(
+            &self.events_path(),
+            &AuditEvent::DeliverIntent {
+                delivery_id: delivery_id.clone(),
+                artifact_path: path_display.clone(),
+                artifact_hash: artifact_hash.clone(),
+                at_ms: now_ms,
+            },
+        )?;
+        let value = send(&bytes)?;
+        Self::append_json(
+            &self.events_path(),
+            &AuditEvent::Deliver {
+                delivery_id: delivery_id.clone(),
+                artifact_path: path_display,
+                artifact_hash: artifact_hash.clone(),
+                at_ms: now_ms,
+            },
+        )?;
+        tracing::info!(
+            target: "flowy.delivery",
+            delivery_id = %delivery_id,
+            artifact_hash = %artifact_hash,
+            outcome = "delivered",
+            override_used = blocked.is_some(),
+            exemption_code = exemption.unwrap_or(""),
+            "delivery sent"
+        );
+        Ok(DeliveryResult {
+            outcome: DeliveryOutcome {
+                delivery_id,
+                delivered: true,
+                blocked,
+                report_id,
+                override_used: blocked.is_some(),
+                exemption_code: exemption,
+            },
+            value: Some(value),
         })
     }
 
@@ -209,87 +523,41 @@ impl DeliveryStore {
     where
         F: FnOnce(&[u8]) -> io::Result<()>,
     {
-        let delivery_id = format!("delivery-{}-{}", now_ms, next_id());
-        let bytes = std::fs::read(artifact)?;
-        let artifact_hash = hash_bytes(&bytes);
-        let report = self.latest_report(artifact)?;
-        let blocked = match &report {
-            None => Some(BlockReason::MissingReport),
-            Some(report) if !report.ok => Some(BlockReason::VerificationFailed),
-            Some(report) if report.artifact_hash != artifact_hash => {
-                Some(BlockReason::HashMismatch)
+        self.deliver_with(artifact, allow_override, now_ms, send)
+            .map(|result| result.outcome)
+    }
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn artifact_key(path: &Path) -> String {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
             }
-            Some(_) => None,
-        };
-        let issues = report
-            .as_ref()
-            .map_or_else(Vec::new, |report| report.issues.clone());
-        let report_id = report.as_ref().map(|report| report.id.clone());
-        if let Some(reason) = blocked {
-            Self::append_json(
-                &self.events_path(),
-                &AuditEvent::DeliverBlocked {
-                    delivery_id: delivery_id.clone(),
-                    artifact_path: artifact.display().to_string(),
-                    artifact_hash: artifact_hash.clone(),
-                    code: reason.code(),
-                    issues,
-                    at_ms: now_ms,
-                },
-            )?;
-            if !allow_override {
-                tracing::info!(
-                    target: "flowy.delivery",
-                    delivery_id = %delivery_id,
-                    artifact_hash = %artifact_hash,
-                    outcome = "blocked",
-                    code = reason.code(),
-                    "delivery blocked"
-                );
-                return Ok(DeliveryOutcome {
-                    delivery_id,
-                    delivered: false,
-                    blocked: Some(reason),
-                    report_id,
-                    override_used: false,
-                });
-            }
-            Self::append_json(
-                &self.events_path(),
-                &AuditEvent::DeliverOverride {
-                    delivery_id: delivery_id.clone(),
-                    artifact_path: artifact.display().to_string(),
-                    artifact_hash: artifact_hash.clone(),
-                    code: reason.code(),
-                    at_ms: now_ms,
-                },
-            )?;
+            other => normalized.push(other.as_os_str()),
         }
-        send(&bytes)?;
-        Self::append_json(
-            &self.events_path(),
-            &AuditEvent::Deliver {
-                delivery_id: delivery_id.clone(),
-                artifact_path: artifact.display().to_string(),
-                artifact_hash: artifact_hash.clone(),
-                at_ms: now_ms,
-            },
-        )?;
-        tracing::info!(
-            target: "flowy.delivery",
-            delivery_id = %delivery_id,
-            artifact_hash = %artifact_hash,
-            outcome = "delivered",
-            override_used = blocked.is_some(),
-            "delivery sent"
-        );
-        Ok(DeliveryOutcome {
-            delivery_id,
-            delivered: true,
-            blocked,
-            report_id,
-            override_used: blocked.is_some(),
-        })
+    }
+    let resolved = std::fs::canonicalize(&normalized).unwrap_or_else(|_| {
+        if let (Some(parent), Some(name)) =
+            (normalized.parent(), normalized.file_name())
+            && let Ok(canon_parent) = std::fs::canonicalize(parent)
+        {
+            canon_parent.join(name)
+        } else {
+            normalized
+        }
+    });
+    let slash = resolved.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        slash.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        slash
     }
 }
 
@@ -433,6 +701,87 @@ mod tests {
         let events = std::fs::read_to_string(store.events_path()).unwrap();
         assert!(events.contains("deliver_blocked"));
         assert!(!events.contains("\"deliver\""));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normalized_paths_match_the_same_verification_report() {
+        let root = scratch("norm");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let file = sub.join("deck.pptx");
+        std::fs::write(&file, b"PK normalized").unwrap();
+        let slash_form =
+            PathBuf::from(file.display().to_string().replace('\\', "/"));
+        store.record_report(&slash_form, Vec::new(), 1_000).unwrap();
+        let dot_form = sub.join(".").join("deck.pptx");
+        assert_eq!(store.check(&dot_form).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exempt_extensions_pass_with_explicit_audit_while_unknown_extensions_block()
+     {
+        let root = scratch("exempt");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let csv = root.join("sales.csv");
+        std::fs::write(&csv, b"a,b\n1,2\n").unwrap();
+        let (csv_calls, csv_send) = counting_sender();
+        let csv_outcome = store.deliver(&csv, false, 1_000, csv_send).unwrap();
+        assert!(csv_outcome.delivered);
+        assert_eq!(csv_outcome.exemption_code, Some(EXEMPT_NO_VERIFIER_V0));
+        assert_eq!(csv_calls.load(Ordering::SeqCst), 1);
+
+        let unknown = root.join("bundle.bin");
+        std::fs::write(&unknown, b"\x00\x01\x02").unwrap();
+        let (bin_calls, bin_send) = counting_sender();
+        let bin_outcome =
+            store.deliver(&unknown, false, 2_000, bin_send).unwrap();
+        assert!(!bin_outcome.delivered);
+        assert_eq!(bin_outcome.blocked, Some(BlockReason::MissingReport));
+        assert_eq!(bin_calls.load(Ordering::SeqCst), 0);
+
+        let events = std::fs::read_to_string(store.events_path()).unwrap();
+        assert!(events.contains("deliver_exempt"));
+        assert!(events.contains(EXEMPT_NO_VERIFIER_V0));
+        assert!(events.contains("deliver_blocked"));
+        assert_eq!(
+            store.recovery_state(&csv_outcome.delivery_id).unwrap(),
+            DeliveryRecoveryState::Delivered
+        );
+        assert_eq!(
+            store.recovery_state(&bin_outcome.delivery_id).unwrap(),
+            DeliveryRecoveryState::Blocked
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_sender_failure_leaves_deliver_intent_in_doubt_without_deliver() {
+        let root = scratch("in-doubt");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK verified");
+        store.record_report(&path, Vec::new(), 1_000).unwrap();
+        let result = store.deliver(&path, false, 2_000, |_bytes| {
+            Err(io::Error::other("simulated crash mid-send"))
+        });
+        assert!(result.is_err());
+        let events = store.read_events().unwrap();
+        let intent_id = events
+            .iter()
+            .find_map(|event| {
+                if let AuditEvent::DeliverIntent { delivery_id, .. } = event {
+                    Some(delivery_id.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("deliver_intent must be persisted before send");
+        assert_eq!(
+            store.recovery_state(&intent_id).unwrap(),
+            DeliveryRecoveryState::InDoubt
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

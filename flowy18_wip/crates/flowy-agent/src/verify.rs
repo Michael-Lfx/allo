@@ -5,7 +5,7 @@
 //! (invalid) and value mismatch. A report is aggregated by issue code; it is a
 //! result, not a tool error, so `ok=false` is visible to the caller.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::delivery::{self, DeliveryStore};
+use crate::pptx::resolve_turn_path;
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -164,20 +165,12 @@ fn now_ms() -> u64 {
         })
 }
 
-fn resolve_path(cwd: Option<&str>, raw: &str) -> PathBuf {
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    match cwd {
-        Some(cwd) => Path::new(cwd).join(path),
-        None => path.to_path_buf(),
-    }
-}
-
 fn execute(
     arguments: Value,
     cwd: Option<&str>,
+    output_root: Option<&Path>,
+    session_id: Option<&str>,
+    submission_id: Option<&str>,
     store: Option<&DeliveryStore>,
 ) -> ToolExecutionResult {
     #[derive(Deserialize)]
@@ -193,9 +186,11 @@ fn execute(
             "expected path, slides and anchors",
         );
     };
-    let path = resolve_path(cwd, &args.path);
+    let path = resolve_turn_path(cwd, output_root, &args.path);
     match verify_deck_file(&path, args.slides, &args.anchors) {
         Ok(report) => {
+            let mut report_id = String::new();
+            let mut artifact_hash = String::new();
             if let Some(store) = store {
                 let issues = report
                     .issues
@@ -205,16 +200,32 @@ fn execute(
                         field: issue.field.clone(),
                     })
                     .collect();
-                if let Err(error) = store.record_report(&path, issues, now_ms())
-                {
-                    tracing::warn!(
-                        target: "flowy.delivery",
-                        %error,
-                        path = %path.display(),
-                        "could not persist the verification report"
-                    );
+                match store.record_report(&path, issues, now_ms()) {
+                    Ok(persisted) => {
+                        report_id = persisted.id;
+                        artifact_hash = persisted.artifact_hash;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "flowy.delivery",
+                            %error,
+                            path = %path.display(),
+                            "could not persist the verification report"
+                        );
+                    }
                 }
             }
+            tracing::info!(
+                target: "flowy.verify",
+                session_id = session_id.unwrap_or(""),
+                root_session_id = session_id.unwrap_or(""),
+                submission_id = submission_id.unwrap_or(""),
+                report_id = %report_id,
+                artifact_hash = %artifact_hash,
+                ok = report.ok,
+                issue_count = report.issues.len(),
+                "deck verification completed"
+            );
             let value = report.to_value();
             let text = if report.ok {
                 "verification passed".to_owned()
@@ -266,7 +277,14 @@ pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
         move |args: ToolCallArgs, context: flowy_agent_core::ToolRunContext| {
             let store = store.clone();
             Box::pin(async move {
-                execute(args.arguments, context.cwd.as_deref(), store.as_ref())
+                execute(
+                    args.arguments,
+                    context.cwd.as_deref(),
+                    context.output_root.as_deref(),
+                    context.agent_id.as_deref(),
+                    context.submission_id.as_deref(),
+                    store.as_ref(),
+                )
             })
         },
     ))
@@ -293,7 +311,7 @@ mod tests {
         let expected = vec![anchor("S0-title", "T"), anchor("S0-body", "one")];
         let report = evaluate("deck.pptx", 1, 1, &deck, &expected);
         assert!(report.ok);
-        assert!(report.issues.is_empty());
+        assert_eq!(report.issues.as_slice(), []);
     }
 
     #[test]

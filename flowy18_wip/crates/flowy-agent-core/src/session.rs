@@ -100,6 +100,16 @@ pub struct SessionRecord {
     pub workspace: Option<SessionWorkspace>,
     #[serde(default)]
     pub delivery_commits: Vec<DeliveryCommit>,
+    /// Top-level session id when spawned from a parent conversation; omitted on root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+}
+
+impl SessionRecord {
+    #[must_use]
+    pub fn effective_root_session_id(&self) -> &str {
+        self.root_session_id.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// The whole session file.
@@ -321,6 +331,7 @@ mod tests {
             origin: SessionOrigin::Unknown,
             workspace: None,
             delivery_commits: Vec::new(),
+            ..SessionRecord::default()
         }
     }
 
@@ -407,5 +418,28 @@ mod tests {
             result,
             ContentBlock::ToolResult { artifact: None, .. }
         ));
+    }
+
+    #[test]
+    fn root_session_id_defaults_to_self_and_omits_when_none() {
+        let root_record = SessionRecord {
+            id: "s-root".into(),
+            ..SessionRecord::default()
+        };
+        assert_eq!(root_record.effective_root_session_id(), "s-root");
+        let serialized = serde_json::to_string(&root_record).unwrap();
+        assert!(!serialized.contains("root_session_id"));
+
+        let child_record = SessionRecord {
+            id: "s-child".into(),
+            root_session_id: Some("s-root".into()),
+            ..SessionRecord::default()
+        };
+        assert_eq!(child_record.effective_root_session_id(), "s-root");
+        let roundtrip: SessionRecord = serde_json::from_str(
+            &serde_json::to_string(&child_record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(roundtrip.root_session_id.as_deref(), Some("s-root"));
     }
 }

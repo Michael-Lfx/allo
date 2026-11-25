@@ -580,9 +580,15 @@ impl StudioPanel {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         self.refresh_chat(cx);
-        if initialized {
+        let background_claim_settled = self.agent.has_active_claim()
+            && self
+                .agent
+                .claimed_session_status()
+                .is_none_or(|status| !status.is_busy());
+        if initialized || background_claim_settled {
             // Startup is a level, not an edge: a receipt accepted by the
-            // previous process must start without a second submit.
+            // previous process must start without a second submit, and a
+            // claim running in a background session must settle when it ends.
             self.refresh_pending_receipts(cx);
         }
     }
@@ -842,28 +848,49 @@ impl StudioPanel {
         Ok(())
     }
 
+    /// Marks the cloud route ready and immediately checks if any queued
+    /// receipts were waiting for the catalog to finish loading.
+    pub fn notify_cloud_ready(&mut self, cx: &mut Context<'_, Self>) {
+        self.cloud_ready = true;
+        if self.initialized {
+            self.refresh_pending_receipts(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     /// Re-read the acceptance journal, finish a settled claim, and start the
     /// next receipt when the agent is idle.
     fn refresh_pending_receipts(&mut self, cx: &mut Context<'_, Self>) {
-        // A manual submit, or the active session's turn, must not interleave
-        // with a queued receipt; the pump re-checks when it is idle. Receipts
-        // owned by other busy sessions are skipped by `run_accepted_once`.
-        if self.submission_pending || self.status.is_busy() {
+        // A manual submit in flight must not interleave with a queued receipt;
+        // the pump re-checks when it settles.
+        if self.submission_pending {
             self.pending_receipts = self.agent.pending_acceptances();
             cx.notify();
             return;
         }
         if self.agent.has_active_claim() {
+            let claimed_status = self.agent.claimed_session_status();
+            if claimed_status
+                .as_ref()
+                .is_some_and(flowy_agent::TurnStatus::is_busy)
+            {
+                self.pending_receipts = self.agent.pending_acceptances();
+                cx.notify();
+                return;
+            }
             // Completed and Stopped are terminal; DeliveryFailed already
             // produced its artifacts and has its own retry surface, so it
             // must not rerun the whole turn. Only a plain error is retried,
             // with the journal's backoff.
             let attempts = self.agent.accepted_attempts().unwrap_or(0);
-            let completed = !matches!(
-                self.status,
-                flowy_agent::TurnStatus::Error { .. }
-                    | flowy_agent::TurnStatus::Idle
-            );
+            let completed = claimed_status.is_some_and(|status| {
+                !matches!(
+                    status,
+                    flowy_agent::TurnStatus::Error { .. }
+                        | flowy_agent::TurnStatus::Idle
+                )
+            });
             match self.agent.finish_accepted(completed) {
                 Ok(true) => {
                     self.emit_notice(Some("notice.receipt_gave_up"), cx);
@@ -875,10 +902,20 @@ impl StudioPanel {
                 Err(error) => self.emit_notice(Some(error), cx),
             }
         }
-        if !self.agent.pending_acceptances().is_empty() {
+        let can_drain = !self.status.is_busy()
+            && !self.catalog_loading
+            && (self.cloud_ready || !self.agent.requires_cloud_ready());
+        if can_drain && !self.agent.pending_acceptances().is_empty() {
             let previous = self.agent.active_session_id();
             match self.agent.run_accepted_once() {
                 Ok(Some(run)) => {
+                    if self.surface == StudioSurface::Home && previous.is_none()
+                    {
+                        // Draining in the background from a blank Home stage
+                        // must not bind the user's next Home prompt to the
+                        // drained session.
+                        let _ = self.agent.clear_active();
+                    }
                     self.pending_receipts = self.agent.pending_acceptances();
                     self.refresh_chat(cx);
                     if previous.as_deref() != Some(run.session_id.as_str()) {
@@ -1071,16 +1108,6 @@ impl StudioPanel {
             chars = typed.trim().chars().count(),
             "enter"
         );
-        if !self.cloud_ready || model.is_none() {
-            tracing::debug!(
-                target: "flowy.prompt",
-                stage = "StudioPanel::send_prompt",
-                reason = "cloud_or_model",
-                "reject"
-            );
-            self.emit_notice(Some("notice.agent_failed"), cx);
-            return;
-        }
         let text = typed.trim().to_string();
         if text.is_empty() {
             tracing::debug!(
@@ -1092,19 +1119,31 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        // A turn that is already running cannot start another one. Before this
-        // change the draft was simply refused; now the host takes responsibility
-        // for it immediately and hands back a durable receipt, so the user can
-        // keep typing while the current turn finishes.
-        // Read the panel's own view rather than re-querying the agent: the
-        // stop/send affordances are rendered from `self.status` too, so a
-        // second source here would let the button and the handler disagree.
         let running = matches!(
             self.status,
             flowy_agent::TurnStatus::Running
                 | flowy_agent::TurnStatus::SavingFiles
         );
-        if running {
+        let waiting_for_cloud = self.catalog_loading
+            || ((!self.cloud_ready || model.is_none())
+                && self.agent.requires_cloud_ready());
+        if !running
+            && !waiting_for_cloud
+            && (!self.cloud_ready || model.is_none())
+        {
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "StudioPanel::send_prompt",
+                reason = "cloud_or_model",
+                "reject"
+            );
+            self.emit_notice(Some("notice.agent_failed"), cx);
+            return;
+        }
+        // A turn that is already running (or waiting for cloud catalog readiness)
+        // cannot start immediately. The host takes responsibility for the draft
+        // right away and hands back a durable receipt, so nothing is lost.
+        if running || waiting_for_cloud {
             match self.agent.accept_deferred(&text) {
                 Ok(receipt) => {
                     tracing::debug!(
@@ -1587,14 +1626,16 @@ impl Render for StudioPanel {
     ) -> impl IntoElement {
         self.apply_prompt_pending(window, cx);
         let model_label = self.model_label();
-        let cloud_ready = self.cloud_ready;
+        let can_submit = self.cloud_ready
+            || self.catalog_loading
+            || self.agent.requires_cloud_ready();
         self.composer.update(cx, |composer, cx| {
             composer.sync_state(
                 self.model,
                 self.model_menu_open,
                 self.submission_pending || self.status.is_busy(),
                 model_label,
-                cloud_ready,
+                can_submit,
                 cx,
             );
         });
@@ -1733,7 +1774,7 @@ mod tests {
             panel.open_session(&id, cx);
             panel.status = flowy_agent::TurnStatus::Running;
             panel.refresh_working(cx);
-            assert!(panel.pending_receipts.is_empty());
+            assert_eq!(panel.pending_receipts.len(), 0);
 
             panel.fill_prompt("queued while the turn runs", cx);
             panel.send_prompt(cx);
@@ -1941,7 +1982,7 @@ mod tests {
 
             // A receipt from another session is labelled by that session, not
             // by whichever one happens to be active now.
-            let mut foreign = receipt.clone();
+            let mut foreign = receipt;
             foreign.session_hint = Some("elsewhere".to_owned());
             let owner = panel.receipt_owner(&foreign);
             assert_ne!(owner, panel.t("chat.pending_here"));
@@ -2668,6 +2709,117 @@ mod tests {
         drop(first);
         drop(second);
         drop(theme);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn catalog_loading_holds_queued_receipts_and_queues_new_prompts(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-catalog-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        flowy_agent::AcceptanceQueue::new(root.clone())
+            .accept(None, "persisted before restart", 1)
+            .unwrap();
+        let panel = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: "flowy".into(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.catalog_loading = true;
+            panel.cloud_ready = false;
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Initialized],
+                cx,
+            );
+            assert_eq!(
+                panel.pending_receipts.len(),
+                1,
+                "startup before catalog arrives must not drain into echo"
+            );
+            assert!(!panel.agent.has_active_claim());
+
+            // Typing and sending while catalog is loading accepts into the
+            // durable queue instead of failing with notice.agent_failed.
+            panel.fill_prompt("typed while catalog loads", cx);
+            panel.send_prompt(cx);
+            assert_eq!(panel.notice, None);
+            assert_eq!(panel.pending_receipts.len(), 2);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn switching_to_home_neither_settles_a_running_claim_nor_binds_home(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "claim-isolation");
+        panel.update(cx, |panel, cx| {
+            let hinted = panel.agent.create_home_session().unwrap();
+            panel.open_session(&hinted, cx);
+            panel
+                .agent
+                .accept_deferred("finish in hinted session")
+                .unwrap();
+
+            // User goes back to a blank Home screen before the receipt drains.
+            panel.new_task(cx);
+            assert_eq!(panel.surface, StudioSurface::Home);
+            assert_eq!(panel.agent.active_session_id(), None);
+
+            panel.initialized = true;
+            panel.refresh_pending_receipts(cx);
+            assert!(panel.agent.has_active_claim());
+            assert_eq!(
+                panel.agent.active_session_id(),
+                None,
+                "background drain must not bind a blank Home screen to the old session"
+            );
+
+            // Wait for the background turn to finish, then verify the claim settles.
+            for _ in 0..200 {
+                if panel
+                    .agent
+                    .claimed_session_status()
+                    .is_none_or(|status| !status.is_busy())
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panel.refresh_pending_receipts(cx);
+            assert!(!panel.agent.has_active_claim());
+            assert_eq!(panel.pending_receipts.len(), 0);
+        });
+        drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
 }
