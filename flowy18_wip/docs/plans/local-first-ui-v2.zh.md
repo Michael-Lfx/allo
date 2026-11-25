@@ -1,7 +1,7 @@
-# Flowy Local-First UI v2 与内核 6 接口解耦架构 · 技术方案与溯源手册
+# Flowy Local-First UI v2 与内核 6+4 接口解耦架构 · 技术方案与溯源手册
 
-> **状态**：✅ 已实现并提交（分支 `feat/flowy-local-ui-v2`，已无冲突 `rebase` 至 `feat/flowy-v0-rc` @ `10b99bac0`，含内核 `65772f857` 全部 6+4 接口对接）  
-> **提交溯源**：`10992fbe8`（UI v2 看板/弹窗/驾驶舱初版）→ `df62c4d98`（代码审查 13 项深度收敛）→ `1c8161bcb`（`flowy-agent` 新 6 接口架构重构）→ `6977dda51`（落盘设计文档）→ `6d81e6fd2`（模块拆解与组件去重）→ 本次收尾提交（深度审查 5 项修复 + 接入 `65772f857` 4 项只读/唤醒接口）  
+> **状态**：✅ 已实现、收尾并就绪待合并（分支 `feat/flowy-local-ui-v2`，已无冲突线性 `rebase` 至 `feat/flowy-v0-rc` @ `10b99bac0`，完整对接内核 `71cdb8e92` + `65772f857` 全部 6+4 接口）  
+> **提交溯源**：`10992fbe8`（UI v2 看板/弹窗/驾驶舱初版）→ `df62c4d98`（代码审查 13 项深度收敛）→ `1c8161bcb`（`flowy-agent` 6 接口架构重构）→ `6977dda51`（落盘设计文档）→ `6d81e6fd2`（模块拆解与组件去重）→ `a0fe5df13`（深度审查 5 项修复 + 接入 `65772f857` 4 项只读/唤醒接口）  
 > **前序基线**：[super-agent-ui-and-motion.zh.md](super-agent-ui-and-motion.zh.md)  
 > **核心原则**：**内核自治调度，UI 降维为纯订阅展示层；以本机办公交付为主体（全局看图形 KPI，细节进居中弹窗看流程图），严守 0 冲突文件硬边界、零生产 mock、零磁盘直读、零隐式内部格式耦合、外部打开扩展名白名单门禁、23 语言全对称。**
 
@@ -14,19 +14,19 @@ Flowy Desktop（`flowy18_wip`）定位为**本机优先（Local-First）的办�
 
 本轮重构围绕三个核心初衷展开：
 1. **解决窄屏响应式塌陷**：早期方案试图在三栏并排主界面中常驻横向流程图与右侧审批抽屉，在 960–1280px 常见笔记本视口下必然出现 KPI 竖排挤压、流程图裁切与文字重叠。因此确立**「主画布只做自适应图形 KPI + 按会话分层摘要卡，点击任意会话弹出宽幅居中流程图 Modal」**的信息分层。
-2. **彻底剥离 UI 侧队列调度器**：此前 `StudioPanel` 在 UI 33ms 节拍器里内嵌了 5 秒定时轮询，手动推断 `has_active_claim()` / `claimed_session_status()` 并调用 `finish_accepted()` / `run_accepted_once()`，既与内核职责倒挂，又容易在后台队列推进时干扰当前焦点会话。在内核 `feat/flowy-v0-rc`（`71cdb8e92`）导出 6 个解耦接口后，我们在未发布期果断一次性完成对接重构，消除历史债。
+2. **彻底剥离 UI 侧队列调度器**：此前 `StudioPanel` 在 UI 33ms 节拍器里内嵌了 5 秒定时轮询，手动推断 `has_active_claim()` / `claimed_session_status()` 并调用 `finish_accepted()` / `run_accepted_once()`，既与内核职责倒挂，又容易在后台队列推进时干扰当前焦点会话。在内核 `feat/flowy-v0-rc`（`71cdb8e92` + `65772f857`）导出 6+4 解耦接口后，我们在未发布期果断一次性完成对接重构并清除全部临时补偿，消除历史债。
 3. **跨 worktree 零冲突协作**：内核侧与 UI 侧并行演进，必须通过窄投影适配器（[ports/mod.rs](../../crates/flowy-studio/src/ports/mod.rs)）和严格文件白名单实现硬隔离，确保双方合并 0 冲突、0 返工。
 
 ### 1.2 演进前后能力对比矩阵
 
-| 维度 | 改造前（v0 基线 `f8fb6b491`） | UI v2 第一阶段（`370dfdb5a` / `70cff483a`） | UI v2 × 6 接口重构（`c5170e55a`） |
+| 维度 | 改造前（v0 基线 `f8fb6b491`） | UI v2 第一阶段（`10992fbe8` / `df62c4d98`） | UI v2 × 6+4 接口闭环（`1c8161bcb`..`a0fe5df13`） |
 | --- | --- | --- | --- |
-| **全局任务可视性** | 仅侧边栏文字列表，无法一眼识别卡点与产物分布 | 自适应 `2×2 / 4×1` GPU 环形图 KPI + 会话分层卡 + 居中流程图弹窗 | 新增 `ReceiptState` 全 7 态可视化、死信/隔离归入卡点、契约交付进度条 |
-| **队列调度归属** | UI 5s 定时泵手动调 `finish_accepted` / `run_accepted_once` | 暂留旧泵（准备切换） | 生产态 `set_autonomous_drain(true)` 移交内核 Tokio 自治，UI 仅订阅 `AgentUpdate::Receipt` |
-| **任务取消控制** | `stop_if_active` 隐式依赖当前焦点会话，无法取消排队回执 | 抽屉可停后台会话，仍走 `stop_if_active` | 统一 `cancel_task(TaskTarget::Session \| Receipt)`，诚实反馈 `FinalizingNotCancellable` |
-| **卡片动作入口** | 核验放行、交付重试分散直调底层方法，无死信恢复 | 弹窗补齐两步核验放行，仍分头调用 | 统一收口 `apply_card_action(OverrideDeliver \| RetryDelivery \| RetryDeadReceipt)` |
-| **契约进度与溯源** | 仅展示单文件核验卡与聊天流 | 新增脱敏 Trace 与 JSONL 导出 | 通过 `work_status(work_id)` 投影真实 `WorkContractProgress` 与缺失交付物告警 |
-| **应用正常关闭** | 标题栏/系统关窗直接 `cx.quit()`，托盘退出无刷盘钩子 | 同前 | `FlowyApp::new` 单一 `cx.on_app_quit` 异步调用 `agent.prepare_shutdown()` 全路径兜底 |
+| **全局任务可视性** | 仅侧边栏文字列表，无法一眼识别卡点与产物分布 | 自适应 `2×2 / 4×1` GPU 环形图 KPI + 会话分层卡 + 居中流程图弹窗 | `visible_acceptances()` 全 7 态持久化投影、退避期/死信/隔离跨重启不丢失、契约交付进度条 |
+| **队列调度归属** | UI 5s 定时泵手动调 `finish_accepted` / `run_accepted_once` | 暂留旧泵（准备切换） | 生产态 `set_autonomous_drain(true)` 移交内核 Tokio 自治，`apply_config` 自动唤醒，UI 纯订阅 `AgentUpdate::Receipt` |
+| **任务取消控制** | `stop_if_active` 隐式依赖当前焦点会话，无法取消排队回执 | 抽屉可停后台会话，仍走 `stop_if_active` | 统一 `cancel_task(TaskTarget::Session \| Receipt)`，登出全量取消在跑会话，诚实反馈 `FinalizingNotCancellable` |
+| **卡片动作入口** | 核验放行、交付重试分散直调底层方法，无死信恢复 | 弹窗补齐两步核验放行，仍分头调用 | 统一收口 `apply_card_action(OverrideDeliver \| RetryDelivery \| RetryDeadReceipt)`，内核自动取代旧死信 |
+| **契约进度与溯源** | 仅展示单文件核验卡与聊天流 | 新增脱敏 Trace 与 JSONL 导出 | `work_status(work_id)` + `session_work_status(session_id)` 覆盖队列与直提全场景契约进度及缺失告警 |
+| **安全与关停边界** | 直接 `cx.quit()` 无刷盘钩子；预览外部打开无白名单 | 同前 | `FlowyApp::new` 单一 `cx.on_app_quit` 异步 `prepare_shutdown()`；外部打开强制 `can_open_with_default_app` + `is_file()` 双门禁 |
 
 ---
 
@@ -38,14 +38,14 @@ Flowy Desktop（`flowy18_wip`）定位为**本机优先（Local-First）的办�
 flowchart LR
   subgraph App["flowy-app 宿主壳层"]
     Dock["三段侧边栏 (dock.rs)<br/>新任务 · 工作台看板 · 资料库 · 技能<br/>本机项目折叠行 + 最近任务"]
-    Host["顶层弹层与退出总闸 (mod.rs)<br/>OverlayHost · 顶层流程图 Modal<br/>cx.on_app_quit 退出钩子"]
+    Host["顶层弹层、设置与退出总闸 (mod.rs / settings.rs)<br/>OverlayHost · 顶层流程图 Modal<br/>cx.on_app_quit · 语言同步 · 登出清理"]
   end
 
   subgraph Studio["flowy-studio 纯订阅展示层"]
-    Intent["意图派发 (panel.rs)<br/>send_prompt / accept_deferred<br/>cancel_task / apply_card_action"]
-    Sub["事件订阅泵 (33ms)<br/>消费 AgentUpdate 全量事件<br/>生产态关闭 5s 手动调度"]
-    Ports["窄投影适配器 (ports.rs)<br/>BoardDataSource 脏缓存快照<br/>WorkContractProgress · 脱敏 Trace"]
-    Views["四大交互面<br/>overview.rs 看板与居中弹窗<br/>composer.rs 4 筹码驾驶舱<br/>deliverables.rs 三模抽屉"]
+    Intent["意图与控制 (panel.rs / work_actions.rs)<br/>send_prompt / accept_deferred / prepare_for_sign_out<br/>cancel_task / apply_card_action / open_file_externally"]
+    Sub["事件订阅泵 (33ms)<br/>消费 AgentUpdate 全量事件<br/>同步 visible_acceptances() · 关闭 5s 手动调度"]
+    Ports["窄投影适配器 (ports/)<br/>board.rs 脏缓存快照 · session_work_status<br/>trace.rs 脱敏日志 · local_env.rs 环境检查"]
+    Views["四大交互面<br/>overview/ 看板与居中弹窗 · menus.rs 弹层<br/>composer.rs 4 筹码驾驶舱 · deliverables.rs 三模抽屉"]
   end
 
   subgraph UI["flowy-ui 零全局原语库"]
@@ -54,18 +54,18 @@ flowchart LR
     Tokens["theme.rs<br/>双主题语义 Token"]
   end
 
-  subgraph Kernel["flowy-agent 宿主内核 (71cdb8e92 · 本分支零修改)"]
-    Drain["Autonomous Drain<br/>Tokio 自治推进与退避唤醒"]
-    Ctrl["控制与卡片网关<br/>cancel_task / apply_card_action"]
-    Truth["持久化真相源<br/>SessionIndex / AcceptanceQueue<br/>WorkContract / DeliveryStore"]
+  subgraph Kernel["flowy-agent 宿主内核 (65772f857 · 本分支零修改)"]
+    Drain["Autonomous Drain<br/>Tokio 自治推进 · apply_config 自动唤醒"]
+    Ctrl["控制与卡片网关<br/>cancel_task / apply_card_action / 死信取代"]
+    Truth["持久化真相源<br/>visible_acceptances / session_work_status<br/>SessionIndex / WorkContract / DeliveryStore"]
     Shut["优雅关停<br/>prepare_shutdown"]
   end
 
   Dock -->|"Section::Board / Studio"| Views
-  Host -->|"SkillChip 与顶部渲染槽"| Views
+  Host -->|"SkillChip · 语言同步 · 顶部渲染槽"| Views
   Views -->|"用户操作"| Intent
   Intent -->|"background_executor / 同步审计"| Ctrl
-  Intent -->|"boot 与 cloud_ready 唤醒"| Drain
+  Intent -->|"apply_config 自动唤醒"| Drain
   Host -->|"异步等待刷盘"| Shut
   Drain --> Truth
   Ctrl --> Truth
@@ -82,14 +82,14 @@ flowchart LR
 
 | 类别 | 明确边界 |
 | --- | --- |
-| **核心目标** | ① 全局可视化工作台 + 宽幅居中流程图弹窗；② 4 筹码本机驾驶舱与三模抽屉；③ 全面切换 `71cdb8e92` 6 个新接口并将 UI 降维为纯订阅层；④ 23 语言对称与双主题零硬编码；⑤ 0 冲突文件边界。 |
+| **核心目标** | ① 全局可视化工作台 + 宽幅居中流程图弹窗；② 4 筹码本机驾驶舱与三模抽屉；③ 全面切换 `71cdb8e92` + `65772f857` 全部 6+4 接口并将 UI 降维为纯订阅层；④ 外部打开白名单门禁、23 语言对称与双主题零硬编码；⑤ 模块解耦与 0 冲突文件边界。 |
 | **明确非目标** | ① 严禁修改 `flowy-agent`、`flowy-agent-core`、`flowy-shell` 及共享文档 `docs/architecture/flowy-v0/*`；② 严禁引入新第三方 Rust crate 或调用 `gpui_kit::init(cx)`；③ 严禁在生产代码中塞入 mock 数据或直读磁盘状态文件；④ 严禁 UI 猜测并拼接内核内部 `submission-{id:032x}` 格式。 |
 
 ### 2.3 五条架构不变量（后续维护不可打破）
-1. **0 冲突硬边界**：UI 侧只允许改动 `flowy18_wip/crates/{flowy-ui, flowy-studio, flowy-app, flowy-i18n}/` 与 `flowy18_wip/docs/plans/`。需要新内核只读能力时一律写入 §6.3 需求单由内核侧补充。
+1. **0 冲突硬边界**：UI 侧只允许改动 `flowy18_wip/crates/{flowy-ui, flowy-studio, flowy-app, flowy-i18n}/` 与 `flowy18_wip/docs/plans/`。需要新内核只读能力时一律通过协同需求单由内核侧补充。
 2. **双轨隔离兼容单测**：`StudioPanel::new_background`（生产 `FlowyApp`）必须开启 `agent.set_autonomous_drain(true)`；`StudioPanel::new`（`cfg!(test)` 确定性单测）保持 `false`，所有旧手动 drain 代码必须锁在 `if !self.agent.autonomous_drain()` 守卫内，不得在生产路径运行。
-3. **零渲染帧 I/O**：`Render::render` 与空闲 33ms 节拍严禁执行 `fs::metadata` 或磁盘扫表；`WorkBoardSnapshot` 与 `LocalEnvSnapshot` 仅在结构化 `AgentUpdate`、项目/配置变更、打开看板或流式 1.2s 节流窗口更新。
-4. **严格不透明 ID 契约**：`work_status(work_id)` 只允许传内核返回的不透明 `receipt.id`（或未来内核导出的 `latest_work_id`）；`CardAction::OverrideDeliver` 必须传 `ChatLine::Verification` 里的真实非空 `report_id`。
+3. **零渲染帧 I/O**：`Render::render` 与空闲 33ms 节拍严禁执行 `fs::metadata`、`Path::is_file()` 或磁盘扫表；`WorkBoardSnapshot` 与 `LocalEnvSnapshot` 仅在结构化 `AgentUpdate`、项目/配置/语言变更、打开看板或流式 1.2s 节流窗口更新；渲染期外部打开按钮仅做纯字符串白名单检查，常规文件存在性校验放进点击回调。
+4. **严格不透明 ID 与安全打开契约**：`work_status(work_id)` / `session_work_status(session_id)` 仅传内核不透明 ID；`CardAction::OverrideDeliver` 必须传 `ChatLine::Verification` 里的真实非空 `report_id`；外部 `open::that` 必须统一经 `open_file_externally` 通过 `flowy_agent::can_open_with_default_app` 门禁。
 5. **单一退出总闸**：关闭刷盘必须统一收口在 `FlowyApp::new` 的 `cx.on_app_quit`，禁止在各个按钮或窗口回调里重复调用 `prepare_shutdown()` 造成遗漏或竞态。
 
 ---
@@ -100,35 +100,35 @@ flowchart LR
 
 | Crate | 文件 | 职责与关键改动 |
 | --- | --- | --- |
-| `flowy-ui` | [theme.rs](../../crates/flowy-ui/src/theme.rs)、[charts.rs](../../crates/flowy-ui/src/charts.rs)、[overlays.rs](../../crates/flowy-ui/src/overlays.rs) | 双主题 `file_kind_*` 语义 Token；基于底层 `Arc`/`Pie` + `canvas` 自绘 `donut_chart` / `progress_ring` / `flow_connector`（免全局 Theme）；免 `viewport_size()` 的 `centered_modal_sheet`。 |
+| `flowy-ui` | [theme.rs](../../crates/flowy-ui/src/theme.rs)、[charts.rs](../../crates/flowy-ui/src/charts.rs)、[overlays.rs](../../crates/flowy-ui/src/overlays.rs) | 双主题 `file_kind_*` 语义 Token；基于底层 `Arc`/`Pie` + `canvas` 自绘 `donut_chart` / `progress_ring` / `flow_connector`（免全局 Theme、唯一动画 ID）；免 `viewport_size()` 的 `centered_modal_sheet`。 |
 | `flowy-studio` | `ports/`（[mod.rs](../../crates/flowy-studio/src/ports/mod.rs)、[board.rs](../../crates/flowy-studio/src/ports/board.rs)、[trace.rs](../../crates/flowy-studio/src/ports/trace.rs)、[local_env.rs](../../crates/flowy-studio/src/ports/local_env.rs)） | `BoardDataSource`、`WorkBoardSnapshot`、`WorkContractProgress`（映射 `work_status` + `session_work_status`）、`LocalEnvSnapshot`、`collect_session_traces`（含 JSON/JWT 密钥脱敏与缺失项告警）、`display_path`（剥离 Windows `\\?\` 与 `\\?\UNC\`）。 |
 | `flowy-studio` | [panel.rs](../../crates/flowy-studio/src/panel.rs)、[work_actions.rs](../../crates/flowy-studio/src/work_actions.rs)、[menus.rs](../../crates/flowy-studio/src/menus.rs) | `set_autonomous_drain(true)` 生产启用；`AgentUpdate::Receipt` 与 `visible_acceptances()` 无状态同步；`cancel_task_target` / `apply_card_action` / `prepare_for_sign_out` / 外部打开白名单门禁 `open_file_externally`；本机环境与驾驶舱弹出菜单。 |
 | `flowy-studio` | `overview/`（[mod.rs](../../crates/flowy-studio/src/overview/mod.rs)、[flow_modal.rs](../../crates/flowy-studio/src/overview/flow_modal.rs)、[trace_panel.rs](../../crates/flowy-studio/src/overview/trace_panel.rs)）、[deliverables.rs](../../crates/flowy-studio/src/deliverables.rs)、[studio.rs](../../crates/flowy-studio/src/studio.rs)、[composer.rs](../../crates/flowy-studio/src/composer.rs) | 看板 KPI 与会话分层卡、顶层居中流程图弹窗（含两步放行/停止/取消排队/死信重投/契约进度/白名单文件打开）、三模右侧抽屉（含 `session_work_status` 契约进度）、4 筹码驾驶舱。 |
-| `flowy-app` | [mod.rs](../../crates/flowy-app/src/app/mod.rs)、[dock.rs](../../crates/flowy-app/src/app/dock.rs)、[projects.rs](../../crates/flowy-app/src/app/projects.rs)、[skills.rs](../../crates/flowy-app/src/app/skills.rs) | `cx.on_app_quit` 挂接 `agent.prepare_shutdown()`；顶层 `flow_modal_overlay` 渲染槽（遮罩覆盖全窗口）；三段侧边栏待拍板优先级修复；项目菜单一键跳转筛选看板；真实技能清单同步。 |
-| `flowy-i18n` | `locales/*.json`（全 23 语种） | 对称新增 UI v2 与 6 接口状态/提示全部 key，经 `every_locale_has_the_same_keys` 与 `check-ui-contracts.mjs` 强校验。 |
+| `flowy-app` | [mod.rs](../../crates/flowy-app/src/app/mod.rs)、[dock.rs](../../crates/flowy-app/src/app/dock.rs)、[settings.rs](../../crates/flowy-app/src/app/settings.rs)、[projects.rs](../../crates/flowy-app/src/app/projects.rs)、[skills.rs](../../crates/flowy-app/src/app/skills.rs) | `cx.on_app_quit` 挂接 `agent.prepare_shutdown()`；`sign_out` 调 `prepare_for_sign_out`；`choose_locale` 联动刷新技能清单；顶层 `flow_modal_overlay` 渲染槽；三段侧边栏待拍板优先级修复；项目菜单一键跳转筛选看板。 |
+| `flowy-i18n` | `locales/*.json`（全 23 语种） | 对称新增 UI v2 与 6+4 接口状态/提示全部 key，经 `every_locale_has_the_same_keys` 与 `check-ui-contracts.mjs` 强校验。 |
 
 ### 3.2 关键异步交互时序
 
-#### 时序 A：启动云端延迟就绪 → 自治队列唤醒 → 死信重投防重复
+#### 时序 A：启动云端延迟就绪 → `apply_config` 自动唤醒 → `visible_acceptances()` 与死信自动取代
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant App as FlowyApp
   participant Panel as StudioPanel
-  participant Agent as AgentHandle (71cdb8e92)
+  participant Agent as AgentHandle (65772f857)
 
   App->>Panel: StudioPanel::new_background (disconnected_config)
   Panel->>Agent: with_config_background + set_autonomous_drain(true)
   Note over Agent: Initialized 时 !can_run_turns()，首轮 kick 直接退出
   App->>Agent: apply_config(live_cloud_config)
-  App->>Panel: notify_cloud_ready()
-  Panel->>Agent: set_autonomous_drain(true) 显式再唤醒
+  Note over Agent: can_run_turns() && autonomous_drain -> 内核自动 kick_autonomous_drain()
+  App->>Panel: notify_cloud_ready() -> sync_receipts() + refresh_board_snapshot()
   Agent-->>Panel: AgentUpdate::Receipt { id, Running -> Retrying -> Dead }
-  Panel->>Panel: record_receipt_state(id, Dead) 写入 failed_receipts 并提示
+  Panel->>Agent: visible_acceptances()（持久化真相源，跨重启可见）
   Panel->>Agent: background_executor: apply_card_action(RetryDeadReceipt { id })
-  Agent-->>Panel: Ok(ReceiptRequeued { receipt_id: new_id }) + Receipt(new_id, Queued)
-  Panel->>Panel: 从 failed_receipts 剔除旧 id，刷新 pending_receipts 与看板
+  Agent-->>Panel: Receipt(old_id, Cancelled) + Receipt(new_id, Queued)
+  Panel->>Panel: sync_receipts() 自动移除旧死信并刷新看板与浮层
 ```
 
 #### 时序 B：显式取消、核验两步放行与单一退出总闸
@@ -138,7 +138,7 @@ sequenceDiagram
   autonumber
   participant User as 用户操作
   participant Panel as StudioPanel / FlowyApp
-  participant Agent as AgentHandle (71cdb8e92)
+  participant Agent as AgentHandle (65772f857)
 
   User->>Panel: 点击「停止此项」或「取消排队」
   Panel->>Agent: background_executor: cancel_task(TaskTarget::Session / Receipt)
@@ -181,12 +181,13 @@ sequenceDiagram
 | **D1** | 流程图展示形态 | **全局看板看图形 KPI + 顶层居中 Modal 展示宽幅流程图** | ❌ 三栏主区常驻流程图：960–1280px 窗口下横向空间严重不足，导致 KPI 竖排挤压与流程节点裁切。 |
 | **D2** | GPUI 图表与环形图实现 | **基于已锁死 `gpui_kit::base::plot::shape::{Arc, Pie}` + `gpui::canvas` 封装零全局原语（`flowy-ui/src/charts.rs`）** | ❌ 调 `gpui_kit::init(cx)` 用高层图表组件：会覆盖现有 `ResolvedTheme` 体系并引入全局状态耦合；❌ 引入新绘图 crate：增加 Windows 构建链风险。 |
 | **D3** | 自治队列开关策略 | **生产 `StudioPanel::new_background` 开启 `set_autonomous_drain(true)`；测试 `StudioPanel::new` 保持 `false`** | ❌ 无条件全局开启：会破坏 `panel.rs` 中 4 个依赖同步确定性 `refresh_pending_receipts` 的既有 GPUI 回归单测。 |
-| **D4** | 云端就绪唤醒缺口兜底 | **在 `StudioPanel::notify_cloud_ready` 中防御性重调 `agent.set_autonomous_drain(true)`** | ❌ 寄希望于 `apply_config()` 自动唤醒：实证 `71cdb8e92` 的 `apply_config()` 未调 `kick_autonomous_drain()`，启动前积压的队列会在云就绪后永久停在 `Queued`。 |
-| **D5** | 死信回执展示与防重投 | **订阅 `AgentUpdate::Receipt` 维护内存 `failed_receipts` + `retrying_receipt` 重入锁；`ReceiptRequeued` 后主动清除旧 ID** | ❌ UI 直接构造 `AcceptanceQueue::new(root)` 扫盘：违反内核“禁止 UI 直读磁盘状态文件”红线；❌ 重投后不清旧 ID：内核追加新回执而保留旧 `dead: true`，会导致用户连点复制任务。 |
-| **D6** | `work_status(work_id)` 接入范围 | **仅对持有真实不透明 `receipt.id` 的分支投影 `WorkContractProgress`** | ❌ 对直提会话自行拼装 `"submission-{id:032x}"`：耦合内核内部私有字符串格式且进程重启后即丢失，改为向内核侧提 `session_work_status(session_id)` 只读接口需求。 |
+| **D4** | 云端就绪唤醒路径 | **依赖内核 `65772f857` 在 `apply_config()` 内自动唤醒；`notify_cloud_ready` 仅刷新 `visible_receipts` 与看板** | ❌ 在 UI 长期保留防御性重调 `set_autonomous_drain(true)`（仅作为 `71cdb8e92` 过渡兜底，已于 `a0fe5df13` 清理）。 |
+| **D5** | 死信/退避期回执展示与防重投 | **统一消费 `agent.visible_acceptances()` + `retrying_receipt` 重入锁；依赖内核 `65772f857` 重投时自动取代旧死信** | ❌ UI 维护内存态 `failed_receipts`（跨重启丢失死信且退避期任务闪烁，已于 `a0fe5df13` 删除）；❌ UI 直读磁盘 `AcceptanceQueue`：违反内核分层红线。 |
+| **D6** | 契约进度查询覆盖范围 | **队列回执走 `work_status(&receipt.id)` + 真实会话走 `session_work_status(&session_id)`（看板/抽屉/Trace 全覆盖）** | ❌ 对直提会话自行拼装 `"submission-{id:032x}"`：耦合内核私有内部格式且重启即失效。 |
 | **D7** | 退出刷盘钩子落点 | **在 `FlowyApp::new` 单一注册 `cx.on_app_quit`，异步执行 `agent.prepare_shutdown()`** | ❌ 在 `titlebar.rs` 与 `on_window_should_close` 分散埋点：会被 `flowy_shell::QuitApp`（托盘退出 + `Ctrl+Q`）直接绕过，且需跨 crate 改 `flowy-shell`。 |
 | **D8** | 卡片动作同步 vs 异步执行 | **`OverrideDeliver` 保持同步调用；`RetryDelivery` / `RetryDeadReceipt` / `cancel_task` 走 `background_executor`** | ❌ 把 `OverrideDeliver` 改成异步：直接破坏既有同步单测 `override_delivery_writes_audit_chain_and_persists_badge_across_reopen`；❌ 把 `RetryDelivery`/`cancel_task` 放 UI 线程：存在锁与磁盘 I/O 卡顿风险。 |
 | **D9** | 看板与环境检查刷新频率 | **脏缓存 + 结构化 `AgentUpdate` 触发 + 流式输出 1.2s 节流；`local_env` 仅状态变化时重算** | ❌ 每帧 `render()` 或每 token 重建快照：会导致每秒数十次 `fs::metadata` 与 `session_lines` 扫描，直接拖垮帧率。 |
+| **D10** | 外部文件打开安全门禁 | **渲染期纯字符串检查 `flowy_agent::can_open_with_default_app`，点击期经 `open_file_externally` 二次校验 `Path::is_file()`** | ❌ 直接 `open::that(&path)`：Windows 上点击 Agent 产出的 `.exe`/`.ps1`/`.bat` 会直接执行；❌ 渲染期调 `Path::is_file()`：违反零渲染帧磁盘 I/O 原则。 |
 
 ---
 
@@ -198,20 +199,20 @@ sequenceDiagram
 1. **`ElementId` 元组类型不匹配（E0277）**
    - **现象**：`charts.rs` 中将 `(elem_id, 1_u64)` 传给 `.id(...)` 编译报错。
    - **根因**：`ElementId` 未实现 `(ElementId, u64)` 嵌套元组，仅支持 `(&'static str, u64)` 或 `(ElementId, &'static str)` 等固定组合。
-   - **解法**：改用 `(elem_id, "ring")` / `(elem_id, "flow")`；所有动态列表项坚持 `("prefix", idx as u64)`。
+   - **解法**：改用 `(elem_id, "ring")` / `(elem_id, "flow")` / `(elem_id, "donut")` / `(panel_elem_id, "enter")`；所有动态列表项坚持 `("prefix", idx as u64)`。
 2. **弹窗遮罩只盖住中栏、不盖侧边栏与标题栏**
    - **现象**：初版把 `flow_modal_overlay` 放在 `StudioPanel::workspace` 内部渲染，导致弹窗被侧栏裁剪、960px 窗口横向溢出。
    - **根因**：`StudioPanel` 仅占右侧内容区，不拥有整窗视口。
-   - **解法**：在 `70cff483a` 提升至顶层 [mod.rs](../../crates/flowy-app/src/app/mod.rs) 的 `FlowyApp::render` 渲染槽，并收紧流程图节点宽度（`148 / 156 / 172px` + `22px` 连线），使 960px 窗口一屏完整无滚动裁切。
+   - **解法**：在 `df62c4d98` 提升至顶层 [mod.rs](../../crates/flowy-app/src/app/mod.rs) 的 `FlowyApp::render` 渲染槽，并收紧流程图节点宽度（`148 / 156 / 172px` + `22px` 连线），使 960px 窗口一屏完整无滚动裁切。
 3. **`check-ui-contracts.mjs` 静态门禁拦截**
    - **现象**：任何裸 `rgb(...)`、`div().on_click(...)`、或 23 套语言字典少 key / 占位符不一致都会直接红灯。
    - **解法**：交互容器统一用 `flowy_ui::interactive(id, label, &self.theme)`；颜色一律走 `self.theme.*`；所有新 key 必须一次同步进全部 23 份 `locales/*.json`。
 
-### 5.2 UI 状态机与交互逻辑坑（来自 `/code-review` 13 项修复）
+### 5.2 UI 状态机、安全与交互逻辑坑（来自两轮 `/code-review` 修复）
 1. **挂载技能发送后输入框草稿无法清空**
    - **现象**：选中技能 chip 发送消息后，提示词仍残留在输入框。
    - **根因**：`send_prompt` 在文本前拼了 `[Skill: ...]\n`，随后异步回调拿拼接后的 `text` 去比对 `prompt_text(cx).trim()`，永远不等。
-   - **解法**：在 `70cff483a` 保留未拼前缀的 `trimmed_draft` 专门用于 `draft_matches` 校验。
+   - **解法**：在 `df62c4d98` 保留未拼前缀的 `trimmed_draft` 专门用于 `draft_matches` 校验。
 2. **`!cloud_ready` 时发送按钮静默失效**
    - **现象**：未连接云模型时点击发送或按回车无任何反馈，用户误以为应用卡死。
    - **解法**：保持按钮可点并派发 `ComposerEvent::CloudNotReady`，自动打开模型菜单并弹出 `notice.model_setup_required` 引导。
@@ -224,49 +225,53 @@ sequenceDiagram
 5. **Trace 脱敏漏掉 JSON 键值对与 JWT**
    - **现象**：早期脱敏仅匹配 `key=val`，对 `{"api_key":"sk-..."}` 与裸 `eyJ...` JWT 失效。
    - **解法**：扩展 `redact_trace_text` 同时识别 `:` 分隔键值、多 token 续行及 `sk-` / `ghp_` / `eyJ` 前缀，并保留 2KB 载荷上限。
+6. **外部文件打开绕过安全白名单 & 语言切换/登出状态残留（`a0fe5df13`）**
+   - **现象**：Flowchart 弹窗与交付物预览曾直调 `open::that(&path)`；切语言时看板缓存与技能菜单未刷新；登出仅调旧 `agent.stop()` 且未清空 UI v2 状态；会话消失时 `flow_modal_session` 未自清导致 Esc 误拦。
+   - **解法**：统一收口 `open_file_externally` 白名单门禁、`choose_locale` + `sync_i18n` 联动刷新、`prepare_for_sign_out` 全量取消与清理、`refresh_board_snapshot` 自动清理失效 Modal。
 
-### 5.3 内核契约与并发控制坑（来自 `carl-idea-king` 对抗审查）
-1. **`apply_config()` 不唤醒 `autonomous_drain`（P1）**
-   - **溯源**：`71cdb8e92` 的 `handle.rs` 中 `apply_config()` 更新 `engine` 与 `config` 后直接返回 `Ok(())`。启动期 `disconnected_config()` 下积压的回执在 `Initialized` 时因 `!can_run_turns()` 退出且不设唤醒 timer，若 UI 不主动唤醒将永久挂起。
-   - **当前对策**：`StudioPanel::notify_cloud_ready` 防御性重调 `agent.set_autonomous_drain(true)`；同时在 §6.3 请求内核侧在 `apply_config()` 内根治。
-2. **`pending_acceptances()` 过滤退避期与死信态 + `RetryDeadReceipt` 不关旧死信（P1）**
-   - **溯源**：`acceptance.rs` 中 `pending()` 仅返回 `is_claimable(now_ms)`，因此 `Retrying` 退避期（`available_at_ms > now_ms`）、`Dead`、`Quarantined` 均不在 `pending_acceptances()` 中；且 `RetryDeadReceipt` 仅 `queue.accept(...)` 追加新 ID、不修改旧 `dead: true`。
-   - **当前对策**：UI 订阅 `AgentUpdate::Receipt` 维护 `failed_receipts` 并在 `ReceiptRequeued` 成功时移除旧 ID；跨重启恢复与退避期保活已在 §6.3 提交内核侧补 `visible_acceptances()` 与取代标记。
-3. **`work_status(work_id)` 无法覆盖非队列直提会话（P1）**
+### 5.3 内核契约与并发控制坑（来自 `carl-idea-king` 对抗审查，已全部闭环）
+1. **`apply_config()` 不唤醒 `autonomous_drain`（P1 → 已于 `65772f857` + `a0fe5df13` 根治）**
+   - **溯源**：`71cdb8e92` 的 `apply_config()` 未调 `kick_autonomous_drain()`，启动期 `disconnected_config()` 下积压的回执会在云就绪后永久挂起。
+   - **最终解法**：内核 `65772f857` 在 `apply_config()` 检测到 `config.can_run_turns() && autonomous_drain` 时自动唤醒；UI 侧 `a0fe5df13` 删除了原 `notify_cloud_ready` 防御性重调补偿。
+2. **`pending_acceptances()` 过滤退避期与死信态 + `RetryDeadReceipt` 不关旧死信（P1 → 已于 `65772f857` + `a0fe5df13` 根治）**
+   - **溯源**：`acceptance.rs` 中 `pending()` 仅返回 `is_claimable(now_ms)`，退避期 `Retrying`、`Dead`、`Quarantined` 均不可见；且 `71cdb8e92` 重投死信不终结旧条目。
+   - **最终解法**：内核 `65772f857` 新增 `visible_acceptances()` 并在重投时自动取代旧死信；UI 侧 `a0fe5df13` 删除了内存态 `failed_receipts` 与 `record_receipt_state`，实现跨重启无状态投影。
+3. **`work_status(work_id)` 无法覆盖非队列直提会话（P1 → 已于 `65772f857` + `a0fe5df13` 根治）**
    - **溯源**：`71cdb8e92` 中 `SessionSummary` 与 `ChatLine` 均无 `submission_id`。
-   - **当前对策**：UI 仅对持有真实 `receipt.id` 的工作分支查 `work_status`，拒绝硬编码内部 `"submission-{id:032x}"`；已在 §6.3 请求内核提供 `session_work_status(session_id)`。
-4. **`QuitApp` 绕过窗口关闭回调（P2）**
+   - **最终解法**：内核 `65772f857` 新增 `session_work_status(session_id)`；UI 侧 `a0fe5df13` 在看板分支投影、会话检视抽屉与脱敏 Trace 全量接入，零耦合内部 ID 格式。
+4. **`QuitApp` 绕过窗口关闭回调（P2 → 已于 `1c8161bcb` 根治）**
    - **溯源**：[flowy-shell/src/lib.rs](../../crates/flowy-shell/src/lib.rs#L98-L100) 注册了 `cx.on_action(|_: &QuitApp, cx| cx.quit())`，托盘退出与 `Ctrl+Q` 不经过 `on_window_should_close`。
    - **解法**：实证 `gpui-pre 0.3.14` 具备 `Context::on_app_quit`，在 `FlowyApp::new` 一处拦截所有 `cx.quit()` 路径并异步完成 `prepare_shutdown()`。
 
 ### 5.4 Windows 构建与 GUI 自动化环境坑
-1. **沙箱 `0xC0000142` 与构建命令选择**：在无交互式 Win32 窗口站的受限沙箱中，普通 `cargo check` 会因 `gpui-pre` build script 退出码 `0xC0000142` 失败，而 `cargo clippy --tests`、`cargo test --no-run`、`cargo build -p flowy-desktop --bin flowy-app` 可完整编译链接（`rc.exe` 仅告警保留默认图标，退出码 0）。
-2. **Windows Defender `os error 1224`**：高频改写源码后立刻跑 `cargo fmt` 偶发文件被临时内存映射锁定，重试一次即可。
-3. **本机实机 GUI E2E 与截图 6 坑**：详见已沉淀的全局 skill `flowy-gpui-e2e`（单次 `.ps1` 会话内用 Git Bash 后台拉起、过滤 `113×113` 无标题悬浮球、`title -eq 'Flowy'`、查静态文本不带 `-i`、双层 `%APPDATA%\Flowy\Flowy\data` 备份还原）。
+1. **沙箱 `0xC0000142` 与构建命令选择**：在无交互式 Win32 窗口站的受限沙箱中，普通 `cargo check` 会因 `gpui-pre` build script 退出码 `0xC0000142` 失败，且拉起 `flowy-app.exe` 或运行链接 GPUI/Win32 的测试二进制会在进入 `main()` 前由 `user32.dll` 返回 `0xC0000142`（`STATUS_DLL_INIT_FAILED`）；而 `cargo clippy --tests`、`cargo test --no-run`、`cargo build -p flowy-desktop --bin flowy-app` 可完整编译链接（`rc.exe` 仅告警保留默认图标，退出码 0）。
+2. **Windows Defender `os error 1224`**：高频并发写同一大源码文件（如 `panel.rs`）或改完立刻跑 `cargo fmt` 偶发 `user-mapped section open` 锁定，按单文件串行编辑并重试即可。
+3. **本机实机 GUI E2E 与截图 6 坑**：详见已沉淀的全局 skill `flowy-gpui-e2e`（单次 `.ps1` 会话内用 Git Bash 后台拉起、过滤 `113×113` 无标题悬浮球、`title -eq 'Flowy'`、查静态文本不带 `-i`、双层 `%APPDATA%\Flowy\Flowy\data` 原子备份还原）。
 
 ---
 
-## 6. 验收标准、验证梯子与内核侧协同待办
+## 6. 验收标准、验证梯子与内核侧协同闭环
 
 ### 6.1 验收用例与当前覆盖状态
 
 | 编号 | 验收场景 | 断言口径 | 当前状态 |
 | --- | --- | --- | --- |
-| **TC-UI-01** | 0 冲突文件边界 | `git diff --name-only feat/flowy-v0-rc` 0 命中内核、`flowy-shell` 与共享文档 | ✅ 已通过（42 个文件全在 UI 白名单） |
+| **TC-UI-01** | 0 冲突文件边界 | `git diff --name-only feat/flowy-v0-rc...HEAD` 0 命中内核、`flowy-shell` 与共享文档 | ✅ 已通过（51 个文件全在 UI 白名单） |
 | **TC-UI-02** | UI 静态契约与 23 语言对称 | `check-ui-contracts.mjs` + `every_locale_has_the_same_keys` 0 错误 | ✅ 已通过 |
 | **TC-UI-03** | 零全局 GPU 图表与动效原语 | `flowy-ui` 42 项单测（含 `charts_paint_without_global_component_theme_init`） | ✅ 已通过（42/42） |
 | **TC-UI-04** | 严格静态检查与二进制编译 | `cargo clippy --tests -- -D warnings` 0 告警 + `flowy-desktop` 编译通过 | ✅ 已通过 |
-| **TC-UI-05** | `WorkContractProgress` 契约投影与死信卡点分类 | `ports::tests::work_contract_progress_projects_partial_missing_and_dead_receipts_as_blockers` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-06** | 死信状态跟踪与清除 | `panel::tests::dead_receipt_lifecycle_tracks_and_clears_failed_receipt_state` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-07** | 云就绪后唤醒自治队列 | `panel::tests::autonomous_drain_notify_cloud_ready_wakes_queued_receipt` | ✅ 编译通过（待本机桌面会话运行） |
+| **TC-UI-05** | 契约投影（含 `session_work_status`）与死信卡点分类 | `ports::board::tests::{projection_classifies_failed_verification_as_blocker_with_report_id, work_contract_progress_projects_partial_missing_and_dead_receipts_as_blockers}` | ✅ 编译通过（待本机桌面会话运行） |
+| **TC-UI-06** | 死信/隔离提示与 `visible_acceptances()` 同步 | `panel::tests::dead_receipt_lifecycle_surfaces_notice_and_syncs_visible_receipts` | ✅ 编译通过（待本机桌面会话运行） |
+| **TC-UI-07** | `apply_config` 自动唤醒 + 云就绪队列同步 | `panel::tests::autonomous_drain_apply_config_and_notify_cloud_ready_syncs_queue` | ✅ 编译通过（待本机桌面会话运行） |
 | **TC-UI-08** | 核验两步放行审计链持久化 | `panel::tests::override_delivery_writes_audit_chain_and_persists_badge_across_reopen` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-09** | 双主题 × 960px/1280px 实机视觉与关窗刷盘 | 在本机普通桌面终端通过 `flowy-gpui-e2e` 截屏与行为验证 | ⏳ 待普通桌面环境复测 |
+| **TC-UI-09** | 外部打开白名单安全门禁（拦 `.ps1`/缺失文件、放 `.pdf`） | `deliverables::tests::external_open_gate_blocks_executables_and_missing_files` | ✅ 编译通过（待本机桌面会话运行） |
+| **TC-UI-10** | 双主题 × 960px/1280px 实机视觉与关窗刷盘 | 在本机普通桌面终端通过 `flowy-gpui-e2e` 截屏与行为验证 | ⏳ 待宿主机交互桌面环境复测 |
 
 ### 6.2 验证梯子（Verification Ladder）
 
 ```powershell
 # 1. 0 冲突文件边界审计
-git diff --name-only feat/flowy-v0-rc
+git diff --name-only feat/flowy-v0-rc...HEAD
 
 # 2. 格式与 UI 契约门禁
 cargo fmt --manifest-path flowy18_wip/Cargo.toml --check
@@ -277,7 +282,7 @@ cargo clippy --manifest-path flowy18_wip/Cargo.toml --tests -p flowy-i18n -p flo
 cargo test --manifest-path flowy18_wip/Cargo.toml -p flowy-ui
 cargo test --manifest-path flowy18_wip/Cargo.toml -p flowy-i18n
 
-# 4. Studio/App 测试构建 + 桌面二进制构建（普通桌面终端可直接去掉 --no-run 执行全套 GPUI 单测）
+# 4. Studio/App 测试构建 + 桌面二进制构建（宿主机普通桌面终端可直接去掉 --no-run 执行全套 GPUI 单测）
 cargo test --manifest-path flowy18_wip/Cargo.toml --no-run -p flowy-studio -p flowy-app
 cargo build --manifest-path flowy18_wip/Cargo.toml -p flowy-desktop --bin flowy-app
 ```
