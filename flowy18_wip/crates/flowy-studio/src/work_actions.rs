@@ -81,6 +81,8 @@ impl StudioPanel {
         self.selected_skill = None;
         self.board_project_filter = None;
         self.retrying_receipts.clear();
+        self.pending_card_selected.clear();
+        self.resolving_cards.clear();
         self.retrying_delivery = None;
         self.close_all_popovers();
         self.flow_modal.close();

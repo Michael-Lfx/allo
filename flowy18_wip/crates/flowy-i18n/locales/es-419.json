@@ -869,5 +869,18 @@
   "composer.clear_workspace": "Usar carpeta predeterminada",
   "chat.copy_reply": "Copiar respuesta",
   "chat.copied": "Copiado",
-  "drawer.toggle_trace": "Mostrar registro técnico"
+  "drawer.toggle_trace": "Mostrar registro técnico",
+  "chat.status_waiting_for_user": "Waiting for your confirmation",
+  "chat.status_stopping": "Stopping cleanly…",
+  "notice.card_pending": "Please respond to the confirmation card in this conversation first.",
+  "card.disambig_title": "Choose which file to update",
+  "card.disambig_confirm": "Update selected",
+  "card.tool_approval_title": "Confirm this step",
+  "card.tool_approve": "Allow",
+  "card.tool_deny": "Skip",
+  "card.stop_handoff_title": "Stopped · Handoff summary",
+  "card.stop_handoff_modified": "Modified files: {files}",
+  "card.stop_handoff_pending": "Pending checks: {items}",
+  "card.heartbeat_waiting": "Waiting, no confirmed progress yet",
+  "verify.visual_disclaimer": "Note: Checked file structure and declared fields; not visually rendered in PowerPoint/Excel."
 }

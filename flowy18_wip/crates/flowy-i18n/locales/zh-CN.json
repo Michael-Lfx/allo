@@ -869,5 +869,18 @@
   "composer.clear_workspace": "恢复默认目录",
   "chat.copy_reply": "复制回复",
   "chat.copied": "已复制",
-  "drawer.toggle_trace": "查看调试日志"
+  "drawer.toggle_trace": "查看调试日志",
+  "chat.status_waiting_for_user": "等你确认后继续",
+  "chat.status_stopping": "正在收尾停止…",
+  "notice.card_pending": "请先处理当前对话里的确认卡片。",
+  "card.disambig_title": "请确认要修改哪一份",
+  "card.disambig_confirm": "确认修改所选",
+  "card.tool_approval_title": "这一步需要你的确认",
+  "card.tool_approve": "允许继续",
+  "card.tool_deny": "暂不执行",
+  "card.stop_handoff_title": "已停止 · 当前状态摘要",
+  "card.stop_handoff_modified": "已改动文件：{files}",
+  "card.stop_handoff_pending": "尚未完成检查：{items}",
+  "card.heartbeat_waiting": "正在等待，尚未确认进展",
+  "verify.visual_disclaimer": "说明：已核对文件结构与声明内容，未在 PowerPoint/Excel 中打开做视觉实测。"
 }

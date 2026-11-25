@@ -869,5 +869,18 @@
   "composer.clear_workspace": "恢復預設目錄",
   "chat.copy_reply": "複製回覆",
   "chat.copied": "已複製",
-  "drawer.toggle_trace": "檢視除錯日誌"
+  "drawer.toggle_trace": "檢視除錯日誌",
+  "chat.status_waiting_for_user": "等你確認後繼續",
+  "chat.status_stopping": "正在收尾停止…",
+  "notice.card_pending": "請先處理目前對話裡的確認卡片。",
+  "card.disambig_title": "請確認要修改哪一份",
+  "card.disambig_confirm": "確認修改所選",
+  "card.tool_approval_title": "這一步需要你的確認",
+  "card.tool_approve": "允許繼續",
+  "card.tool_deny": "暫不執行",
+  "card.stop_handoff_title": "已停止 · 目前狀態摘要",
+  "card.stop_handoff_modified": "已更動檔案：{files}",
+  "card.stop_handoff_pending": "尚未完成檢查：{items}",
+  "card.heartbeat_waiting": "正在等待，尚未確認進展",
+  "verify.visual_disclaimer": "說明：已核對檔案結構與聲明內容，未在 PowerPoint/Excel 中開啟做視覺實測。"
 }

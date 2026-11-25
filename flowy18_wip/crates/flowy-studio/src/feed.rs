@@ -1726,6 +1726,13 @@ impl ChatFeed {
                     }
                     details = details.child(list);
                 }
+                details = details.child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .whitespace_normal()
+                        .child(self.t("verify.visual_disclaimer")),
+                );
                 card = card.child(self.reveal_collapsible(
                     ("verify-detail-reveal", row_id),
                     row_id,

@@ -127,12 +127,13 @@ impl std::fmt::Debug for StudioConfig {
     }
 }
 
-/// A failed turn keeps its localized error line visible until the next turn.
+/// A failed or waiting turn keeps its localized status line visible until resolved.
 const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
     status.is_busy()
         || matches!(
             status,
-            flowy_agent::TurnStatus::Error { .. }
+            flowy_agent::TurnStatus::WaitingForUser
+                | flowy_agent::TurnStatus::Error { .. }
                 | flowy_agent::TurnStatus::DeliveryFailed
         )
 }
@@ -217,6 +218,11 @@ pub struct StudioPanel {
     /// Verification report IDs currently executing `CardAction::OverrideDeliver`
     /// on a background worker (prevents double-click re-entry).
     pub(crate) overriding_reports: std::collections::HashSet<String>,
+    /// Multi-select object ids ticked per `PendingCard::Disambiguation` card id.
+    pub(crate) pending_card_selected:
+        std::collections::HashMap<String, Vec<String>>,
+    /// Pending card IDs currently resolving via `CardAction::ResolveCard`.
+    pub(crate) resolving_cards: std::collections::HashSet<String>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -552,6 +558,8 @@ impl StudioPanel {
             visible_receipts,
             retrying_receipts: std::collections::HashSet::new(),
             overriding_reports: std::collections::HashSet::new(),
+            pending_card_selected: std::collections::HashMap::new(),
+            resolving_cards: std::collections::HashSet::new(),
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -1590,11 +1598,16 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        let running = matches!(
-            self.status,
-            flowy_agent::TurnStatus::Running
-                | flowy_agent::TurnStatus::SavingFiles
-        );
+        let has_pending_card =
+            matches!(self.status, flowy_agent::TurnStatus::WaitingForUser)
+                || self.agent.active_session_id().is_some_and(|sid| {
+                    !self.agent.session_pending_cards(&sid).is_empty()
+                });
+        if has_pending_card {
+            self.emit_notice(Some("notice.card_pending"), cx);
+            return;
+        }
+        let running = self.status.is_busy();
         let waiting_for_cloud = self.catalog_loading
             || ((!self.cloud_ready || model.is_none())
                 && self.agent.requires_cloud_ready());
@@ -3041,6 +3054,8 @@ mod tests {
         use flowy_agent::TurnStatus;
 
         assert!(working_line_visible(&TurnStatus::Running));
+        assert!(working_line_visible(&TurnStatus::Stopping));
+        assert!(working_line_visible(&TurnStatus::WaitingForUser));
         assert!(working_line_visible(&TurnStatus::Error {
             message: "chat.status_error".into(),
         }));

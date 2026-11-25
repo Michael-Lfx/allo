@@ -16,6 +16,7 @@ mod menus;
 mod motion;
 mod overview;
 mod panel;
+mod pending_card;
 pub mod ports;
 mod projects;
 mod starter;
