@@ -16,7 +16,7 @@ use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
 use crate::run_fence::{RunFence, RunTicket};
 use crate::session::{
     DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, TurnState,
+    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -383,6 +383,22 @@ impl Engine {
             && record.status.is_busy()
         {
             record.status = TurnState::Stopped;
+            if let Some(sub_id) = record
+                .messages
+                .iter()
+                .rev()
+                .find(|msg| {
+                    msg.role == Role::User
+                        && matches!(msg.source, MessageSource::User)
+                        && msg.id.starts_with("submission-")
+                })
+                .map(|msg| msg.id.clone())
+            {
+                record
+                    .submission_outcomes
+                    .entry(sub_id)
+                    .or_insert(SubmissionOutcome::Aborted);
+            }
         }
         inner.index.save(&self.root).map(|()| true)
     }
@@ -679,6 +695,25 @@ impl Engine {
                     }
                     record.status =
                         status_for(result.outcome, error.as_deref());
+                    if let Some(sub_id) = submission_id.as_ref() {
+                        let outcome_entry = match result.outcome {
+                            LoopOutcome::Completed => {
+                                SubmissionOutcome::Completed
+                            }
+                            LoopOutcome::Aborted => SubmissionOutcome::Aborted,
+                            LoopOutcome::Failed => SubmissionOutcome::Failed {
+                                message: error
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|text| !text.is_empty())
+                                    .unwrap_or("model reported an error")
+                                    .to_owned(),
+                            },
+                        };
+                        record
+                            .submission_outcomes
+                            .insert(sub_id.clone(), outcome_entry);
+                    }
                     Ok((result.outcome, commit))
                 }
                 Err(message) => {
@@ -693,6 +728,14 @@ impl Engine {
                     record.status = TurnState::Error {
                         message: message.clone(),
                     };
+                    if let Some(sub_id) = submission_id.as_ref() {
+                        record.submission_outcomes.insert(
+                            sub_id.clone(),
+                            SubmissionOutcome::Failed {
+                                message: message.clone(),
+                            },
+                        );
+                    }
                     Err(RunError::Loop(message))
                 }
             };

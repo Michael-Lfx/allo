@@ -22,7 +22,7 @@ pub use loop_runner::{
 pub use run_fence::{RunFence, RunTicket};
 pub use session::{
     DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, TurnState,
+    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
 };
 pub use transport::{echo_stream_fn, openai_stream_fn};
 

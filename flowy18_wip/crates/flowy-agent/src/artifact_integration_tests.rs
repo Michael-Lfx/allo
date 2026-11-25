@@ -57,6 +57,7 @@ struct ProviderFixture {
 enum ProviderMode {
     Delivery,
     ProjectWrite { path: String, content: String },
+    DelayedText { delay_ms: u64, reply: String },
 }
 
 impl ProviderFixture {
@@ -68,6 +69,13 @@ impl ProviderFixture {
         Self::start_with(ProviderMode::ProjectWrite {
             path: path.into(),
             content: content.into(),
+        })
+    }
+
+    fn start_delayed_text(delay_ms: u64, reply: &str) -> Self {
+        Self::start_with(ProviderMode::DelayedText {
+            delay_ms,
+            reply: reply.into(),
         })
     }
 
@@ -163,6 +171,18 @@ impl ProviderFixture {
                                             "stop",
                                         )
                                     }
+                                }
+                                ProviderMode::DelayedText {
+                                    delay_ms,
+                                    reply,
+                                } => {
+                                    thread::sleep(Duration::from_millis(
+                                        *delay_ms,
+                                    ));
+                                    (
+                                        json!({"role":"assistant","content": reply}),
+                                        "stop",
+                                    )
                                 }
                             }
                         } else {
@@ -546,5 +566,358 @@ fn completed_project_turn_imports_successful_write_file() {
             .read_artifact(&records[0].manifest.receipt.artifact_id)
             .unwrap(),
         MARKDOWN.as_bytes()
+    );
+}
+
+#[test]
+fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
+    use flowy_agent_core::{
+        AcceptanceQueue, ContentBlock, Message, MessageSource, ReceiptState,
+        Role, SessionIndex, SessionRecord, SubmissionOutcome, TurnState,
+    };
+
+    let scratch = Scratch::new();
+    let queue = AcceptanceQueue::new(scratch.0.clone());
+
+    // Case 1: Legacy-shaped Error session with an assistant error reply.
+    let err_receipt = queue
+        .accept(None, "Deliver the signed report", 1_000)
+        .unwrap();
+    assert!(
+        queue
+            .take(&err_receipt.id, "try-1", 1_001, 30)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        queue
+            .bind(
+                &err_receipt.id,
+                "try-1",
+                "session-error",
+                "submission-error",
+                1_002
+            )
+            .unwrap()
+    );
+
+    // Case 2: Session whose later turn Completed, while this earlier submission
+    // explicitly recorded SubmissionOutcome::Failed.
+    let earlier_fail = queue
+        .accept(None, "Earlier failed work in same session", 1_010)
+        .unwrap();
+    assert!(
+        queue
+            .take(&earlier_fail.id, "try-2", 1_011, 30)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        queue
+            .bind(
+                &earlier_fail.id,
+                "try-2",
+                "session-later-ok",
+                "submission-failed-first",
+                1_012
+            )
+            .unwrap()
+    );
+
+    let mut index = SessionIndex::load(&scratch.0).unwrap();
+    index.upsert(SessionRecord {
+        id: "session-error".into(),
+        status: TurnState::Error {
+            message: "provider failed".into(),
+        },
+        messages: vec![
+            Message {
+                id: "submission-error".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("Deliver the signed report")],
+                source: MessageSource::User,
+            },
+            Message {
+                id: "response-error".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text(
+                    "Could not complete this task",
+                )],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+            },
+        ],
+        origin: SessionOrigin::Home,
+        ..SessionRecord::default()
+    });
+    let mut outcomes = std::collections::BTreeMap::new();
+    outcomes.insert(
+        "submission-failed-first".to_owned(),
+        SubmissionOutcome::Failed {
+            message: "tool crash".to_owned(),
+        },
+    );
+    outcomes.insert(
+        "submission-second-ok".to_owned(),
+        SubmissionOutcome::Completed,
+    );
+    index.upsert(SessionRecord {
+        id: "session-later-ok".into(),
+        status: TurnState::Completed,
+        messages: vec![
+            Message {
+                id: "submission-failed-first".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text(
+                    "Earlier failed work in same session",
+                )],
+                source: MessageSource::User,
+            },
+            Message {
+                id: "resp-failed-first".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("failed")],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+            },
+            Message {
+                id: "submission-second-ok".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("follow up")],
+                source: MessageSource::User,
+            },
+            Message {
+                id: "resp-second-ok".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("ok")],
+                source: MessageSource::Model {
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                },
+            },
+        ],
+        submission_outcomes: outcomes,
+        origin: SessionOrigin::Home,
+        ..SessionRecord::default()
+    });
+    index.save(&scratch.0).unwrap();
+
+    let reopened = AgentHandle::with_config(
+        scratch.0.clone(),
+        LlmConfig {
+            api_key: None,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        reopened.receipt_state(&err_receipt.id),
+        Some(ReceiptState::Retrying),
+        "an Error session must never be reconciled as Completed on restart"
+    );
+    assert_eq!(
+        reopened.receipt_state(&earlier_fail.id),
+        Some(ReceiptState::Retrying),
+        "an explicitly Failed submission must stay retryable even if a later turn Completed"
+    );
+    assert!(
+        reopened
+            .artifact_store()
+            .unwrap()
+            .committed_ids()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn forced_breakpoint_1_bind_failure_and_stale_lease_never_dispatch_engine() {
+    use flowy_agent_core::AcceptanceQueue;
+
+    // Subcase A: journal write failure during `queue.bind` -> zero provider calls.
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(10, "should not run");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let _session = handle.create_home_session().unwrap();
+    let _receipt = handle
+        .accept_deferred("must not run on bind error")
+        .unwrap();
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    let orig_perms = fs::metadata(&journal_path).unwrap().permissions();
+    handle.set_before_accepted_bind_hook(Some(Arc::new(move |_| {
+        let mut perms = fs::metadata(&journal_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&journal_path, perms).unwrap();
+    })));
+    let err = handle
+        .run_accepted_once()
+        .expect_err("bind error must fail closed");
+    assert_eq!(err, "notice.storage_error");
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "failed bind must result in zero engine/provider invocations"
+    );
+    assert!(!handle.has_active_claim());
+    // Restore original permissions so Scratch cleanup succeeds on Windows.
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    fs::set_permissions(&journal_path, orig_perms).unwrap();
+    drop(handle);
+    drop(provider);
+
+    // Subcase B: lease cancelled/lost before `queue.bind` -> Ok(None), zero calls.
+    let scratch_b = Scratch::new();
+    let provider_b = ProviderFixture::start_delayed_text(10, "should not run");
+    let handle_b =
+        AgentHandle::with_config(scratch_b.0.clone(), provider_b.config());
+    let _session_b = handle_b.create_home_session().unwrap();
+    let _receipt_b = handle_b.accept_deferred("cancelled before bind").unwrap();
+    let root_b = scratch_b.0.clone();
+    handle_b.set_before_accepted_bind_hook(Some(Arc::new(move |receipt_id| {
+        let queue = AcceptanceQueue::new(root_b.clone());
+        assert!(queue.cancel(receipt_id, 9_999_999_999_999).unwrap());
+    })));
+    assert!(
+        handle_b
+            .run_accepted_once()
+            .expect("stale bind returns Ok(None)")
+            .is_none()
+    );
+    assert!(
+        provider_b.requests.lock().unwrap().is_empty(),
+        "stale lease bind must result in zero engine/provider invocations"
+    );
+    assert!(!handle_b.has_active_claim());
+}
+
+#[test]
+fn concurrent_session_switch_between_bind_and_submit_keeps_work_on_session_a() {
+    use std::sync::Barrier;
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_project_write(
+        "outputs/from-session-a.md",
+        "# Bound to A\n",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session_a = handle.create_home_session().unwrap();
+    let session_b = handle.create_home_session().unwrap();
+    handle.select_session(&session_a).unwrap();
+    let receipt = handle.accept_deferred("execute strictly in A").unwrap();
+    assert_eq!(receipt.session_hint.as_deref(), Some(session_a.as_str()));
+
+    let enter_barrier = Arc::new(Barrier::new(2));
+    let resume_barrier = Arc::new(Barrier::new(2));
+    let hook_enter = Arc::clone(&enter_barrier);
+    let hook_resume = Arc::clone(&resume_barrier);
+    handle.set_before_accepted_submit_hook(Some(Arc::new(move |_bound| {
+        hook_enter.wait();
+        hook_resume.wait();
+    })));
+
+    let switcher_handle = handle.clone();
+    let target_b = session_b.clone();
+    let switcher = thread::spawn(move || {
+        enter_barrier.wait();
+        switcher_handle.select_session(&target_b).unwrap();
+        assert_eq!(
+            switcher_handle.active_session_id().as_deref(),
+            Some(target_b.as_str())
+        );
+        resume_barrier.wait();
+    });
+
+    let run = handle
+        .run_accepted_once()
+        .expect("dispatch")
+        .expect("claimed");
+    switcher.join().unwrap();
+    handle.set_before_accepted_submit_hook(None);
+
+    assert_eq!(run.session_id, session_a);
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str()),
+        "background dispatch must never hijack the user's active session B"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.has_busy_session() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!handle.has_busy_session());
+    handle.finish_accepted(true).unwrap();
+
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let rec_a = history.get(&session_a).expect("session A exists");
+    let rec_b = history.get(&session_b).expect("session B exists");
+    assert!(
+        rec_a
+            .messages
+            .iter()
+            .any(|msg| msg.text().contains("execute strictly in A")),
+        "session A must receive the bound prompt"
+    );
+    assert!(
+        rec_b.messages.is_empty(),
+        "session B must remain completely untouched, got {:?}",
+        rec_b.messages
+    );
+    let artifacts = handle.artifacts().unwrap();
+    assert!(
+        artifacts
+            .iter()
+            .all(|item| item.manifest.receipt.session_id == session_a),
+        "all artifacts must belong strictly to session A"
+    );
+}
+
+#[test]
+fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(450, "done slowly");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let _session = handle.create_home_session().unwrap();
+    handle.set_accepted_lease_ms_for_test(150);
+
+    let receipt = handle
+        .accept_deferred("slow turn needing heartbeat")
+        .unwrap();
+    let _run = handle
+        .run_accepted_once()
+        .expect("dispatch")
+        .expect("claimed");
+
+    // Wait well past the initial 150ms lease expiry while the 450ms turn runs.
+    thread::sleep(Duration::from_millis(260));
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Running),
+        "heartbeat must keep the active claim Running past initial lease expiry"
+    );
+    assert!(
+        handle.pending_acceptances().is_empty(),
+        "a heartbeated running receipt must not re-enter pending"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while handle.has_busy_session() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!handle.has_busy_session());
+    handle.finish_accepted(true).unwrap();
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Completed)
+    );
+    let journal =
+        fs::read_to_string(AcceptanceQueue::path(&scratch.0)).unwrap();
+    assert!(
+        journal.contains(r#""event":"renewed""#),
+        "acceptance journal must contain lease renewal entries: {journal}"
     );
 }

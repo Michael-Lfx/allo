@@ -66,6 +66,9 @@ pub struct AcceptedMessage {
     /// record stays for inspection; it is never claimed again.
     #[serde(default)]
     pub dead: bool,
+    /// Terminal: cancelled explicitly by user/host intent; never claimed again.
+    #[serde(default)]
+    pub cancelled: bool,
     /// Last attempt id that claimed this receipt, kept even after lease expiry
     /// so crash recovery can reconcile against committed engine history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +89,7 @@ pub enum ReceiptState {
     Running,
     Retrying,
     Completed,
+    Cancelled,
     Dead,
 }
 
@@ -100,6 +104,7 @@ pub struct Lease {
 impl AcceptedMessage {
     fn is_claimable(&self, now_ms: u64) -> bool {
         !self.dead
+            && !self.cancelled
             && self.completed_at_ms.is_none()
             && self
                 .available_at_ms
@@ -114,6 +119,8 @@ impl AcceptedMessage {
     pub fn state_at(&self, now_ms: u64) -> ReceiptState {
         if self.completed_at_ms.is_some() {
             ReceiptState::Completed
+        } else if self.cancelled {
+            ReceiptState::Cancelled
         } else if self.dead {
             ReceiptState::Dead
         } else if self
@@ -162,6 +169,15 @@ enum JournalEntry {
         submission_id: String,
         at_ms: u64,
     },
+    /// Lease heartbeat extending an active claim while a long turn is running.
+    Renewed {
+        id: String,
+        attempt_id: String,
+        lease_until_ms: u64,
+        at_ms: u64,
+    },
+    /// Explicit cancellation by host/user; terminal unless a new receipt is queued.
+    Cancelled { id: String, at_ms: u64 },
     Completed {
         id: String,
         attempt_id: String,
@@ -245,6 +261,7 @@ impl AcceptanceQueue {
                     available_at_ms: None,
                     attempts: 0,
                     dead: false,
+                    cancelled: false,
                     last_attempt_id: None,
                     target_session_id: None,
                     submission_id: None,
@@ -282,6 +299,34 @@ impl AcceptanceQueue {
                     {
                         receipt.target_session_id = Some(session_id);
                         receipt.submission_id = Some(submission_id);
+                    }
+                }
+                JournalEntry::Renewed {
+                    id,
+                    attempt_id,
+                    lease_until_ms,
+                    ..
+                } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                        && receipt.completed_at_ms.is_none()
+                        && !receipt.dead
+                        && !receipt.cancelled
+                        && let Some(lease) = &mut receipt.lease
+                        && lease.attempt_id == attempt_id
+                    {
+                        lease.expires_at_ms =
+                            lease.expires_at_ms.max(lease_until_ms);
+                    }
+                }
+                JournalEntry::Cancelled { id, .. } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                        && receipt.completed_at_ms.is_none()
+                        && !receipt.dead
+                    {
+                        receipt.cancelled = true;
+                        receipt.lease = None;
                     }
                 }
                 JournalEntry::Completed { id, at_ms, .. } => {
@@ -368,6 +413,7 @@ impl AcceptanceQueue {
             available_at_ms: None,
             attempts: 0,
             dead: false,
+            cancelled: false,
             last_attempt_id: None,
             target_session_id: None,
             submission_id: None,
@@ -451,6 +497,7 @@ impl AcceptanceQueue {
         };
         if receipt.completed_at_ms.is_some()
             || receipt.dead
+            || receipt.cancelled
             || receipt.lease.as_ref().map(|l| l.attempt_id.as_str())
                 != Some(attempt_id)
         {
@@ -461,6 +508,62 @@ impl AcceptanceQueue {
             attempt_id: attempt_id.to_owned(),
             session_id: session_id.to_owned(),
             submission_id: submission_id.to_owned(),
+            at_ms: now_ms,
+        })?;
+        Ok(true)
+    }
+
+    /// Extend an active claim lease while a long turn is still running.
+    /// Only the current lease owner may renew it.
+    pub fn renew_lease(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
+        else {
+            return Ok(false);
+        };
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.cancelled
+            || receipt.lease.as_ref().map(|l| l.attempt_id.as_str())
+                != Some(attempt_id)
+        {
+            return Ok(false);
+        }
+        self.append(&JournalEntry::Renewed {
+            id: id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            lease_until_ms: now_ms.saturating_add(lease_ms),
+            at_ms: now_ms,
+        })?;
+        Ok(true)
+    }
+
+    /// Explicitly cancel a queued or active receipt so it will never be
+    /// claimed again. Already-completed or dead receipts return `Ok(false)`.
+    pub fn cancel(&self, id: &str, now_ms: u64) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
+        else {
+            return Ok(false);
+        };
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.cancelled
+        {
+            return Ok(false);
+        }
+        self.append(&JournalEntry::Cancelled {
+            id: id.to_owned(),
             at_ms: now_ms,
         })?;
         Ok(true)
@@ -483,6 +586,7 @@ impl AcceptanceQueue {
         };
         if receipt.completed_at_ms.is_some()
             || receipt.dead
+            || receipt.cancelled
             || receipt.last_attempt_id.as_deref() != Some(attempt_id)
         {
             return Ok(false);
@@ -544,7 +648,10 @@ impl AcceptanceQueue {
         else {
             return Ok(false);
         };
-        if receipt.completed_at_ms.is_some() || receipt.dead {
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.cancelled
+        {
             return Ok(false);
         }
         if receipt
@@ -1125,6 +1232,78 @@ mod tests {
         let settled = queue.get(&accepted.id).expect("get").expect("found");
         assert_eq!(settled.state_at(5_200), ReceiptState::Completed);
         assert_eq!(queue.pending_at(5_200).expect("pending").len(), 0);
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn renew_lease_extends_active_claim_and_rejects_stale_owner() {
+        let root = temp_root("renew-lease");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "long work", 1_000).expect("accept");
+        let claimed = queue
+            .take(&accepted.id, "attempt-1", 1_000, 300)
+            .expect("take")
+            .expect("claimed");
+        assert_eq!(claimed.state_at(1_200), ReceiptState::Running);
+
+        assert!(
+            !queue
+                .renew_lease(&accepted.id, "wrong-attempt", 1_200, 300)
+                .expect("wrong owner")
+        );
+        assert!(
+            queue
+                .renew_lease(&accepted.id, "attempt-1", 1_200, 500)
+                .expect("renew")
+        );
+        // Past the original 1_300 expiry, the renewed 1_700 lease keeps it Running.
+        let renewed = queue.get(&accepted.id).expect("get").expect("found");
+        assert_eq!(renewed.state_at(1_500), ReceiptState::Running);
+        assert_eq!(queue.pending_at(1_500).expect("pending").len(), 0);
+        assert_eq!(renewed.state_at(1_700), ReceiptState::Retrying);
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn cancel_prevents_future_claims_and_never_overrides_completed() {
+        let root = temp_root("cancel");
+        let queue = AcceptanceQueue::new(&root);
+        let queued = queue.accept(None, "drop me", 1_000).expect("accept");
+        assert!(queue.cancel(&queued.id, 1_050).expect("cancel"));
+        assert!(!queue.cancel(&queued.id, 1_060).expect("idempotent cancel"));
+        assert_eq!(
+            queue
+                .get(&queued.id)
+                .expect("get")
+                .expect("found")
+                .state_at(1_100),
+            ReceiptState::Cancelled
+        );
+        assert!(queue.pending_at(1_100).expect("pending").is_empty());
+        assert!(
+            queue
+                .take(&queued.id, "attempt-1", 1_100, 500)
+                .expect("take")
+                .is_none()
+        );
+
+        let done = queue.accept(None, "already done", 2_000).expect("accept");
+        queue
+            .take(&done.id, "attempt-1", 2_010, 500)
+            .expect("take")
+            .expect("claimed");
+        assert!(queue.complete(&done.id, "attempt-1", 2_020).expect("done"));
+        assert!(!queue.cancel(&done.id, 2_030).expect("cannot cancel done"));
+        assert_eq!(
+            queue
+                .get(&done.id)
+                .expect("get")
+                .expect("found")
+                .state_at(2_030),
+            ReceiptState::Completed
+        );
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

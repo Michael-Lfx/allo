@@ -13,8 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
     LoopOutcome, ModelRoute, ReceiptState, RunError, SessionOrigin,
-    SessionRecord, SessionWorkspace, TurnObserver, TurnState, complete_text,
-    echo_stream_fn, log_preview,
+    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnObserver,
+    TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -122,7 +122,11 @@ struct AcceptedClaim {
     attempt_id: String,
     session_id: String,
     attempts: u32,
+    heartbeat_cancel: CancelToken,
 }
+
+#[cfg(test)]
+type AcceptedSubmitHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 struct UiState {
     root: PathBuf,
@@ -132,6 +136,11 @@ struct UiState {
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
     active: Mutex<Option<String>>,
     accepted_claim: Mutex<Option<AcceptedClaim>>,
+    accepted_lease_ms: AtomicU64,
+    #[cfg(test)]
+    before_accepted_bind_hook: Mutex<Option<AcceptedSubmitHook>>,
+    #[cfg(test)]
+    before_accepted_submit_hook: Mutex<Option<AcceptedSubmitHook>>,
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
@@ -169,6 +178,11 @@ impl UiState {
             tool_args: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             accepted_claim: Mutex::new(None),
+            accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
+            #[cfg(test)]
+            before_accepted_bind_hook: Mutex::new(None),
+            #[cfg(test)]
+            before_accepted_submit_hook: Mutex::new(None),
             workspace_for_new_sessions: Mutex::new(None),
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
@@ -579,7 +593,11 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
-        reconcile_committed_acceptances(&state.root, &engine);
+        reconcile_committed_acceptances(
+            &state.root,
+            &engine,
+            state.artifact_store.get(),
+        );
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -750,6 +768,74 @@ impl AgentHandle {
         *lock(&self.inner.state.workspace_for_new_sessions) = None;
         self.set_origin_for_new_sessions(SessionOrigin::Home);
         self.create_session()
+    }
+
+    /// Create a new durable Home session without mutating the caller's
+    /// workspace/origin context, optionally preserving the current UI active
+    /// session.
+    fn create_background_home_session(
+        &self,
+        make_active: bool,
+    ) -> Result<String, &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        if *lock(&self.inner.state.load_failed) {
+            return Err("notice.storage_error");
+        }
+        let id = format!("s-{}", next_stamp());
+        let now = now_ms();
+        let root = self
+            .inner
+            .state
+            .root
+            .join("sessions")
+            .join("workspaces")
+            .join(&id);
+        std::fs::create_dir_all(&root).map_err(|error| {
+            log_storage_io_error("create session workspace", &root, &error);
+            "notice.storage_error"
+        })?;
+        let session_workspace = Some(SessionWorkspace { root });
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        engine
+            .create_session_with_metadata(
+                id.clone(),
+                now,
+                SessionOrigin::Home,
+                session_workspace.clone(),
+            )
+            .map_err(|_| "notice.storage_error")?;
+        lock(&self.inner.state.live).insert(
+            id.clone(),
+            Live {
+                projection: ChatProjection::new(),
+                title: String::new(),
+                titled: false,
+                auto_title_pending: false,
+                title_signal: CancelToken::new(),
+                status: TurnStatus::Idle,
+                updated_at: now,
+                turn_started_at: None,
+                workspace: None,
+                origin: SessionOrigin::Home,
+                session_workspace,
+            },
+        );
+        if make_active {
+            *lock(&self.inner.state.active) = Some(id.clone());
+            self.inner
+                .state
+                .context_generation
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        if persist_index(&self.inner.state).is_err() {
+            self.inner.state.report_storage_error();
+        }
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        Ok(id)
     }
 
     /// The host-side artifact catalog API. A missing store means startup
@@ -1641,13 +1727,18 @@ impl AgentHandle {
     /// Claim and start the oldest accepted receipt, if any.
     ///
     /// Reconciles any previously bound receipt whose engine turn already
-    /// committed on disk before claiming new work, so a crash between engine
-    /// commit and journal settlement never re-runs completed turns.
+    /// committed on disk before claiming new work, binds `(session_id,
+    /// submission_id)` fail-closed before execution, and submits directly to
+    /// the bound session without mutating the UI's active selection.
     pub fn run_accepted_once(
         &self,
     ) -> Result<Option<AcceptedRun>, &'static str> {
         if let Some(engine) = lock(&self.inner.engine).as_ref() {
-            reconcile_committed_acceptances(&self.inner.state.root, engine);
+            reconcile_committed_acceptances(
+                &self.inner.state.root,
+                engine,
+                self.inner.state.artifact_store.get(),
+            );
         }
         if !self.can_run_turns()
             || self.has_active_claim()
@@ -1679,29 +1770,34 @@ impl AgentHandle {
         let submission = u128::from_le_bytes(bytes);
         let attempt_id = format!("attempt-{submission:032x}");
         let submission_id = format!("submission-{submission:032x}");
+        let lease_ms = state.accepted_lease_ms.load(Ordering::Acquire).max(50);
         let now = now_ms();
         let Some(claimed) = queue
-            .take(&next.id, &attempt_id, now, ACCEPTED_LEASE_MS)
+            .take(&next.id, &attempt_id, now, lease_ms)
             .map_err(|_| "notice.storage_error")?
         else {
             return Ok(None);
         };
         let session = match claimed.session_hint.as_deref() {
             Some(hint) => {
-                if lock(&state.live)
+                let hinted_state = lock(&state.live)
                     .get(hint)
-                    .is_some_and(|session| session.status.is_busy())
-                {
-                    // Lost the race after selection: wait, do not fork.
-                    let _ =
-                        queue.release(&claimed.id, &attempt_id, now_ms(), 0);
-                    return Ok(None);
-                }
-                // Selecting also loads a session that a restart has not
-                // brought into `live` yet; a deleted hint falls back home.
-                match self.select_session(hint) {
-                    Ok(()) => hint.to_owned(),
-                    Err(_) => match self.create_home_session() {
+                    .map(|session| session.status.is_busy());
+                match hinted_state {
+                    Some(true) => {
+                        // Lost the race after selection: wait, do not fork.
+                        let _ = queue.release(
+                            &claimed.id,
+                            &attempt_id,
+                            now_ms(),
+                            0,
+                        );
+                        return Ok(None);
+                    }
+                    Some(false) => hint.to_owned(),
+                    None => match self.create_background_home_session(
+                        previous_active.is_none(),
+                    ) {
                         Ok(session) => session,
                         Err(error) => {
                             settle_failed_attempt(
@@ -1716,7 +1812,9 @@ impl AgentHandle {
                     },
                 }
             }
-            None => match self.create_home_session() {
+            None => match self
+                .create_background_home_session(previous_active.is_none())
+            {
                 Ok(session) => session,
                 Err(error) => {
                     settle_failed_attempt(
@@ -1730,21 +1828,51 @@ impl AgentHandle {
                 }
             },
         };
-        // Persist (session_id, submission_id) before starting the engine so
-        // crash recovery can detect committed output instead of re-running.
-        let _ = queue.bind(
+        #[cfg(test)]
+        {
+            let hook = lock(&state.before_accepted_bind_hook).clone();
+            if let Some(hook) = hook {
+                hook(&claimed.id);
+            }
+        }
+        // Persist (session_id, submission_id) fail-closed before starting the
+        // engine: a write error or stale lease must never dispatch work.
+        match queue.bind(
             &claimed.id,
             &attempt_id,
             &session,
             &submission_id,
             now_ms(),
-        );
-        if let Err(error) = self.submit_chat(submission, &claimed.text) {
-            if let Some(prev) = &previous_active
-                && prev != &session
-            {
-                let _ = self.select_session(prev);
+        ) {
+            Ok(true) => {}
+            Ok(false) => return Ok(None),
+            Err(_) => {
+                settle_failed_attempt(
+                    &queue,
+                    &claimed.id,
+                    &attempt_id,
+                    claimed.attempts,
+                    now_ms(),
+                );
+                return Err("notice.storage_error");
             }
+        }
+        #[cfg(test)]
+        {
+            let hook = lock(&state.before_accepted_submit_hook).clone();
+            if let Some(hook) = hook {
+                hook(&session);
+            }
+        }
+        let heartbeat_cancel = CancelToken::new();
+        if let Err(error) = self.submit_message_targeted(
+            Some(&session),
+            &claimed.text,
+            Some(submission),
+            None,
+            Some(heartbeat_cancel.clone()),
+        ) {
+            heartbeat_cancel.cancel();
             settle_failed_attempt(
                 &queue,
                 &claimed.id,
@@ -1754,16 +1882,47 @@ impl AgentHandle {
             );
             return Err(error);
         }
-        if let Some(prev) = &previous_active
-            && prev != &session
-        {
-            let _ = self.select_session(prev);
-        }
         *lock(&state.accepted_claim) = Some(AcceptedClaim {
             receipt_id: claimed.id.clone(),
             attempt_id: attempt_id.clone(),
             session_id: session.clone(),
             attempts: claimed.attempts,
+            heartbeat_cancel: heartbeat_cancel.clone(),
+        });
+        let hb_queue = AcceptanceQueue::new(state.root.clone());
+        let hb_receipt = claimed.id.clone();
+        let hb_attempt = attempt_id.clone();
+        let interval_ms = (lease_ms / 3).max(20);
+        self.inner.runtime.spawn(async move {
+            let mut ticker = tokio::time::interval(
+                std::time::Duration::from_millis(interval_ms),
+            );
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    () = heartbeat_cancel.cancelled() => break,
+                    _ = ticker.tick() => {
+                        match hb_queue.renew_lease(
+                            &hb_receipt,
+                            &hb_attempt,
+                            now_ms(),
+                            lease_ms,
+                        ) {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(error) => {
+                                tracing::warn!(
+                                    target: "flowy.acceptance",
+                                    receipt_id = %hb_receipt,
+                                    attempt_id = %hb_attempt,
+                                    %error,
+                                    "lease heartbeat renewal failed"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         });
         let root_session_id = self.root_session_id_for(&session);
         tracing::info!(
@@ -1783,6 +1942,30 @@ impl AgentHandle {
             session_id: session,
             submission,
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_accepted_lease_ms_for_test(&self, lease_ms: u64) {
+        self.inner
+            .state
+            .accepted_lease_ms
+            .store(lease_ms, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_accepted_bind_hook(
+        &self,
+        hook: Option<AcceptedSubmitHook>,
+    ) {
+        *lock(&self.inner.state.before_accepted_bind_hook) = hook;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_accepted_submit_hook(
+        &self,
+        hook: Option<AcceptedSubmitHook>,
+    ) {
+        *lock(&self.inner.state.before_accepted_submit_hook) = hook;
     }
 
     /// Finish the receipt started by [`Self::run_accepted_once`].
@@ -1822,6 +2005,7 @@ impl AgentHandle {
         // Only drop the claim once the journal accepted the outcome; a failed
         // write keeps it so a retry can finish the same attempt.
         if result.is_ok() {
+            claim.heartbeat_cancel.cancel();
             let root_session_id = self.root_session_id_for(&claim.session_id);
             tracing::info!(
                 target: "flowy.acceptance",
@@ -1891,6 +2075,17 @@ impl AgentHandle {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
+        self.submit_message_targeted(None, text, submission, selection, None)
+    }
+
+    fn submit_message_targeted(
+        &self,
+        explicit_session_id: Option<&str>,
+        text: &str,
+        submission: Option<u128>,
+        selection: Option<SubmissionSelection<'_>>,
+        turn_done_signal: Option<CancelToken>,
+    ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
             target: "flowy.prompt",
@@ -1924,7 +2119,15 @@ impl AgentHandle {
         }) {
             return Err("notice.agent_busy");
         }
-        let id = self.ensure_active_session()?;
+        let id = match explicit_session_id {
+            Some(target_id) => {
+                if !lock(&state.live).contains_key(target_id) {
+                    return Err("notice.agent_failed");
+                }
+                target_id.to_owned()
+            }
+            None => self.ensure_active_session()?,
+        };
         if lock(&state.live)
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
@@ -2089,6 +2292,9 @@ impl AgentHandle {
         let completed_submission = submission;
         self.inner.runtime.spawn(async move {
             let outcome = turn.await;
+            if let Some(signal) = turn_done_signal {
+                signal.cancel();
+            }
             match &outcome {
                 Ok(LoopOutcome::Completed) => {
                     tracing::debug!(
@@ -3675,21 +3881,33 @@ fn settle_failed_attempt(
     }
 }
 
-/// Returns `true` only when `submission_id` has durable post-execution output
-/// in `record` (either a successful `DeliveryCommit` or at least one
-/// Assistant/Tool message following the submission's User message on a
-/// non-running session). Never mistakes a pre-run User prompt saved by
-/// `Engine::prepare` for a completed turn.
+/// Returns `true` only when `submission_id` has an explicit durable
+/// `Completed` outcome (and, if it produced a `DeliveryCommit`, every committed
+/// artifact is already visible in `ArtifactStore`). Never mistakes an `Error`,
+/// `Aborted`, `Partial`, or pre-run `User`-only prompt for a completed work.
 fn submission_committed_in_session(
     record: &SessionRecord,
     submission_id: &str,
+    committed_artifacts: &BTreeSet<String>,
 ) -> bool {
-    if record.delivery_commits.iter().any(|commit| {
-        commit.submission_id == submission_id && commit.completed_successfully
-    }) {
-        return true;
+    if let Some(commit) = record
+        .delivery_commits
+        .iter()
+        .find(|commit| commit.submission_id == submission_id)
+    {
+        return commit.completed_successfully
+            && commit
+                .artifact_ids
+                .iter()
+                .all(|id| committed_artifacts.contains(id));
     }
-    if record.status.is_busy() {
+    if let Some(outcome) = record.submission_outcomes.get(submission_id) {
+        return matches!(outcome, SubmissionOutcome::Completed);
+    }
+    // Legacy fallback for sessions written before `submission_outcomes`
+    // existed: only an explicitly Completed session with post-prompt output
+    // qualifies; Error / Stopped / Running never reconcile as Completed.
+    if record.status != TurnState::Completed {
         return false;
     }
     let Some(user_idx) = record
@@ -3710,18 +3928,26 @@ fn submission_committed_in_session(
 
 /// Reconcile any previously bound receipt whose engine turn already committed
 /// on disk before the process could append `Completed` to the journal.
-fn reconcile_committed_acceptances(root: &Path, engine: &Engine) {
+fn reconcile_committed_acceptances(
+    root: &Path,
+    engine: &Engine,
+    store: Option<&ArtifactStore>,
+) {
     let queue = AcceptanceQueue::new(root.to_path_buf());
     let Ok(receipts) = queue.replay() else {
         return;
     };
+    let committed_artifacts = store
+        .and_then(|store| store.committed_ids().ok())
+        .unwrap_or_default();
     let now = now_ms();
     for receipt in receipts {
         // Only reconcile unsettled claims (`Taken` + `Bound` with no
-        // subsequent `Completed` / `Released` / `Dead`): an explicit `Released`
-        // clears `lease` to signal that the host intentionally requested retry.
+        // subsequent `Completed` / `Released` / `Dead` / `Cancelled`): an
+        // explicit `Released` clears `lease` to request a retry.
         if receipt.completed_at_ms.is_some()
             || receipt.dead
+            || receipt.cancelled
             || receipt.lease.is_none()
         {
             continue;
@@ -3736,10 +3962,13 @@ fn reconcile_committed_acceptances(root: &Path, engine: &Engine) {
         let Some(record) = engine.session(session_id) else {
             continue;
         };
-        if submission_committed_in_session(&record, submission_id)
-            && queue
-                .complete_reconciled(&receipt.id, attempt_id, now)
-                .unwrap_or(false)
+        if submission_committed_in_session(
+            &record,
+            submission_id,
+            &committed_artifacts,
+        ) && queue
+            .complete_reconciled(&receipt.id, attempt_id, now)
+            .unwrap_or(false)
         {
             tracing::info!(
                 target: "flowy.acceptance",

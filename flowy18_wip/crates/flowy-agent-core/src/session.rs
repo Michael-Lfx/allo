@@ -5,6 +5,7 @@
 //! [`Message`] values, including raw tool-call argument strings and tool-result
 //! pairing, so a restored session can be sent to a model unchanged.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -78,6 +79,19 @@ impl TurnState {
     }
 }
 
+/// Durable terminal outcome recorded per `submission_id` inside a session.
+///
+/// Lets crash recovery and work-status queries verify the exact outcome of an
+/// individual submission instead of guessing from the latest session status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubmissionOutcome {
+    Completed,
+    Partial { missing: Vec<String> },
+    Failed { message: String },
+    Aborted,
+}
+
 /// One durable session: metadata plus the full structured message history.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -100,6 +114,9 @@ pub struct SessionRecord {
     pub workspace: Option<SessionWorkspace>,
     #[serde(default)]
     pub delivery_commits: Vec<DeliveryCommit>,
+    /// Per-submission durable terminal outcomes (`submission-<id>` -> outcome).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub submission_outcomes: BTreeMap<String, SubmissionOutcome>,
     /// Top-level session id when spawned from a parent conversation; omitted on root sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
