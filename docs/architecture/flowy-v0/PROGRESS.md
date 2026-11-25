@@ -808,12 +808,12 @@ no session was live, so there is nothing to hint at
 
 在任务 8 之后继续补 V2 的生产化缺口，按「先兑现承诺、再动执行主干」推进，四刀都已提交：
 
-| 提交 | 内容 |
+| 提交（rebase 前 → 后） | 内容 |
 | --- | --- |
-| `eae5efc6f` | 启动即排水：`Initialized` 后立即检查队列；空闲每 5s 复查，崩溃租约与退避到期能自恢复；手动提交或会话忙时不插队 |
-| `1411d1c23` | 重试预算与死信：`Dead` 终态只允许当前租约持有者写入；10 次后不再重试；第 3 次失败与最终放弃各有提示（23 locale） |
-| `6e770cf17` | 会话归属：收据只等自己的会话；忙则等待、不另开新会话；重启按 hint 重新加载；等待不涨 attempts |
-| 本次 | 队列条标注归属：「本会话 / 会话 xxxxxxxx / 主时间线」；新增 3 个 i18n 键 × 23 locale |
+| `eae5efc6f` → `aec253b47` | 启动即排水：`Initialized` 后立即检查队列；空闲每 5s 复查，崩溃租约与退避到期能自恢复；手动提交或会话忙时不插队 |
+| `1411d1c23` → `bf8935c42` | 重试预算与死信：`Dead` 终态只允许当前租约持有者写入；10 次后不再重试；第 3 次失败与最终放弃各有提示（23 locale） |
+| `6e770cf17` → `653e6d4fd` | 会话归属：收据只等自己的会话；忙则等待、不另开新会话；重启按 hint 重新加载；等待不涨 attempts |
+| 本次 → `be02dff9a` | 队列条标注归属：「本会话 / 会话 xxxxxxxx / 主时间线」；新增 3 个 i18n 键 × 23 locale |
 
 验证基线：core 72 / agent 107 / studio 82 / i18n 8；`accept.sh` 3/3；`clippy --lib -D warnings` 干净。
 
@@ -858,9 +858,9 @@ no session was live, so there is nothing to hint at
 
 - 提交 `4e35a1580`。新增 `flowy18_wip/crates/flowy-agent/src/delivery.rs`：报告与事件各一份 append-only JSONL，位于 `<store_root>/delivery/reports.jsonl` 与 `events.jsonl`。
 - 门自己按产物路径读最新报告、自己重算 sha256；三类拒绝分开：`DELIVERY_NOT_VERIFIED`（无报告）/ `DELIVERY_VERIFICATION_FAILED`（`ok=false`）/ `DELIVERY_ARTIFACT_CHANGED`（哈希不符）。
-- 被拒时**发送器调用次数为 0**，审计里只有 `deliver_blocked`；override 必须显式传入，事件序 `deliver_blocked → deliver_override → deliver`。
-- `verify_deck` 成功后落报告；`publish_file` 对 `.pptx` 先过门，拒绝文案新增 `chat.publish.not_verified` 并在 23 个 locale 同步。
-- trace：`tracing` 的 `flowy.delivery` target，字段 `delivery_id / artifact_hash / outcome`；事后可按事件重放过程和结果。
+- 被拒时**发送器调用次数为 0**，`DeliveryStore::deliver()` 审计里只有 `deliver_blocked`；override 必须显式传入，事件序 `deliver_blocked → deliver_override → deliver`。
+- `verify_deck` 成功后落报告；`publish_file` 对 `.pptx` 先调 `gate.check()` 过门，拒绝文案新增 `chat.publish.not_verified` 并在 23 个 locale 同步。
+- trace：`DeliveryStore::deliver()` 打 `tracing` 的 `flowy.delivery` target，字段 `delivery_id / artifact_hash / outcome`；事后可按事件重放过程和结果。
 - 先红后绿：去掉门时 `a_pptx_without_a_report...` 红（拿到别的错误码），装回门后绿。
-- 当前边界：只覆盖 `.pptx`；override UI 未接；崩溃窗口仍是「先发后记」。均记在 `交接给下一个agent.md` §14。
+- 当前边界（2026-11-25 复核校准）：① 只覆盖 `.pptx`；② `publish_file` 当前调的是只读 `gate.check()` 而非 `gate.deliver()`，因此普通入口被拒时虽未入库（sender 0 次），但尚未往 `events.jsonl` 写 `deliver_blocked` / `deliver`（留任务 14 一并收口）；③ override UI 未接；④ 崩溃窗口仍是「先发后记」。详见 `交接给下一个agent.md` §15。
 - 基线：core 73 / agent 124 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净；未推送。
