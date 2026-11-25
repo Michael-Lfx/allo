@@ -123,7 +123,6 @@ impl WorkContractProgress {
     pub fn from_status(status: &WorkStatus) -> Option<Self> {
         let has_contract = !status.required_items.is_empty()
             || !status.missing_items.is_empty()
-            || status.outcome.is_some()
             || !status.delivered_artifact_ids.is_empty();
         if !has_contract {
             return None;
@@ -397,6 +396,7 @@ impl BoardDataSource for AgentHandle {
                     let work_progress = self
                         .work_status(&receipt.id)
                         .and_then(|s| WorkContractProgress::from_status(&s));
+                    let safe_text = super::redact_trace_text(&receipt.text);
                     WorkBranchSummary {
                         id: format!("receipt-{}", receipt.id),
                         skill_label: SkillLabel::Key("board.skill_queue"),
@@ -404,11 +404,11 @@ impl BoardDataSource for AgentHandle {
                             receipt_id: receipt.id.clone(),
                             state: *state,
                         },
-                        deliverable_name: clip_label(&receipt.text, 28),
+                        deliverable_name: clip_label(&safe_text, 28),
                         deliverable_path: None,
                         format: DeliverableFormat::Other,
                         progress_pct: receipt_progress_pct(*state),
-                        detail: clip_label(&receipt.text, 96),
+                        detail: clip_label(&safe_text, 96),
                         work_progress,
                     }
                 })
@@ -701,6 +701,7 @@ where
     for (receipt, state) in queued_receipts {
         let work_progress = work_status_fn(&receipt.id)
             .and_then(|s| WorkContractProgress::from_status(&s));
+        let safe_text = super::redact_trace_text(&receipt.text);
         branches.push(WorkBranchSummary {
             id: format!("{}-q-{}", summary.id, receipt.id),
             skill_label: SkillLabel::Key("board.skill_queue"),
@@ -708,11 +709,11 @@ where
                 receipt_id: receipt.id.clone(),
                 state: *state,
             },
-            deliverable_name: clip_label(&receipt.text, 24),
+            deliverable_name: clip_label(&safe_text, 24),
             deliverable_path: None,
             format: DeliverableFormat::Other,
             progress_pct: receipt_progress_pct(*state),
-            detail: clip_label(&receipt.text, 96),
+            detail: clip_label(&safe_text, 96),
             work_progress,
         });
     }
@@ -725,16 +726,22 @@ where
             .find_map(|line| match line {
                 ChatLine::Assistant { text } | ChatLine::User { text } => {
                     let trimmed = text.trim();
-                    (!trimmed.is_empty()).then(|| clip_label(trimmed, 48))
+                    (!trimmed.is_empty()).then(|| {
+                        let safe = super::redact_trace_text(trimmed);
+                        clip_label(&safe, 48)
+                    })
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| summary.title.clone());
+            .unwrap_or_else(|| super::redact_trace_text(&summary.title));
         branches.push(WorkBranchSummary {
             id: format!("{}-idle", summary.id),
             skill_label: SkillLabel::Key("chat.router_name"),
             phase: BranchPhase::Idle,
-            deliverable_name: clip_label(&summary.title, 24),
+            deliverable_name: clip_label(
+                &super::redact_trace_text(&summary.title),
+                24,
+            ),
             deliverable_path: None,
             format: DeliverableFormat::Other,
             progress_pct: 100.0,
@@ -1078,5 +1085,48 @@ mod tests {
             branches[0].phase,
             BranchPhase::NeedsApproval { .. }
         ));
+    }
+
+    #[test]
+    fn work_contract_progress_ignores_empty_completed_qa_outcome() {
+        let status = WorkStatus {
+            work_id: "qa-empty".into(),
+            session_id: Some("s-qa".into()),
+            submission_id: Some("sub-qa".into()),
+            contract_revision: None,
+            receipt_state: Some(ReceiptState::Completed),
+            outcome: Some(SubmissionOutcome::Completed),
+            required_items: Vec::new(),
+            delivered_artifact_ids: Vec::new(),
+            missing_items: Vec::new(),
+        };
+        assert!(
+            WorkContractProgress::from_status(&status).is_none(),
+            "pure Q&A with 0 required/delivered items must not render a 0/0 contract badge"
+        );
+    }
+
+    #[test]
+    fn board_projection_redacts_secrets_in_receipt_and_qa_previews() {
+        let summary = SessionSummary {
+            id: "s-sec".into(),
+            title: "check api_key=sk-secret-do-not-leak".into(),
+            updated_at: 42,
+            project_id: None,
+        };
+        let lines = vec![ChatLine::User {
+            text: "Bearer tok_1234567890abcdef".into(),
+        }];
+        let branches = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            |_| None,
+        );
+        assert!(!branches[0].deliverable_name.contains("sk-secret"));
+        assert!(!branches[0].detail.contains("tok_1234567890abcdef"));
     }
 }

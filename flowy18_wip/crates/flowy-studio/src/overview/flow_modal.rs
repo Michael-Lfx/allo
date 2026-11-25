@@ -3,12 +3,13 @@
 use flowy_agent::ReceiptState;
 use flowy_ui as theme;
 use flowy_ui::charts::{FlowEdgeStyle, flow_connector, progress_ring};
+use flowy_ui::status_pill;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, div,
     prelude::*, px,
 };
 
-use super::{FlowModalTab, status_pill};
+use super::FlowModalTab;
 use crate::panel::StudioPanel;
 use crate::ports::{
     BranchPhase, SessionBoardGroup, WorkBranchSummary, display_path_str,
@@ -22,14 +23,15 @@ impl StudioPanel {
         &self,
         cx: &Context<'_, Self>,
     ) -> Option<AnyElement> {
-        let session_id = self.flow_modal_session.as_deref()?;
+        let session_id = self.flow_modal.session.as_deref()?;
         let group = self
             .board_snapshot
             .sessions
             .iter()
             .find(|g| g.session_id == session_id)?;
         let selected_branch = self
-            .flow_modal_branch
+            .flow_modal
+            .branch
             .as_deref()
             .and_then(|bid| group.branches.iter().find(|b| b.id == bid))
             .or_else(|| {
@@ -52,6 +54,7 @@ impl StudioPanel {
 
         let header = div()
             .w_full()
+            .rounded_t(self.theme.modal_radius())
             .px(self.theme.space(20.))
             .py(self.theme.space(12.))
             .border_b_1()
@@ -243,7 +246,7 @@ impl StudioPanel {
                     .child(self.t("board.esc_hint")),
             );
 
-        let detail_body = match self.flow_modal_tab {
+        let detail_body = match self.flow_modal.tab {
             FlowModalTab::Action => {
                 self.modal_action_panel(group, selected_branch, cx)
             }
@@ -273,20 +276,16 @@ impl StudioPanel {
             .child(flow_canvas)
             .child(footer);
 
-        let panel_entity = cx.entity().downgrade();
         Some(theme::centered_modal_sheet(
-            "flow-modal-layer",
-            "flow-modal-panel",
-            SharedString::from(group.title.clone()),
-            1040.0,
+            theme::ModalSheetConfig {
+                layer_id: "flow-modal-layer".into(),
+                panel_id: "flow-modal-panel".into(),
+                label: SharedString::from(group.title.clone()),
+                max_width_px: 1040.0,
+            },
             &self.theme,
             &self.ui,
             cx,
-            move |_window, cx| {
-                let _ = panel_entity.update(cx, |panel, cx| {
-                    panel.close_flow_modal(cx);
-                });
-            },
             modal_body,
         ))
     }
@@ -423,8 +422,8 @@ impl StudioPanel {
                 .items_center()
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
-                    panel.flow_modal_branch = Some(bid1.clone());
-                    panel.flow_modal_override_ack = false;
+                    panel.flow_modal.branch = Some(bid1.clone());
+                    panel.flow_modal.override_ack = false;
                     cx.notify();
                 }))
                 .child(progress_ring(
@@ -495,8 +494,8 @@ impl StudioPanel {
                 .items_center()
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
-                    panel.flow_modal_branch = Some(bid2.clone());
-                    panel.flow_modal_override_ack = false;
+                    panel.flow_modal.branch = Some(bid2.clone());
+                    panel.flow_modal.override_ack = false;
                     cx.notify();
                 }))
                 .child(
@@ -570,7 +569,48 @@ impl StudioPanel {
                 e3_style,
                 policy,
             ))
-            .child(
+            .child({
+                let is_plain_qa = matches!(branch.phase, BranchPhase::Idle)
+                    && branch.deliverable_path.is_none();
+                let badge = if is_plain_qa {
+                    div()
+                        .size(px(22.))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            theme::icons::sparkles()
+                                .size(px(11.))
+                                .text_color(self.theme.muted()),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex_none()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded_md()
+                        .bg(format_color)
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(self.theme.on_ink())
+                        .child(branch.format.tag())
+                        .into_any_element()
+                };
+                let subtitle = match &branch.phase {
+                    BranchPhase::Delivered { hash_short, .. }
+                        if !hash_short.is_empty() =>
+                    {
+                        format!("sha256:{hash_short}")
+                    }
+                    BranchPhase::Idle if branch.deliverable_path.is_none() => {
+                        self.t("chat.status_idle")
+                    }
+                    _ => self.t("chat.deliverables"),
+                };
                 theme::interactive(
                     ("fm-n3", idx),
                     branch.deliverable_name.clone(),
@@ -589,22 +629,11 @@ impl StudioPanel {
                 .items_center()
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
-                    panel.flow_modal_branch = Some(bid3.clone());
-                    panel.flow_modal_override_ack = false;
+                    panel.flow_modal.branch = Some(bid3.clone());
+                    panel.flow_modal.override_ack = false;
                     cx.notify();
                 }))
-                .child(
-                    div()
-                        .flex_none()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded_md()
-                        .bg(format_color)
-                        .text_xs()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(self.theme.on_ink())
-                        .child(branch.format.tag()),
-                )
+                .child(badge)
                 .child(
                     div()
                         .min_w_0()
@@ -627,18 +656,10 @@ impl StudioPanel {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child(match &branch.phase {
-                                    BranchPhase::Delivered {
-                                        hash_short,
-                                        ..
-                                    } if !hash_short.is_empty() => {
-                                        format!("sha256:{hash_short}")
-                                    }
-                                    _ => self.t("chat.deliverables"),
-                                }),
+                                .child(subtitle),
                         ),
-                ),
-            )
+                )
+            })
             .into_any_element()
     }
 
@@ -648,7 +669,7 @@ impl StudioPanel {
         label: String,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let selected = self.flow_modal_tab == tab;
+        let selected = self.flow_modal.tab == tab;
         theme::interactive(
             match tab {
                 FlowModalTab::Action => "fm-tab-action",
@@ -674,7 +695,7 @@ impl StudioPanel {
         })
         .child(label)
         .on_click(cx.listener(move |panel, _, _, cx| {
-            panel.flow_modal_tab = tab;
+            panel.flow_modal.tab = tab;
             panel.refresh_trace_cache();
             cx.notify();
         }))
@@ -836,7 +857,7 @@ impl StudioPanel {
         summary: &str,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let ack = self.flow_modal_override_ack;
+        let ack = self.flow_modal.override_ack;
         let has_report = !report_id.trim().is_empty();
         let sid = session_id.to_owned();
         let rid = report_id.to_owned();
@@ -889,8 +910,8 @@ impl StudioPanel {
                         .text_xs()
                         .text_color(self.theme.muted())
                         .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.flow_modal_override_ack =
-                                !panel.flow_modal_override_ack;
+                            panel.flow_modal.override_ack =
+                                !panel.flow_modal.override_ack;
                             cx.notify();
                         }))
                         .child(

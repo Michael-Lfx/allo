@@ -1,9 +1,9 @@
 //! Local environment status popover and cockpit picker menus (workspace, skill).
 
 use flowy_ui as theme;
+use flowy_ui::status_pill;
 use gpui::{Context, FontWeight, IntoElement, Stateful, div, prelude::*, px};
 
-use crate::overview::status_pill;
 use crate::panel::StudioPanel;
 
 impl StudioPanel {
@@ -114,26 +114,54 @@ impl StudioPanel {
                         .child(self.t("env.toggle_l3_label")),
                 )
                 .child(
-                    theme::Button::new(
+                    theme::interactive(
                         "env-toggle-l3",
                         if l3_enabled {
                             self.t("env.state_on")
                         } else {
                             self.t("env.state_off")
                         },
-                    )
-                    .variant(if l3_enabled {
-                        theme::ControlVariant::Primary
-                    } else {
-                        theme::ControlVariant::Secondary
-                    })
-                    .size(theme::ControlSize::Small)
-                    .render(
                         &self.theme,
-                        cx.listener(|panel, _, _, cx| {
+                    )
+                    .px(self.theme.space(10.))
+                    .py(px(4.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if l3_enabled {
+                        self.theme.status_verified().opacity(0.45)
+                    } else {
+                        self.theme.line()
+                    })
+                    .bg(if l3_enabled {
+                        self.theme.status_verified_bg()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if l3_enabled {
+                        self.theme.status_verified()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.dock_hover()))
+                    .when(l3_enabled, |pill| {
+                        pill.child(theme::icons::check().size(px(11.)))
+                    })
+                    .child(if l3_enabled {
+                        self.t("env.state_on")
+                    } else {
+                        self.t("env.state_off")
+                    })
+                    .on_click(cx.listener(
+                        |panel, _, _, cx| {
                             panel.toggle_semantic_verify(cx);
-                        }),
-                    ),
+                        },
+                    )),
                 ),
         )
     }
@@ -167,7 +195,7 @@ impl StudioPanel {
             .child(self.t("composer.workspace_default"))
             .when(default_selected, |row| row.child(theme::icons::check()))
             .on_click(cx.listener(|panel, _, _, cx| {
-                panel.workspace_menu_open = false;
+                panel.close_all_popovers();
                 panel.bind_default_workspace(cx);
             })),
         );
@@ -221,7 +249,7 @@ impl StudioPanel {
                 .when(selected, |row| row.child(theme::icons::check()))
                 .on_click(cx.listener(
                     move |panel, _, _, cx| {
-                        panel.workspace_menu_open = false;
+                        panel.close_all_popovers();
                         let _ = panel.open_project(&pid, cx);
                     },
                 )),
@@ -257,7 +285,7 @@ impl StudioPanel {
                 .child(self.t("composer.skill_clear"))
                 .on_click(cx.listener(|panel, _, _, cx| {
                     panel.selected_skill = None;
-                    panel.skill_menu_open = false;
+                    panel.close_all_popovers();
                     cx.notify();
                 })),
             );
@@ -325,7 +353,7 @@ impl StudioPanel {
                     .on_click(cx.listener(
                         move |panel, _, _, cx| {
                             panel.selected_skill = Some(chip.clone());
-                            panel.skill_menu_open = false;
+                            panel.close_all_popovers();
                             cx.notify();
                         },
                     )),

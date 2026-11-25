@@ -14,9 +14,6 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 
-/// Width of the whole stage, shared by the hero, composer, chips and starters.
-const STAGE_W: f32 = 760.;
-
 impl StudioPanel {
     /// Category chips and the current category's clean two-column prompt cards.
     pub fn starter_section(
@@ -50,7 +47,7 @@ impl StudioPanel {
             // width from the parent, which is what makes the row responsive.
             .flex_1()
             .min_w_0()
-            .max_w(px(STAGE_W))
+            .max_w(px(crate::STAGE_MAX_W))
             .flex()
             .flex_col()
             .items_center()
@@ -100,7 +97,7 @@ impl StudioPanel {
             chip.bg(self.theme.card())
                 .border_color(self.theme.line())
                 .shadow_sm()
-                .text_color(self.theme.ink())
+                .text_color(self.theme.starter_ink())
         } else {
             chip.border_color(self.theme.canvas())
                 .text_color(self.theme.muted())

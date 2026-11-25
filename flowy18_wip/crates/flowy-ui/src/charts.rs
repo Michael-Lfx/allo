@@ -6,7 +6,6 @@
 //! window-scoped theme contract and headless `#[gpui::test]` requirements.
 
 use std::f32::consts::TAU;
-use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Bounds, ElementId, FontWeight, Hsla,
@@ -167,7 +166,7 @@ pub fn progress_ring(
             .child(ring_canvas)
             .with_animation(
                 (elem_id, "ring"),
-                Animation::new(Duration::from_millis(1600))
+                Animation::new(motion::RING_PULSE)
                     .repeat()
                     .with_easing(motion::pulsing_sine()),
                 |el, t| el.opacity(0.25_f32.mul_add(t, 0.75)),
@@ -260,7 +259,7 @@ pub fn flow_connector(
             .child(edge)
             .with_animation(
                 (elem_id, "flow"),
-                Animation::new(Duration::from_millis(1200))
+                Animation::new(motion::FLOW_EDGE)
                     .repeat()
                     .with_easing(motion::pulsing_sine()),
                 |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),

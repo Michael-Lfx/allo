@@ -467,29 +467,31 @@ pub fn dialog(
         )
 }
 
+/// Configuration for [`centered_modal_sheet`].
+#[derive(Clone, Debug)]
+pub struct ModalSheetConfig {
+    pub layer_id: ElementId,
+    pub panel_id: ElementId,
+    pub label: SharedString,
+    pub max_width_px: f32,
+}
+
 /// Responsive full-window centered modal sheet for wide visual content.
 ///
-/// Uses flex centering + max width instead of stale `window.viewport_size()`,
-/// so resizing the window reflows immediately.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors dialog overlay helper shape for wide centered sheets"
-)]
+/// Composes [`modal_layer`] and [`dialog`] so outside-click dismissal routes
+/// through `OverlayHost::request_close(CloseReason::Outside)` with identical
+/// focus restoration to `Escape`, while flex centering reflows immediately on
+/// window resize.
 pub fn centered_modal_sheet(
-    layer_id: impl Into<ElementId>,
-    panel_id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    max_width_px: f32,
+    config: ModalSheetConfig,
     theme: &ResolvedTheme,
     ui: &UiContext,
     cx: &App,
-    on_dismiss: impl Fn(&mut Window, &mut App) + 'static,
     body: impl IntoElement,
 ) -> AnyElement {
-    let panel_elem_id: ElementId = panel_id.into();
-    let panel = dialog(panel_elem_id.clone(), label, theme, ui, cx)
+    let panel = dialog(config.panel_id.clone(), config.label, theme, ui, cx)
         .w_full()
-        .max_w(px(max_width_px))
+        .max_w(px(config.max_width_px))
         .max_h_full()
         .border_1()
         .border_color(theme.line())
@@ -503,11 +505,13 @@ pub fn centered_modal_sheet(
         if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
             gpui::AnimationExt::with_animation(
                 panel,
-                (panel_elem_id, "enter"),
+                (config.panel_id, "enter"),
                 gpui::Animation::new(crate::motion::MODERATE)
                     .with_easing(crate::motion::out_quint()),
                 |el, delta| {
-                    el.opacity(delta).relative().top(px(8.0 * (1.0 - delta)))
+                    el.opacity(delta)
+                        .relative()
+                        .top(px(crate::motion::ENTER_OFFSET * (1.0 - delta)))
                 },
             )
             .into_any_element()
@@ -515,26 +519,8 @@ pub fn centered_modal_sheet(
             panel.into_any_element()
         };
 
-    div()
-        .id(layer_id)
-        .occlude()
-        .absolute()
-        .inset_0()
+    modal_layer(config.layer_id, theme, ui, animated_panel)
         .p(px(24.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme.scrim())
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            move |_: &gpui::MouseDownEvent,
-                  window: &mut Window,
-                  cx: &mut App| {
-                on_dismiss(window, cx);
-                cx.stop_propagation();
-            },
-        )
-        .child(animated_panel)
         .into_any_element()
 }
 

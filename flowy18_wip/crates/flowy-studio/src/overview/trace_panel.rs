@@ -21,33 +21,6 @@ pub enum TraceFilter {
     WarnAndError,
 }
 
-/// Compact rounded pill shared by Board cards, Flowchart Modal, Drawer, and Menus.
-pub fn status_pill(
-    bg: gpui::Rgba,
-    fg: gpui::Rgba,
-    label: String,
-    leading: Option<AnyElement>,
-) -> AnyElement {
-    div()
-        .flex_none()
-        .px(px(8.))
-        .py(px(2.))
-        .rounded_full()
-        .bg(bg)
-        .flex()
-        .items_center()
-        .gap(px(5.))
-        .children(leading)
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(fg)
-                .child(label),
-        )
-        .into_any_element()
-}
-
 impl StudioPanel {
     pub(crate) fn receipt_state_visual(
         &self,

@@ -7,7 +7,7 @@ use flowy_agent::{
 };
 use gpui::Context;
 
-use crate::panel::{StudioPanel, StudioSurface};
+use crate::panel::{ActivePopover, StudioPanel, StudioSurface};
 
 impl StudioPanel {
     /// Synchronizes both claimable pending receipts (for legacy tests/counts)
@@ -62,9 +62,7 @@ impl StudioPanel {
         self.retrying_receipts.clear();
         self.retrying_delivery = None;
         self.close_all_popovers();
-        self.flow_modal_session = None;
-        self.flow_modal_branch = None;
-        self.flow_modal_override_ack = false;
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.cached_trace = None;
         // Apply disconnected config first so autonomous drain cannot claim new
@@ -131,8 +129,8 @@ impl StudioPanel {
     /// displaying the Trace tab across the Flowchart Modal or Right Drawer.
     #[must_use]
     pub(crate) fn active_trace_session_id(&self) -> Option<String> {
-        if self.flow_modal_tab == crate::overview::FlowModalTab::Trace
-            && let Some(sid) = &self.flow_modal_session
+        if self.flow_modal.tab == crate::overview::FlowModalTab::Trace
+            && let Some(sid) = &self.flow_modal.session
         {
             return Some(sid.clone());
         }
@@ -173,17 +171,73 @@ impl StudioPanel {
         self.cached_trace = Some((session_id, entries));
     }
 
+    /// Overlay scope identifier of the currently open Studio popover, if any.
+    #[must_use]
+    pub const fn active_popup_scope(&self) -> Option<&'static str> {
+        self.popover.scope()
+    }
+
+    /// Dismisses whichever Studio popover or Flowchart Modal matches `scope`.
+    /// Returns `true` when state changed and notified observers.
+    pub fn dismiss_overlay(
+        &mut self,
+        scope: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if matches!(scope, "flow-modal" | "flow-modal-panel") {
+            if !self.flow_modal.is_open() {
+                return false;
+            }
+            self.close_flow_modal(cx);
+            return true;
+        }
+        if self.popover.scope() == Some(scope) {
+            self.close_all_popovers();
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     /// Closes all mutually exclusive transient popovers in one place so new
     /// cockpit menus cannot be missed by navigation or dialog transitions.
     pub fn close_all_popovers(&mut self) {
-        self.model_info_open = false;
-        self.model_menu_open = false;
-        self.bg_tasks_open = false;
-        self.env_popover_open = false;
-        self.workspace_menu_open = false;
-        self.skill_menu_open = false;
-        self.credits_hover = false;
+        self.popover = ActivePopover::None;
         self.credits_close = None;
+    }
+
+    pub(crate) fn toggle_popover(&mut self, next: ActivePopover) {
+        self.credits_close = None;
+        self.popover = if self.popover == next {
+            ActivePopover::None
+        } else {
+            next
+        };
+    }
+
+    pub(crate) fn open_popover(&mut self, next: ActivePopover) {
+        self.credits_close = None;
+        self.popover = next;
+    }
+
+    #[must_use]
+    pub(crate) const fn is_model_menu_open(&self) -> bool {
+        matches!(self.popover, ActivePopover::ModelMenu { .. })
+    }
+
+    #[must_use]
+    pub(crate) const fn is_bg_tasks_open(&self) -> bool {
+        matches!(self.popover, ActivePopover::BgTasks)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_workspace_menu_open(&self) -> bool {
+        matches!(self.popover, ActivePopover::WorkspaceMenu)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_skill_menu_open(&self) -> bool {
+        matches!(self.popover, ActivePopover::SkillMenu)
     }
 
     pub(crate) fn cancel_task_target(
@@ -302,16 +356,14 @@ impl StudioPanel {
             &unassigned_title,
             self.board_generation,
         );
-        if let Some(open_sid) = self.flow_modal_session.as_deref()
+        if let Some(open_sid) = self.flow_modal.session.as_deref()
             && !self
                 .board_snapshot
                 .sessions
                 .iter()
                 .any(|group| group.session_id == open_sid)
         {
-            self.flow_modal_session = None;
-            self.flow_modal_branch = None;
-            self.flow_modal_override_ack = false;
+            self.flow_modal.close();
         }
         self.refresh_trace_cache();
         self.last_board_refresh = Some(std::time::Instant::now());
@@ -337,7 +389,7 @@ impl StudioPanel {
     /// Opens the Global Visual Board (`StudioSurface::Board`).
     pub fn open_board(&mut self, cx: &mut Context<'_, Self>) {
         self.board_project_filter = None;
-        self.flow_modal_session = None;
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.close_all_popovers();
         self.surface = StudioSurface::Board;
@@ -363,18 +415,16 @@ impl StudioPanel {
         branch_id: Option<String>,
         cx: &mut Context<'_, Self>,
     ) {
-        self.flow_modal_session = Some(session_id);
-        self.flow_modal_branch = branch_id;
-        self.flow_modal_tab = crate::overview::FlowModalTab::Action;
-        self.flow_modal_override_ack = false;
+        self.flow_modal.session = Some(session_id);
+        self.flow_modal.branch = branch_id;
+        self.flow_modal.tab = crate::overview::FlowModalTab::Action;
+        self.flow_modal.override_ack = false;
         cx.notify();
     }
 
     /// Closes the centered Flowchart Modal cleanly.
     pub fn close_flow_modal(&mut self, cx: &mut Context<'_, Self>) {
-        self.flow_modal_session = None;
-        self.flow_modal_branch = None;
-        self.flow_modal_override_ack = false;
+        self.flow_modal.close();
         self.refresh_trace_cache();
         cx.notify();
     }
@@ -382,7 +432,7 @@ impl StudioPanel {
     /// Whether the centered Flowchart Modal is currently visible.
     #[must_use]
     pub const fn has_flow_modal(&self) -> bool {
-        self.flow_modal_session.is_some()
+        self.flow_modal.is_open()
     }
 
     /// Jumps straight into the Flowchart Modal for the first session waiting on

@@ -4,19 +4,20 @@
 //! - `overview/mod.rs`: KPI strip, filter bar, and session-layered board cards.
 //! - `overview/flow_modal.rs`: centered top-level Flowchart Modal & branch actions.
 //! - `overview/trace_panel.rs`: shared redacted Trace panel, contract progress
-//!   card, `ReceiptState` visuals, and compact `status_pill`.
+//!   card, and `ReceiptState` visuals.
 
 mod flow_modal;
 mod trace_panel;
 
 use flowy_ui as theme;
 use flowy_ui::charts::{DonutSegment, donut_chart};
+use flowy_ui::status_pill;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, prelude::*, px};
 
 use crate::panel::StudioPanel;
 use crate::ports::{BranchPhase, DeliverableFormat, SessionBoardGroup};
 
-pub use trace_panel::{TraceFilter, status_pill};
+pub use trace_panel::TraceFilter;
 
 /// Top-level session filter on the Global Visual Board.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -417,14 +418,20 @@ impl StudioPanel {
         for (idx, group) in
             self.board_snapshot.sessions.iter().take(8).enumerate()
         {
+            let has_deliverables = group
+                .branches
+                .iter()
+                .any(|b| matches!(b.phase, BranchPhase::Delivered { .. }));
             let bar_h =
                 (group.branches.len() as f32).mul_add(4.0, 8.0).min(22.0);
             let color = if group.has_blocker {
                 self.theme.status_attention()
             } else if group.is_running {
                 self.theme.status_active()
+            } else if has_deliverables {
+                self.theme.status_verified().opacity(0.6)
             } else {
-                self.theme.status_verified().opacity(0.55)
+                self.theme.line()
             };
             let sid = group.session_id.clone();
             let spark_label = format!(
@@ -439,6 +446,8 @@ impl StudioPanel {
                     &self.theme,
                 )
                 .flex_1()
+                .min_w(px(10.))
+                .max_w(px(28.))
                 .h(px(bar_h))
                 .rounded_sm()
                 .bg(color)
@@ -663,7 +672,7 @@ impl StudioPanel {
             .child(pills)
             .child(
                 theme::Button::new("board-new-task", self.t("dock.new_task"))
-                    .variant(theme::ControlVariant::Secondary)
+                    .variant(theme::ControlVariant::Ghost)
                     .size(theme::ControlSize::Small)
                     .render(
                         &self.theme,
@@ -688,9 +697,19 @@ impl StudioPanel {
             .unwrap_or_else(|| self.t("studio.space_default_sub"));
 
         if !group.is_active {
+            let file_branches: Vec<_> = group
+                .branches
+                .iter()
+                .filter(|b| {
+                    b.deliverable_path.is_some()
+                        || !matches!(b.phase, BranchPhase::Idle)
+                })
+                .take(3)
+                .collect();
+            let has_deliverables = !file_branches.is_empty();
             let mut file_chips =
                 div().flex().flex_wrap().items_center().gap(px(6.));
-            for branch in group.branches.iter().take(3) {
+            for branch in file_branches {
                 let color = self.format_color(branch.format);
                 file_chips = file_chips.child(
                     div()
@@ -737,13 +756,13 @@ impl StudioPanel {
                     .flex()
                     .items_center()
                     .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .size(px(7.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(self.theme.status_verified()),
-                    )
+                    .child(div().size(px(7.)).flex_none().rounded_full().bg(
+                        if has_deliverables {
+                            self.theme.status_verified()
+                        } else {
+                            self.theme.muted().opacity(0.6)
+                        },
+                    ))
                     .child(
                         div()
                             .text_xs()
@@ -761,7 +780,7 @@ impl StudioPanel {
                         None,
                     )),
             )
-            .child(file_chips)
+            .when(has_deliverables, |row| row.child(file_chips))
             .child(
                 div()
                     .flex_none()

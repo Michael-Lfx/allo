@@ -235,33 +235,7 @@ impl FlowyApp {
             | "bg-tasks-popover" | "workspace-menu" | "skill-menu"
             | "env-status-popover" | "flow-modal-panel" | "flow-modal" => {
                 self.studio.update(cx, |panel, cx| {
-                    match scope {
-                        "model-list" => {
-                            panel.model_menu_open = false;
-                        }
-                        "model-info" => {
-                            panel.model_info_open = false;
-                        }
-                        "bg-tasks-popover" => {
-                            panel.bg_tasks_open = false;
-                        }
-                        "workspace-menu" => {
-                            panel.workspace_menu_open = false;
-                        }
-                        "skill-menu" => {
-                            panel.skill_menu_open = false;
-                        }
-                        "env-status-popover" => {
-                            panel.env_popover_open = false;
-                        }
-                        "flow-modal-panel" | "flow-modal" => {
-                            panel.close_flow_modal(cx);
-                        }
-                        _ => {
-                            panel.credits_hover = false;
-                        }
-                    }
-                    cx.notify();
+                    panel.dismiss_overlay(scope, cx);
                 });
             }
             "skill-unlock" => {
@@ -1241,10 +1215,8 @@ impl FlowyApp {
                             app.screen = Screen::Main;
                             app.refresh_models(cx);
                             app.refresh_credits(cx);
-                            let open = false;
                             app.studio.update(cx, |panel, cx| {
-                                panel.model_info_open = open;
-                                cx.notify();
+                                panel.dismiss_overlay("model-info", cx);
                             });
                         }
                         Err(AuthError::InvalidCode) => {
@@ -1819,24 +1791,7 @@ impl Render for FlowyApp {
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation =>
             {
-                let studio = self.studio.read(cx);
-                if studio.model_menu_open {
-                    Some("model-list")
-                } else if studio.model_info_open {
-                    Some("model-info")
-                } else if studio.workspace_menu_open {
-                    Some("workspace-menu")
-                } else if studio.skill_menu_open {
-                    Some("skill-menu")
-                } else if studio.env_popover_open {
-                    Some("env-status-popover")
-                } else if studio.bg_tasks_open {
-                    Some("bg-tasks-popover")
-                } else if studio.credits_hover {
-                    Some("credit-card")
-                } else {
-                    None
-                }
+                self.studio.read(cx).active_popup_scope()
             }
             settings::Picker::None => None,
         }

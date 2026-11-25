@@ -25,6 +25,23 @@ pub enum ComposerEvent {
     CloudNotReady,
 }
 
+/// Pushed read-only snapshot from `StudioPanel` so `ChatComposer` stays decoupled
+/// without positional boolean flags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComposerViewState {
+    pub model: Model,
+    pub model_menu_open: bool,
+    pub running: bool,
+    pub model_label: SharedString,
+    pub cloud_ready: bool,
+    pub workspace_label: SharedString,
+    pub workspace_bound: bool,
+    pub workspace_menu_open: bool,
+    pub semantic_verify_enabled: bool,
+    pub skill_label: Option<SharedString>,
+    pub skill_menu_open: bool,
+}
+
 pub struct ChatComposer {
     ui: theme::UiContext,
     theme: theme::ResolvedTheme,
@@ -87,52 +104,34 @@ impl ChatComposer {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "pushed snapshot fields avoid exposing StudioPanel to composer"
-    )]
     pub(crate) fn sync_state(
         &mut self,
-        model: Model,
-        menu_open: bool,
-        running: bool,
-        model_label: String,
-        cloud_ready: bool,
-        workspace_label: String,
-        workspace_bound: bool,
-        workspace_menu_open: bool,
-        semantic_verify_enabled: bool,
-        skill_label: Option<String>,
-        skill_menu_open: bool,
+        next: ComposerViewState,
         cx: &mut Context<'_, Self>,
     ) {
-        let model_label = SharedString::from(model_label);
-        let workspace_label = SharedString::from(workspace_label);
-        let skill_label = skill_label.map(SharedString::from);
-        if self.model != model
-            || self.model_menu_open != menu_open
-            || self.running != running
-            || self.model_label != model_label
-            || self.cloud_ready != cloud_ready
-            || self.workspace_label != workspace_label
-            || self.workspace_bound != workspace_bound
-            || self.workspace_menu_open != workspace_menu_open
-            || self.semantic_verify_enabled != semantic_verify_enabled
-            || self.skill_label != skill_label
-            || self.skill_menu_open != skill_menu_open
+        if self.model != next.model
+            || self.model_menu_open != next.model_menu_open
+            || self.running != next.running
+            || self.model_label != next.model_label
+            || self.cloud_ready != next.cloud_ready
+            || self.workspace_label != next.workspace_label
+            || self.workspace_bound != next.workspace_bound
+            || self.workspace_menu_open != next.workspace_menu_open
+            || self.semantic_verify_enabled != next.semantic_verify_enabled
+            || self.skill_label != next.skill_label
+            || self.skill_menu_open != next.skill_menu_open
         {
-            self.model = model;
-            self.model_menu_open = menu_open;
-            self.running = running;
-            self.model_label = model_label;
-            self.cloud_ready = cloud_ready;
-            self.workspace_label = workspace_label;
-            self.workspace_bound = workspace_bound;
-            self.workspace_menu_open = workspace_menu_open;
-            self.semantic_verify_enabled = semantic_verify_enabled;
-            self.skill_label = skill_label;
-            self.skill_menu_open = skill_menu_open;
+            self.model = next.model;
+            self.model_menu_open = next.model_menu_open;
+            self.running = next.running;
+            self.model_label = next.model_label;
+            self.cloud_ready = next.cloud_ready;
+            self.workspace_label = next.workspace_label;
+            self.workspace_bound = next.workspace_bound;
+            self.workspace_menu_open = next.workspace_menu_open;
+            self.semantic_verify_enabled = next.semantic_verify_enabled;
+            self.skill_label = next.skill_label;
+            self.skill_menu_open = next.skill_menu_open;
             cx.notify();
         }
     }
@@ -187,8 +186,8 @@ impl ChatComposer {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .max_w(px(760.))
-                    .rounded(px(20.))
+                    .max_w(px(crate::STAGE_MAX_W))
+                    .rounded(self.theme.modal_radius())
                     .border_1()
                     .border_color(self.theme.line())
                     .bg(self.theme.card())

@@ -2282,7 +2282,7 @@ impl Render for ChatFeed {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .max_w(px(760.))
+                                    .max_w(px(crate::STAGE_MAX_W))
                                     .px(feed.theme.space(32.))
                                     .py(feed.theme.space(4.))
                                     .child(feed.history_line(index, cx)),

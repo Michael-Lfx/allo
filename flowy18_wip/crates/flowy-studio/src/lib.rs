@@ -29,3 +29,6 @@ pub use ports::{SkillChip, WorkBoardSnapshot};
 pub use projects::Project;
 
 pub use credits::{CreditsViewState, grouped as grouped_credits};
+
+/// Shared maximum stage width for the Home hero, composer, starters, and chat stream.
+pub(crate) const STAGE_MAX_W: f32 = 760.;

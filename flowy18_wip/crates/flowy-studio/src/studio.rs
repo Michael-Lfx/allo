@@ -1,18 +1,9 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
 use flowy_ui as theme;
 use gpui::{Context, FontWeight, SharedString, Window, div, prelude::*, px};
 
-/// Last few characters of a receipt id, by **character**, never by byte.
-///
-/// `String::len()` counts bytes and `&id[i..]` panics when `i` lands inside a
-/// multi-byte character. Ids come from a human-readable journal on disk, so a
-/// hand-edited one must not be able to take the window down.
-fn short_receipt_id(id: &str) -> String {
-    let count = id.chars().count();
-    id.chars().skip(count.saturating_sub(8)).collect()
-}
+use crate::panel::ActivePopover;
 
 impl crate::panel::StudioPanel {
     /// Where a queued receipt belongs, in the user's words.
@@ -27,8 +18,10 @@ impl crate::panel::StudioPanel {
             {
                 self.t("chat.pending_here")
             }
-            Some(hint) => self
-                .tf("chat.pending_other", &[("id", &short_receipt_id(hint))]),
+            Some(hint) => self.tf(
+                "chat.pending_other",
+                &[("id", &crate::ports::short_id(hint))],
+            ),
         }
     }
 
@@ -89,87 +82,88 @@ impl crate::panel::StudioPanel {
                     row.child(self.right_sheet_drawer(cx))
                 }),
         );
-        if self.model_info_open && !self.model_menu_open && chrome {
-            column = column.child(theme::popover(
-                "model-info",
-                "model-menu-trigger",
-                self.model_info(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.model_menu_open && chrome {
-            column = column.child(theme::popover(
-                "model-list",
-                self.model_menu_anchor,
-                self.model_menu(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.workspace_menu_open && chrome {
-            column = column.child(theme::popover_above(
-                "workspace-menu",
-                "composer-workspace-trigger",
-                self.workspace_menu(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.skill_menu_open && chrome {
-            column = column.child(theme::popover_above(
-                "skill-menu",
-                "composer-skill-trigger",
-                self.skill_menu(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.env_popover_open && chrome {
-            column = column.child(theme::popover(
-                "env-status-popover",
-                "env-status-trigger",
-                self.env_status_popover(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.bg_tasks_open && chrome {
-            column = column.child(theme::popover_above(
-                "bg-tasks-popover",
-                "bg-tasks-trigger",
-                self.bg_tasks_popover(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
-        }
-        if self.credits_hover
-            && !self.model_info_open
-            && !self.model_menu_open
-            && !self.env_popover_open
-            && chrome
-        {
-            column = column.child(theme::popover(
-                "credit-card",
-                "credit-pill-trigger",
-                self.credit_card(cx),
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
+        if chrome {
+            let rtl = self.i18n.locale().is_rtl();
+            match self.popover {
+                ActivePopover::None => {}
+                ActivePopover::ModelInfo => {
+                    column = column.child(theme::popover(
+                        "model-info",
+                        "model-menu-trigger",
+                        self.model_info(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::ModelMenu { anchor } => {
+                    column = column.child(theme::popover(
+                        "model-list",
+                        anchor,
+                        self.model_menu(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::WorkspaceMenu => {
+                    column = column.child(theme::popover_above(
+                        "workspace-menu",
+                        "composer-workspace-trigger",
+                        self.workspace_menu(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::SkillMenu => {
+                    column = column.child(theme::popover_above(
+                        "skill-menu",
+                        "composer-skill-trigger",
+                        self.skill_menu(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::EnvStatus => {
+                    column = column.child(theme::popover(
+                        "env-status-popover",
+                        "env-status-trigger",
+                        self.env_status_popover(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::BgTasks => {
+                    column = column.child(theme::popover_above(
+                        "bg-tasks-popover",
+                        "bg-tasks-trigger",
+                        self.bg_tasks_popover(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+                ActivePopover::Credits => {
+                    column = column.child(theme::popover(
+                        "credit-card",
+                        "credit-pill-trigger",
+                        self.credit_card(cx),
+                        &self.ui,
+                        window,
+                        cx,
+                        rtl,
+                    ));
+                }
+            }
         }
         column
     }
@@ -267,17 +261,12 @@ impl crate::panel::StudioPanel {
                             .whitespace_nowrap()
                             .child(status_text),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .px(self.theme.space(6.))
-                            .py(px(1.))
-                            .rounded_md()
-                            .bg(self.theme.status_active_bg())
-                            .text_xs()
-                            .text_color(self.theme.status_active())
-                            .child(self.t("chat.bg_task_running")),
-                    ),
+                    .child(theme::status_pill(
+                        self.theme.status_active_bg(),
+                        self.theme.status_active(),
+                        self.t("chat.bg_task_running"),
+                        None,
+                    )),
             );
         }
 
@@ -298,7 +287,7 @@ impl crate::panel::StudioPanel {
                 .filter(|title| !title.trim().is_empty())
                 .map(str::to_owned)
                 .or_else(|| preview.clone())
-                .unwrap_or_else(|| short_receipt_id(&session_id));
+                .unwrap_or_else(|| crate::ports::short_id(&session_id));
             let subtitle =
                 preview.filter(|text| text.as_str() != title.as_str());
             let inspect_title = title.clone();
@@ -354,17 +343,12 @@ impl crate::panel::StudioPanel {
                             )
                         }),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(6.))
-                        .py(px(1.))
-                        .rounded_md()
-                        .bg(self.theme.status_active_bg())
-                        .text_xs()
-                        .text_color(self.theme.status_active())
-                        .child(self.t("chat.bg_task_running")),
-                )
+                .child(theme::status_pill(
+                    self.theme.status_active_bg(),
+                    self.theme.status_active(),
+                    self.t("chat.bg_task_running"),
+                    None,
+                ))
                 .child(
                     theme::icons::chevron_right()
                         .size(px(12.))
@@ -388,11 +372,12 @@ impl crate::panel::StudioPanel {
         for (index, (receipt, state)) in
             visible_receipts.into_iter().enumerate()
         {
-            let preview: String = receipt.text.chars().take(40).collect();
+            let safe_text = crate::ports::redact_trace_text(&receipt.text);
+            let preview: String = safe_text.chars().take(40).collect();
             let owner = self.receipt_owner(&receipt);
             let receipt_tag = self.tf(
                 "chat.pending_receipt",
-                &[("id", &short_receipt_id(&receipt.id))],
+                &[("id", &crate::ports::short_id(&receipt.id))],
             );
             let label =
                 format!("{receipt_tag} \u{00b7} {owner} \u{00b7} {preview}");
@@ -447,17 +432,12 @@ impl crate::panel::StudioPanel {
                                 .child(meta),
                         ),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(6.))
-                        .py(px(1.))
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .text_xs()
-                        .text_color(state_fg)
-                        .child(state_label),
-                )
+                .child(theme::status_pill(
+                    self.theme.soft(),
+                    state_fg,
+                    state_label,
+                    None,
+                ))
                 .child(
                     theme::icons::chevron_right()
                         .size(px(12.))
@@ -566,7 +546,7 @@ impl crate::panel::StudioPanel {
             .items_center()
             .gap(self.theme.space(4.))
             .child(self.model_label())
-            .child(if self.model_menu_open {
+            .child(if self.is_model_menu_open() {
                 theme::icons::chevron_up()
             } else {
                 theme::icons::chevron_down()
@@ -671,7 +651,7 @@ impl crate::panel::StudioPanel {
                             return;
                         }
                         cx.emit(crate::panel::StudioEvent::TierSelected(tier));
-                        panel.model_menu_open = false;
+                        panel.close_all_popovers();
                         cx.notify();
                     })),
             );
@@ -699,7 +679,7 @@ impl crate::panel::StudioPanel {
     fn dismiss_model_info(&mut self, cx: &mut Context<'_, Self>) {
         self.model_info_version = env!("CARGO_PKG_VERSION").to_string();
         self.emit_model(cx);
-        self.model_info_open = false;
+        self.close_all_popovers();
         cx.notify();
     }
 
@@ -912,10 +892,9 @@ impl crate::panel::StudioPanel {
                         .child(self.model_button_label())
                         .on_click(cx.listener(
                             |app, _event, _window, cx| {
-                                app.model_menu_open = !app.model_menu_open
-                                    || app.model_menu_anchor
-                                        != "model-menu-trigger";
-                                app.model_menu_anchor = "model-menu-trigger";
+                                app.toggle_popover(ActivePopover::ModelMenu {
+                                    anchor: "model-menu-trigger",
+                                });
                                 cx.notify();
                             },
                         )),
@@ -1049,11 +1028,10 @@ impl crate::panel::StudioPanel {
                 // `Action::Expand`, so keeping the plain button role matches
                 // `model-menu-trigger` and stays clickable via Windows UIA.
                 .on_click(cx.listener(|panel, _, _, cx| {
-                    let opening = !panel.env_popover_open;
-                    panel.close_all_popovers();
+                    let opening = panel.popover != ActivePopover::EnvStatus;
+                    panel.toggle_popover(ActivePopover::EnvStatus);
                     if opening {
                         panel.refresh_local_env();
-                        panel.env_popover_open = true;
                     }
                     cx.notify();
                 }))
@@ -1067,22 +1045,25 @@ impl crate::panel::StudioPanel {
     fn set_credit_hover(&mut self, hovered: bool, cx: &mut Context<'_, Self>) {
         if hovered {
             self.credits_close = None;
-            if !self.credits_hover {
-                self.credits_hover = true;
+            // Hovering the credits pill opens the summary only when no other
+            // click-triggered popover is open, so grazing the top bar never
+            // dismisses an active Model or Env popover.
+            if self.popover == ActivePopover::None {
+                self.popover = ActivePopover::Credits;
                 cx.notify();
             }
             return;
         }
-        if !self.credits_hover {
+        if self.popover != ActivePopover::Credits {
             return;
         }
         self.credits_close = Some(cx.spawn(async move |weak, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(150))
-                .await;
+            cx.background_executor().timer(crate::motion::FAST).await;
             let _ = weak.update(cx, |app, cx| {
-                app.credits_hover = false;
-                cx.notify();
+                if app.popover == ActivePopover::Credits {
+                    app.popover = ActivePopover::None;
+                    cx.notify();
+                }
             });
         }));
     }
@@ -1104,7 +1085,7 @@ impl crate::panel::StudioPanel {
             .cursor_pointer()
             .hover(|pill| pill.bg(self.theme.line()))
             .on_click(cx.listener(|app, _, _, cx| {
-                app.credits_hover = !app.credits_hover;
+                app.toggle_popover(ActivePopover::Credits);
                 cx.notify();
             }))
             .on_hover(cx.listener(|app, hovered: &bool, _window, cx| {
@@ -1251,30 +1232,5 @@ const fn tier_key(tier: flowy_agent::Model) -> &'static str {
         flowy_agent::Model::Standard => "standard",
         flowy_agent::Model::Lite => "lite",
         flowy_agent::Model::Flex => "flex",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn short_receipt_id_never_splits_a_character() {
-        // The generated ids are ASCII, so the ordinary case just trims.
-        assert_eq!(short_receipt_id("accepted-1a208c0bc80-0"), "c0bc80-0");
-        assert_eq!(short_receipt_id("short"), "short");
-        assert_eq!(short_receipt_id(""), "");
-
-        // These are the ones that used to panic. `String::len()` counts bytes,
-        // so `&id[len - 8..]` landed inside a character and took the window
-        // down. The journal is a human-readable file on disk, so a hand-edited
-        // id is enough to reach this.
-        assert_eq!(short_receipt_id("中文中文"), "中文中文");
-        // Ten characters, so the last eight survive intact.
-        assert_eq!(
-            short_receipt_id("排队中排队中中文测试"),
-            "中排队中中文测试"
-        );
-        assert_eq!(short_receipt_id("短"), "短");
     }
 }

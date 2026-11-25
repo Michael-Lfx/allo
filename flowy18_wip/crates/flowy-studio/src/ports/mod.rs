@@ -45,7 +45,10 @@ pub fn display_path_str(raw: &str) -> String {
     }
 }
 
-pub(super) fn short_id(id: &str) -> String {
+/// Last few characters of an id, by **character** (never by byte) so
+/// human-edited UTF-8 journal ids cannot panic the UI.
+#[must_use]
+pub(crate) fn short_id(id: &str) -> String {
     let count = id.chars().count();
     id.chars().skip(count.saturating_sub(8)).collect()
 }
@@ -77,5 +80,15 @@ mod tests {
             r"\\fileserver\share\report.pptx"
         );
         assert_eq!(display_path_str("/tmp/demo.docx"), "/tmp/demo.docx");
+    }
+
+    #[test]
+    fn short_id_never_splits_a_character() {
+        assert_eq!(short_id("accepted-1a208c0bc80-0"), "c0bc80-0");
+        assert_eq!(short_id("short"), "short");
+        assert_eq!(short_id(""), "");
+        assert_eq!(short_id("中文中文"), "中文中文");
+        assert_eq!(short_id("排队中排队中中文测试"), "中排队中中文测试");
+        assert_eq!(short_id("短"), "短");
     }
 }

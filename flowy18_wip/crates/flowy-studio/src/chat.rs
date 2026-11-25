@@ -21,7 +21,7 @@ impl crate::panel::StudioPanel {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .max_w(px(760.))
+                            .max_w(px(crate::STAGE_MAX_W))
                             .px(self.theme.space(32.))
                             .child(self.rating_row(cx)),
                     ),
@@ -43,7 +43,7 @@ impl crate::panel::StudioPanel {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .max_w(px(760.))
+                    .max_w(px(crate::STAGE_MAX_W))
                     .min_h(px(28.))
                     .px(self.theme.space(32.))
                     .flex()
@@ -95,7 +95,8 @@ impl crate::panel::StudioPanel {
                                     label,
                                     &self.theme,
                                 )
-                                .aria_expanded(self.bg_tasks_open)
+                                // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+                                // `Action::Expand`, so keeping a plain button stays clickable via Windows UIA.
                                 .rounded_full()
                                 .border_1()
                                 .border_color(self.theme.line())
@@ -114,7 +115,7 @@ impl crate::panel::StudioPanel {
                                     div()
                                         .flex_none()
                                         .text_color(self.theme.muted())
-                                        .child(if self.bg_tasks_open {
+                                        .child(if self.is_bg_tasks_open() {
                                             theme::icons::chevron_up()
                                                 .size(px(12.))
                                         } else {

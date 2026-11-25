@@ -120,6 +120,63 @@ const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
         )
 }
 
+/// Mutually exclusive transient popover open on [`StudioPanel`].
+///
+/// Encoding popovers as a single enum guarantees two cockpit menus can never
+/// overlap visually or drift out of sync with `OverlayHost`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActivePopover {
+    #[default]
+    None,
+    ModelInfo,
+    ModelMenu {
+        anchor: &'static str,
+    },
+    BgTasks,
+    EnvStatus,
+    WorkspaceMenu,
+    SkillMenu,
+    Credits,
+}
+
+impl ActivePopover {
+    #[must_use]
+    pub const fn scope(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ModelMenu { .. } => Some("model-list"),
+            Self::ModelInfo => Some("model-info"),
+            Self::WorkspaceMenu => Some("workspace-menu"),
+            Self::SkillMenu => Some("skill-menu"),
+            Self::EnvStatus => Some("env-status-popover"),
+            Self::BgTasks => Some("bg-tasks-popover"),
+            Self::Credits => Some("credit-card"),
+        }
+    }
+}
+
+/// Self-contained UI state for the centered Flowchart Modal.
+#[derive(Clone, Debug, Default)]
+pub struct FlowModalState {
+    pub session: Option<String>,
+    pub branch: Option<String>,
+    pub tab: crate::overview::FlowModalTab,
+    pub override_ack: bool,
+}
+
+impl FlowModalState {
+    pub fn close(&mut self) {
+        self.session = None;
+        self.branch = None;
+        self.override_ack = false;
+    }
+
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        self.session.is_some()
+    }
+}
+
 pub struct StudioPanel {
     pub ui: UiContext,
     pub theme: ResolvedTheme,
@@ -165,22 +222,13 @@ pub struct StudioPanel {
     pub document: DocumentSession,
     pub agent: AgentHandle,
     pub credits: crate::CreditsViewState,
-    pub credits_hover: bool,
-    pub credits_close: Option<Task<()>>,
-    pub model_info_open: bool,
-    pub model_menu_open: bool,
-    pub bg_tasks_open: bool,
-    pub env_popover_open: bool,
-    pub workspace_menu_open: bool,
-    pub skill_menu_open: bool,
+    pub(crate) popover: ActivePopover,
+    pub(crate) credits_close: Option<Task<()>>,
     pub(crate) board_snapshot: crate::ports::WorkBoardSnapshot,
     pub(crate) local_env: crate::ports::LocalEnvSnapshot,
     pub(crate) board_filter: crate::overview::BoardFilter,
     pub(crate) board_project_filter: Option<String>,
-    pub(crate) flow_modal_session: Option<String>,
-    pub(crate) flow_modal_branch: Option<String>,
-    pub(crate) flow_modal_tab: crate::overview::FlowModalTab,
-    pub(crate) flow_modal_override_ack: bool,
+    pub(crate) flow_modal: FlowModalState,
     pub(crate) trace_filter: crate::overview::TraceFilter,
     /// Dirty-cached redacted traces for the currently open Trace tab so
     /// `Render::render` never touches kernel journal files on disk.
@@ -193,7 +241,6 @@ pub struct StudioPanel {
     pub(crate) board_generation: u64,
     pub(crate) last_board_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
-    pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
     pub model: Model,
     pub catalog: ProviderCatalog,
@@ -344,23 +391,7 @@ impl StudioPanel {
             |panel, _, event: &flowy_ui::OverlayEvent, cx| {
                 let flowy_ui::OverlayEvent::CloseRequested { scope, .. } =
                     event;
-                match scope.as_ref() {
-                    "model-list" => panel.model_menu_open = false,
-                    "model-info" => panel.model_info_open = false,
-                    "credit-card" => panel.credits_hover = false,
-                    "bg-tasks-popover" => panel.bg_tasks_open = false,
-                    "env-status-popover" => panel.env_popover_open = false,
-                    "workspace-menu" => panel.workspace_menu_open = false,
-                    "skill-menu" => panel.skill_menu_open = false,
-                    "flow-modal" | "flow-modal-panel" => {
-                        panel.flow_modal_session = None;
-                        panel.flow_modal_branch = None;
-                        panel.flow_modal_override_ack = false;
-                        panel.refresh_trace_cache();
-                    }
-                    _ => return,
-                }
-                cx.notify();
+                panel.dismiss_overlay(scope.as_ref(), cx);
             },
         );
         let feed = cx.new(|cx| {
@@ -441,32 +472,27 @@ impl StudioPanel {
                     }
                     ComposerEvent::Stop => panel.stop_turn(cx),
                     ComposerEvent::ModelMenu(anchor) => {
-                        let opening = !panel.model_menu_open
-                            || panel.model_menu_anchor != *anchor;
-                        panel.close_all_popovers();
-                        panel.model_menu_anchor = anchor;
-                        panel.model_menu_open = opening;
+                        panel.toggle_popover(ActivePopover::ModelMenu {
+                            anchor,
+                        });
                         cx.notify();
                     }
                     ComposerEvent::WorkspaceMenu => {
-                        let opening = !panel.workspace_menu_open;
-                        panel.close_all_popovers();
-                        panel.workspace_menu_open = opening;
+                        panel.toggle_popover(ActivePopover::WorkspaceMenu);
                         cx.notify();
                     }
                     ComposerEvent::VerifyToggle => {
+                        panel.toggle_popover(ActivePopover::None);
                         panel.toggle_semantic_verify(cx);
                     }
                     ComposerEvent::SkillMenu => {
-                        let opening = !panel.skill_menu_open;
-                        panel.close_all_popovers();
-                        panel.skill_menu_open = opening;
+                        panel.toggle_popover(ActivePopover::SkillMenu);
                         cx.notify();
                     }
                     ComposerEvent::CloudNotReady => {
-                        panel.close_all_popovers();
-                        panel.model_menu_open = true;
-                        panel.model_menu_anchor = "composer-model-trigger";
+                        panel.open_popover(ActivePopover::ModelMenu {
+                            anchor: "composer-model-trigger",
+                        });
                         panel.emit_notice(
                             Some("notice.model_setup_required"),
                             cx,
@@ -530,22 +556,17 @@ impl StudioPanel {
             document: DocumentSession::new(product),
             agent,
             credits: crate::CreditsViewState::Unavailable,
-            credits_hover: false,
+            popover: if model_info_open {
+                ActivePopover::ModelInfo
+            } else {
+                ActivePopover::None
+            },
             credits_close: None,
-            model_info_open,
-            model_menu_open: false,
-            bg_tasks_open: false,
-            env_popover_open: false,
-            workspace_menu_open: false,
-            skill_menu_open: false,
             board_snapshot: crate::ports::WorkBoardSnapshot::default(),
             local_env: crate::ports::LocalEnvSnapshot::default(),
             board_filter: crate::overview::BoardFilter::All,
             board_project_filter: None,
-            flow_modal_session: None,
-            flow_modal_branch: None,
-            flow_modal_tab: crate::overview::FlowModalTab::Action,
-            flow_modal_override_ack: false,
+            flow_modal: FlowModalState::default(),
             trace_filter: crate::overview::TraceFilter::All,
             cached_trace: None,
             drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
@@ -555,7 +576,6 @@ impl StudioPanel {
             board_generation: 0,
             last_board_refresh: None,
             tiers: Vec::new(),
-            model_menu_anchor: "model-menu-trigger",
             i18n,
             model,
             catalog: ProviderCatalog::new(),
@@ -960,9 +980,7 @@ impl StudioPanel {
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.close_all_popovers();
-        self.flow_modal_session = None;
-        self.flow_modal_branch = None;
-        self.flow_modal_override_ack = false;
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -982,9 +1000,7 @@ impl StudioPanel {
             Ok(()) => {
                 self.invalidate_submission(cx);
                 self.close_all_popovers();
-                self.flow_modal_session = None;
-                self.flow_modal_branch = None;
-                self.flow_modal_override_ack = false;
+                self.flow_modal.close();
                 self.clear_right_sheet();
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
@@ -1006,9 +1022,7 @@ impl StudioPanel {
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.close_all_popovers();
-        self.flow_modal_session = None;
-        self.flow_modal_branch = None;
-        self.flow_modal_override_ack = false;
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -1024,9 +1038,7 @@ impl StudioPanel {
 
     /// Toggles the floating background-tasks popover anchored above the composer.
     pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
-        let opening = !self.bg_tasks_open;
-        self.close_all_popovers();
-        self.bg_tasks_open = opening;
+        self.toggle_popover(ActivePopover::BgTasks);
         cx.notify();
     }
 
@@ -1119,7 +1131,7 @@ impl StudioPanel {
     /// Jumps to the Chief Assistant's active default-workspace thread, or lands
     /// calmly on the Home stage ready for a fresh instruction.
     pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
         if self.agent.active_session_id().is_some()
             && self.active_project_id.is_none()
             && self.agent.has_messages()
@@ -1398,7 +1410,7 @@ impl StudioPanel {
                         .collect();
                     self.set_artifacts(items, cx);
                 }
-                self.flow_modal_override_ack = false;
+                self.flow_modal.override_ack = false;
                 self.refresh_chat(cx);
                 self.refresh_board_snapshot();
                 self.emit_notice(None, cx);
@@ -1864,7 +1876,7 @@ impl StudioPanel {
         self.right_drawer_open = true;
         self.deliverables = Some(files);
         self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
         cx.notify();
     }
 
@@ -1879,7 +1891,7 @@ impl StudioPanel {
         self.right_drawer_open = true;
         self.inspected_work = Some(work);
         self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
         cx.notify();
     }
 
@@ -1899,7 +1911,7 @@ impl StudioPanel {
         } else {
             self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
         }
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
         cx.notify();
     }
 
@@ -2129,22 +2141,22 @@ impl Render for StudioPanel {
         let skill_label = self
             .selected_skill
             .as_ref()
-            .map(|skill| skill.title.clone());
+            .map(|skill| gpui::SharedString::from(skill.title.clone()));
+        let composer_state = crate::composer::ComposerViewState {
+            model: self.model,
+            model_menu_open: self.is_model_menu_open(),
+            running: self.submission_pending || self.status.is_busy(),
+            model_label: gpui::SharedString::from(model_label),
+            cloud_ready: can_submit,
+            workspace_label: gpui::SharedString::from(workspace_label),
+            workspace_bound,
+            workspace_menu_open: self.is_workspace_menu_open(),
+            semantic_verify_enabled,
+            skill_label,
+            skill_menu_open: self.is_skill_menu_open(),
+        };
         self.composer.update(cx, |composer, cx| {
-            composer.sync_state(
-                self.model,
-                self.model_menu_open,
-                self.submission_pending || self.status.is_busy(),
-                model_label,
-                can_submit,
-                workspace_label,
-                workspace_bound,
-                self.workspace_menu_open,
-                semantic_verify_enabled,
-                skill_label,
-                self.skill_menu_open,
-                cx,
-            );
+            composer.sync_state(composer_state, cx);
         });
         self.workspace(window, cx)
     }
@@ -3633,6 +3645,52 @@ mod tests {
             panel.catalog_loading = false;
             panel.cloud_ready = true;
             assert!(panel.can_submit_prompt());
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn active_popover_enforces_mutual_exclusion_and_overlay_dismissal(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "popover-seam");
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.active_popup_scope(), None);
+
+            panel.toggle_popover(ActivePopover::EnvStatus);
+            assert_eq!(panel.active_popup_scope(), Some("env-status-popover"));
+
+            // Opening the model menu automatically replaces EnvStatus (never two popovers).
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "model-menu-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), Some("model-list"));
+            assert!(panel.is_model_menu_open());
+
+            // Switching anchor keeps ModelMenu open on the new anchor.
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "composer-model-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), Some("model-list"));
+
+            // Same anchor toggles closed.
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "composer-model-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), None);
+
+            // Overlay dismissal only closes matching scope and also handles Flow Modal.
+            panel.toggle_popover(ActivePopover::BgTasks);
+            assert!(!panel.dismiss_overlay("model-list", cx));
+            assert_eq!(panel.active_popup_scope(), Some("bg-tasks-popover"));
+            assert!(panel.dismiss_overlay("bg-tasks-popover", cx));
+            assert_eq!(panel.active_popup_scope(), None);
+
+            panel.open_flow_modal("s-demo".into(), None, cx);
+            assert!(panel.has_flow_modal());
+            assert!(panel.dismiss_overlay("flow-modal-panel", cx));
+            assert!(!panel.has_flow_modal());
         });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);

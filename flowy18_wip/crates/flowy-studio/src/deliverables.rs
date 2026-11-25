@@ -13,8 +13,8 @@ use gpui::{
     ImageFormat, IntoElement, SharedString, div, img, prelude::*, px,
 };
 
-use crate::overview::status_pill;
 use crate::panel::StudioPanel;
+use flowy_ui::status_pill;
 
 /// Active tab inside the unified right-hand sheet drawer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -666,7 +666,9 @@ impl StudioPanel {
                             .text_xs()
                             .text_color(self.theme.ink())
                             .whitespace_normal()
-                            .child(receipt.text.clone()),
+                            .child(crate::ports::redact_trace_text(
+                                &receipt.text,
+                            )),
                     )
                     .when_some(work_progress, |card, progress| {
                         card.child(self.contract_progress_block(progress))
