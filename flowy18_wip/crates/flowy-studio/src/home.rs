@@ -120,6 +120,25 @@ impl crate::panel::StudioPanel {
         let count = active_work.to_string();
         let count_label =
             self.tf("chat.bg_tasks_pill", &[("count", count.as_str())]);
+        let animate_pulse =
+            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
+        let dot = div()
+            .size(px(6.))
+            .flex_shrink_0()
+            .rounded_full()
+            .bg(self.theme.status_active());
+        let dot_el = if animate_pulse {
+            dot.with_animation(
+                "home-desk-resume-dot",
+                Animation::new(crate::motion::PULSE)
+                    .repeat()
+                    .with_easing(crate::motion::pulsing_sine()),
+                |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
+            )
+            .into_any_element()
+        } else {
+            dot.into_any_element()
+        };
         theme::anchor_trigger(
             theme::interactive(
                 "home-desk-resume",
@@ -143,20 +162,7 @@ impl crate::panel::StudioPanel {
             .on_click(cx.listener(|panel, _event, _window, cx| {
                 panel.toggle_bg_tasks(cx);
             }))
-            .child(
-                div()
-                    .size(px(6.))
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .bg(self.theme.status_active())
-                    .with_animation(
-                        "home-desk-resume-dot",
-                        Animation::new(crate::motion::PULSE)
-                            .repeat()
-                            .with_easing(crate::motion::pulsing_sine()),
-                        |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
-                    ),
-            )
+            .child(dot_el)
             .child(
                 div()
                     .text_size(self.theme.caption_size())
@@ -168,7 +174,7 @@ impl crate::panel::StudioPanel {
                     .px(self.theme.space(8.))
                     .py(px(1.))
                     .rounded_full()
-                    .bg(self.theme.soft())
+                    .bg(self.theme.status_active_bg())
                     .text_size(self.theme.caption_size())
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(self.theme.status_active())

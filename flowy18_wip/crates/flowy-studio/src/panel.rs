@@ -186,6 +186,8 @@ pub struct StudioPanel {
     pub(crate) session_opened_by_user: bool,
     /// Files the deliverables drawer lists; `None` keeps it closed.
     pub(crate) deliverables: Option<Vec<FileEntry>>,
+    /// Single background work or queued receipt inspected in the right sheet.
+    pub(crate) inspected_work: Option<crate::deliverables::InspectedWork>,
     /// Path being previewed inside the drawer.
     pub(crate) preview_file: Option<String>,
     /// Loaded once when the file is picked, so rendering never touches disk.
@@ -481,6 +483,7 @@ impl StudioPanel {
             starter_carousel: flowy_ui::CarouselState::new(),
             session_opened_by_user: false,
             deliverables: None,
+            inspected_work: None,
             preview_file: None,
             preview_body: None,
             drafts: std::collections::HashMap::new(),
@@ -787,6 +790,10 @@ impl StudioPanel {
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
+        self.deliverables = None;
+        self.inspected_work = None;
+        self.preview_file = None;
+        self.preview_body = None;
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
@@ -805,6 +812,10 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
+                self.deliverables = None;
+                self.inspected_work = None;
+                self.preview_file = None;
+                self.preview_body = None;
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
@@ -829,6 +840,10 @@ impl StudioPanel {
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
+        self.deliverables = None;
+        self.inspected_work = None;
+        self.preview_file = None;
+        self.preview_body = None;
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         self.submission = None;
@@ -1555,6 +1570,23 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.deliverables = Some(files);
+        self.inspected_work = None;
+        self.bg_tasks_open = false;
+        self.preview_file = None;
+        self.preview_body = None;
+        cx.notify();
+    }
+
+    /// Opens the right-hand inspector sheet for one running session or queued
+    /// receipt without interrupting the user's current conversation.
+    pub(crate) fn open_work_inspector(
+        &mut self,
+        work: crate::deliverables::InspectedWork,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.inspected_work = Some(work);
+        self.deliverables = None;
+        self.bg_tasks_open = false;
         self.preview_file = None;
         self.preview_body = None;
         cx.notify();
@@ -1563,7 +1595,7 @@ impl StudioPanel {
     /// Opens the drawer with the latest turn's files, or closes it if open.
     pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
         if self.deliverables.is_some() {
-            self.close_deliverables(cx);
+            self.close_right_sheet(cx);
             return;
         }
         let files = self.feed.read(cx).latest_deliverables();
@@ -1573,10 +1605,37 @@ impl StudioPanel {
         }
     }
 
-    pub(crate) fn close_deliverables(&mut self, cx: &mut Context<'_, Self>) {
+    /// Closes whichever right-hand sheet is open (deliverables or single-work
+    /// step inspector).
+    pub(crate) fn close_right_sheet(&mut self, cx: &mut Context<'_, Self>) {
         self.deliverables = None;
+        self.inspected_work = None;
         self.preview_file = None;
         self.preview_body = None;
+        cx.notify();
+    }
+
+    /// Number of deliverables available in the current session's latest turn.
+    pub(crate) fn deliverable_count(&self, cx: &Context<'_, Self>) -> usize {
+        self.feed
+            .read(cx)
+            .latest_deliverables()
+            .map_or(0, |files| files.len())
+    }
+
+    /// Requests a graceful stop for one specific background or active session.
+    pub(crate) fn stop_session_turn(
+        &self,
+        session_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let agent = self.agent.clone();
+        let target = session_id.to_owned();
+        cx.background_executor()
+            .spawn(async move {
+                agent.stop_if_active(Some(&target));
+            })
+            .detach();
         cx.notify();
     }
 

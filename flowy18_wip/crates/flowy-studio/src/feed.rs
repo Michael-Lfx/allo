@@ -25,6 +25,7 @@ pub struct ChatFeed {
     override_checked: HashSet<String>,
     list: ListState,
     expanded_rows: HashSet<u64>,
+    measured_heights: HashMap<u64, gpui::Entity<f32>>,
     history: ChatHistory,
     projection: Projection,
     expanded_turns: HashMap<String, HashSet<usize>>,
@@ -207,6 +208,7 @@ impl ChatFeed {
             states: HashMap::new(),
             list,
             expanded_rows: HashSet::new(),
+            measured_heights: HashMap::new(),
             history: ChatHistory::default(),
             projection: Projection::default(),
             expanded_turns: HashMap::new(),
@@ -294,7 +296,7 @@ impl ChatFeed {
         cx: &mut Context<'_, Self>,
     ) {
         let name = session.as_deref().unwrap_or_default();
-        let projection = Projection::build(
+        let projection = Projection::build_live(
             &self.history.rows,
             self.history.streaming,
             self.history.status == TurnStatus::Completed,
@@ -323,6 +325,26 @@ impl ChatFeed {
                     .filter(|row| {
                         projection.folds.get(row)
                             != self.projection.folds.get(row)
+                    })
+                    .copied(),
+            )
+            .chain(
+                self.projection
+                    .fold_meta
+                    .keys()
+                    .filter(|row| {
+                        projection.fold_meta.get(row)
+                            != self.projection.fold_meta.get(row)
+                    })
+                    .copied(),
+            )
+            .chain(
+                projection
+                    .fold_meta
+                    .keys()
+                    .filter(|row| {
+                        projection.fold_meta.get(row)
+                            != self.projection.fold_meta.get(row)
                     })
                     .copied(),
             )
@@ -474,6 +496,7 @@ impl ChatFeed {
                 if new_ids.get(offset) != Some(id) {
                     self.row_focus.remove(id);
                     self.expanded_rows.remove(id);
+                    self.measured_heights.remove(id);
                 }
             }
         }
@@ -493,11 +516,52 @@ impl ChatFeed {
 
     fn toggle_detail(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         if let Some(index) = self.row_ids.iter().position(|&row| row == id) {
-            if !self.expanded_rows.remove(&id) {
+            if self.expanded_rows.remove(&id) {
+                // Keep the measured height cached so re-opening immediately
+                // animates smoothly from 0 to its exact measured height.
+            } else {
                 self.expanded_rows.insert(id);
+                self.measured_heights
+                    .entry(id)
+                    .or_insert_with(|| cx.new(|_| 0.0));
             }
             self.list.remeasure_items(index..index + 1);
             cx.notify();
+        }
+    }
+
+    fn measured_height_for(
+        &self,
+        id: u64,
+        cx: &Context<'_, Self>,
+    ) -> (f32, Option<gpui::Entity<f32>>) {
+        self.measured_heights
+            .get(&id)
+            .map_or((0.0, None), |entity| {
+                (*entity.read(cx), Some(entity.clone()))
+            })
+    }
+
+    fn reveal_collapsible(
+        &self,
+        anim_id: (&'static str, u64),
+        row_id: u64,
+        content: gpui::Div,
+        cx: &Context<'_, Self>,
+    ) -> gpui::AnyElement {
+        let policy = self.theme.motion_policy();
+        let (measured, handle) = self.measured_height_for(row_id, cx);
+        if let Some(entity) = handle {
+            crate::motion::auto_height_reveal(
+                anim_id,
+                measured,
+                policy,
+                crate::motion::measure_height(content, entity),
+            )
+        } else {
+            crate::motion::auto_height_reveal(
+                anim_id, measured, policy, content,
+            )
         }
     }
 
@@ -550,59 +614,175 @@ impl ChatFeed {
     ) -> gpui::AnyElement {
         let line = &self.lines[index];
         let Some(fold) = self.projection.folds.get(&index).copied() else {
+            let is_nested_process = matches!(
+                line,
+                ChatLine::Reasoning { .. }
+                    | ChatLine::ToolCall { .. }
+                    | ChatLine::Tool { .. }
+                    | ChatLine::ToolResult {
+                        is_error: false,
+                        ..
+                    }
+            );
+            if is_nested_process {
+                return div()
+                    .w_full()
+                    .ml(px(8.))
+                    .pl(self.theme.space(12.))
+                    .border_l_1()
+                    .border_color(self.theme.line())
+                    .child(self.chat_line(index, line, cx))
+                    .into_any_element();
+            }
             return self.chat_line(index, line, cx).into_any_element();
         };
+        let row_id = self.row_ids[index];
+        let meta = self.projection.fold_meta.get(&index);
         let key = if fold.expanded {
             "history.hide_work"
         } else {
             "history.show_work"
         };
-        let title = self.t(key);
+        let accessible_title = self.t(key);
         let show = !fold.expanded;
+        let is_live = meta.is_some_and(|m| m.live);
+        let policy = self.theme.motion_policy();
+        let animate_pulse = crate::motion::travel_scale(policy) > 0.0;
+
+        let summary_text = meta.map_or_else(
+            || accessible_title.clone(),
+            |m| {
+                let count = m.step_count.max(1).to_string();
+                if m.live {
+                    self.tf("chat.steps_live_summary", &[("n", &count)])
+                } else {
+                    let base =
+                        self.tf("chat.steps_done_summary", &[("n", &count)]);
+                    if m.duration_secs > 0 {
+                        let dur = self.format_duration_secs(m.duration_secs);
+                        format!("{base} \u{00b7} {dur}")
+                    } else {
+                        base
+                    }
+                }
+            },
+        );
+        let active_glimpse = meta
+            .filter(|_| !fold.expanded)
+            .and_then(|m| m.active_step.clone());
+
+        let leading_indicator = if is_live {
+            let dot = div()
+                .size(px(6.))
+                .flex_none()
+                .rounded_full()
+                .bg(self.theme.status_active());
+            if animate_pulse {
+                dot.with_animation(
+                    ("turn-fold-live-dot", row_id),
+                    Animation::new(crate::motion::PULSE)
+                        .repeat()
+                        .with_easing(crate::motion::pulsing_sine()),
+                    |el, delta| el.opacity(0.55f32.mul_add(-delta, 1.0)),
+                )
+                .into_any_element()
+            } else {
+                dot.into_any_element()
+            }
+        } else {
+            theme::icons::check()
+                .size(px(12.))
+                .text_color(self.theme.status_verified())
+                .into_any_element()
+        };
+
         // A plain button keeps the standard invoke path (pointer, keyboard and
         // UIA click all land on the same handler); an expanded a11y state would
         // turn the node into a menu button whose invoke is never delivered.
-        let button = div()
-            .id(("turn-fold-row", self.row_ids[index]))
-            .debug_selector(|| "chat-turn-fold".to_owned())
-            .min_h(px(0.))
-            .text_xs()
-            .text_color(self.theme.muted())
-            .px(self.theme.space(4.))
-            .py(self.theme.space(4.))
-            .child(
-                theme::Button::new(("turn-fold", self.row_ids[index]), title)
-                    .variant(theme::ControlVariant::Ghost)
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener(move |feed, _, _, cx| {
-                            feed.set_turn_expanded(fold.key, show, cx);
-                        }),
-                    ),
-            );
+        let capsule = theme::interactive(
+            ("turn-fold", row_id),
+            accessible_title,
+            &self.theme,
+        )
+        .debug_selector(|| "chat-turn-fold".to_owned())
+        .max_w_full()
+        .px(self.theme.space(10.))
+        .py(px(5.))
+        .rounded_full()
+        .border_1()
+        .border_color(if is_live {
+            self.theme.status_active().opacity(0.35)
+        } else {
+            self.theme.line()
+        })
+        .bg(if is_live {
+            self.theme.status_active_bg()
+        } else {
+            self.theme.soft().opacity(0.55)
+        })
+        .flex()
+        .items_center()
+        .gap(self.theme.space(6.))
+        .cursor_pointer()
+        .hover(|style| style.bg(self.theme.soft()))
+        .child(leading_indicator)
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if is_live {
+                    self.theme.ink()
+                } else {
+                    self.theme.muted()
+                })
+                .child(summary_text),
+        )
+        .when_some(active_glimpse, |row, glimpse| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .text_xs()
+                    .text_color(self.theme.muted().opacity(0.8))
+                    .child(format!("\u{00b7} {glimpse}")),
+            )
+        })
+        .child(div().flex_none().text_color(self.theme.muted()).child(
+            if fold.expanded {
+                theme::icons::chevron_down().size(px(12.))
+            } else {
+                theme::icons::chevron_right().size(px(12.))
+            },
+        ))
+        .on_click(cx.listener(move |feed, _, _, cx| {
+            feed.set_turn_expanded(fold.key, show, cx);
+        }));
+
         div()
+            .w_full()
             .flex()
             .flex_col()
             .items_start()
-            .gap(self.theme.space(4.))
-            .child(button)
-            .when(fold.expanded, |row| {
-                row.child(
-                    div()
-                        .w_full()
-                        .child(self.chat_line(index, line, cx))
-                        .with_animation(
-                            ("turn-fold-reveal", self.row_ids[index]),
-                            Animation::new(crate::motion::AUTO_HEIGHT)
-                                .with_easing(crate::motion::out_quint()),
-                            |el, delta| {
-                                el.opacity(delta)
-                                    .relative()
-                                    .top(px(4. * (1.0 - delta)))
-                            },
-                        ),
-                )
+            .gap(self.theme.space(6.))
+            .child(capsule)
+            .when(fold.expanded, |col| {
+                let body = div()
+                    .w_full()
+                    .ml(px(8.))
+                    .pl(self.theme.space(12.))
+                    .border_l_1()
+                    .border_color(self.theme.line())
+                    .child(self.chat_line(index, line, cx));
+                col.child(crate::motion::auto_height_reveal(
+                    ("turn-fold-reveal", row_id),
+                    0.0,
+                    policy,
+                    body,
+                ))
             })
             .into_any_element()
     }
@@ -617,16 +797,21 @@ impl ChatFeed {
             ChatLine::User { text } => div()
                 .id(("chat-user", self.row_ids[index]))
                 .w_full()
+                .py(self.theme.space(4.))
                 .flex()
                 .justify_end()
                 .child(
                     div()
-                        .max_w(px(540.))
-                        .px(self.theme.space(12.))
-                        .py(self.theme.space(8.))
-                        .rounded_xl()
-                        .bg(self.theme.soft())
+                        .max_w(px(560.))
+                        .px(self.theme.space(16.))
+                        .py(self.theme.space(10.))
+                        .rounded(px(18.))
+                        .border_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.card())
+                        .shadow_xs()
                         .text_sm()
+                        .text_color(self.theme.ink())
                         .whitespace_normal()
                         .child(text.clone()),
                 )
@@ -640,7 +825,7 @@ impl ChatFeed {
                 div()
                     .id(("chat-assistant", self.row_ids[index]))
                     .w_full()
-                    .py(self.theme.space(4.))
+                    .py(self.theme.space(6.))
                     .flex()
                     .flex_col()
                     .gap(self.theme.space(6.))
@@ -649,10 +834,10 @@ impl ChatFeed {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(self.theme.space(6.))
+                                .gap(self.theme.space(8.))
                                 .child(
                                     div()
-                                        .size(px(18.))
+                                        .size(px(20.))
                                         .flex_none()
                                         .rounded_md()
                                         .bg(self.theme.assistant_badge_bg())
@@ -661,7 +846,7 @@ impl ChatFeed {
                                         .justify_center()
                                         .child(
                                             theme::icons::sparkles()
-                                                .size(px(10.))
+                                                .size(px(11.))
                                                 .text_color(
                                                     self.theme
                                                         .assistant_badge_fg(),
@@ -671,19 +856,28 @@ impl ChatFeed {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.muted())
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(self.theme.ink())
                                         .child(self.t("chat.router_name")),
                                 ),
                         )
                     })
-                    .child(div().w_full().text_sm().whitespace_normal().child(
-                        if self.projection.streaming == Some(index) {
-                            div().child(text.clone())
-                        } else {
-                            markdown::render(text, self.theme, &self.i18n)
-                        },
-                    ))
+                    .child(
+                        div()
+                            .w_full()
+                            .pl(px(28.))
+                            .text_sm()
+                            .whitespace_normal()
+                            .child(
+                                if self.projection.streaming == Some(index) {
+                                    div().child(text.clone())
+                                } else {
+                                    markdown::render(
+                                        text, self.theme, &self.i18n,
+                                    )
+                                },
+                            ),
+                    )
                     .into_any_element()
             }
             ChatLine::Reasoning {
@@ -1136,6 +1330,9 @@ impl ChatFeed {
             self.t("verify.card.failed")
         };
 
+        let policy = self.theme.motion_policy();
+        let animate_pulse = crate::motion::travel_scale(policy) > 0.0;
+
         if ok || override_used {
             let expanded = self.expanded_rows.contains(&row_id);
             let compact_label = if ok {
@@ -1143,9 +1340,63 @@ impl ChatFeed {
             } else {
                 self.tf("verify.compact.override", &[("name", &name)])
             };
+            let deliverables_for_quick_open =
+                ok.then(|| self.latest_deliverables()).flatten();
+            let status_pill = if ok {
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded_full()
+                    .bg(self.theme.status_verified_bg())
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        theme::icons::check()
+                            .size(px(12.))
+                            .text_color(self.theme.status_verified()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.status_verified())
+                            .child(self.t("verify.card.passed")),
+                    )
+                    .into_any_element()
+            } else {
+                let badge = self.t("verify.override.badge");
+                div()
+                    .id(("verify-override-badge", row_id))
+                    .debug_selector(|| "chat-verify-override-badge".to_owned())
+                    .role(gpui::Role::Status)
+                    .aria_label(badge.clone())
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded_full()
+                    .bg(self.theme.status_attention_bg())
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        theme::icons::circle_alert()
+                            .size(px(12.))
+                            .text_color(self.theme.status_attention()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.status_attention())
+                            .child(badge),
+                    )
+                    .into_any_element()
+            };
             let mut toggle = theme::interactive(
                 ("verify-compact-toggle", row_id),
-                compact_label.clone(),
+                compact_label,
                 &self.theme,
             )
             .aria_expanded(expanded)
@@ -1153,21 +1404,13 @@ impl ChatFeed {
             .min_w_0()
             .px(self.theme.space(10.))
             .py(self.theme.space(6.))
-            .rounded_lg()
+            .rounded_xl()
             .flex()
             .items_center()
             .gap(self.theme.space(8.))
             .cursor_pointer()
             .hover(|style| style.bg(self.theme.soft()))
-            .child(if ok {
-                theme::icons::check()
-                    .size(px(14.))
-                    .text_color(self.theme.status_verified())
-            } else {
-                theme::icons::circle_alert()
-                    .size(px(14.))
-                    .text_color(self.theme.status_attention())
-            })
+            .child(status_pill)
             .child(
                 div()
                     .flex_1()
@@ -1181,7 +1424,8 @@ impl ChatFeed {
                     })
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .child(compact_label),
+                    .truncate()
+                    .child(name),
             );
             if ok && !short_hash.is_empty() {
                 toggle =
@@ -1200,24 +1444,21 @@ impl ChatFeed {
                             )),
                     );
             }
-            if override_used {
-                let badge = self.t("verify.override.badge");
+            if let Some(files) = deliverables_for_quick_open {
                 toggle = toggle.child(
-                    div()
-                        .id(("verify-override-badge", row_id))
-                        .debug_selector(|| {
-                            "chat-verify-override-badge".to_owned()
-                        })
-                        .role(gpui::Role::Status)
-                        .aria_label(badge.clone())
-                        .flex_none()
-                        .px(self.theme.space(6.))
-                        .py(px(1.))
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .text_xs()
-                        .text_color(self.theme.status_attention())
-                        .child(badge),
+                    theme::Button::new(
+                        ("verify-open-deliverables", row_id),
+                        self.t("studio.view_deliverables"),
+                    )
+                    .variant(theme::ControlVariant::Ghost)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.emit(OpenDeliverables(files.clone()));
+                        }),
+                    ),
                 );
             }
             toggle = toggle
@@ -1246,9 +1487,9 @@ impl ChatFeed {
                 })
                 .aria_label(status_label)
                 .w_full()
-                .max_w(px(540.))
+                .max_w(px(560.))
                 .min_w_0()
-                .rounded_lg()
+                .rounded_xl()
                 .border_1()
                 .border_color(self.theme.line())
                 .bg(self.theme.card())
@@ -1259,7 +1500,7 @@ impl ChatFeed {
             if expanded {
                 let mut details = div()
                     .w_full()
-                    .px(self.theme.space(10.))
+                    .px(self.theme.space(12.))
                     .py(self.theme.space(8.))
                     .border_t_1()
                     .border_color(self.theme.line())
@@ -1343,33 +1584,20 @@ impl ChatFeed {
                             .child(hint_label),
                     );
                 }
-                card = card.child(
-                    details.with_animation(
-                        ("verify-detail-reveal", row_id),
-                        Animation::new(crate::motion::AUTO_HEIGHT)
-                            .with_easing(crate::motion::out_quint()),
-                        |el, delta| {
-                            el.opacity(delta)
-                                .relative()
-                                .top(px(4. * (1.0 - delta)))
-                        },
-                    ),
-                );
+                card = card.child(self.reveal_collapsible(
+                    ("verify-detail-reveal", row_id),
+                    row_id,
+                    details,
+                    cx,
+                ));
             }
 
             if override_used && !ok {
-                return card
-                    .with_animation(
-                        ("verify-settled", row_id),
-                        Animation::new(crate::motion::MODERATE)
-                            .with_easing(crate::motion::out_quint()),
-                        |el, delta| {
-                            el.opacity(delta)
-                                .relative()
-                                .top(px(4. * (1.0 - delta)))
-                        },
-                    )
-                    .into_any_element();
+                return crate::motion::settled_collapse_reveal(
+                    ("verify-settled", row_id),
+                    policy,
+                    card,
+                );
             }
             return card.into_any_element();
         }
@@ -1379,6 +1607,12 @@ impl ChatFeed {
 
         let mut header = div()
             .w_full()
+            .rounded_t_xl()
+            .bg(self.theme.danger_bg())
+            .border_b_1()
+            .border_color(self.theme.line())
+            .px(self.theme.space(12.))
+            .py(self.theme.space(10.))
             .flex()
             .items_center()
             .gap(self.theme.space(8.))
@@ -1402,6 +1636,7 @@ impl ChatFeed {
                     .text_color(self.theme.muted())
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .truncate()
                     .child(name),
             );
         if !short_hash.is_empty() {
@@ -1410,7 +1645,7 @@ impl ChatFeed {
                     .px(self.theme.space(6.))
                     .py(px(1.))
                     .rounded_md()
-                    .bg(self.theme.soft())
+                    .bg(self.theme.card())
                     .text_xs()
                     .text_color(self.theme.muted())
                     .child(
@@ -1425,21 +1660,26 @@ impl ChatFeed {
             .role(gpui::Role::Alert)
             .aria_label(status_label)
             .w_full()
-            .max_w(px(540.))
+            .max_w(px(560.))
             .min_w_0()
             .rounded_xl()
             .border_1()
-            .border_color(self.theme.danger())
+            .border_color(self.theme.danger().opacity(0.65))
             .bg(self.theme.card())
             .flex()
             .flex_col()
-            .gap(self.theme.space(8.))
-            .px(self.theme.space(12.))
-            .py(self.theme.space(10.))
             .child(header);
 
+        let mut body = div()
+            .w_full()
+            .px(self.theme.space(12.))
+            .py(self.theme.space(10.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.));
+
         if !issues.is_empty() {
-            let mut list = div().w_full().flex().flex_col().gap(px(4.));
+            let mut list = div().w_full().flex().flex_col().gap(px(5.));
             for (issue_ix, line_text) in self
                 .format_verification_issues(issues)
                 .into_iter()
@@ -1450,26 +1690,42 @@ impl ChatFeed {
                         .id(("verify-issue", row_id * 100 + issue_ix as u64))
                         .role(gpui::Role::Status)
                         .aria_label(line_text.clone())
-                        .text_xs()
-                        .text_color(self.theme.ink())
-                        .whitespace_normal()
-                        .child(line_text),
+                        .flex()
+                        .items_start()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .mt(px(5.))
+                                .size(px(5.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(self.theme.danger()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(self.theme.ink())
+                                .whitespace_normal()
+                                .child(line_text),
+                        ),
                 );
             }
-            card = card.child(list);
+            body = body.child(list);
         }
 
         if let Some(hint) = semantic_hint
             && !hint.trim().is_empty()
         {
             let hint_label = self.tf("verify.semantic.hint", &[("hint", hint)]);
-            card = card.child(
+            body = body.child(
                 div()
                     .id(("verify-semantic-hint", row_id))
                     .role(gpui::Role::Status)
                     .aria_label(hint_label.clone())
                     .px(self.theme.space(8.))
-                    .py(self.theme.space(4.))
+                    .py(self.theme.space(6.))
                     .rounded_md()
                     .bg(self.theme.soft())
                     .text_xs()
@@ -1478,6 +1734,8 @@ impl ChatFeed {
                     .child(hint_label),
             );
         }
+
+        card = card.child(body);
 
         // §8.3: Never render an ordinary "Send / Deliver" primary button when
         // verification fails. Only an explicit unchecked-by-default checkbox
@@ -1558,9 +1816,12 @@ impl ChatFeed {
         card = card.child(
             div()
                 .w_full()
-                .pt(self.theme.space(4.))
+                .rounded_b_xl()
+                .bg(self.theme.soft().opacity(0.45))
                 .border_t_1()
                 .border_color(self.theme.line())
+                .px(self.theme.space(12.))
+                .py(self.theme.space(8.))
                 .flex()
                 .flex_wrap()
                 .items_center()
@@ -1573,6 +1834,7 @@ impl ChatFeed {
                 )),
         );
 
+        let _ = animate_pulse;
         card.into_any_element()
     }
     fn reasoning_block(
@@ -1588,6 +1850,8 @@ impl ChatFeed {
         let has_body = !text.trim().is_empty();
         let glimpse =
             (!expanded).then(|| tail_line_preview(text, 56)).flatten();
+        let animate_pulse =
+            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
         let title = if live {
             self.t("chat.reasoning_live")
         } else {
@@ -1595,7 +1859,7 @@ impl ChatFeed {
             self.tf("chat.thought_for", &[("duration", &duration)])
         };
         let leading = if live {
-            div()
+            let row = div()
                 .flex_none()
                 .flex()
                 .items_center()
@@ -1611,8 +1875,9 @@ impl ChatFeed {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(self.theme.muted())
                         .child(title.clone()),
-                )
-                .with_animation(
+                );
+            if animate_pulse {
+                row.with_animation(
                     ("reasoning-live", row_id),
                     Animation::new(crate::motion::PULSE)
                         .repeat()
@@ -1620,6 +1885,9 @@ impl ChatFeed {
                     |el, delta| el.opacity(0.45f32.mul_add(-delta, 1.0)),
                 )
                 .into_any_element()
+            } else {
+                row.into_any_element()
+            }
         } else {
             div()
                 .flex_none()
@@ -1689,28 +1957,22 @@ impl ChatFeed {
                 )),
             );
         if expanded && has_body {
-            block = block.child(
-                div()
-                    .ml(px(8.))
-                    .pl(self.theme.space(12.))
-                    .py(self.theme.space(4.))
-                    .border_l_1()
-                    .border_color(self.theme.line())
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .whitespace_normal()
-                    .child(text.to_owned())
-                    .with_animation(
-                        ("reasoning-reveal", row_id),
-                        Animation::new(crate::motion::AUTO_HEIGHT)
-                            .with_easing(crate::motion::out_quint()),
-                        |el, delta| {
-                            el.opacity(delta)
-                                .relative()
-                                .top(px(4. * (1.0 - delta)))
-                        },
-                    ),
-            );
+            let content = div()
+                .ml(px(8.))
+                .pl(self.theme.space(12.))
+                .py(self.theme.space(4.))
+                .border_l_1()
+                .border_color(self.theme.line())
+                .text_xs()
+                .text_color(self.theme.muted())
+                .whitespace_normal()
+                .child(text.to_owned());
+            block = block.child(self.reveal_collapsible(
+                ("reasoning-reveal", row_id),
+                row_id,
+                content,
+                cx,
+            ));
         }
         block
     }
@@ -1726,6 +1988,8 @@ impl ChatFeed {
         let row_id = self.row_ids[index];
         let has_target = !target.is_empty();
         let expanded = has_target && self.expanded_rows.contains(&row_id);
+        let animate_pulse =
+            crate::motion::travel_scale(self.theme.motion_policy()) > 0.0;
         let heading = if running {
             self.tf("chat.tool_live", &[("name", name)])
         } else {
@@ -1737,12 +2001,13 @@ impl ChatFeed {
             format!("{heading} {target}")
         };
         let status_mark = if running {
-            div()
+            let dot = div()
                 .size(px(6.))
                 .flex_none()
                 .rounded_full()
-                .bg(self.theme.status_active())
-                .with_animation(
+                .bg(self.theme.status_active());
+            if animate_pulse {
+                dot.with_animation(
                     ("tool-live-dot", row_id),
                     Animation::new(crate::motion::PULSE)
                         .repeat()
@@ -1750,6 +2015,9 @@ impl ChatFeed {
                     |dot, delta| dot.opacity(0.6f32.mul_add(-delta, 1.0)),
                 )
                 .into_any_element()
+            } else {
+                dot.into_any_element()
+            }
         } else {
             theme::icons::check()
                 .size(px(12.))
@@ -1826,28 +2094,22 @@ impl ChatFeed {
                 )),
             );
         if expanded {
-            row = row.child(
-                div()
-                    .px(self.theme.space(10.))
-                    .pb(self.theme.space(8.))
-                    .pt(self.theme.space(4.))
-                    .border_t_1()
-                    .border_color(self.theme.line())
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .whitespace_normal()
-                    .child(format!("{name} {target}"))
-                    .with_animation(
-                        ("tool-reveal", row_id),
-                        Animation::new(crate::motion::AUTO_HEIGHT)
-                            .with_easing(crate::motion::out_quint()),
-                        |el, delta| {
-                            el.opacity(delta)
-                                .relative()
-                                .top(px(4. * (1.0 - delta)))
-                        },
-                    ),
-            );
+            let content = div()
+                .px(self.theme.space(10.))
+                .pb(self.theme.space(8.))
+                .pt(self.theme.space(4.))
+                .border_t_1()
+                .border_color(self.theme.line())
+                .text_xs()
+                .text_color(self.theme.muted())
+                .whitespace_normal()
+                .child(format!("{name} {target}"));
+            row = row.child(self.reveal_collapsible(
+                ("tool-reveal", row_id),
+                row_id,
+                content,
+                cx,
+            ));
         }
         row
     }
@@ -1869,7 +2131,7 @@ impl ChatFeed {
                 .rounded_lg()
                 .border_1()
                 .border_color(self.theme.danger())
-                .bg(self.theme.card())
+                .bg(self.theme.danger_bg())
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
                 .flex()
@@ -1958,28 +2220,22 @@ impl ChatFeed {
                 )),
             );
         if expanded {
-            block = block.child(
-                div()
-                    .px(self.theme.space(10.))
-                    .pb(self.theme.space(8.))
-                    .pt(self.theme.space(4.))
-                    .border_t_1()
-                    .border_color(self.theme.line())
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .whitespace_normal()
-                    .child(text.to_owned())
-                    .with_animation(
-                        ("tool-out-reveal", row_id),
-                        Animation::new(crate::motion::AUTO_HEIGHT)
-                            .with_easing(crate::motion::out_quint()),
-                        |el, delta| {
-                            el.opacity(delta)
-                                .relative()
-                                .top(px(4. * (1.0 - delta)))
-                        },
-                    ),
-            );
+            let content = div()
+                .px(self.theme.space(10.))
+                .pb(self.theme.space(8.))
+                .pt(self.theme.space(4.))
+                .border_t_1()
+                .border_color(self.theme.line())
+                .text_xs()
+                .text_color(self.theme.muted())
+                .whitespace_normal()
+                .child(text.to_owned());
+            block = block.child(self.reveal_collapsible(
+                ("tool-out-reveal", row_id),
+                row_id,
+                content,
+                cx,
+            ));
         }
         block.into_any_element()
     }

@@ -797,5 +797,17 @@
   "deliverables.kind_data": "数据",
   "deliverables.kind_file": "文件",
   "deliverables.open_external": "打开文件",
-  "deliverables.empty": "暂无交付物"
+  "deliverables.empty": "暂无交付物",
+  "chat.steps_live_summary": "处理中 · 共 {count} 步",
+  "chat.steps_done_summary": "已完成 {count} 步过程",
+  "studio.space_default_sub": "默认工作区 · 常驻时间线",
+  "studio.deliverables_count": "交付夹 ({count})",
+  "studio.view_deliverables": "查看交付夹",
+  "studio.return_to_chat": "返回对话",
+  "drawer.work_title": "后台任务透视",
+  "drawer.work_open_session": "切到该对话",
+  "drawer.work_stop": "停止此项",
+  "drawer.work_no_steps": "等待执行步骤更新…",
+  "home.fill_hint": "填入",
+  "dock.attention_badge": "待拍板"
 }

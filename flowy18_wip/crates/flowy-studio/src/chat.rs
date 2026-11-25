@@ -33,6 +33,7 @@ impl crate::panel::StudioPanel {
 
     fn bg_tasks_dock_slot(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let count = self.background_work_count();
+        let scale = crate::motion::travel_scale(self.theme.motion_policy());
         div()
             .id("bg-tasks-slot")
             .w_full()
@@ -56,10 +57,58 @@ impl crate::panel::StudioPanel {
                                 "chat.bg_tasks_pill",
                                 &[("count", &count.to_string())],
                             );
+                            let dot = div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(self.theme.status_active());
+                            let dot_el = if scale > 0.0 {
+                                dot.with_animation(
+                                    "bg-pill-dot",
+                                    Animation::new(crate::motion::PULSE)
+                                        .repeat()
+                                        .with_easing(
+                                            crate::motion::pulsing_sine(),
+                                        ),
+                                    |dot, delta| {
+                                        dot.opacity(0.6f32.mul_add(-delta, 1.0))
+                                    },
+                                )
+                                .into_any_element()
+                            } else {
+                                dot.into_any_element()
+                            };
+                            let text_el = div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.ink())
+                                .child(label.clone());
+                            let label_el = if scale > 0.0 {
+                                text_el
+                                    .with_animation(
+                                        ("bg-pill-count", count as u64),
+                                        Animation::new(
+                                            crate::motion::COUNTER_ROLL,
+                                        )
+                                        .with_easing(
+                                            crate::motion::damped_pop(),
+                                        ),
+                                        move |el, delta| {
+                                            el.opacity(delta.clamp(0.0, 1.0))
+                                                .relative()
+                                                .top(px(6.
+                                                    * scale
+                                                    * (1.0 - delta)))
+                                        },
+                                    )
+                                    .into_any_element()
+                            } else {
+                                text_el.into_any_element()
+                            };
                             slot.child(theme::anchor_trigger(
                                 theme::interactive(
                                     "bg-tasks-pill",
-                                    label.clone(),
+                                    label,
                                     &self.theme,
                                 )
                                 .aria_expanded(self.bg_tasks_open)
@@ -75,51 +124,8 @@ impl crate::panel::StudioPanel {
                                 .gap(self.theme.space(6.))
                                 .cursor_pointer()
                                 .hover(|style| style.bg(self.theme.soft()))
-                                .child(
-                                    div()
-                                        .size(px(6.))
-                                        .flex_none()
-                                        .rounded_full()
-                                        .bg(self.theme.status_active())
-                                        .with_animation(
-                                            "bg-pill-dot",
-                                            Animation::new(
-                                                crate::motion::PULSE,
-                                            )
-                                            .repeat()
-                                            .with_easing(
-                                                crate::motion::pulsing_sine(),
-                                            ),
-                                            |dot, delta| {
-                                                dot.opacity(
-                                                    0.6f32.mul_add(-delta, 1.0),
-                                                )
-                                            },
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.ink())
-                                        .child(label)
-                                        .with_animation(
-                                            ("bg-pill-count", count as u64),
-                                            Animation::new(
-                                                crate::motion::COUNTER_ROLL,
-                                            )
-                                            .with_easing(
-                                                crate::motion::damped_pop(),
-                                            ),
-                                            |el, delta| {
-                                                el.opacity(
-                                                    delta.clamp(0.0, 1.0),
-                                                )
-                                                .relative()
-                                                .top(px(6. * (1.0 - delta)))
-                                            },
-                                        ),
-                                )
+                                .child(dot_el)
+                                .child(label_el)
                                 .child(
                                     div()
                                         .flex_none()

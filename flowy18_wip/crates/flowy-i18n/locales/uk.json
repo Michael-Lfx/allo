@@ -797,5 +797,17 @@
   "deliverables.kind_data": "Data",
   "deliverables.kind_file": "File",
   "deliverables.open_external": "Open file",
-  "deliverables.empty": "No deliverables yet"
+  "deliverables.empty": "No deliverables yet",
+  "chat.steps_live_summary": "Working · {count} step(s)",
+  "chat.steps_done_summary": "{count} step(s) completed",
+  "studio.space_default_sub": "Default space · Persistent timeline",
+  "studio.deliverables_count": "Deliverables ({count})",
+  "studio.view_deliverables": "View deliverables",
+  "studio.return_to_chat": "View chat",
+  "drawer.work_title": "Background task",
+  "drawer.work_open_session": "Open conversation",
+  "drawer.work_stop": "Stop task",
+  "drawer.work_no_steps": "Waiting for execution updates…",
+  "home.fill_hint": "Use",
+  "dock.attention_badge": "Needs review"
 }

@@ -12,10 +12,12 @@ use gpui::{Image, ImageFormat, Img, img};
 pub struct Starter {
     pub(crate) title_key: &'static str,
     pub(crate) prompt_key: &'static str,
+    #[allow(dead_code)]
     cover: fn() -> Img,
 }
 
 impl Starter {
+    #[allow(dead_code)]
     pub(crate) fn cover(&self) -> Img {
         (self.cover)()
     }

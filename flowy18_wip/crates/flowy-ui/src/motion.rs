@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::time::Duration;
 
-use gpui::{App, Element, Entity};
+use gpui::{
+    Animation, AnimationExt, AnyElement, App, Element, ElementId, Entity,
+    IntoElement, ParentElement, Styled, div, px,
+};
 
 use crate::{MotionPolicy, PrepaintBounds};
 
@@ -228,6 +231,69 @@ pub fn measure_height<E: Element>(
             }
         });
     })
+}
+
+/// Pre-measured smooth height reveal container (GPUI equivalent of Linger's
+/// `AutoHeight`).
+///
+/// When `measured_height > 0.5` and `policy == MotionPolicy::Full`, animates
+/// container height from `0` to `measured_height` with `.overflow_hidden()`
+/// using `out_quint()`, releasing the height constraint once `delta >= 0.995`
+/// so dynamically growing content is never clipped.
+pub fn auto_height_reveal(
+    id: impl Into<ElementId>,
+    measured_height: f32,
+    policy: MotionPolicy,
+    content: impl IntoElement,
+) -> AnyElement {
+    let scale = travel_scale(policy);
+    if scale <= 0.0 {
+        return div().w_full().child(content).into_any_element();
+    }
+    let has_height = measured_height > 1.0;
+    div()
+        .w_full()
+        .child(content)
+        .with_animation(
+            id,
+            Animation::new(AUTO_HEIGHT).with_easing(out_quint()),
+            move |el, delta| {
+                let el = el.opacity(delta);
+                if has_height && delta < 0.995 {
+                    el.overflow_hidden()
+                        .h(px((measured_height * delta).max(1.0)))
+                } else {
+                    el.relative().top(px(4.0 * scale * (1.0 - delta)))
+                }
+            },
+        )
+        .into_any_element()
+}
+
+/// Smooth height-collapse transition when a settled approval card folds into
+/// a compact permanent single-line audit notice (Plan M2).
+pub fn settled_collapse_reveal(
+    id: impl Into<ElementId>,
+    policy: MotionPolicy,
+    content: impl IntoElement,
+) -> AnyElement {
+    let scale = travel_scale(policy);
+    if scale <= 0.0 {
+        return div().w_full().child(content).into_any_element();
+    }
+    div()
+        .w_full()
+        .child(content)
+        .with_animation(
+            id,
+            Animation::new(MODERATE).with_easing(out_quint()),
+            move |el, delta| {
+                el.opacity(delta)
+                    .relative()
+                    .top(px(-6.0 * scale * (1.0 - delta)))
+            },
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

@@ -1,9 +1,8 @@
 //! Home starter browsing.
 //!
-//! One selector plus one content row below the composer. A row of quiet intent
-//! chips picks the category, and the four examples below swap in place. Picking
-//! an example overwrites the composer so the prompt can be previewed without
-//! sending it.
+//! Quiet intent category pills plus a crisp two-column grid of calm starter
+//! prompts directly below the composer. Picking an example fills the composer
+//! so the prompt can be previewed and refined before sending.
 
 pub mod catalog;
 
@@ -11,65 +10,51 @@ use crate::panel::StudioPanel;
 use catalog::{Category, Starter};
 use flowy_ui as theme;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, IntoElement, ObjectFit,
-    SharedString, Window, div, prelude::*, px,
+    Animation, AnimationExt, Context, FontWeight, IntoElement, SharedString,
+    Window, div, prelude::*, px,
 };
 
-/// Width of the whole stage, shared by the hero, the chips and the cards.
+/// Width of the whole stage, shared by the hero, composer, chips and starters.
 const STAGE_W: f32 = 760.;
-/// Card height. One value: alternating heights made the row look misaligned.
-const CARD_H: f32 = 148.;
-/// Card width. Fixed, so a narrow window scrolls the row instead of squeezing
-/// the cards into unreadable slivers.
-const CARD_W: f32 = 200.;
+
+fn prompt_glimpse(text: &str, max_chars: usize) -> String {
+    let collapsed: String =
+        text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = collapsed.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}\u{2026}")
+    } else {
+        head
+    }
+}
 
 impl StudioPanel {
-    /// Category chips and the current category's four examples.
+    /// Category chips and the current category's clean two-column prompt cards.
     pub fn starter_section(
         &self,
         _window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let gap = self.theme.space(12.);
         let category = self.starter_category();
-        // Cards are collected rather than assembled: `flowy_ui::carousel_track`
-        // owns the rail so every carousel in the app shares one implementation.
-        let mut items: Vec<AnyElement> =
-            Vec::with_capacity(category.examples().len());
-        for (index, starter) in category.examples().iter().enumerate() {
-            items.push(
-                self.example_card(starter, index as u64, category, cx)
-                    .into_any_element(),
-            );
-        }
-        // One row, never wrapping. Geometry and paging live in `flowy-ui` so
-        // every carousel in the app clamps identically.
-        //
-        // `stage_w` is the design ceiling, not a measured width: GPUI's
-        // `viewport_size` keeps reporting the launch size after a resize, so a
-        // window narrower than the stage scrolls less far than it could. Paging
-        // stays predictable, it just cannot use the tail of a narrow window.
-        let geometry = flowy_ui::CarouselGeometry {
-            item_w: CARD_W,
-            gap: 12.,
-            count: category.examples().len(),
-        };
-        let stage_w = STAGE_W;
-        let paging = geometry.needs_paging(stage_w);
-        let total = geometry.total_width();
-        let state = self.starter_carousel;
-        let strip = flowy_ui::carousel_track(&state, gap, items);
-        let mut rail = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(self.theme.space(8.));
-        if paging && state.can_prev() {
-            rail = rail.child(self.carousel_arrow(-1, geometry, stage_w, cx));
-        }
-        rail = rail.child(div().flex_1().min_w_0().child(strip));
-        if paging && state.can_next(total, stage_w) {
-            rail = rail.child(self.carousel_arrow(1, geometry, stage_w, cx));
+        let examples = category.examples();
+        let mut grid =
+            div().w_full().flex().flex_col().gap(self.theme.space(8.));
+        for (row_idx, pair) in examples.chunks(2).enumerate() {
+            let mut row = div()
+                .w_full()
+                .flex()
+                .items_stretch()
+                .gap(self.theme.space(8.));
+            for (col_idx, starter) in pair.iter().enumerate() {
+                let index = (row_idx * 2 + col_idx) as u64;
+                row =
+                    row.child(self.example_card(starter, index, category, cx));
+            }
+            if pair.len() == 1 {
+                row = row.child(div().flex_1().min_w_0());
+            }
+            grid = grid.child(row);
         }
         div()
             .id("home-starters")
@@ -83,51 +68,7 @@ impl StudioPanel {
             .items_center()
             .gap(self.theme.space(12.))
             .child(self.category_chips(cx))
-            .child(rail)
-    }
-
-    /// One circular carousel arrow. Callers only render it when it can act.
-    fn carousel_arrow(
-        &self,
-        direction: i32,
-        geometry: flowy_ui::CarouselGeometry,
-        stage_w: f32,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let icon = if direction < 0 {
-            theme::icons::chevron_left()
-        } else {
-            theme::icons::chevron_right()
-        };
-        theme::interactive(
-            ("home-carousel", u64::from(direction >= 0)),
-            SharedString::from(if direction < 0 { "previous" } else { "next" }),
-            &self.theme,
-        )
-        .w(px(30.))
-        .h(px(30.))
-        .rounded_full()
-        .border_1()
-        .border_color(self.theme.line())
-        .bg(self.theme.card())
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .child(icon)
-        .on_click(cx.listener(move |panel, _, _, cx| {
-            // Clamping, page size and end detection all live in `CarouselState`.
-            if direction < 0 {
-                panel.starter_carousel.prev(geometry.page_width(stage_w));
-            } else {
-                panel.starter_carousel.next(
-                    geometry.page_width(stage_w),
-                    geometry.total_width(),
-                    stage_w,
-                );
-            }
-            cx.notify();
-        }))
+            .child(grid)
     }
 
     fn category_chips(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -159,19 +100,22 @@ impl StudioPanel {
         .px(self.theme.space(12.))
         .py(self.theme.space(4.))
         .rounded_full()
+        .border_1()
         .cursor_pointer()
         .child(
             // Same weight for every chip: a bold selected label changes the
             // row's width and shifts the centred stage.
-            div().text_sm().child(title),
+            div().text_xs().child(title),
         );
         let soft = self.theme.soft();
         chip = if selected {
-            // Teal marks the selected intent. It is used as ink, not as a
-            // background: white on teal fails the contrast check in flowy-ui.
-            chip.bg(soft).text_color(self.theme.starter_ink())
+            chip.bg(self.theme.card())
+                .border_color(self.theme.line())
+                .shadow_sm()
+                .text_color(self.theme.ink())
         } else {
-            chip.text_color(self.theme.muted())
+            chip.border_color(self.theme.canvas())
+                .text_color(self.theme.muted())
                 .hover(move |style| style.bg(soft))
         };
         chip.on_click(cx.listener(move |panel, _, _, cx| {
@@ -188,73 +132,86 @@ impl StudioPanel {
     ) -> impl IntoElement {
         let title = self.t(starter.title_key);
         let prompt = self.t(starter.prompt_key);
-        let cover = starter.cover();
-        // Uniform height: alternating heights read as a misaligned row.
-        let height = CARD_H;
-        // Cards arrive one after another: each holds its curve slightly longer
-        // than the previous one, so the row reads as a sequence.
-        let delay = crate::motion::stagger(index, 24, crate::motion::MODERATE);
-        theme::interactive(
+        let glimpse = prompt_glimpse(&prompt, 46);
+        let fill_hint = self.t("home.fill_hint");
+        let scale = crate::motion::travel_scale(self.theme.motion_policy());
+        let delay = crate::motion::stagger(index, 28, crate::motion::MODERATE);
+        let soft = self.theme.soft();
+        let card = theme::interactive(
             ("home-starter-example", index),
             SharedString::from(title.clone()),
             &self.theme,
         )
-        .w(px(CARD_W))
-        .h(px(height))
-        // Below this the card becomes unreadable, so wrap instead of squeezing.
-        .min_w(px(180.))
-        .flex()
-        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .px(self.theme.space(12.))
+        .py(self.theme.space(10.))
         .rounded_xl()
         .border_1()
         .border_color(self.theme.line())
-        .bg(self.theme.soft())
-        .hover(|card| card.bg(self.theme.card()))
-        .overflow_hidden()
+        .bg(self.theme.card())
+        .hover(move |style| style.bg(soft))
+        .cursor_pointer()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
         .child(
-            // The cover takes the remaining height; the band below darkens
-            // the image edge and carries the title. Explicit top/bottom radii
-            // satisfy GPUI's rounded clipping rule.
             div()
                 .w_full()
-                .flex_1()
-                .min_h_0()
-                .rounded_t_xl()
-                .overflow_hidden()
-                .child(cover.w_full().h_full().object_fit(ObjectFit::Cover)),
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(self.theme.space(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.ink())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(fill_hint),
+                ),
         )
         .child(
             div()
                 .w_full()
-                .rounded_b_xl()
-                .px(self.theme.space(10.))
-                .py(self.theme.space(8.))
-                .text_sm()
+                .text_xs()
+                .text_color(self.theme.muted())
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .truncate()
-                .bg(self.theme.scrim())
-                .child(title),
+                .child(glimpse),
         )
         .on_click(cx.listener(move |panel, _, _, cx| {
             // Picking previews the prompt; it never sends.
             panel.request_fill_prompt(prompt.clone(), cx);
-        }))
-        .with_animation(
+        }));
+        if scale <= 0.0 {
+            return card.into_any_element();
+        }
+        card.with_animation(
             // Keyed by category so a switcher replays the stagger.
-            (
-                "home-starter-card",
-                category as u32 as u64 * 8 + index,
-            ),
+            ("home-starter-card", category as u32 as u64 * 8 + index),
             Animation::new(crate::motion::MODERATE).with_easing(
                 crate::motion::delayed(delay, crate::motion::out_quint()),
             ),
-            move |card, delta| {
-                card.opacity(delta)
-                    .relative()
-                    .top(px(crate::motion::ENTER_OFFSET * (1.0 - delta)))
+            move |el, delta| {
+                el.opacity(delta).relative().top(px(
+                    crate::motion::ENTER_OFFSET * scale * (1.0 - delta),
+                ))
             },
         )
+        .into_any_element()
     }
 }
 

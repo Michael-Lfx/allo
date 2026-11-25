@@ -76,16 +76,11 @@ impl crate::panel::StudioPanel {
         } else {
             self.section_page().into_any_element()
         };
-        column = column.child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .child(content)
-                .when_some(self.deliverables.as_ref(), |row, _| {
-                    row.child(self.deliverables_drawer(cx))
-                }),
-        );
+        column =
+            column.child(div().flex().flex_1().min_h_0().child(content).when(
+                self.deliverables.is_some() || self.inspected_work.is_some(),
+                |row| row.child(self.right_sheet_drawer(cx)),
+            ));
         if self.model_info_open && !self.model_menu_open && chrome {
             column = column.child(theme::popover(
                 "model-info",
@@ -242,7 +237,7 @@ impl crate::panel::StudioPanel {
                             .px(self.theme.space(6.))
                             .py(px(1.))
                             .rounded_md()
-                            .bg(self.theme.soft())
+                            .bg(self.theme.status_active_bg())
                             .text_xs()
                             .text_color(self.theme.status_active())
                             .child(self.t("chat.bg_task_running")),
@@ -261,6 +256,7 @@ impl crate::panel::StudioPanel {
                 .unwrap_or_else(|| short_receipt_id(&session_id));
             let subtitle =
                 preview.filter(|text| text.as_str() != title.as_str());
+            let inspect_title = title.clone();
             panel = panel.child(
                 theme::interactive(
                     ("bg-task-running", index as u64),
@@ -298,6 +294,7 @@ impl crate::panel::StudioPanel {
                                 .text_color(self.theme.ink())
                                 .overflow_hidden()
                                 .whitespace_nowrap()
+                                .truncate()
                                 .child(title),
                         )
                         .when_some(subtitle, |col, text| {
@@ -307,6 +304,7 @@ impl crate::panel::StudioPanel {
                                     .text_color(self.theme.muted())
                                     .overflow_hidden()
                                     .whitespace_nowrap()
+                                    .truncate()
                                     .child(text),
                             )
                         }),
@@ -317,16 +315,25 @@ impl crate::panel::StudioPanel {
                         .px(self.theme.space(6.))
                         .py(px(1.))
                         .rounded_md()
-                        .bg(self.theme.soft())
+                        .bg(self.theme.status_active_bg())
                         .text_xs()
                         .text_color(self.theme.status_active())
                         .child(self.t("chat.bg_task_running")),
                 )
+                .child(
+                    theme::icons::chevron_right()
+                        .size(px(12.))
+                        .text_color(self.theme.muted()),
+                )
                 .on_click(cx.listener(
                     move |panel, _, _, cx| {
-                        panel.open_session(&session_id, cx);
-                        panel.bg_tasks_open = false;
-                        cx.notify();
+                        panel.open_work_inspector(
+                            crate::deliverables::InspectedWork::Session {
+                                id: session_id.clone(),
+                                title: inspect_title.clone(),
+                            },
+                            cx,
+                        );
                     },
                 )),
             );
@@ -347,9 +354,21 @@ impl crate::panel::StudioPanel {
             } else {
                 preview
             };
-            let row_content = div()
+            let inspect_receipt = receipt.clone();
+            panel = panel.child(
+                theme::interactive(
+                    ("pending-receipt", index as u64),
+                    label,
+                    &self.theme,
+                )
                 .w_full()
                 .min_w_0()
+                .px(self.theme.space(8.))
+                .py(self.theme.space(6.))
+                .rounded_lg()
+                .bg(self.theme.soft().opacity(0.45))
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
                 .flex()
                 .items_center()
                 .gap(self.theme.space(8.))
@@ -366,6 +385,7 @@ impl crate::panel::StudioPanel {
                                 .text_color(self.theme.ink())
                                 .overflow_hidden()
                                 .whitespace_nowrap()
+                                .truncate()
                                 .child(heading),
                         )
                         .child(
@@ -374,6 +394,7 @@ impl crate::panel::StudioPanel {
                                 .text_color(self.theme.muted())
                                 .overflow_hidden()
                                 .whitespace_nowrap()
+                                .truncate()
                                 .child(meta),
                         ),
                 )
@@ -387,46 +408,23 @@ impl crate::panel::StudioPanel {
                         .text_xs()
                         .text_color(self.theme.muted())
                         .child(self.t("chat.bg_task_queued")),
-                );
-            if let Some(hint) = receipt.session_hint.clone() {
-                panel = panel.child(
-                    theme::interactive(
-                        ("pending-receipt", index as u64),
-                        label,
-                        &self.theme,
-                    )
-                    .w_full()
-                    .min_w_0()
-                    .px(self.theme.space(8.))
-                    .py(self.theme.space(6.))
-                    .rounded_lg()
-                    .bg(self.theme.soft().opacity(0.45))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(self.theme.soft()))
-                    .child(row_content)
-                    .on_click(cx.listener(
-                        move |panel, _, _, cx| {
-                            panel.open_session(&hint, cx);
-                            panel.bg_tasks_open = false;
-                            cx.notify();
-                        },
-                    )),
-                );
-            } else {
-                panel = panel.child(
-                    div()
-                        .id(("pending-receipt", index))
-                        .role(gpui::Role::Status)
-                        .aria_label(label)
-                        .w_full()
-                        .min_w_0()
-                        .px(self.theme.space(8.))
-                        .py(self.theme.space(6.))
-                        .rounded_lg()
-                        .bg(self.theme.soft().opacity(0.45))
-                        .child(row_content),
-                );
-            }
+                )
+                .child(
+                    theme::icons::chevron_right()
+                        .size(px(12.))
+                        .text_color(self.theme.muted()),
+                )
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.open_work_inspector(
+                            crate::deliverables::InspectedWork::Receipt(
+                                inspect_receipt.clone(),
+                            ),
+                            cx,
+                        );
+                    },
+                )),
+            );
         }
 
         if !has_running && self.pending_receipts.is_empty() {
@@ -660,93 +658,261 @@ impl crate::panel::StudioPanel {
         self.plan.label_key()
     }
 
+    fn space_breadcrumb(&self) -> impl IntoElement {
+        let active_project = self.active_project_id.as_deref().and_then(|id| {
+            self.projects.iter().find(|project| project.id == id)
+        });
+        if let Some(project) = active_project {
+            let monogram = project.name.trim().chars().next().map_or_else(
+                || "S".to_owned(),
+                |c| c.to_uppercase().to_string(),
+            );
+            let folder = project
+                .root
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default()
+                .to_owned();
+            div()
+                .id("studio-space-breadcrumb")
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .min_w_0()
+                .child(
+                    div()
+                        .size(px(22.))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .border_1()
+                        .border_color(self.theme.line())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.theme.ink())
+                        .child(monogram),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.theme.ink())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(project.name.clone()),
+                )
+                .when(!folder.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(format!("\u{00b7} {folder}")),
+                    )
+                })
+        } else {
+            div()
+                .id("studio-space-breadcrumb")
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .min_w_0()
+                .child(
+                    div()
+                        .size(px(22.))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(self.theme.assistant_badge_bg())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            theme::icons::sparkles()
+                                .size(px(11.))
+                                .text_color(self.theme.assistant_badge_fg()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.theme.ink())
+                        .whitespace_nowrap()
+                        .child(self.t("dock.chief_assistant")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(format!(
+                            "\u{00b7} {}",
+                            self.t("studio.space_default_sub")
+                        )),
+                )
+        }
+    }
+
     fn top_bar(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let in_chat = self.surface == crate::panel::StudioSurface::Chat;
+        let can_return_to_chat = self.surface
+            == crate::panel::StudioSurface::Home
+            && self.agent.has_messages();
+        let deliverable_count = self.deliverable_count(cx);
+        let deliverables_label = if deliverable_count > 0 {
+            let count = deliverable_count.to_string();
+            self.tf("studio.deliverables_count", &[("n", count.as_str())])
+        } else {
+            self.t("chat.deliverables")
+        };
+        let drawer_open = self.deliverables.is_some();
+
         div()
-            .h(px(56.))
-            .px(self.theme.space(24.))
+            .h(px(48.))
+            .px(self.theme.space(20.))
             .flex()
             .items_center()
             .justify_between()
+            .gap(self.theme.space(12.))
             .border_b_1()
             .border_color(self.theme.line())
-            .child(theme::anchor_trigger(
-                theme::interactive(
-                    "model-menu",
-                    self.model_label(),
-                    &self.theme,
-                )
-                .px(self.theme.space(12.))
-                .py(self.theme.space(4.))
-                .rounded_full()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(self.model_button_label())
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
-                        app.model_menu_open = !app.model_menu_open
-                            || app.model_menu_anchor != "model-menu-trigger";
-                        app.model_menu_anchor = "model-menu-trigger";
-                        cx.notify();
-                    },
-                )),
-                "model-menu-trigger",
-                &self.ui,
-            ))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(self.theme.space(12.))
-                    .when(
-                        self.surface == crate::panel::StudioSurface::Chat,
-                        |row| {
-                            row.child(
-                                theme::Button::new(
-                                    "fold-desk",
-                                    self.t("dock.fold_desk"),
-                                )
-                                .variant(theme::ControlVariant::Ghost)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(|panel, _, _, cx| {
-                                        panel.fold_desk(cx);
-                                    }),
-                                ),
-                            )
-                            .child(
-                                theme::Button::new(
-                                    "deliverables",
-                                    self.t("chat.deliverables"),
-                                )
-                                .variant(theme::ControlVariant::Ghost)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(|panel, _, _, cx| {
-                                        panel.toggle_deliverables(cx);
-                                    }),
-                                ),
-                            )
-                        },
-                    )
+                    .gap(self.theme.space(10.))
+                    .child(self.space_breadcrumb())
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(self.theme.muted())
-                            .child(self.t(self.plan_key())),
+                            .w(px(1.))
+                            .h(px(14.))
+                            .flex_none()
+                            .bg(self.theme.line()),
                     )
-                    .child(
-                        theme::Button::new("upgrade", self.t("studio.upgrade"))
+                    .child(theme::anchor_trigger(
+                        theme::interactive(
+                            "model-menu",
+                            self.model_label(),
+                            &self.theme,
+                        )
+                        .px(self.theme.space(10.))
+                        .py(px(4.))
+                        .rounded_full()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .cursor_pointer()
+                        .hover(|style| {
+                            style
+                                .bg(self.theme.soft())
+                                .text_color(self.theme.ink())
+                        })
+                        .child(self.model_button_label())
+                        .on_click(cx.listener(
+                            |app, _event, _window, cx| {
+                                app.model_menu_open = !app.model_menu_open
+                                    || app.model_menu_anchor
+                                        != "model-menu-trigger";
+                                app.model_menu_anchor = "model-menu-trigger";
+                                cx.notify();
+                            },
+                        )),
+                        "model-menu-trigger",
+                        &self.ui,
+                    )),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .when(can_return_to_chat, |row| {
+                        row.child(
+                            theme::Button::new(
+                                "return-to-chat",
+                                self.t("studio.return_to_chat"),
+                            )
                             .variant(theme::ControlVariant::Secondary)
                             .size(theme::ControlSize::Small)
                             .render(
                                 &self.theme,
-                                cx.listener(|app, _event, _window, cx| {
-                                    app.note("notice.upgrade_later", cx);
+                                cx.listener(|panel, _, _, cx| {
+                                    panel.set_surface(
+                                        crate::panel::StudioSurface::Chat,
+                                        cx,
+                                    );
                                 }),
                             ),
-                    )
+                        )
+                    })
+                    .when(in_chat, |row| {
+                        row.child(
+                            theme::Button::new(
+                                "fold-desk",
+                                self.t("dock.fold_desk"),
+                            )
+                            .variant(theme::ControlVariant::Ghost)
+                            .size(theme::ControlSize::Small)
+                            .render(
+                                &self.theme,
+                                cx.listener(|panel, _, _, cx| {
+                                    panel.fold_desk(cx);
+                                }),
+                            ),
+                        )
+                    })
+                    .when(in_chat || deliverable_count > 0, |row| {
+                        row.child(
+                            theme::interactive(
+                                "deliverables",
+                                deliverables_label.clone(),
+                                &self.theme,
+                            )
+                            .px(self.theme.space(10.))
+                            .py(px(4.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if drawer_open {
+                                self.theme.border_strong()
+                            } else {
+                                self.theme.line()
+                            })
+                            .bg(if drawer_open {
+                                self.theme.soft()
+                            } else {
+                                self.theme.canvas()
+                            })
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.ink())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(self.theme.soft()))
+                            .child(
+                                theme::icons::file_fold()
+                                    .size(px(13.))
+                                    .text_color(self.theme.muted()),
+                            )
+                            .child(deliverables_label)
+                            .on_click(cx.listener(
+                                |panel, _, _, cx| {
+                                    panel.toggle_deliverables(cx);
+                                },
+                            )),
+                        )
+                    })
                     .child(self.credit_pill(cx)),
             )
     }

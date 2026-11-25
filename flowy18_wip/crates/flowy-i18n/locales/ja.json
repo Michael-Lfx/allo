@@ -797,5 +797,17 @@
   "deliverables.kind_data": "データ",
   "deliverables.kind_file": "ファイル",
   "deliverables.open_external": "ファイルを開く",
-  "deliverables.empty": "成果物はまだありません"
+  "deliverables.empty": "成果物はまだありません",
+  "chat.steps_live_summary": "処理中 · {count} ステップ",
+  "chat.steps_done_summary": "{count} ステップ完了",
+  "studio.space_default_sub": "既定スペース · 常駐タイムライン",
+  "studio.deliverables_count": "成果物 ({count})",
+  "studio.view_deliverables": "成果物を見る",
+  "studio.return_to_chat": "会話に戻る",
+  "drawer.work_title": "バックグラウンドタスク",
+  "drawer.work_open_session": "会話を開く",
+  "drawer.work_stop": "タスクを停止",
+  "drawer.work_no_steps": "実行ステップを待機中…",
+  "home.fill_hint": "入力",
+  "dock.attention_badge": "要確認"
 }

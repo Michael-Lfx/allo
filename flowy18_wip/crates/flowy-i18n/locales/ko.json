@@ -797,5 +797,17 @@
   "deliverables.kind_data": "데이터",
   "deliverables.kind_file": "파일",
   "deliverables.open_external": "파일 열기",
-  "deliverables.empty": "아직 산출물이 없습니다"
+  "deliverables.empty": "아직 산출물이 없습니다",
+  "chat.steps_live_summary": "처리 중 · {count}단계",
+  "chat.steps_done_summary": "{count}단계 완료",
+  "studio.space_default_sub": "기본 공간 · 상주 타임라인",
+  "studio.deliverables_count": "산출물 ({count})",
+  "studio.view_deliverables": "산출물 보기",
+  "studio.return_to_chat": "대화로 돌아가기",
+  "drawer.work_title": "백그라운드 작업",
+  "drawer.work_open_session": "대화 열기",
+  "drawer.work_stop": "작업 중지",
+  "drawer.work_no_steps": "실행 업데이트 대기 중…",
+  "home.fill_hint": "채우기",
+  "dock.attention_badge": "확인 필요"
 }
