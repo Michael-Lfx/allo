@@ -2187,6 +2187,91 @@ pub async fn replay_concept_review(
     })
 }
 
+// ── T1 档案重放缝（smoke review-replay --replay-archive 臂专用公开面）──────────
+//
+// 与上面 [`replay_concept_review`] 的分工：那一条是「臂内装配上下文 → 走完整
+// 评审」（渲染 user、机械核、带死因重试、降级），量的是模型 + 机器的合成结论；
+// 这一条是观测实验——把真机留档里**当时评审实际收到的 user 原文**原样重发，
+// 只读模型写出来的原始结论。两条互不替代。
+
+/// 档案重放一次评审调用的原始读数：只读回包里评审契约的字段，不做任何处置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayRawReview {
+    /// 回包 `verdict` 字段的原文（缺席或不是字符串 = 空串）——不归一大小写、
+    /// 不折算：是不是 reject/pass 由读数面按原文判。
+    pub verdict: String,
+    /// `problems` 数组行数（缺席或不是数组 = 0）。
+    pub problems: usize,
+    /// `term_provenance` 数组行数（缺席或不是数组 = 0）。
+    pub term_provenance_rows: usize,
+    /// `fragments` 数组行数（缺席或不是数组 = 0）。
+    pub fragment_rows: usize,
+}
+
+/// 档案重放的回包读数。传输失败（超时/网关/流中断）没有回包，走 `Err`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayRawReply {
+    /// 回包是单个合法 JSON 对象。
+    Verdict(ReplayRawReview),
+    /// 回包不是单个合法 JSON 对象（呓语/截断）——读不出结论，不等于放行。
+    Unparsed,
+}
+
+/// 录制评审输入的原样重发（T1 实验用）：`raw_user` 逐字节作为 user 发出，
+/// **不渲染、不装配**（【待审批次】、点名清单、候选集等全部取自档案原文）；
+/// system 不取档案，由 `concept_review_system()` 按**当前进程的开关**生成。
+/// 不跑机械校验、不重试、不降级——回包按评审契约读出原始结论就返回：校验
+/// 与重试会把「模型的判断」和「机器的处置」混在一起。
+pub async fn replay_review_with_raw_user(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    raw_user: &str,
+) -> Result<ReplayRawReply, nomifun_common::AppError> {
+    // system 按调用时刻的开关现取（与 `concept_review` 循环内每轮现取同款）；
+    // 调用面同评审主路：json 缝 + thinking、同一输出上限与超时。
+    let system = concept_review_system();
+    let raw = crate::generation::complete_json_coach(
+        completer,
+        model_override,
+        "growth_review",
+        &system,
+        raw_user,
+        crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
+        None,
+    )
+    .await?;
+    Ok(read_raw_review_reply(&raw))
+}
+
+/// 回包 → 原始读数。**严格**解析：整份回包（去首尾空白）必须就是单个 JSON
+/// 对象。评审主路的 `parse_json_object` 会容忍围栏与散文包裹、修转义与尾
+/// 逗号、并给截断的回包补全括号——那些都是机器替模型补出来的结论，这里一
+/// 律不补，读不出来如实记 [`ReplayRawReply::Unparsed`]。字段按名宽松读取
+/// （不验词表、不验表契约）：违反契约的回包照样读出模型的原始 verdict。
+fn read_raw_review_reply(raw: &str) -> ReplayRawReply {
+    let Ok(serde_json::Value::Object(fields)) =
+        serde_json::from_str::<serde_json::Value>(raw.trim())
+    else {
+        return ReplayRawReply::Unparsed;
+    };
+    let rows = |key: &str| {
+        fields
+            .get(key)
+            .and_then(|value| value.as_array())
+            .map_or(0, Vec::len)
+    };
+    ReplayRawReply::Verdict(ReplayRawReview {
+        verdict: fields
+            .get("verdict")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        problems: rows("problems"),
+        term_provenance_rows: rows("term_provenance"),
+        fragment_rows: rows("fragments"),
+    })
+}
+
 /// Render the review problems for the redraft prompt.
 pub fn format_review_problems(problems: &[ReviewProblem]) -> String {
     problems

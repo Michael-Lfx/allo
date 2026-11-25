@@ -614,6 +614,17 @@ pub enum LearningSmokeCommand {
         /// 都不设 = on 臂，都设 off = off 臂，只关一个 = 报错退出。
         #[arg(long)]
         t1: bool,
+        /// 档案重放模式（T1 实验用）：读真机生长留档的调用档案（calls.jsonl），
+        /// 把 `--rows` 指定行里**当时评审实际收到的 user 原文**原样重发；system
+        /// 不用档案里的，由正式代码按当前进程的开关生成。不装配评审上下文、
+        /// 不跑机械校验、不重试——观测的是模型在给定输入下写出来的原始结论。
+        /// 每行采样 2 次，读数带臂名（臂判定同 `--t1`）。不传 = 现有行为不变。
+        #[arg(long, requires = "rows", conflicts_with = "t1")]
+        replay_archive: Option<PathBuf>,
+        /// 档案重放取哪些行（0 基行号，逗号分隔）；须与 `--replay-archive` 同用。
+        /// 越界或不可解析的行报错退出，不静默跳过。
+        #[arg(long, value_delimiter = ',', requires = "replay_archive")]
+        rows: Vec<usize>,
     },
 }
 
@@ -804,6 +815,7 @@ mod tests {
             provider,
             model,
             t1,
+            ..
         } = command
         else {
             panic!("expected review-replay");
