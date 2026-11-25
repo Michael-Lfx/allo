@@ -864,3 +864,47 @@ no session was live, so there is nothing to hint at
 - 先红后绿：去掉门时 `a_pptx_without_a_report...` 红（拿到别的错误码），装回门后绿。
 - 当前边界（2026-11-25 复核校准）：① 只覆盖 `.pptx`；② `publish_file` 当前调的是只读 `gate.check()` 而非 `gate.deliver()`，因此普通入口被拒时虽未入库（sender 0 次），但尚未往 `events.jsonl` 写 `deliver_blocked` / `deliver`（留任务 14 一并收口）；③ override UI 未接；④ 崩溃窗口仍是「先发后记」。详见 `交接给下一个agent.md` §15。
 - 基线：core 73 / agent 124 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净；未推送。
+
+---
+
+## 任务 14–18 · Phase 1–4 全链路收口与真机启动终验（2026-11-25）
+
+### 一、Phase 1 + Phase 2（提交 `5e96fb681`）
+
+1. **P0-1 启动竞态吞队列清零**：
+   - `LlmConfig` 新增 `requires_cloud_ready()` / `can_run_turns()`；`FlowyApp` 未拿到云端目录前（`provider == "flowy"` 且无凭据），`AgentHandle::run_accepted_once` 与 `StudioPanel::refresh_pending_receipts` 挂起排水，严禁将持久化回执排入 `mock/echo`；
+   - 云端目录到达（`FlowyApp::select_tier` → `StudioPanel::notify_cloud_ready`）才触发排队回执执行；云端未就绪时手动发送改走 `accept_deferred` 落盘回执。
+2. **P0-2 会话结案与首页隔离**：
+   - `AcceptedClaim` 绑定 `{ id, session_id }`，`StudioPanel` 按 `claim.session_id` 查询真实会话终态结案，切换会话不误结案；`StudioSurface::Home` 下后台排空不篡改首页当前激活上下文。
+3. **P0-3 工具路径统一与沙箱守卫**：
+   - `create_deck` / `verify_deck` 统一优先按 `context.output_root`（回退 `context.cwd`）解析相对路径，纳入 `handle.rs` `path_guard`（拦截 `..` 越界），`delivery.rs` 新增 `artifact_key` 消除路径分隔符与大小写差异，Home 系统提示词补齐 `create_deck → verify_deck → publish_file` 链路，并清零 `verify.rs` / `panel.rs` 既有 `--all-targets` clippy 告警。
+4. **全类型交付硬门 ＋ 方案 A 显式豁免表 ＋ 崩溃意图留痕**：
+   - `publish_tool.rs` 移除 `.pptx` 特判，全部 `publish_file` 统一经 `DeliveryStore::deliver_with` 包裹 `ArtifactStore::prepare`；
+   - `csv / pdf / md / txt / json / html` 走显式豁免码 `EXEMPT_NO_VERIFIER_V0` 并落 `deliver_exempt`；未知扩展名与未核验/失败/篡改 `.pptx` 一律阻断且 `prepare` 调用 0 次，普通入口真实落盘 `deliver_blocked`；
+   - 入库前先追加 `deliver_intent`，入库成功后追加 `deliver`，支持 `recovery_state` 识别崩溃窗口 `InDoubt`；补齐 `INFO target="flowy.acceptance" | "flowy.verify" | "flowy.delivery"`（均带 `root_session_id`，零密钥泄漏）。
+
+### 二、Phase 3 + Phase 4（提交 `599b82c35`）
+
+1. **Studio 核验结论卡（§8.3）与显式 Override 永久标记（23 locale）**：
+   - `ChatLine::Verification` 投影 `verify_deck` 逐项四码问题、产物 SHA-256 前 8 位短指纹与 L3 语义复核提示；`history.rs` 保持核验卡永不折叠；
+   - `ok=false` 时隐藏常规保存/交付按钮，展示默认未勾选的 `Role::CheckBox`（「我知道核验没过，仍要交付」），勾选后才启用「强制放行交付」按钮；
+   - 点击强制放行调用 `AgentHandle::override_deliver_artifact`，在 `delivery/events.jsonl` 形成完整 `deliver_blocked → deliver_override → deliver_intent → deliver` 审计链，并在对话卡片与 `LibraryPanel`（资料库）列表项永久展示「未过核验强制放行」徽标，重启客户端仍在。
+2. **L3 语义复核提示层（`semantic_verify.rs`，§6.7）**：
+   - 固化字面简报规则（「只依据简报的字面要求。简报没要求的，缺了不算问题。」），严格校验 `Value::Bool`（拒绝字符串 `"false"` 冒充通过），8s 超时与非法 JSON 一律 fail-closed 为 `Inconclusive`，结果只附卡片提示、绝不阻断硬门，并向 `INFO target="flowy.verify"` 输出 `l3_status / l3_issue_count / l3_duration_ms` 供灰度统计。
+3. **跨包联调抓出的额外真坑**：
+   - 在 `flowy-app` 编写端到端测试时，验证确认 Home 会话沙箱位于 `<store_root>/sessions/workspaces/<session_id>`（而非顶层 `workspaces/`），`confined_to` 成功拦截了错误目录，修正测试沙箱路径后 `override_deliver_artifact → FlowyApp → LibraryPanel` 自动水合链路一次跑通。
+
+### 三、最终全量门禁与真机验证基线
+
+```
+flowy-agent-core : 74 passed, 0 failed, 2 ignored  （基线 73）
+flowy-agent      : 137 passed, 0 failed, 1 ignored （基线 124，+13）
+flowy-studio     : 86 passed, 0 failed             （基线 82，+4）
+flowy-app        : 50 passed, 0 failed             （新增启动门控 + 资料库 Override 徽标 + 默认 INFO 日志脱敏审计）
+flowy-i18n       : 8 passed, 0 failed              （23 locale 键完全对称）
+WITH_APP=1 accept.sh : 4/4 通过（含真实 flowy-app.exe 后台拉起存活校验）
+clippy --all-targets -- -D warnings : 0 error, 0 warning
+bun scripts/check-ui-contracts.mjs  : passed
+```
+
+- **当前状态**：Phase 1–4 全部收口并本地提交（未推送）；按 `BLOCKED.md` §5 硬止损停在 **V6 外发通道**前等待需求方拍板。
