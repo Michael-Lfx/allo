@@ -607,6 +607,13 @@ pub enum LearningSmokeCommand {
         /// 模型名（与 --provider 成对）。
         #[arg(long)]
         model: Option<String>,
+        /// T1 模式（训练轮逐代重测，票 t1-training-wheels-retest）：夹具换成
+        /// 真实批 A（打回锚）/ 真实批 B（放行锚）/ 三角形折叠批（打回锚，对照），
+        /// 每夹具 5 跑，读数带臂名。臂由两个表义务开关的进程环境变量判定：
+        /// `NOMI_LEARNING_REVIEW_PROVENANCE` / `NOMI_LEARNING_REVIEW_FRAGMENTS`
+        /// 都不设 = on 臂，都设 off = off 臂，只关一个 = 报错退出。
+        #[arg(long)]
+        t1: bool,
     },
 }
 
@@ -796,6 +803,7 @@ mod tests {
             db,
             provider,
             model,
+            t1,
         } = command
         else {
             panic!("expected review-replay");
@@ -803,6 +811,7 @@ mod tests {
         assert_eq!(db, Some(PathBuf::from("/dev/smoke.sqlite")));
         assert_eq!(provider.as_deref(), Some("openai"));
         assert_eq!(model.as_deref(), Some("gpt-5"));
+        assert!(!t1, "缺省不进 T1 模式");
 
         // 缺省形态（从零临时库）也合法。
         let cli = Cli::try_parse_from(["nomicore", "learning-smoke", "review-replay"]).unwrap();
@@ -810,6 +819,41 @@ mod tests {
             panic!("expected learning-smoke");
         };
         assert!(matches!(command, super::LearningSmokeCommand::ReviewReplay { .. }));
+    }
+
+    /// T1 模式是显式 opt-in：`--t1` 才置位，可与 --db/--provider/--model 并用；
+    /// 不传 = 默认模式。
+    #[test]
+    fn learning_smoke_review_replay_t1_flag_is_opt_in() {
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "review-replay",
+            "--t1",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        let super::LearningSmokeCommand::ReviewReplay { t1, provider, model, .. } = command else {
+            panic!("expected review-replay");
+        };
+        assert!(t1, "--t1 进 T1 模式");
+        assert_eq!(provider.as_deref(), Some("openai"));
+        assert_eq!(model.as_deref(), Some("gpt-5"));
+
+        let cli = Cli::try_parse_from(["nomicore", "learning-smoke", "review-replay"]).unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        let super::LearningSmokeCommand::ReviewReplay { t1, .. } = command else {
+            panic!("expected review-replay");
+        };
+        assert!(!t1, "不传 --t1 = 默认模式");
     }
 
     #[test]
