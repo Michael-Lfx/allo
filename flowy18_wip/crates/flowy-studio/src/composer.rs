@@ -19,6 +19,10 @@ pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
+    WorkspaceMenu,
+    VerifyToggle,
+    SkillMenu,
+    CloudNotReady,
 }
 
 pub struct ChatComposer {
@@ -30,6 +34,12 @@ pub struct ChatComposer {
     /// Live cloud-catalog label. The catalog lives on `StudioPanel`, so the
     /// selected model name is pushed down while the composer stays cached.
     model_label: SharedString,
+    workspace_label: SharedString,
+    workspace_bound: bool,
+    workspace_menu_open: bool,
+    semantic_verify_enabled: bool,
+    skill_label: Option<SharedString>,
+    skill_menu_open: bool,
     cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
@@ -63,6 +73,12 @@ impl ChatComposer {
             i18n,
             model,
             model_label: SharedString::default(),
+            workspace_label: SharedString::default(),
+            workspace_bound: false,
+            workspace_menu_open: false,
+            semantic_verify_enabled: false,
+            skill_label: None,
+            skill_menu_open: false,
             cloud_ready: false,
             model_menu_open: false,
             running: false,
@@ -71,6 +87,11 @@ impl ChatComposer {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "pushed snapshot fields avoid exposing StudioPanel to composer"
+    )]
     pub(crate) fn sync_state(
         &mut self,
         model: Model,
@@ -78,20 +99,40 @@ impl ChatComposer {
         running: bool,
         model_label: String,
         cloud_ready: bool,
+        workspace_label: String,
+        workspace_bound: bool,
+        workspace_menu_open: bool,
+        semantic_verify_enabled: bool,
+        skill_label: Option<String>,
+        skill_menu_open: bool,
         cx: &mut Context<'_, Self>,
     ) {
         let model_label = SharedString::from(model_label);
+        let workspace_label = SharedString::from(workspace_label);
+        let skill_label = skill_label.map(SharedString::from);
         if self.model != model
             || self.model_menu_open != menu_open
             || self.running != running
             || self.model_label != model_label
             || self.cloud_ready != cloud_ready
+            || self.workspace_label != workspace_label
+            || self.workspace_bound != workspace_bound
+            || self.workspace_menu_open != workspace_menu_open
+            || self.semantic_verify_enabled != semantic_verify_enabled
+            || self.skill_label != skill_label
+            || self.skill_menu_open != skill_menu_open
         {
             self.model = model;
             self.model_menu_open = menu_open;
             self.running = running;
             self.model_label = model_label;
             self.cloud_ready = cloud_ready;
+            self.workspace_label = workspace_label;
+            self.workspace_bound = workspace_bound;
+            self.workspace_menu_open = workspace_menu_open;
+            self.semantic_verify_enabled = semantic_verify_enabled;
+            self.skill_label = skill_label;
+            self.skill_menu_open = skill_menu_open;
             cx.notify();
         }
     }
@@ -122,10 +163,11 @@ impl ChatComposer {
                     // gpui-pre reads the draft through `value()`, not
                     // `as_str()`.
                     let draft = !this.prompt.read(cx).value().trim().is_empty();
-                    // A running turn no longer blocks Enter: the host accepts
-                    // the message into its durable queue instead of rejecting
-                    // it, so "accepted" and "answered" are separate events.
-                    if !draft || !this.cloud_ready {
+                    if !draft {
+                        return;
+                    }
+                    if !this.cloud_ready {
+                        cx.emit(ComposerEvent::CloudNotReady);
                         return;
                     }
                     tracing::debug!(
@@ -167,12 +209,25 @@ impl ChatComposer {
                     )
                     .child(
                         div()
+                            .w_full()
+                            .min_w_0()
                             .flex()
                             .flex_wrap()
                             .items_center()
+                            .justify_between()
                             .gap(self.theme.space(6.))
-                            .child(div().flex_1())
-                            .child(self.model_chip(cx))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .min_w_0()
+                                    .child(self.model_chip(cx))
+                                    .child(self.workspace_chip(cx))
+                                    .child(self.verify_chip(cx))
+                                    .child(self.skill_chip(cx)),
+                            )
                             .child(
                                 self.composer_submit(running, has_draft, cx),
                             ),
@@ -190,28 +245,167 @@ impl ChatComposer {
 
     fn model_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let label = self.composer_model_label();
+        let warn = !self.cloud_ready;
         theme::anchor_trigger(
             theme::interactive("composer-model", label.clone(), &self.theme)
                 .focus_visible(|style| {
                     style.border_color(self.theme.focus_ring())
                 })
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(10.))
+                .px(self.theme.space(8.))
                 .rounded_full()
+                .bg(if warn {
+                    self.theme.status_attention_bg()
+                } else {
+                    self.theme.soft()
+                })
                 .flex()
                 .items_center()
-                .gap(self.theme.space(4.))
+                .gap(px(4.))
                 .text_xs()
-                .text_color(self.theme.ink())
+                .text_color(if warn {
+                    self.theme.status_attention()
+                } else {
+                    self.theme.ink()
+                })
                 .child(theme::icons::sparkles().size(px(12.)))
                 .child(label)
                 .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft().opacity(0.45)))
+                .hover(|style| style.bg(self.theme.dock_hover()))
                 .aria_expanded(self.model_menu_open)
                 .on_click(cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
                 })),
             "composer-model-trigger",
+            &self.ui,
+        )
+    }
+
+    fn workspace_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let label = if self.workspace_label.is_empty() {
+            self.t("composer.workspace_default")
+        } else {
+            self.workspace_label.to_string()
+        };
+        theme::anchor_trigger(
+            theme::interactive(
+                "composer-workspace",
+                label.clone(),
+                &self.theme,
+            )
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .max_w(px(148.))
+            .px(self.theme.space(8.))
+            .rounded_full()
+            .bg(if self.workspace_bound {
+                self.theme.status_active_bg()
+            } else {
+                self.theme.soft()
+            })
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_xs()
+            .text_color(if self.workspace_bound {
+                self.theme.status_active()
+            } else {
+                self.theme.ink()
+            })
+            .child(theme::icons::folder().size(px(12.)))
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .child(label),
+            )
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.dock_hover()))
+            .aria_expanded(self.workspace_menu_open)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::WorkspaceMenu);
+            })),
+            "composer-workspace-trigger",
+            &self.ui,
+        )
+    }
+
+    fn verify_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let label = if self.semantic_verify_enabled {
+            self.t("composer.verify_l3_on")
+        } else {
+            self.t("composer.verify_ask")
+        };
+        theme::interactive("composer-verify", label.clone(), &self.theme)
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .px(self.theme.space(8.))
+            .rounded_full()
+            .bg(if self.semantic_verify_enabled {
+                self.theme.status_verified_bg()
+            } else {
+                self.theme.soft()
+            })
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_xs()
+            .text_color(if self.semantic_verify_enabled {
+                self.theme.status_verified()
+            } else {
+                self.theme.muted()
+            })
+            .child(theme::icons::check().size(px(11.)))
+            .child(label)
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.dock_hover()))
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::VerifyToggle);
+            }))
+    }
+
+    fn skill_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let active = self.skill_label.is_some();
+        let label = self
+            .skill_label
+            .as_ref()
+            .map_or_else(|| self.t("composer.skill_pick"), ToString::to_string);
+        theme::anchor_trigger(
+            theme::interactive("composer-skill", label.clone(), &self.theme)
+                .min_h(self.theme.control_height(theme::ControlSize::Small))
+                .max_w(px(136.))
+                .px(self.theme.space(8.))
+                .rounded_full()
+                .bg(if active {
+                    self.theme.status_active_bg()
+                } else {
+                    self.theme.soft()
+                })
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_xs()
+                .text_color(if active {
+                    self.theme.status_active()
+                } else {
+                    self.theme.muted()
+                })
+                .child(theme::icons::sparkles().size(px(11.)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(label),
+                )
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.dock_hover()))
+                .aria_expanded(self.skill_menu_open)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::SkillMenu);
+                })),
+            "composer-skill-trigger",
             &self.ui,
         )
     }

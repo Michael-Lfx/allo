@@ -7,6 +7,7 @@
 
 mod button;
 mod carousel;
+pub mod charts;
 mod chrome;
 mod context;
 mod controls;
@@ -24,6 +25,9 @@ pub use button::{
     Button, IconButton, button, install_initial_tab_focus, interactive,
 };
 pub use carousel::{CarouselGeometry, CarouselState, carousel_track};
+pub use charts::{
+    DonutSegment, FlowEdgeStyle, donut_chart, flow_connector, progress_ring,
+};
 pub use chrome::{
     FilterTabs, ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
 };

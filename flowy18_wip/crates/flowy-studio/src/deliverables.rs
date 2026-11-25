@@ -15,9 +15,19 @@ use gpui::{
 
 use crate::panel::StudioPanel;
 
+/// Active tab inside the unified right-hand sheet drawer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RightDrawerTab {
+    #[default]
+    Deliverables,
+    Steps,
+    Trace,
+}
+
 /// Truncated parent directory path, keeping the tail legible in a narrow drawer.
 fn short_parent_path(path: &str) -> String {
-    let parent = Path::new(path)
+    let cleaned = crate::ports::display_path_str(path);
+    let parent = Path::new(&cleaned)
         .parent()
         .and_then(Path::to_str)
         .unwrap_or_default();
@@ -117,30 +127,109 @@ pub fn load_preview(path: &str) -> PreviewBody {
 }
 
 impl StudioPanel {
-    /// Unified right-hand sheet drawer: either the Single-Work Step Inspector
-    /// (opened from the background-works popover) or Space Deliverables & file
-    /// preview (opened from the top bar or inline receipt).
+    /// Unified right-hand sheet drawer: 3-mode inspector (Deliverables | Steps |
+    /// Trace) or focused Single-Work Inspector from the background popover.
     pub(crate) fn right_sheet_drawer(
         &self,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let (title, badge_count, body) =
-            if let Some(work) = &self.inspected_work {
-                (
-                    self.t("drawer.work_title"),
-                    None,
-                    self.work_inspector_view(work, cx),
-                )
-            } else {
-                let files = self.deliverables.as_deref().unwrap_or(&[]);
-                let count = (!files.is_empty()).then_some(files.len());
-                let body = match (&self.preview_file, &self.preview_body) {
-                    (Some(path), Some(preview)) => {
-                        self.preview_view(path, preview, cx).into_any_element()
+        let active_session = self.agent.active_session_id();
+        let body = if let Some(work) = &self.inspected_work {
+            match self.drawer_tab {
+                RightDrawerTab::Trace => match work {
+                    InspectedWork::Session { id, .. } => div()
+                        .p(self.theme.space(12.))
+                        .child(self.modal_trace_panel(id, cx))
+                        .into_any_element(),
+                    InspectedWork::Receipt(r) => {
+                        if let Some(sid) = &r.session_hint {
+                            div()
+                                .p(self.theme.space(12.))
+                                .child(self.modal_trace_panel(sid, cx))
+                                .into_any_element()
+                        } else {
+                            self.work_inspector_view(work, cx)
+                        }
                     }
-                    _ => self.deliverables_list(files, cx),
-                };
-                (self.t("chat.deliverables"), count, body)
+                },
+                _ => self.work_inspector_view(work, cx),
+            }
+        } else {
+            match self.drawer_tab {
+                RightDrawerTab::Deliverables => {
+                    let files = self.deliverables.as_deref().unwrap_or(&[]);
+                    match (&self.preview_file, &self.preview_body) {
+                        (Some(path), Some(preview)) => self
+                            .preview_view(path, preview, cx)
+                            .into_any_element(),
+                        _ => self.deliverables_list(files, cx),
+                    }
+                }
+                RightDrawerTab::Steps => {
+                    if let Some(sid) = &active_session {
+                        let title = self.agent.session_title();
+                        self.work_inspector_view(
+                            &InspectedWork::Session {
+                                id: sid.clone(),
+                                title,
+                            },
+                            cx,
+                        )
+                    } else {
+                        div()
+                            .p(self.theme.space(12.))
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("drawer.work_no_steps"))
+                            .into_any_element()
+                    }
+                }
+                RightDrawerTab::Trace => {
+                    if let Some(sid) = &active_session {
+                        div()
+                            .p(self.theme.space(12.))
+                            .child(self.modal_trace_panel(sid, cx))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .p(self.theme.space(12.))
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("trace.empty"))
+                            .into_any_element()
+                    }
+                }
+            }
+        };
+
+        let tab_pill =
+            |tab: RightDrawerTab, key: &'static str, id: &'static str| {
+                let label = self.t(key);
+                let selected = self.drawer_tab == tab;
+                theme::interactive(id, label.clone(), &self.theme)
+                    .px(self.theme.space(8.))
+                    .py(px(3.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .bg(if selected {
+                        self.theme.card()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .text_color(if selected {
+                        self.theme.ink()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        panel.drawer_tab = tab;
+                        if matches!(tab, RightDrawerTab::Deliverables) {
+                            panel.inspected_work = None;
+                        }
+                        cx.notify();
+                    }))
             };
 
         let sheet = div()
@@ -157,6 +246,7 @@ impl StudioPanel {
                     .w_full()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .gap(self.theme.space(8.))
                     .px(self.theme.space(12.))
                     .py(self.theme.space(10.))
@@ -164,30 +254,27 @@ impl StudioPanel {
                     .border_color(self.theme.line())
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .p(px(2.))
+                            .rounded_lg()
+                            .bg(self.theme.soft())
                             .flex()
                             .items_center()
-                            .gap(self.theme.space(6.))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .child(title),
-                            )
-                            .when_some(badge_count, |row, count| {
-                                row.child(
-                                    div()
-                                        .px(px(6.))
-                                        .py(px(1.))
-                                        .rounded_full()
-                                        .bg(self.theme.soft())
-                                        .text_xs()
-                                        .text_color(self.theme.muted())
-                                        .child(count.to_string()),
-                                )
-                            }),
+                            .gap(px(2.))
+                            .child(tab_pill(
+                                RightDrawerTab::Deliverables,
+                                "chat.deliverables",
+                                "drawer-tab-deliverables",
+                            ))
+                            .child(tab_pill(
+                                RightDrawerTab::Steps,
+                                "drawer.tab_steps",
+                                "drawer-tab-steps",
+                            ))
+                            .child(tab_pill(
+                                RightDrawerTab::Trace,
+                                "drawer.tab_trace",
+                                "drawer-tab-trace",
+                            )),
                     )
                     .child(
                         theme::Button::new(
@@ -701,6 +788,30 @@ impl StudioPanel {
                 )),
             );
         }
+        if self.active_project_id.is_none()
+            && let Some(first) = files.first()
+        {
+            let first_path = first.path.clone();
+            column = column.child(
+                div().w_full().pt(self.theme.space(8.)).child(
+                    theme::Button::new(
+                        "deliverables-promote-project",
+                        self.t("deliverables.promote_project"),
+                    )
+                    .variant(theme::ControlVariant::Secondary)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.register_deliverable_folder_as_project(
+                                &first_path,
+                                cx,
+                            );
+                        }),
+                    ),
+                ),
+            );
+        }
         column.into_any_element()
     }
 
@@ -764,6 +875,23 @@ impl StudioPanel {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(name),
+                    )
+                    .child(
+                        theme::Button::new(
+                            "preview-reveal-folder",
+                            self.t("board.reveal_folder"),
+                        )
+                        .variant(theme::ControlVariant::Ghost)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener({
+                                let reveal_path = external_path.clone();
+                                move |panel, _, _, cx| {
+                                    panel.reveal_file_in_os(&reveal_path, cx);
+                                }
+                            }),
+                        ),
                     )
                     .child(
                         theme::Button::new(

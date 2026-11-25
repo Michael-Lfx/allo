@@ -12,7 +12,9 @@ mod home;
 pub mod library;
 mod markdown;
 mod motion;
+mod overview;
 mod panel;
+pub mod ports;
 mod projects;
 mod starter;
 mod studio;
@@ -21,6 +23,7 @@ pub use composer::SubmitComposer;
 pub use panel::{
     StudioConfig, StudioEvent, StudioPanel, StudioSurface, TierView,
 };
+pub use ports::{SkillChip, WorkBoardSnapshot};
 pub use projects::Project;
 
 pub use credits::{CreditsViewState, grouped as grouped_credits};

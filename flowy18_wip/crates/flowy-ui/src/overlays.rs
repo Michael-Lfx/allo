@@ -467,6 +467,76 @@ pub fn dialog(
         )
 }
 
+/// Responsive full-window centered modal sheet for wide visual content.
+///
+/// Uses flex centering + max width instead of stale `window.viewport_size()`,
+/// so resizing the window reflows immediately.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors dialog overlay helper shape for wide centered sheets"
+)]
+pub fn centered_modal_sheet(
+    layer_id: impl Into<ElementId>,
+    panel_id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    max_width_px: f32,
+    theme: &ResolvedTheme,
+    ui: &UiContext,
+    cx: &App,
+    on_dismiss: impl Fn(&mut Window, &mut App) + 'static,
+    body: impl IntoElement,
+) -> AnyElement {
+    let panel = dialog(panel_id, label, theme, ui, cx)
+        .w_full()
+        .max_w(px(max_width_px))
+        .max_h_full()
+        .border_1()
+        .border_color(theme.line())
+        .shadow_lg()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(body);
+
+    let animated_panel =
+        if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
+            gpui::AnimationExt::with_animation(
+                panel,
+                "centered-modal-enter",
+                gpui::Animation::new(crate::motion::MODERATE)
+                    .with_easing(crate::motion::out_quint()),
+                |el, delta| {
+                    el.opacity(delta).relative().top(px(8.0 * (1.0 - delta)))
+                },
+            )
+            .into_any_element()
+        } else {
+            panel.into_any_element()
+        };
+
+    div()
+        .id(layer_id)
+        .occlude()
+        .absolute()
+        .inset_0()
+        .p(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.scrim())
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            move |_: &gpui::MouseDownEvent,
+                  window: &mut Window,
+                  cx: &mut App| {
+                on_dismiss(window, cx);
+                cx.stop_propagation();
+            },
+        )
+        .child(animated_panel)
+        .into_any_element()
+}
+
 /// Replacement for the retired `InteractiveElement::on_prepaint` hook.
 ///
 /// `gpui-pre` gives interactive elements no prepaint callback, but popover

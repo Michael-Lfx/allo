@@ -65,12 +65,15 @@ impl crate::panel::StudioPanel {
                     .child(message),
             );
         }
-        // The drawer sits beside whichever surface is showing, so it works in
-        // the conversation too, not just on the home stage.
+        let is_board = self.surface == crate::panel::StudioSurface::Board;
+        // The drawer sits beside Home/Chat, never on the Global Visual Board
+        // (which uses centered modal flowcharts so KPIs never squash).
         let content = if self.surface == crate::panel::StudioSurface::Home {
             self.studio(window, cx).into_any_element()
         } else if self.surface == crate::panel::StudioSurface::Chat {
             self.chat_canvas(cx).into_any_element()
+        } else if is_board {
+            self.board_canvas(cx)
         } else if self.surface == crate::panel::StudioSurface::Automation {
             self.automation_canvas(cx).into_any_element()
         } else {
@@ -78,7 +81,9 @@ impl crate::panel::StudioPanel {
         };
         column =
             column.child(div().flex().flex_1().min_h_0().child(content).when(
-                self.deliverables.is_some() || self.inspected_work.is_some(),
+                !is_board
+                    && (self.deliverables.is_some()
+                        || self.inspected_work.is_some()),
                 |row| row.child(self.right_sheet_drawer(cx)),
             ));
         if self.model_info_open && !self.model_menu_open && chrome {
@@ -103,6 +108,39 @@ impl crate::panel::StudioPanel {
                 self.i18n.locale().is_rtl(),
             ));
         }
+        if self.workspace_menu_open && chrome {
+            column = column.child(theme::popover_above(
+                "workspace-menu",
+                "composer-workspace-trigger",
+                self.workspace_menu(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
+        }
+        if self.skill_menu_open && chrome {
+            column = column.child(theme::popover_above(
+                "skill-menu",
+                "composer-skill-trigger",
+                self.skill_menu(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
+        }
+        if self.env_popover_open && chrome {
+            column = column.child(theme::popover(
+                "env-status-popover",
+                "env-status-trigger",
+                self.env_status_popover(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
+        }
         if self.bg_tasks_open && chrome {
             column = column.child(theme::popover_above(
                 "bg-tasks-popover",
@@ -117,6 +155,7 @@ impl crate::panel::StudioPanel {
         if self.credits_hover
             && !self.model_info_open
             && !self.model_menu_open
+            && !self.env_popover_open
             && chrome
         {
             column = column.child(theme::popover(
@@ -128,6 +167,9 @@ impl crate::panel::StudioPanel {
                 cx,
                 self.i18n.locale().is_rtl(),
             ));
+        }
+        if let Some(modal) = self.flow_modal_overlay(cx) {
+            column = column.child(modal);
         }
         column
     }
@@ -653,6 +695,49 @@ impl crate::panel::StudioPanel {
     }
 
     fn space_breadcrumb(&self) -> impl IntoElement {
+        if self.surface == crate::panel::StudioSurface::Board {
+            return div()
+                .id("studio-space-breadcrumb")
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .min_w_0()
+                .child(
+                    div()
+                        .size(px(22.))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(self.theme.assistant_badge_bg())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            theme::icons::sparkles()
+                                .size(px(11.))
+                                .text_color(self.theme.assistant_badge_fg()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.theme.ink())
+                        .whitespace_nowrap()
+                        .child(self.t("board.title")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(format!(
+                            "\u{00b7} {}",
+                            self.t("board.subtitle")
+                        )),
+                );
+        }
         let active_project = self.active_project_id.as_deref().and_then(|id| {
             self.projects.iter().find(|project| project.id == id)
         });
@@ -757,6 +842,7 @@ impl crate::panel::StudioPanel {
 
     fn top_bar(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let in_chat = self.surface == crate::panel::StudioSurface::Chat;
+        let is_board = self.surface == crate::panel::StudioSurface::Board;
         let can_return_to_chat = self.surface
             == crate::panel::StudioSurface::Home
             && self.agent.has_messages();
@@ -865,50 +951,466 @@ impl crate::panel::StudioPanel {
                             ),
                         )
                     })
-                    .when(in_chat || deliverable_count > 0, |row| {
-                        row.child(
-                            theme::interactive(
-                                "deliverables",
-                                deliverables_label.clone(),
-                                &self.theme,
+                    .when(
+                        !is_board && (in_chat || deliverable_count > 0),
+                        |row| {
+                            row.child(
+                                theme::interactive(
+                                    "deliverables",
+                                    deliverables_label.clone(),
+                                    &self.theme,
+                                )
+                                .px(self.theme.space(10.))
+                                .py(px(4.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(if drawer_open {
+                                    self.theme.border_strong()
+                                } else {
+                                    self.theme.line()
+                                })
+                                .bg(if drawer_open {
+                                    self.theme.soft()
+                                } else {
+                                    self.theme.canvas()
+                                })
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.ink())
+                                .cursor_pointer()
+                                .hover(|style| style.bg(self.theme.soft()))
+                                .child(
+                                    theme::icons::file_fold()
+                                        .size(px(13.))
+                                        .text_color(self.theme.muted()),
+                                )
+                                .child(deliverables_label)
+                                .on_click(
+                                    cx.listener(|panel, _, _, cx| {
+                                        panel.toggle_deliverables(cx);
+                                    }),
+                                ),
                             )
-                            .px(self.theme.space(10.))
-                            .py(px(4.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(if drawer_open {
-                                self.theme.border_strong()
-                            } else {
-                                self.theme.line()
-                            })
-                            .bg(if drawer_open {
-                                self.theme.soft()
-                            } else {
-                                self.theme.canvas()
-                            })
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.ink())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(self.theme.soft()))
-                            .child(
-                                theme::icons::file_fold()
-                                    .size(px(13.))
-                                    .text_color(self.theme.muted()),
-                            )
-                            .child(deliverables_label)
-                            .on_click(cx.listener(
-                                |panel, _, _, cx| {
-                                    panel.toggle_deliverables(cx);
-                                },
-                            )),
-                        )
-                    })
+                        },
+                    )
+                    .child(self.env_status_pill(cx))
                     .child(self.credit_pill(cx)),
             )
+    }
+
+    fn env_status_pill(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let env = crate::ports::probe_local_env(
+            &self.projects,
+            &self.installed_skills,
+            self.cloud_ready,
+            self.agent.semantic_verify_enabled(),
+        );
+        let ready = matches!(env.overall, crate::ports::EnvSeverity::Ready);
+        let dot_color = if ready {
+            self.theme.status_verified()
+        } else {
+            self.theme.status_attention()
+        };
+        let label = if ready {
+            self.t("env.pill_ready")
+        } else {
+            self.t("env.pill_attention")
+        };
+        theme::anchor_trigger(
+            theme::interactive("env-status-pill", label.clone(), &self.theme)
+                .px(self.theme.space(10.))
+                .py(px(4.))
+                .rounded_full()
+                .bg(self.theme.soft())
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if ready {
+                    self.theme.muted()
+                } else {
+                    self.theme.status_attention()
+                })
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.dock_hover()))
+                .aria_expanded(self.env_popover_open)
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.env_popover_open = !panel.env_popover_open;
+                    if panel.env_popover_open {
+                        panel.model_menu_open = false;
+                        panel.workspace_menu_open = false;
+                        panel.skill_menu_open = false;
+                        panel.bg_tasks_open = false;
+                        panel.credits_hover = false;
+                    }
+                    cx.notify();
+                }))
+                .child(div().size(px(6.)).rounded_full().bg(dot_color))
+                .child(label),
+            "env-status-trigger",
+            &self.ui,
+        )
+    }
+
+    fn env_status_popover(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let env = crate::ports::probe_local_env(
+            &self.projects,
+            &self.installed_skills,
+            self.cloud_ready,
+            self.agent.semantic_verify_enabled(),
+        );
+        let l3_enabled = env.semantic_verify_enabled;
+        let mut card = div()
+            .id("env-status-card")
+            .occlude()
+            .w(px(300.))
+            .p(self.theme.space(14.))
+            .rounded_xl()
+            .bg(self.theme.card())
+            .border_1()
+            .border_color(self.theme.line())
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
+            .child(
+                div()
+                    .pb(self.theme.space(6.))
+                    .border_b_1()
+                    .border_color(self.theme.line())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.ink())
+                            .child(self.t("env.popover_title")),
+                    )
+                    .child(
+                        div()
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(
+                                if matches!(
+                                    env.overall,
+                                    crate::ports::EnvSeverity::Ready
+                                ) {
+                                    self.theme.status_verified_bg()
+                                } else {
+                                    self.theme.status_attention_bg()
+                                },
+                            )
+                            .text_xs()
+                            .text_color(
+                                if matches!(
+                                    env.overall,
+                                    crate::ports::EnvSeverity::Ready
+                                ) {
+                                    self.theme.status_verified()
+                                } else {
+                                    self.theme.status_attention()
+                                },
+                            )
+                            .child(
+                                if matches!(
+                                    env.overall,
+                                    crate::ports::EnvSeverity::Ready
+                                ) {
+                                    self.t("env.pill_ready")
+                                } else {
+                                    self.t("env.pill_attention")
+                                },
+                            ),
+                    ),
+            );
+
+        for check in env.checks {
+            let color = match check.severity {
+                crate::ports::EnvSeverity::Ready => {
+                    self.theme.status_verified()
+                }
+                crate::ports::EnvSeverity::Warning => {
+                    self.theme.status_attention()
+                }
+            };
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_xs()
+                    .child(
+                        div()
+                            .text_color(self.theme.muted())
+                            .child(self.t(check.label_key)),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(color)
+                            .child(check.detail),
+                    ),
+            );
+        }
+
+        card.child(
+            div()
+                .pt(self.theme.space(8.))
+                .border_t_1()
+                .border_color(self.theme.line())
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(self.theme.space(8.))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.ink())
+                        .child(self.t("env.toggle_l3_label")),
+                )
+                .child(
+                    theme::Button::new(
+                        "env-toggle-l3",
+                        if l3_enabled {
+                            self.t("env.state_on")
+                        } else {
+                            self.t("env.state_off")
+                        },
+                    )
+                    .variant(if l3_enabled {
+                        theme::ControlVariant::Primary
+                    } else {
+                        theme::ControlVariant::Secondary
+                    })
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.toggle_semantic_verify(cx);
+                        }),
+                    ),
+                ),
+        )
+    }
+
+    fn workspace_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let mut menu = div()
+            .id("workspace-menu-panel")
+            .occlude()
+            .w(px(260.))
+            .max_h(px(280.))
+            .overflow_y_scroll()
+            .p(self.theme.space(8.))
+            .rounded_xl()
+            .bg(self.theme.card())
+            .border_1()
+            .border_color(self.theme.line())
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .gap(px(4.));
+
+        let default_selected = self.active_project_id.is_none();
+        menu = menu.child(
+            theme::interactive(
+                "workspace-opt-default",
+                self.t("composer.workspace_default"),
+                &self.theme,
+            )
+            .w_full()
+            .px(self.theme.space(10.))
+            .py(px(6.))
+            .rounded_lg()
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.soft()))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_xs()
+            .child(self.t("composer.workspace_default"))
+            .when(default_selected, |row| row.child(theme::icons::check()))
+            .on_click(cx.listener(|panel, _, _, cx| {
+                panel.workspace_menu_open = false;
+                panel.new_task(cx);
+            })),
+        );
+
+        for (idx, project) in self.projects.iter().enumerate() {
+            let pid = project.id.clone();
+            let selected =
+                self.active_project_id.as_deref() == Some(pid.as_str());
+            let path_label = crate::ports::display_path(&project.root);
+            menu = menu.child(
+                theme::interactive(
+                    ("workspace-opt-proj", idx as u64),
+                    project.name.clone(),
+                    &self.theme,
+                )
+                .w_full()
+                .px(self.theme.space(10.))
+                .py(px(6.))
+                .rounded_lg()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.ink())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .truncate()
+                                .child(project.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.muted())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .truncate()
+                                .child(path_label),
+                        ),
+                )
+                .when(selected, |row| row.child(theme::icons::check()))
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.workspace_menu_open = false;
+                        let _ = panel.open_project(&pid, cx);
+                    },
+                )),
+            );
+        }
+        menu
+    }
+
+    fn skill_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let mut menu = div()
+            .id("skill-menu-panel")
+            .occlude()
+            .w(px(280.))
+            .max_h(px(300.))
+            .overflow_y_scroll()
+            .p(self.theme.space(8.))
+            .rounded_xl()
+            .bg(self.theme.card())
+            .border_1()
+            .border_color(self.theme.line())
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .gap(px(4.));
+
+        if self.selected_skill.is_some() {
+            menu = menu.child(
+                theme::interactive(
+                    "skill-opt-clear",
+                    self.t("composer.skill_clear"),
+                    &self.theme,
+                )
+                .w_full()
+                .px(self.theme.space(10.))
+                .py(px(6.))
+                .rounded_lg()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .text_xs()
+                .text_color(self.theme.muted())
+                .child(self.t("composer.skill_clear"))
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.selected_skill = None;
+                    panel.skill_menu_open = false;
+                    cx.notify();
+                })),
+            );
+        }
+
+        if self.installed_skills.is_empty() {
+            menu = menu.child(
+                div()
+                    .p(self.theme.space(10.))
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .child(self.t("composer.skill_empty")),
+            );
+        } else {
+            for (idx, skill) in self.installed_skills.iter().enumerate() {
+                let chip = skill.clone();
+                let selected = self
+                    .selected_skill
+                    .as_ref()
+                    .is_some_and(|cur| cur.id == skill.id);
+                menu = menu.child(
+                    theme::interactive(
+                        ("skill-opt-item", idx as u64),
+                        skill.title.clone(),
+                        &self.theme,
+                    )
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(px(6.))
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.soft()))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(self.theme.ink())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(skill.title.clone()),
+                            )
+                            .when(!skill.summary.is_empty(), |col| {
+                                col.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(self.theme.muted())
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .child(skill.summary.clone()),
+                                )
+                            }),
+                    )
+                    .when(selected, |row| row.child(theme::icons::check()))
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            panel.selected_skill = Some(chip.clone());
+                            panel.skill_menu_open = false;
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+        }
+        menu
     }
 
     fn set_credit_hover(&mut self, hovered: bool, cx: &mut Context<'_, Self>) {

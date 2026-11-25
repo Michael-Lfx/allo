@@ -100,6 +100,7 @@ pub enum Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Studio,
+    Board,
     // Computer,
     // Agent,
     Search,
@@ -205,6 +206,10 @@ impl FlowyApp {
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
             panel.bg_tasks_open = false;
+            panel.workspace_menu_open = false;
+            panel.skill_menu_open = false;
+            panel.env_popover_open = false;
+            panel.close_flow_modal(cx);
             panel.credits_hover = false;
             panel.credits_close = None;
             cx.notify();
@@ -234,7 +239,8 @@ impl FlowyApp {
                 self.task_menu = None;
             }
             "model-list" | "model-info" | "credit-card"
-            | "bg-tasks-popover" => {
+            | "bg-tasks-popover" | "workspace-menu" | "skill-menu"
+            | "env-status-popover" | "flow-modal-panel" | "flow-modal" => {
                 self.studio.update(cx, |panel, cx| {
                     match scope {
                         "model-list" => {
@@ -245,6 +251,18 @@ impl FlowyApp {
                         }
                         "bg-tasks-popover" => {
                             panel.bg_tasks_open = false;
+                        }
+                        "workspace-menu" => {
+                            panel.workspace_menu_open = false;
+                        }
+                        "skill-menu" => {
+                            panel.skill_menu_open = false;
+                        }
+                        "env-status-popover" => {
+                            panel.env_popover_open = false;
+                        }
+                        "flow-modal-panel" | "flow-modal" => {
+                            panel.close_flow_modal(cx);
                         }
                         _ => {
                             panel.credits_hover = false;
@@ -602,6 +620,7 @@ impl FlowyApp {
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
         app.load_library(cx);
+        app.sync_studio_skills(cx);
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::new",
@@ -1483,18 +1502,27 @@ impl FlowyApp {
                     } else {
                         StudioSurface::Home
                     };
+                    panel.close_flow_modal(cx);
                     panel.set_surface(surface, cx);
+                    panel.set_notice(notice, cx);
+                });
+            }
+            Section::Board => {
+                self.studio.update(cx, |panel, cx| {
+                    panel.open_board(cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Automation => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Search => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.search",
@@ -1509,12 +1537,17 @@ impl FlowyApp {
                 self.studio.update(cx, |panel, cx| {
                     panel.model_menu_open = false;
                     panel.model_info_open = false;
+                    panel.workspace_menu_open = false;
+                    panel.skill_menu_open = false;
+                    panel.env_popover_open = false;
+                    panel.close_flow_modal(cx);
                     panel.credits_hover = false;
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Create => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.create",
@@ -1527,6 +1560,7 @@ impl FlowyApp {
             }
             Section::More => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_notice(notice, cx);
                 });
             }
@@ -1600,6 +1634,13 @@ impl FlowyApp {
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
+                if self.section == Section::Board
+                    && self.studio.read(cx).surface != StudioSurface::Board
+                {
+                    self.nav_back.push(Section::Board);
+                    self.nav_forward.clear();
+                    self.section = Section::Studio;
+                }
                 self.load_library(cx);
                 cx.notify();
             }
@@ -1689,6 +1730,7 @@ impl FlowyApp {
                         panel.set_i18n(i18n, cx);
                     });
                     app.sync_artifact_preview_locale(cx);
+                    app.sync_studio_skills(cx);
                     cx.notify();
                 });
                 if updated.is_err() {
@@ -1743,6 +1785,13 @@ impl Render for FlowyApp {
                     && self.section == Section::Library)
                     .then(|| self.library.read(cx).modal_scope())
                     .flatten()
+            })
+            .or_else(|| {
+                (self.screen == Screen::Main
+                    && self.section != Section::More
+                    && self.section != Section::Library
+                    && self.studio.read(cx).has_flow_modal())
+                .then(|| gpui::SharedString::from("flow-modal-panel"))
             });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
@@ -1765,32 +1814,26 @@ impl Render for FlowyApp {
                     && self.section != Section::More
                     && self.section != Section::Library
                     && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).model_menu_open =>
+                        != StudioSurface::Automation =>
             {
-                Some("model-list")
-            }
-            settings::Picker::None
-                if self.active_dialog == state::ActiveDialog::None
-                    && self.screen == Screen::Main
-                    && self.section != Section::More
-                    && self.section != Section::Library
-                    && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).model_info_open =>
-            {
-                Some("model-info")
-            }
-            settings::Picker::None
-                if self.active_dialog == state::ActiveDialog::None
-                    && self.screen == Screen::Main
-                    && self.section != Section::More
-                    && self.section != Section::Library
-                    && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).credits_hover =>
-            {
-                Some("credit-card")
+                let studio = self.studio.read(cx);
+                if studio.model_menu_open {
+                    Some("model-list")
+                } else if studio.model_info_open {
+                    Some("model-info")
+                } else if studio.workspace_menu_open {
+                    Some("workspace-menu")
+                } else if studio.skill_menu_open {
+                    Some("skill-menu")
+                } else if studio.env_popover_open {
+                    Some("env-status-popover")
+                } else if studio.bg_tasks_open {
+                    Some("bg-tasks-popover")
+                } else if studio.credits_hover {
+                    Some("credit-card")
+                } else {
+                    None
+                }
             }
             settings::Picker::None => None,
         }

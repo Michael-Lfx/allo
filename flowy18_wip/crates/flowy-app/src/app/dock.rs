@@ -7,6 +7,7 @@ use gpui::{
 #[derive(Clone, Copy)]
 enum DockIcon {
     NewTask,
+    Board,
     // Search,
     Library,
     Create,
@@ -20,6 +21,7 @@ impl DockIcon {
     fn render(self) -> theme::icons::Icon {
         match self {
             Self::NewTask => theme::icons::square_pen(),
+            Self::Board => theme::icons::layout_grid(),
             // Self::Search => theme::icons::search(),
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
@@ -84,6 +86,8 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let (
             active_work,
+            board_blockers,
+            board_active,
             in_chat,
             chief_selected,
             new_task_selected,
@@ -101,6 +105,8 @@ impl FlowyApp {
                 .and_then(|session| studio.agent.session_preview(&session.id));
             (
                 studio.total_active_work_count(),
+                studio.board_blocker_count(),
+                studio.board_active_count(),
                 in_chat,
                 in_chat && studio.active_project_id.is_none(),
                 self.section == Section::Studio && !in_chat,
@@ -108,8 +114,64 @@ impl FlowyApp {
                 studio.agent.busy_session_ids(),
             )
         };
-        let mut navigation =
-            div().flex().flex_col().gap_1().child(Self::nav_item(
+        let board_row = item_row(
+            self.theme,
+            "board",
+            self.t("dock.board"),
+            self.section == Section::Board,
+            DockIcon::Board,
+        )
+        .when(board_blockers > 0, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(self.theme.status_attention_bg())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(self.theme.status_attention())
+                    .child(board_blockers.to_string()),
+            )
+        })
+        .when(board_blockers == 0 && board_active > 0, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(self.theme.status_active_bg())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.theme.status_active())
+                    .child(board_active.to_string()),
+            )
+        })
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.select_navigation("board", Section::Board, cx);
+        }));
+        let skills_selected = self.section == Section::More
+            && self.persona.page == super::more::Page::Skills;
+        let skills_row = item_row(
+            self.theme,
+            "skills",
+            self.t("more.skills"),
+            skills_selected,
+            DockIcon::Skills,
+        )
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.user_menu = false;
+            app.select_more_page(super::more::Page::Skills, cx);
+        }));
+
+        // Top core 4 entries: New Task, Visual Board, Library, Skills.
+        let navigation = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(Self::nav_item(
                 &self.theme,
                 "new-task",
                 self.t("dock.new_task"),
@@ -117,19 +179,18 @@ impl FlowyApp {
                 Section::Studio,
                 DockIcon::NewTask,
                 cx,
-            ));
-
-        // Primary space navigation (Library stays prominent); secondary tools sit
-        // quieter below a subtle hairline divider.
-        navigation = navigation.child(Self::nav_item(
-            &self.theme,
-            "library",
-            self.t("dock.library"),
-            self.section == Section::Library,
-            Section::Library,
-            DockIcon::Library,
-            cx,
-        ));
+            ))
+            .child(board_row)
+            .child(Self::nav_item(
+                &self.theme,
+                "library",
+                self.t("dock.library"),
+                self.section == Section::Library,
+                Section::Library,
+                DockIcon::Library,
+                cx,
+            ))
+            .child(skills_row);
         let mut secondary = div()
             .mt_1()
             .pt_1()
@@ -154,21 +215,13 @@ impl FlowyApp {
                 cx,
             ));
         }
-        secondary = secondary
-            .child(self.more_page_dock_item(
-                "skills",
-                "more.skills",
-                super::more::Page::Skills,
-                DockIcon::Skills,
-                cx,
-            ))
-            .child(self.more_page_dock_item(
-                "personalization",
-                "more.personal",
-                super::more::Page::Personal,
-                DockIcon::Personalization,
-                cx,
-            ));
+        secondary = secondary.child(self.more_page_dock_item(
+            "personalization",
+            "more.personal",
+            super::more::Page::Personal,
+            DockIcon::Personalization,
+            cx,
+        ));
 
         div()
             .id("dock-scroll")
@@ -495,11 +548,12 @@ impl FlowyApp {
                 session.project_id.as_deref() == Some(project_id.as_str())
                     && busy_ids.contains(&session.id)
             });
-            let project_attention = !project_busy
-                && sessions.iter().any(|session| {
-                    session.project_id.as_deref() == Some(project_id.as_str())
-                        && attention_ids.contains(&session.id)
-                });
+            // Never mask a pending approval / failed verification behind another
+            // running session in the same project.
+            let project_attention = sessions.iter().any(|session| {
+                session.project_id.as_deref() == Some(project_id.as_str())
+                    && attention_ids.contains(&session.id)
+            });
             let flip_offset = flip.read(cx).offset_for(&project_id);
             let toggle_label = if expanded {
                 self.tf("project.collapse", &[("name", &project.name)])
@@ -607,6 +661,9 @@ impl FlowyApp {
                                 .text_size(self.theme.body_size())
                                 .child(project.name.clone()),
                         )
+                        .when(project_attention, |row| {
+                            row.child(attention_dot(self.theme))
+                        })
                         .when(project_busy, |row| {
                             row.child(running_dot(
                                 SharedString::from(format!(
@@ -614,9 +671,6 @@ impl FlowyApp {
                                 )),
                                 self.theme,
                             ))
-                        })
-                        .when(project_attention, |row| {
-                            row.child(attention_dot(self.theme))
                         })
                         .when(project.pinned, |row| {
                             row.child(
@@ -655,8 +709,7 @@ impl FlowyApp {
                     session.project_id.as_deref() == Some(project_id.as_str())
                 }) {
                     let busy = busy_ids.contains(&session.id);
-                    let attention =
-                        !busy && attention_ids.contains(&session.id);
+                    let attention = attention_ids.contains(&session.id);
                     rows = rows.child(self.conversation_row(
                         window,
                         cx,
@@ -809,14 +862,12 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .when(attention, |row| row.child(attention_dot(self.theme)))
             .when(busy, |row| {
                 row.child(running_dot(
                     SharedString::from(format!("dock-running-{session_id}")),
                     self.theme,
                 ))
-            })
-            .when(attention && !busy, |row| {
-                row.child(attention_dot(self.theme))
             })
             .when(show_menu, |row| {
                 row.child(self.conversation_row_actions(
@@ -926,7 +977,7 @@ impl FlowyApp {
             };
             let selected = active.as_deref() == Some(session_id.as_str());
             let busy = busy_ids.contains(&session_id);
-            let attention = !busy && attention_ids.contains(&session_id);
+            let attention = attention_ids.contains(&session_id);
             let flip_offset = flip.read(cx).offset_for(&session_id);
             let row = self.conversation_row(
                 window,
@@ -1198,6 +1249,9 @@ impl FlowyApp {
     pub(super) fn toggle_user_menu(&mut self, cx: &mut Context<'_, Self>) {
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
+            panel.workspace_menu_open = false;
+            panel.skill_menu_open = false;
+            panel.env_popover_open = false;
             cx.notify();
         });
         self.user_menu = !self.user_menu;

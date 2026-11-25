@@ -38,6 +38,7 @@ fn new_submission_id() -> u128 {
 pub enum StudioSurface {
     Home,
     Chat,
+    Board,
     Automation,
     Placeholder {
         title_key: &'static str,
@@ -162,6 +163,21 @@ pub struct StudioPanel {
     pub model_info_open: bool,
     pub model_menu_open: bool,
     pub bg_tasks_open: bool,
+    pub env_popover_open: bool,
+    pub workspace_menu_open: bool,
+    pub skill_menu_open: bool,
+    pub(crate) board_snapshot: crate::ports::WorkBoardSnapshot,
+    pub(crate) board_filter: crate::overview::BoardFilter,
+    pub(crate) board_project_filter: Option<String>,
+    pub(crate) flow_modal_session: Option<String>,
+    pub(crate) flow_modal_branch: Option<String>,
+    pub(crate) flow_modal_tab: crate::overview::FlowModalTab,
+    pub(crate) flow_modal_override_ack: bool,
+    pub(crate) trace_filter: crate::overview::TraceFilter,
+    pub(crate) drawer_tab: crate::deliverables::RightDrawerTab,
+    pub(crate) selected_skill: Option<crate::ports::SkillChip>,
+    pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
+    board_generation: u64,
     pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
@@ -316,6 +332,14 @@ impl StudioPanel {
                     "model-info" => panel.model_info_open = false,
                     "credit-card" => panel.credits_hover = false,
                     "bg-tasks-popover" => panel.bg_tasks_open = false,
+                    "env-status-popover" => panel.env_popover_open = false,
+                    "workspace-menu" => panel.workspace_menu_open = false,
+                    "skill-menu" => panel.skill_menu_open = false,
+                    "flow-modal" | "flow-modal-panel" => {
+                        panel.flow_modal_session = None;
+                        panel.flow_modal_branch = None;
+                        panel.flow_modal_override_ack = false;
+                    }
                     _ => return,
                 }
                 cx.notify();
@@ -402,7 +426,41 @@ impl StudioPanel {
                         panel.model_menu_open = !panel.model_menu_open
                             || panel.model_menu_anchor != *anchor;
                         panel.model_menu_anchor = anchor;
+                        if panel.model_menu_open {
+                            panel.workspace_menu_open = false;
+                            panel.skill_menu_open = false;
+                            panel.env_popover_open = false;
+                        }
                         cx.notify();
+                    }
+                    ComposerEvent::WorkspaceMenu => {
+                        panel.workspace_menu_open = !panel.workspace_menu_open;
+                        if panel.workspace_menu_open {
+                            panel.model_menu_open = false;
+                            panel.skill_menu_open = false;
+                            panel.env_popover_open = false;
+                        }
+                        cx.notify();
+                    }
+                    ComposerEvent::VerifyToggle => {
+                        panel.toggle_semantic_verify(cx);
+                    }
+                    ComposerEvent::SkillMenu => {
+                        panel.skill_menu_open = !panel.skill_menu_open;
+                        if panel.skill_menu_open {
+                            panel.model_menu_open = false;
+                            panel.workspace_menu_open = false;
+                            panel.env_popover_open = false;
+                        }
+                        cx.notify();
+                    }
+                    ComposerEvent::CloudNotReady => {
+                        panel.model_menu_open = true;
+                        panel.model_menu_anchor = "composer-model-trigger";
+                        panel.emit_notice(
+                            Some("notice.model_setup_required"),
+                            cx,
+                        );
                     }
                 }
             });
@@ -464,6 +522,21 @@ impl StudioPanel {
             model_info_open,
             model_menu_open: false,
             bg_tasks_open: false,
+            env_popover_open: false,
+            workspace_menu_open: false,
+            skill_menu_open: false,
+            board_snapshot: crate::ports::WorkBoardSnapshot::default(),
+            board_filter: crate::overview::BoardFilter::All,
+            board_project_filter: None,
+            flow_modal_session: None,
+            flow_modal_branch: None,
+            flow_modal_tab: crate::overview::FlowModalTab::Action,
+            flow_modal_override_ack: false,
+            trace_filter: crate::overview::TraceFilter::All,
+            drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
+            selected_skill: None,
+            installed_skills: Vec::new(),
+            board_generation: 0,
             tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
             i18n,
@@ -490,6 +563,7 @@ impl StudioPanel {
         };
         panel.start_pump(cx);
         panel.refresh_chat(cx);
+        panel.refresh_board_snapshot();
         // A persisted failed status must be visible on the first frame too.
         panel.refresh_working(cx);
         panel
@@ -593,6 +667,7 @@ impl StudioPanel {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         let background_claim_settled = self.agent.has_active_claim()
             && self
                 .agent
@@ -794,6 +869,12 @@ impl StudioPanel {
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
+        self.env_popover_open = false;
+        self.workspace_menu_open = false;
+        self.skill_menu_open = false;
+        self.flow_modal_session = None;
+        self.flow_modal_branch = None;
+        self.flow_modal_override_ack = false;
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -802,6 +883,7 @@ impl StudioPanel {
         self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         self.emit_notice(None, cx);
         self.credits_hover = false;
         self.credits_close = None;
@@ -813,12 +895,19 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
+                self.env_popover_open = false;
+                self.workspace_menu_open = false;
+                self.skill_menu_open = false;
+                self.flow_modal_session = None;
+                self.flow_modal_branch = None;
+                self.flow_modal_override_ack = false;
                 self.clear_right_sheet();
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
                 self.surface = StudioSurface::Home;
                 self.refresh_chat(cx);
+                self.refresh_board_snapshot();
                 self.emit_notice(None, cx);
                 self.set_prompt_text("", cx);
                 cx.emit(StudioEvent::SessionsChanged);
@@ -835,6 +924,12 @@ impl StudioPanel {
         self.model_info_open = false;
         self.model_menu_open = false;
         self.bg_tasks_open = false;
+        self.env_popover_open = false;
+        self.workspace_menu_open = false;
+        self.skill_menu_open = false;
+        self.flow_modal_session = None;
+        self.flow_modal_branch = None;
+        self.flow_modal_override_ack = false;
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -842,6 +937,7 @@ impl StudioPanel {
         self.surface = StudioSurface::Home;
         self.set_prompt_text("", cx);
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
@@ -1115,8 +1211,29 @@ impl StudioPanel {
             self.emit_notice(Some("chat.publish.context"), cx);
             return;
         };
-        match self.agent.override_deliver_artifact(
+        self.confirm_override_for_session(
             &session_id,
+            report_id,
+            artifact_path,
+            cx,
+        );
+    }
+
+    /// Explicit override bound to a specific session and real non-empty
+    /// verification `report_id` (required by kernel `f8fb6b491`).
+    pub(crate) fn confirm_override_for_session(
+        &mut self,
+        session_id: &str,
+        report_id: &str,
+        artifact_path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if report_id.trim().is_empty() {
+            self.emit_notice(Some("verify.override.missing_report"), cx);
+            return;
+        }
+        match self.agent.override_deliver_artifact(
+            session_id,
             report_id,
             artifact_path,
         ) {
@@ -1124,6 +1241,8 @@ impl StudioPanel {
                 if let Ok(store) = self.agent.artifact_store()
                     && let Ok(records) = store.list()
                 {
+                    // Single hash query instead of O(N*E) per-record scan.
+                    let overridden = self.agent.overridden_artifact_hashes();
                     let items = records
                         .into_iter()
                         .map(|record| {
@@ -1134,7 +1253,7 @@ impl StudioPanel {
                                 .unwrap_or_default()
                                 .to_ascii_lowercase();
                             let override_used =
-                                self.agent.artifact_was_overridden(&receipt.sha256);
+                                overridden.contains(&receipt.sha256);
                             crate::library::LibraryItem {
                                 id: receipt.artifact_id,
                                 title: receipt.display_name,
@@ -1169,7 +1288,9 @@ impl StudioPanel {
                         .collect();
                     self.set_artifacts(items, cx);
                 }
+                self.flow_modal_override_ack = false;
                 self.refresh_chat(cx);
+                self.refresh_board_snapshot();
                 self.emit_notice(None, cx);
                 cx.emit(StudioEvent::ArtifactsChanged);
             }
@@ -1212,6 +1333,7 @@ impl StudioPanel {
             self.set_prompt_text("", cx);
         }
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
     }
@@ -1289,15 +1411,22 @@ impl StudioPanel {
         // Text queued for the next render has not reached the prompt state yet;
         // it is still what the user asked to send.
         let typed = self.prompt_text(cx);
+        let trimmed = typed.trim();
+        let text = if let Some(skill) = &self.selected_skill
+            && !trimmed.is_empty()
+        {
+            format!("[Skill: {}]\n{trimmed}", skill.title)
+        } else {
+            trimmed.to_string()
+        };
         tracing::debug!(
             target: "flowy.prompt",
             stage = "StudioPanel::send_prompt",
             cloud_ready = self.cloud_ready,
             model = ?model,
-            chars = typed.trim().chars().count(),
+            chars = text.chars().count(),
             "enter"
         );
-        let text = typed.trim().to_string();
         if text.is_empty() {
             tracing::debug!(
                 target: "flowy.prompt",
@@ -1717,6 +1846,7 @@ impl StudioPanel {
                     root: project.root,
                 }));
         }
+        self.refresh_board_snapshot();
         cx.notify();
         Ok(())
     }
@@ -1740,6 +1870,7 @@ impl StudioPanel {
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
         }
+        self.refresh_board_snapshot();
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
         Ok(())
@@ -1826,6 +1957,171 @@ impl StudioPanel {
         self.new_task(cx);
     }
 
+    pub fn new_conversation(&mut self, cx: &mut Context<'_, Self>) {
+        self.new_task(cx);
+    }
+
+    /// Rebuilds the cached Visual Board snapshot from `AgentHandle`.
+    /// Called strictly on `AgentUpdate`, project changes, or opening the Board
+    /// — never on idle 33ms pump ticks or inside `Render::render`.
+    pub(crate) fn refresh_board_snapshot(&mut self) {
+        use crate::ports::BoardDataSource as _;
+        self.board_generation = self.board_generation.wrapping_add(1);
+        let default_label = self.t("studio.space_default_sub");
+        self.board_snapshot = self.agent.build_board_snapshot(
+            &self.projects,
+            &self.pending_receipts,
+            &default_label,
+            self.board_generation,
+        );
+    }
+
+    /// Opens the Global Visual Board (`StudioSurface::Board`).
+    pub fn open_board(&mut self, cx: &mut Context<'_, Self>) {
+        self.board_project_filter = None;
+        self.flow_modal_session = None;
+        self.clear_right_sheet();
+        self.bg_tasks_open = false;
+        self.model_menu_open = false;
+        self.workspace_menu_open = false;
+        self.skill_menu_open = false;
+        self.env_popover_open = false;
+        self.surface = StudioSurface::Board;
+        self.refresh_board_snapshot();
+        cx.notify();
+    }
+
+    /// Opens the Global Visual Board pre-filtered to one local project.
+    pub fn open_board_for_project(
+        &mut self,
+        project_id: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.open_board(cx);
+        self.board_project_filter = project_id;
+        cx.notify();
+    }
+
+    /// Opens the centered Flowchart Modal for `session_id`.
+    pub(crate) fn open_flow_modal(
+        &mut self,
+        session_id: String,
+        branch_id: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.flow_modal_session = Some(session_id);
+        self.flow_modal_branch = branch_id;
+        self.flow_modal_tab = crate::overview::FlowModalTab::Action;
+        self.flow_modal_override_ack = false;
+        cx.notify();
+    }
+
+    /// Closes the centered Flowchart Modal cleanly.
+    pub fn close_flow_modal(&mut self, cx: &mut Context<'_, Self>) {
+        self.flow_modal_session = None;
+        self.flow_modal_branch = None;
+        self.flow_modal_override_ack = false;
+        cx.notify();
+    }
+
+    /// Whether the centered Flowchart Modal is currently visible.
+    #[must_use]
+    pub const fn has_flow_modal(&self) -> bool {
+        self.flow_modal_session.is_some()
+    }
+
+    /// Jumps straight into the Flowchart Modal for the first session waiting on
+    /// user approval.
+    pub(crate) fn open_first_blocker_modal(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let found = self.board_snapshot.sessions.iter().find_map(|group| {
+            group
+                .branches
+                .iter()
+                .find(|branch| {
+                    matches!(
+                        branch.phase,
+                        crate::ports::BranchPhase::NeedsApproval { .. }
+                    )
+                })
+                .map(|branch| (group.session_id.clone(), branch.id.clone()))
+        });
+        if let Some((sid, bid)) = found {
+            self.open_flow_modal(sid, Some(bid), cx);
+        } else {
+            self.emit_notice(Some("board.no_blockers"), cx);
+        }
+    }
+
+    /// Pushes installed skills from `flowy-app` (`flowy-skills`) into Studio.
+    pub fn set_installed_skills(
+        &mut self,
+        skills: Vec<crate::ports::SkillChip>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.installed_skills != skills {
+            self.installed_skills = skills;
+            cx.notify();
+        }
+    }
+
+    /// Cached count of branches waiting for explicit user approval.
+    #[must_use]
+    pub const fn board_blocker_count(&self) -> usize {
+        self.board_snapshot.kpi.approval_count
+    }
+
+    /// Cached count of active (waiting approval + running) branches for dock badge.
+    #[must_use]
+    pub const fn board_active_count(&self) -> usize {
+        self.board_snapshot.kpi.approval_count
+            + self.board_snapshot.kpi.running_count
+    }
+
+    /// Toggles the kernel L3 semantic verification disclosure switch.
+    pub(crate) fn toggle_semantic_verify(&self, cx: &mut Context<'_, Self>) {
+        let next = !self.agent.semantic_verify_enabled();
+        self.agent.set_semantic_verify_enabled(next);
+        cx.notify();
+    }
+
+    /// Opens the parent directory holding `path` in the OS file manager.
+    pub(crate) fn reveal_file_in_os(
+        &mut self,
+        path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.reveal_file(path, cx);
+    }
+
+    /// Registers the parent directory of a delivered file as a persistent local
+    /// project in the sidebar (without modifying kernel workspace paths).
+    pub(crate) fn register_deliverable_folder_as_project(
+        &mut self,
+        file_path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(parent) = std::path::Path::new(file_path).parent() else {
+            self.emit_notice(Some("project.invalid_folder"), cx);
+            return;
+        };
+        let name = parent
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("Flowy")
+            .to_owned();
+        match self.create_project(&name, parent, cx) {
+            Ok(_) => {
+                self.refresh_board_snapshot();
+                self.emit_notice(Some("deliverables.promoted_project"), cx);
+            }
+            Err(key) => self.emit_notice(Some(key), cx),
+        }
+    }
+
     pub(crate) fn placeholder_title(&self) -> String {
         match self.surface {
             StudioSurface::Placeholder { title_key, .. } => self.t(title_key),
@@ -1852,6 +2148,20 @@ impl Render for StudioPanel {
         let can_submit = self.cloud_ready
             || self.catalog_loading
             || self.agent.requires_cloud_ready();
+        let workspace_label = self
+            .active_project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|p| p.id == id))
+            .map_or_else(
+                || self.t("composer.workspace_default"),
+                |project| project.name.clone(),
+            );
+        let workspace_bound = self.active_project_id.is_some();
+        let semantic_verify_enabled = self.agent.semantic_verify_enabled();
+        let skill_label = self
+            .selected_skill
+            .as_ref()
+            .map(|skill| skill.title.clone());
         self.composer.update(cx, |composer, cx| {
             composer.sync_state(
                 self.model,
@@ -1859,6 +2169,12 @@ impl Render for StudioPanel {
                 self.submission_pending || self.status.is_busy(),
                 model_label,
                 can_submit,
+                workspace_label,
+                workspace_bound,
+                self.workspace_menu_open,
+                semantic_verify_enabled,
+                skill_label,
+                self.skill_menu_open,
                 cx,
             );
         });
