@@ -4962,16 +4962,43 @@ fn archive_cursor_at_end(path: &Path) -> usize {
 /// 同），「N 跑」实为 1 跑。标记让请求互不相同而被测材料不变：原 system
 /// 逐字节保留在前面，user 一字不动。标记措辞明示「采样编号、无需处理」，
 /// 放在 system 末尾——离输出契约最远，不夹在判据中间。
+///
+/// 标记带**运行前缀**：采样编号在进程内是确定的（夹具序 × 跑数 + 跑序），
+/// 同一臂若中断后重跑，请求会与上一次逐字节相同、整臂被缓存命中而读数
+/// 看不出来。前缀每次进程启动取一次，重跑必然是新请求；同一次运行内不变，
+/// 臂内各采样仍互不相同。
 struct SampleMarker {
     inner: Arc<dyn nomifun_learning::LearningCompleter>,
     marker: String,
 }
 
+/// 运行前缀（进程级一次）：取启动时刻的 Unix 毫秒。测试经
+/// [`SampleMarker::with_run_prefix`] 注入确定值。
+fn replay_run_prefix() -> &'static str {
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis().to_string())
+            .unwrap_or_else(|_| "0".to_owned())
+    })
+}
+
 impl SampleMarker {
     fn new(inner: Arc<dyn nomifun_learning::LearningCompleter>, sample: u32) -> Self {
+        Self::with_run_prefix(inner, replay_run_prefix(), sample)
+    }
+
+    fn with_run_prefix(
+        inner: Arc<dyn nomifun_learning::LearningCompleter>,
+        run_prefix: &str,
+        sample: u32,
+    ) -> Self {
         Self {
             inner,
-            marker: format!("\n\n（采样编号 #{sample}：仅用于区分重复请求，无需处理、不要提及。）"),
+            marker: format!(
+                "\n\n（采样编号 {run_prefix}-{sample}：仅用于区分重复请求，无需处理、不要提及。）"
+            ),
         }
     }
 
@@ -6444,9 +6471,10 @@ mod review_replay_tests {
     }
 
     /// T1 每次采样的采样编号唯一（破缓存的前提，见 [`SampleMarker`]）：三夹具
-    /// × 5 跑 = 15 次请求的 system 两两不同，采样编号恰是 #0–#14 各一次。
-    /// 夹具循环一跑一调 [`replay_fixture_runs`]，编号仍按「夹具序 × 每夹具
-    /// 跑数 + 跑序」合成——夹具内同号会让第 2 跑起被服务端缓存命中。
+    /// × 5 跑 = 15 次请求的 system 两两不同；同一次运行内运行前缀相同，采样
+    /// 编号恰是 0–14 各一次。夹具循环一跑一调 [`replay_fixture_runs`]，编号
+    /// 仍按「夹具序 × 每夹具跑数 + 跑序」合成——夹具内同号会让第 2 跑起被
+    /// 服务端缓存命中。
     #[tokio::test]
     #[serial_test::serial]
     async fn t1_every_sample_gets_a_distinct_marker_across_fixtures_and_runs() {
@@ -6473,22 +6501,92 @@ mod review_replay_tests {
         .unwrap();
         let systems = scripted.systems.lock().unwrap().clone();
         assert_eq!(systems.len(), 15, "三夹具 × 5 跑");
-        let markers: Vec<String> = systems
+        // 标记形态：「（采样编号 <运行前缀>-<编号>：…」。
+        let markers: Vec<(String, String)> = systems
             .iter()
             .map(|system| {
                 let (_, tail) = system
-                    .rsplit_once("（采样编号 #")
+                    .rsplit_once("（采样编号 ")
                     .expect("每次请求的 system 末尾都有采样标记");
-                tail.split('：').next().unwrap_or_default().to_owned()
+                let id = tail.split('：').next().unwrap_or_default();
+                let (run_prefix, sample) = id
+                    .split_once('-')
+                    .unwrap_or_else(|| panic!("采样编号须为「运行前缀-编号」：{id}"));
+                (run_prefix.to_owned(), sample.to_owned())
             })
             .collect();
+        let run_prefixes: std::collections::BTreeSet<String> =
+            markers.iter().map(|(prefix, _)| prefix.clone()).collect();
         assert_eq!(
-            markers,
+            run_prefixes.len(),
+            1,
+            "同一次运行内运行前缀相同：{run_prefixes:?}"
+        );
+        assert_eq!(
+            markers.iter().map(|(_, sample)| sample.clone()).collect::<Vec<_>>(),
             (0..15).map(|sample| sample.to_string()).collect::<Vec<_>>(),
-            "采样编号 #0–#14 各一次"
+            "采样编号 0–14 各一次"
         );
         let unique: std::collections::BTreeSet<&String> = systems.iter().collect();
         assert_eq!(unique.len(), systems.len(), "15 次请求的 system 两两不同");
+    }
+
+    /// 运行前缀破「重跑被缓存」：采样编号在进程内是确定的，同一臂中断后
+    /// 重跑若请求逐字节相同，整臂会被服务端缓存命中而读数看不出来。不同
+    /// 运行前缀下同一采样编号的标记必须不同——重跑必然是新请求。
+    #[tokio::test]
+    async fn sample_marker_differs_across_run_prefixes_so_a_rerun_is_never_cached() {
+        use nomifun_learning::LearningCompleter;
+
+        #[derive(Default)]
+        struct Capturing(std::sync::Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl LearningCompleter for Capturing {
+            async fn complete(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                _system: &str,
+                _user: &str,
+                _max_tokens: u32,
+            ) -> Result<String, nomifun_common::AppError> {
+                unreachable!("回放臂只走 json+thinking")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                system: &str,
+                _user: &str,
+                _max_tokens: u32,
+                _temperature: Option<f32>,
+            ) -> Result<String, nomifun_common::AppError> {
+                self.0.lock().unwrap().push(system.to_owned());
+                Ok("{}".into())
+            }
+        }
+
+        /// 用给定运行前缀发一次请求，返回内层实际收到的 system。
+        async fn captured_system(run_prefix: &str) -> String {
+            let inner = Arc::new(Capturing::default());
+            let marker = SampleMarker::with_run_prefix(inner.clone(), run_prefix, 7);
+            let _ = marker
+                .complete_json_with_thinking(None, "系统提示", "材料", 1024, None)
+                .await;
+            let captured = inner.0.lock().unwrap().clone();
+            captured
+                .into_iter()
+                .next()
+                .expect("内层恰好收到一次请求")
+        }
+        let first_run = captured_system("1700000000000").await;
+        let rerun = captured_system("1700000000001").await;
+        assert_ne!(
+            first_run, rerun,
+            "同一采样编号、不同运行前缀 → 请求不同（重跑不被缓存）"
+        );
+        assert!(
+            first_run.starts_with("系统提示") && first_run.contains("1700000000000-7"),
+            "原 system 在前、标记含运行前缀与编号：{first_run}"
+        );
     }
 
     /// T1 汇总（票面 R-d/R-e 读数面）：Scripted 批 A（打回锚）3 拒 2 放 →
