@@ -20,7 +20,7 @@
 //! it is written while a turn is running, and the index is rewritten at turn
 //! boundaries.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -771,12 +771,35 @@ impl AcceptanceQueue {
         &self,
         now_ms: u64,
     ) -> io::Result<Vec<String>> {
+        self.release_uncommitted_leases_except(now_ms, &BTreeSet::new())
+    }
+
+    /// Cold-boot lease release that protects receipts bound to sessions in
+    /// `protected_sessions` (such as sessions suspended in
+    /// [`crate::TurnState::WaitingForUser`] awaiting a persisted user card), so
+    /// restarts never auto-requeue or drop user approval/disambiguation gates.
+    pub fn release_uncommitted_leases_except(
+        &self,
+        now_ms: u64,
+        protected_sessions: &BTreeSet<String>,
+    ) -> io::Result<Vec<String>> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let receipts = self.replay_detailed_locked()?.0;
         let mut entries = Vec::new();
         let mut released_ids = Vec::new();
         for receipt in receipts {
+            let protected = receipt
+                .target_session_id
+                .as_deref()
+                .is_some_and(|sid| protected_sessions.contains(sid))
+                || receipt
+                    .session_hint
+                    .as_deref()
+                    .is_some_and(|sid| protected_sessions.contains(sid));
+            if protected {
+                continue;
+            }
             if receipt.completed_at_ms.is_none()
                 && !receipt.dead
                 && !receipt.cancelled

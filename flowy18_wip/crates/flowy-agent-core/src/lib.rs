@@ -22,8 +22,10 @@ pub use loop_runner::{
 };
 pub use run_fence::{PublishToken, RunFence, RunTicket};
 pub use session::{
-    DeliveryCommit, DeliveryCommitter, RequiredDeliverable, SessionIndex,
-    SessionOrigin, SessionRecord, SessionWorkspace, SubmissionOutcome,
+    BranchHeartbeat, DeliveryCommit, DeliveryCommitter, DisambiguationOption,
+    FactEntry, FactStatus, ObjectVerifyState, PendingCard, RequiredDeliverable,
+    SessionIndex, SessionOrigin, SessionRecord, SessionWorkspace,
+    StopHandoffManifest, SubmissionOutcome, TrackedObject, TrackedObjectKind,
     TurnState, WorkContract,
 };
 pub use transport::{

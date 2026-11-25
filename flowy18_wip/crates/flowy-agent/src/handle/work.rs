@@ -2,10 +2,11 @@
 
 use super::{
     AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate, ArtifactStore,
-    BTreeSet, CancelOutcome, CardAction, CardActionOutcome, ChatLine, Engine,
-    MessageSource, Ordering, ReceiptState, Role, SessionRecord,
-    SubmissionOutcome, TaskTarget, TurnState, TurnStatus, WorkStatus, lock,
-    log_storage_io_error, now_ms, persist_index,
+    BTreeSet, CancelOutcome, CardAction, CardActionOutcome, CardSelection,
+    ChatLine, Engine, MessageSource, Ordering, PendingCard, ReceiptState,
+    ResumedSubmission, Role, SessionRecord, SubmissionOutcome, TaskTarget,
+    TurnState, TurnStatus, WorkStatus, lock, log_storage_io_error, now_ms,
+    persist_index,
 };
 use crate::artifact_store::PublicationState;
 
@@ -367,6 +368,197 @@ impl AgentHandle {
                     receipt_id: requeued.id,
                 })
             }
+            CardAction::ResolveCard {
+                session_id,
+                card_id,
+                selection,
+            } => self.resolve_card_action(&session_id, &card_id, selection),
+        }
+    }
+
+    fn resolve_card_action(
+        &self,
+        session_id: &str,
+        card_id: &str,
+        selection: CardSelection,
+    ) -> Result<CardActionOutcome, &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        let record = engine.session(session_id).ok_or("notice.agent_failed")?;
+        let Some(card) = record
+            .pending_cards
+            .iter()
+            .find(|item| item.card_id() == card_id)
+            .cloned()
+        else {
+            return Err("notice.card_not_found");
+        };
+        match (card, selection) {
+            (
+                PendingCard::Disambiguation {
+                    prompt,
+                    impact_boundary,
+                    options,
+                    allow_multi,
+                    ..
+                },
+                CardSelection::Disambiguate { object_ids },
+            ) => {
+                if object_ids.is_empty() {
+                    return Err("notice.card_selection_empty");
+                }
+                if !allow_multi && object_ids.len() > 1 {
+                    return Err("notice.card_selection_invalid");
+                }
+                let valid = object_ids
+                    .iter()
+                    .all(|oid| options.iter().any(|opt| opt.object_id == *oid));
+                if !valid {
+                    return Err("notice.card_selection_invalid");
+                }
+                let prev_contract = record
+                    .work_contract
+                    .as_ref()
+                    .ok_or("notice.card_selection_invalid")?;
+                let updated_brief =
+                    crate::verify::apply_disambiguation_selection(
+                        prev_contract,
+                        &prompt,
+                        &object_ids,
+                        now_ms(),
+                    )?;
+                let updated_wc = updated_brief.to_work_contract();
+                engine
+                    .take_pending_card(
+                        session_id,
+                        card_id,
+                        TurnState::Idle,
+                        Some(updated_wc),
+                    )
+                    .map_err(|_| {
+                        self.inner.state.report_storage_error();
+                        "notice.session_storage_failed"
+                    })?;
+                {
+                    let mut live = lock(&self.inner.state.live);
+                    if let Some(session) = live.get_mut(session_id) {
+                        session.status = TurnStatus::Idle;
+                        session.projection.lines.retain(|line| {
+                            !matches!(
+                                line,
+                                ChatLine::Status { text }
+                                    if text == TurnStatus::WaitingForUser.key()
+                            )
+                        });
+                    }
+                }
+                let selected_labels: Vec<String> = options
+                    .iter()
+                    .filter(|opt| object_ids.contains(&opt.object_id))
+                    .map(|opt| opt.label.clone())
+                    .collect();
+                let model_prompt = format!(
+                    "{prompt}\n\n[已确认修改目标：{}；影响边界：{impact_boundary}]",
+                    selected_labels.join("、")
+                );
+                let mut bytes = [0_u8; 16];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "notice.agent_failed")?;
+                let submission = u128::from_le_bytes(bytes);
+                self.inner.submit_message_targeted_locked(
+                    Some(session_id),
+                    &prompt,
+                    Some(submission),
+                    None,
+                    None,
+                    None,
+                    Some(ResumedSubmission {
+                        contract: Some(updated_brief),
+                        model_prompt_override: Some(model_prompt),
+                        skip_push_user_line: true,
+                    }),
+                )?;
+                Ok(CardActionOutcome::CardResolved {
+                    card_id: card_id.to_owned(),
+                    resumed: true,
+                })
+            }
+            (
+                PendingCard::ToolApproval {
+                    args_hash: expected_hash,
+                    ..
+                },
+                CardSelection::ApproveTool { args_hash },
+            ) => {
+                if args_hash != expected_hash {
+                    return Err("notice.approval_hash_mismatch");
+                }
+                engine
+                    .take_pending_card(
+                        session_id,
+                        card_id,
+                        TurnState::Idle,
+                        None,
+                    )
+                    .map_err(|_| {
+                        self.inner.state.report_storage_error();
+                        "notice.session_storage_failed"
+                    })?;
+                if let Some(session) =
+                    lock(&self.inner.state.live).get_mut(session_id)
+                {
+                    session.status = TurnStatus::Idle;
+                    session.updated_at = now_ms();
+                }
+                if persist_index(&self.inner.state).is_err() {
+                    self.inner.state.report_storage_error();
+                }
+                self.inner.state.push_update(AgentUpdate::Session {
+                    id: session_id.to_owned(),
+                });
+                Ok(CardActionOutcome::CardResolved {
+                    card_id: card_id.to_owned(),
+                    resumed: false,
+                })
+            }
+            (
+                PendingCard::ToolApproval { .. },
+                CardSelection::DenyTool { .. },
+            ) => {
+                engine
+                    .take_pending_card(
+                        session_id,
+                        card_id,
+                        TurnState::Stopped,
+                        None,
+                    )
+                    .map_err(|_| {
+                        self.inner.state.report_storage_error();
+                        "notice.session_storage_failed"
+                    })?;
+                if let Some(session) =
+                    lock(&self.inner.state.live).get_mut(session_id)
+                {
+                    session.status = TurnStatus::Stopped;
+                    session.updated_at = now_ms();
+                }
+                if persist_index(&self.inner.state).is_err() {
+                    self.inner.state.report_storage_error();
+                }
+                self.inner.state.push_update(AgentUpdate::Session {
+                    id: session_id.to_owned(),
+                });
+                Ok(CardActionOutcome::CardResolved {
+                    card_id: card_id.to_owned(),
+                    resumed: false,
+                })
+            }
+            _ => Err("notice.card_selection_invalid"),
         }
     }
 
@@ -401,6 +593,9 @@ impl AgentHandle {
         }
         let mut wait_list = Vec::new();
         for session_id in to_wait {
+            if self.inner.is_session_waiting_for_user(&session_id) {
+                continue;
+            }
             match self.cancel_task(TaskTarget::Session(session_id.clone())) {
                 Ok(
                     CancelOutcome::Cancelled

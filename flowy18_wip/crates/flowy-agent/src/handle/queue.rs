@@ -221,13 +221,25 @@ impl Harness {
             .pending()
             .map_err(|_| "notice.session_storage_failed")?
             .into_iter()
-            .find(|receipt| match receipt.session_hint.as_deref() {
-                // A receipt belongs to the session it was submitted from.
-                // While that session is still running or reaping after cancel,
-                // wait for it instead of taking the receipt and inflating its
-                // attempt count.
-                Some(hint) => !self.is_session_busy_or_active(hint),
-                None => true,
+            .find(|receipt| {
+                let target_waiting = receipt
+                    .target_session_id
+                    .as_deref()
+                    .is_some_and(|sid| self.is_session_waiting_for_user(sid));
+                if target_waiting {
+                    return false;
+                }
+                match receipt.session_hint.as_deref() {
+                    // A receipt belongs to the session it was submitted from.
+                    // While that session is running, reaping after cancel, or
+                    // parked in WaitingForUser, wait for it instead of taking
+                    // the receipt and inflating its attempt count.
+                    Some(hint) => {
+                        !self.is_session_busy_or_active(hint)
+                            && !self.is_session_waiting_for_user(hint)
+                    }
+                    None => true,
+                }
             })
         else {
             return Ok(None);
@@ -247,7 +259,9 @@ impl Harness {
         };
         let session = match claimed.session_hint.as_deref() {
             Some(hint) if lock(&state.live).contains_key(hint) => {
-                if self.is_session_busy_or_active(hint) {
+                if self.is_session_busy_or_active(hint)
+                    || self.is_session_waiting_for_user(hint)
+                {
                     // Lost the race after selection: wait with 0 ms backoff,
                     // do not fork.
                     let _ =
@@ -325,6 +339,7 @@ impl Harness {
             Some(submission),
             None,
             Some(pending_claim),
+            None,
         ) {
             heartbeat_cancel.cancel();
             if error == RECEIPT_SUPERSEDED_ERR {
@@ -626,6 +641,12 @@ impl Harness {
                     && !r.cancelled
                     && !r.quarantined
                     && r.completed_at_ms.is_none()
+                    && !r.target_session_id.as_deref().is_some_and(|sid| {
+                        self.is_session_waiting_for_user(sid)
+                    })
+                    && !r.session_hint.as_deref().is_some_and(|sid| {
+                        self.is_session_waiting_for_user(sid)
+                    })
             })
             .map(|r| {
                 let avail = r.available_at_ms.unwrap_or(0);

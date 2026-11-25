@@ -192,7 +192,7 @@ pub fn prepare_conversation_artifacts_gated(
     // Multiple writes to one file in the same turn all see the final bytes.
     // Keep only the last successful call as the stable source identity while
     // enforcing the same per-turn file and byte budgets as publish_file.
-    let mut latest = BTreeMap::<String, (ResolvedWrite, String)>::new();
+    let mut latest = BTreeMap::<String, (ResolvedWrite, String, String)>::new();
     let mut budgets = BTreeMap::<String, TurnBudget>::new();
     for write in writes {
         let Some(resolved) = resolve_write(&root, &write.raw_path) else {
@@ -257,7 +257,7 @@ pub fn prepare_conversation_artifacts_gated(
         }
         latest.insert(
             resolved.identity.clone(),
-            (resolved, write.tool_call_id.clone()),
+            (resolved, write.tool_call_id.clone(), write.turn_id.clone()),
         );
     }
 
@@ -271,7 +271,7 @@ pub fn prepare_conversation_artifacts_gated(
         }
     };
     let mut commits = Vec::new();
-    for (identity, (resolved, tool_call_id)) in latest {
+    for (identity, (resolved, tool_call_id, turn_id)) in latest {
         let full_path = resolved.source_root.join(&resolved.identity);
         let submission_id = match submission_id() {
             Ok(id) => id,
@@ -318,9 +318,12 @@ pub fn prepare_conversation_artifacts_gated(
             {
                 continue;
             }
-            match gate.stage_with(
+            let expected_revision =
+                session.submission_revisions.get(&turn_id).copied();
+            match gate.stage_with_revision(
                 &full_path,
                 false,
+                expected_revision,
                 now_ms(),
                 |checked_bytes| {
                     let expected_hash =

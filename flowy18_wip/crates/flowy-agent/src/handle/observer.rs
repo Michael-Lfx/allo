@@ -793,6 +793,8 @@ pub(super) fn import_engine_sessions(
                 existing.status = live_status(record.status.clone());
                 existing.updated_at = record.updated_at;
             }
+            let waiting_for_user = record.status == TurnState::WaitingForUser
+                || !record.pending_cards.is_empty();
             restore_existing_history(
                 existing,
                 record,
@@ -811,6 +813,8 @@ pub(super) fn import_engine_sessions(
             );
             if pending_delivery {
                 mark_live_delivery_failed(existing);
+            } else if waiting_for_user {
+                existing.status = TurnStatus::WaitingForUser;
             }
             continue;
         }
@@ -863,6 +867,7 @@ pub(super) fn import_engine_sessions(
                 },
                 origin: record.origin,
                 session_workspace: record.workspace,
+                heartbeat: None,
             },
         );
     }
@@ -1311,7 +1316,10 @@ pub(super) fn tool_result_display_text(tool_name: &str, text: &str) -> String {
 pub(super) fn live_status(state: TurnState) -> TurnStatus {
     match state {
         TurnState::Idle => TurnStatus::Idle,
-        TurnState::Running | TurnState::Stopped => TurnStatus::Stopped,
+        TurnState::WaitingForUser => TurnStatus::WaitingForUser,
+        TurnState::Running | TurnState::Stopping | TurnState::Stopped => {
+            TurnStatus::Stopped
+        }
         TurnState::Completed => TurnStatus::Completed,
         TurnState::Error { message } => TurnStatus::Error { message },
     }

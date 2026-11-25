@@ -1,12 +1,17 @@
 //! Host-owned brief contract extraction and cross-revision inheritance.
 
+use flowy_agent_core::{TrackedObject, TrackedObjectKind};
+
+use super::resolver::{
+    ResolveOutcome, build_initial_objects, resolve_contract_sync,
+};
 use super::{
     BTreeMap, Path, RequiredDeliverable, STRUCTURE, SlideL1Stats,
     VALUE_MISMATCH, VerifyIssue, WorkContract, push_unique,
 };
 
 /// Host-owned literal constraints extracted from user briefs and evolved
-/// across follow-up revisions (§6.6, §6.7 & kernel review §2.4).
+/// across follow-up revisions (§6.6, §6.7 & §12.5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BriefContract {
     pub revision: u32,
@@ -14,6 +19,7 @@ pub struct BriefContract {
     pub expected_filenames: Vec<String>,
     pub required_items: Vec<RequiredDeliverable>,
     pub pinned_facts: BTreeMap<String, String>,
+    pub objects: Vec<TrackedObject>,
 }
 
 impl BriefContract {
@@ -24,171 +30,49 @@ impl BriefContract {
         let required_items =
             extract_required_items(brief, &expected_filenames, min_slides);
         let pinned_facts = extract_pinned_facts(brief);
-        Self {
+        let mut contract = Self {
             revision: 1,
             min_slides,
             expected_filenames,
             required_items,
             pinned_facts,
+            objects: Vec::new(),
+        };
+        contract.objects = build_initial_objects(&contract, 0);
+        contract
+    }
+
+    #[must_use]
+    pub fn from_work_contract(contract: &WorkContract) -> Self {
+        let expected_filenames: Vec<String> = contract
+            .required_items
+            .iter()
+            .filter_map(|item| item.filename.clone())
+            .collect();
+        Self {
+            revision: contract.revision.max(1),
+            min_slides: contract.min_slides,
+            expected_filenames,
+            required_items: contract.required_items.clone(),
+            pinned_facts: contract.pinned_facts.clone(),
+            objects: contract.objects.clone(),
         }
     }
 
     /// Evolve a prior persisted [`WorkContract`] with a follow-up prompt.
     ///
-    /// Unrevoked slide counts, required deliverables, and pinned facts (such
-    /// as quote amount) survive narrow follow-ups like "only change the date",
-    /// while newly mentioned values update their corresponding constraint and
-    /// bump `revision`.
+    /// Delegates multi-object isolation, proposal guarding, and ambiguity
+    /// protection to [`resolve_contract_sync`]. When a prompt is ambiguous
+    /// across multiple writable deliverables, returns the prior confirmed
+    /// contract unchanged rather than silently overwriting untouched files.
     #[must_use]
     pub fn evolve(previous: Option<&WorkContract>, prompt: &str) -> Self {
-        let delta = Self::from_brief(prompt);
-        let Some(prev) = previous else {
-            return delta;
-        };
-        let mut required_items = prev.required_items.clone();
-        let is_rename = is_rename_prompt(prompt);
-        let prompt_lower = prompt.to_ascii_lowercase();
-        let mut inherited_min_slides = prev.min_slides;
-        let revoke_xlsx = [
-            "不用做报价表",
-            "不需要报价表",
-            "不要报价表",
-            "去掉报价表",
-            "删除报价表",
-            "不用做excel",
-            "不需要excel",
-            "不需要xlsx",
-            "去掉excel",
-            "去掉表格",
-            "只做ppt",
-            "只要ppt",
-            "only ppt",
-        ]
-        .iter()
-        .any(|cue| prompt_lower.contains(cue));
-        let revoke_pptx =
-            ["不用做ppt", "不需要ppt", "去掉ppt", "no ppt", "no slides"]
-                .iter()
-                .any(|cue| prompt_lower.contains(cue));
-        let revoke_docx =
-            ["不用做word", "不需要word", "不需要docx", "去掉word"]
-                .iter()
-                .any(|cue| prompt_lower.contains(cue));
-        for item in delta.required_items {
-            if is_rename && let Some(new_name) = item.filename.as_deref() {
-                // Prefer replacing the specifically mentioned previous filename
-                // so multi-file decks (e.g. `east.pptx` + `west.pptx`) never
-                // lose sibling deliverables when renaming one file.
-                if let Some(slot) = required_items.iter_mut().find(|existing| {
-                    existing.extension.eq_ignore_ascii_case(&item.extension)
-                        && existing.filename.as_deref().is_some_and(|old| {
-                            !old.eq_ignore_ascii_case(new_name)
-                                && prompt_lower
-                                    .contains(&old.to_ascii_lowercase())
-                        })
-                }) {
-                    *slot = item;
-                    continue;
-                }
-                let same_ext_indices: Vec<usize> = required_items
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, existing)| {
-                        existing
-                            .extension
-                            .eq_ignore_ascii_case(&item.extension)
-                            .then_some(idx)
-                    })
-                    .collect();
-                if same_ext_indices.len() == 1 {
-                    required_items[same_ext_indices[0]] = item;
-                    continue;
-                }
-            }
-            let duplicate = required_items.iter().any(|existing| {
-                existing.extension.eq_ignore_ascii_case(&item.extension)
-                    && match (&existing.filename, &item.filename) {
-                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                        (None, None) => true,
-                        _ => false,
-                    }
-            });
-            if !duplicate {
-                // If an explicit filename is introduced for an extension that
-                // previously only had a generic role placeholder, upgrade it.
-                if item.filename.is_some()
-                    && let Some(slot) = required_items.iter_mut().find(|e| {
-                        e.filename.is_none()
-                            && e.extension.eq_ignore_ascii_case(&item.extension)
-                    })
-                {
-                    *slot = item;
-                } else {
-                    required_items.push(item);
-                }
-            }
-        }
-        // Apply explicit user revocations AFTER merging `delta` so mentioning
-        // "不用做报价表了" never re-adds `*.xlsx` from the negated noun.
-        if revoke_xlsx {
-            required_items.retain(|existing| {
-                !existing.extension.eq_ignore_ascii_case("xlsx")
-                    && !existing.extension.eq_ignore_ascii_case("csv")
-            });
-        }
-        if revoke_pptx {
-            required_items.retain(|existing| {
-                !existing.extension.eq_ignore_ascii_case("pptx")
-            });
-            inherited_min_slides = None;
-        }
-        if revoke_docx {
-            required_items.retain(|existing| {
-                !existing.extension.eq_ignore_ascii_case("docx")
-            });
-        }
-        let expected_filenames: Vec<String> = required_items
-            .iter()
-            .filter_map(|item| item.filename.clone())
-            .collect();
-        let mut pinned_facts = prev.pinned_facts.clone();
-        if [
-            "去掉日期",
-            "去掉具体日期",
-            "删除日期",
-            "不需要日期",
-            "不用日期",
-            "不要日期",
-            "remove date",
-            "no date",
-        ]
-        .iter()
-        .any(|cue| prompt_lower.contains(cue))
-        {
-            pinned_facts.remove("date");
-        }
-        if [
-            "去掉报价",
-            "删除报价",
-            "不需要报价",
-            "不要报价",
-            "remove quote",
-            "no price",
-        ]
-        .iter()
-        .any(|cue| prompt_lower.contains(cue))
-        {
-            pinned_facts.remove("quote");
-        }
-        for (key, value) in delta.pinned_facts {
-            pinned_facts.insert(key, value);
-        }
-        Self {
-            revision: prev.revision.saturating_add(1).max(1),
-            min_slides: delta.min_slides.or(inherited_min_slides),
-            expected_filenames,
-            required_items,
-            pinned_facts,
+        match resolve_contract_sync(previous, prompt, None, 0) {
+            ResolveOutcome::Resolved { contract, .. } => contract,
+            ResolveOutcome::Ambiguous { .. } => previous.map_or_else(
+                || Self::from_brief(prompt),
+                Self::from_work_contract,
+            ),
         }
     }
 
@@ -198,6 +82,7 @@ impl BriefContract {
             && self.expected_filenames.is_empty()
             && self.required_items.is_empty()
             && self.pinned_facts.is_empty()
+            && self.objects.is_empty()
     }
 
     #[must_use]
@@ -207,6 +92,7 @@ impl BriefContract {
             required_items: self.required_items.clone(),
             min_slides: self.min_slides,
             pinned_facts: self.pinned_facts.clone(),
+            objects: self.objects.clone(),
         }
     }
 
@@ -217,35 +103,109 @@ impl BriefContract {
         issues: &mut Vec<VerifyIssue>,
     ) {
         let suffix = format!(".{}", ext.to_ascii_lowercase());
-        let matches: Vec<&str> = self
+        let mut matches: Vec<&str> = self
             .expected_filenames
             .iter()
             .filter(|name| name.to_ascii_lowercase().ends_with(&suffix))
             .map(String::as_str)
             .collect();
-        if matches.len() != 1 {
+        for obj in &self.objects {
+            if obj.kind == TrackedObjectKind::Deliverable
+                && obj.extension.eq_ignore_ascii_case(ext)
+                && let Some(name) = obj.filename.as_deref()
+                && !matches
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(name))
+            {
+                matches.push(name);
+            }
+        }
+        if matches.is_empty() {
             return;
         }
         let actual = artifact_path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        if !actual.eq_ignore_ascii_case(matches[0]) {
+        if !matches
+            .iter()
+            .any(|expected| actual.eq_ignore_ascii_case(expected))
+        {
             push_unique(issues, STRUCTURE, "brief_filename");
         }
     }
 
+    pub(super) fn check_pinned_facts_for_path(
+        &self,
+        artifact_path: &Path,
+        observed_text: &str,
+        issues: &mut Vec<VerifyIssue>,
+    ) {
+        let facts = self
+            .to_work_contract()
+            .confirmed_facts_for_artifact(artifact_path);
+        self.check_facts_map(&facts, observed_text, issues);
+    }
+
+    #[cfg(test)]
     pub(super) fn check_pinned_facts(
         &self,
         observed_text: &str,
         issues: &mut Vec<VerifyIssue>,
     ) {
-        if self.pinned_facts.is_empty() {
+        let wc = self.to_work_contract();
+        let observed_lower = observed_text.to_ascii_lowercase();
+        // When checking text without an explicit artifact path, infer the
+        // matching deliverable object if its filename stem (or unique role)
+        // appears in `observed_text`.
+        let matched_obj = wc
+            .objects
+            .iter()
+            .find(|obj| {
+                obj.kind == TrackedObjectKind::Deliverable
+                    && obj.filename.as_deref().is_some_and(|name| {
+                        let stem = name
+                            .rsplit_once('.')
+                            .map_or(name, |(s, _)| s)
+                            .to_ascii_lowercase();
+                        stem.chars().count() >= 3
+                            && observed_lower.contains(&stem)
+                    })
+            })
+            .or_else(|| {
+                if observed_text.contains("报价表") {
+                    let sheets: Vec<&TrackedObject> = wc
+                        .objects
+                        .iter()
+                        .filter(|obj| {
+                            obj.kind == TrackedObjectKind::Deliverable
+                                && obj.extension.eq_ignore_ascii_case("xlsx")
+                        })
+                        .collect();
+                    (sheets.len() == 1).then_some(sheets[0])
+                } else {
+                    None
+                }
+            });
+        let facts = match matched_obj {
+            Some(obj) => wc.confirmed_facts_for(&obj.object_id),
+            None => self.pinned_facts.clone(),
+        };
+        self.check_facts_map(&facts, observed_text, issues);
+    }
+
+    fn check_facts_map(
+        &self,
+        facts: &BTreeMap<String, String>,
+        observed_text: &str,
+        issues: &mut Vec<VerifyIssue>,
+    ) {
+        if facts.is_empty() {
             return;
         }
         let normalized_doc = compact_text(observed_text);
         let single_deliverable = self.required_items.len() <= 1;
-        if let Some(expected_quote) = self.pinned_facts.get("quote") {
+        if let Some(expected_quote) = facts.get("quote") {
             let mentions_price = normalized_doc.contains("报价")
                 || normalized_doc.contains("总价")
                 || normalized_doc.contains("预算")
@@ -261,7 +221,7 @@ impl BriefContract {
                 push_unique(issues, VALUE_MISMATCH, "brief_quote");
             }
         }
-        if let Some(expected_date) = self.pinned_facts.get("date") {
+        if let Some(expected_date) = facts.get("date") {
             let mentions_date = normalized_doc.contains("日期")
                 || normalized_doc.contains("202")
                 || normalized_doc.contains('年')
@@ -524,7 +484,7 @@ pub(super) fn parse_chinese_numeral(
     Some((first_val, 1))
 }
 
-fn is_rename_prompt(prompt: &str) -> bool {
+pub(super) fn is_rename_prompt(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     ["改名", "重命名", "更名", "rename", "文件名改"]
         .iter()
@@ -674,20 +634,35 @@ const fn is_filename_boundary_char(ch: char) -> bool {
 }
 
 fn strip_chinese_filename_prefix(stem: &str) -> &str {
-    // Strip leading Chinese phrasing verbs/classifiers attached without spaces
-    // before a Chinese/mixed filename (e.g. "帮我做一份季度汇报_2026" ->
-    // "季度汇报_2026", "写一份总结" -> "总结").
+    // Strip leading Chinese phrasing verbs/classifiers and embedded clause
+    // quantifiers (e.g. "请帮青禾项目做一份报价表和三页青禾项目报价汇报" ->
+    // "青禾项目报价汇报", "另做一份三页的青禾项目内部讨论稿" ->
+    // "青禾项目内部讨论稿", "保留青禾项目报价汇报" -> "青禾项目报价汇报").
     const PHRASING_PREFIXES: &[&str] = &[
+        "请帮我做一份",
         "帮我做一份",
         "帮我写一份",
         "帮我生成一份",
-        "请帮我做一份",
         "请做一份",
+        "另做一份",
+        "再做一份",
+        "另写一份",
+        "再写一份",
+        "另生成一份",
         "做一份",
         "写一份",
         "生成一份",
         "制作一份",
         "输出一份",
+        "请帮我",
+        "请帮",
+        "另做",
+        "再做",
+        "先保留",
+        "保留",
+        "仅把",
+        "只把",
+        "同步把",
         "保存为",
         "导出为",
         "命名为",
@@ -706,6 +681,8 @@ fn strip_chinese_filename_prefix(stem: &str) -> &str {
         "上传",
         "一份",
         "一个",
+        "仅",
+        "只",
         "叫",
         "把",
         "将",
@@ -713,6 +690,28 @@ fn strip_chinese_filename_prefix(stem: &str) -> &str {
         "写",
     ];
     let mut cur = stem;
+    // Strip embedded clause prefix ending at the last slide/document quantifier
+    // (e.g. "...报价表和三页|青禾项目报价汇报" or "...三页的|青禾项目内部讨论稿").
+    let chars: Vec<(usize, char)> = cur.char_indices().collect();
+    let mut last_quantifier_end: Option<usize> = None;
+    for idx in 1..chars.len() {
+        let (byte_pos, ch) = chars[idx];
+        let prev = chars[idx - 1].1;
+        let is_unit = matches!(ch, '页' | '张' | '份')
+            && (prev.is_ascii_digit() || is_cn_numeral_char(prev));
+        if is_unit {
+            let mut end = byte_pos + ch.len_utf8();
+            if cur[end..].starts_with('的') {
+                end += '的'.len_utf8();
+            }
+            if end < cur.len() {
+                last_quantifier_end = Some(end);
+            }
+        }
+    }
+    if let Some(end) = last_quantifier_end {
+        cur = &cur[end..];
+    }
     loop {
         let mut stripped = false;
         for prefix in PHRASING_PREFIXES {
@@ -1099,15 +1098,30 @@ pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
             }
         }
     }
-    // 2. YYYY年M月D日
+    // 2. YYYY年M月D日 (allowing optional CJK spacing such as "2026 年 11 月 27 日")
     let chars: Vec<(usize, char)> = brief.char_indices().collect();
     for i in 0..chars.len() {
-        if chars[i].1 == '年' && i >= 4 {
-            let y: String = chars[i - 4..i].iter().map(|(_, c)| *c).collect();
+        if chars[i].1 == '年' {
+            let mut y_end = i;
+            while y_end > 0 && chars[y_end - 1].1.is_whitespace() {
+                y_end -= 1;
+            }
+            if y_end < 4 {
+                continue;
+            }
+            let y_start = y_end - 4;
+            let preceded_by_digit =
+                y_start > 0 && chars[y_start - 1].1.is_ascii_digit();
+            if preceded_by_digit {
+                continue;
+            }
+            let y: String =
+                chars[y_start..y_end].iter().map(|(_, c)| *c).collect();
             if y.starts_with("20") && y.chars().all(|c| c.is_ascii_digit()) {
                 let after_y = &brief[chars[i].0 + '年'.len_utf8()..];
                 if let Some((m_str, after_m)) = after_y.split_once('月') {
                     let d_digits: String = after_m
+                        .trim_start()
                         .chars()
                         .take_while(char::is_ascii_digit)
                         .collect();
@@ -1117,7 +1131,7 @@ pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
                         && (1..=31).contains(&d)
                     {
                         matches.push((
-                            chars[i - 4].0,
+                            chars[y_start].0,
                             format!("{y}-{m:02}-{d:02}"),
                         ));
                     }

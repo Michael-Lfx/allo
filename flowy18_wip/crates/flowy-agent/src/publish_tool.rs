@@ -43,9 +43,18 @@ fn publish_error(
     }
 }
 
+#[cfg(test)]
 pub fn definition(
     store: ArtifactStore,
     gate: Option<DeliveryStore>,
+) -> Arc<ToolDefinition> {
+    definition_with_revision(store, gate, None)
+}
+
+pub fn definition_with_revision(
+    store: ArtifactStore,
+    gate: Option<DeliveryStore>,
+    expected_contract_revision: Option<u32>,
 ) -> Arc<ToolDefinition> {
     Arc::new(
         ToolDefinition::new(
@@ -192,9 +201,10 @@ pub fn definition(
                             if let Some(gate) = &gate_clone {
                                 let artifact =
                                     output_root_clone.join(&normalized_clone);
-                                match gate.stage_with(
+                                match gate.stage_with_revision(
                                     &artifact,
                                     false,
+                                    expected_contract_revision,
                                     now_ms(),
                                     |checked_bytes| {
                                         let expected_hash =
@@ -604,6 +614,63 @@ mod tests {
             ),
             "submission-prefixed relative path must publish cleanly: {result:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn stale_contract_revision_report_is_refused_at_publish_file() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-stale-rev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let submission_id = format!("submission-{:032x}", 10);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        let deck = output_root.join("deck.pptx");
+        std::fs::write(&deck, b"PK rev1-deck").unwrap();
+        gate.record_report_bytes_with_revision(
+            &deck,
+            b"PK rev1-deck",
+            Vec::new(),
+            Some(1),
+            10,
+        )
+        .unwrap();
+
+        let tool =
+            super::definition_with_revision(store.clone(), Some(gate), Some(2));
+        let result = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-stale-rev".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": "deck.pptx",
+                    "delivery_key": "deck",
+                }),
+            },
+            ToolRunContext {
+                signal: CancelToken::new(),
+                agent_id: Some("session-rev".to_owned()),
+                cwd: Some(root.display().to_string()),
+                todos: None,
+                submission_id: Some(submission_id),
+                session_origin: SessionOrigin::Home,
+                output_root: Some(output_root),
+                artifact_delivery_available: true,
+            },
+        )
+        .await;
+        let ToolExecutionResult::Error { code, .. } = result else {
+            panic!(
+                "stale rev=1 report must be refused under rev=2: {result:?}"
+            );
+        };
+        assert_eq!(code, "DELIVERY_CONTRACT_REVISION_MISMATCH");
+        assert_eq!(store.usage().unwrap().staging_bytes, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

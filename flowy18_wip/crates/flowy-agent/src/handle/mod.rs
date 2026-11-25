@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, PromptTurn, ReceiptState, RequiredDeliverable,
-    RunError, SessionOrigin, SessionRecord, SessionWorkspace,
-    SubmissionOutcome, TurnObserver, TurnState, complete_text, echo_stream_fn,
-    log_preview,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit, Engine,
+    EngineConfig, LoopOutcome, ModelRoute, PendingCard, PromptTurn,
+    ReceiptState, RequiredDeliverable, RunError, SessionOrigin, SessionRecord,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TurnObserver,
+    TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -120,6 +120,14 @@ pub enum CancelOutcome {
     FinalizingNotCancellable,
 }
 
+/// User selection submitted to resolve a persisted [`PendingCard`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardSelection {
+    Disambiguate { object_ids: Vec<String> },
+    ApproveTool { args_hash: String },
+    DenyTool { reason: Option<String> },
+}
+
 /// Structured card-level user actions executed exclusively by the host kernel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardAction {
@@ -135,6 +143,11 @@ pub enum CardAction {
     RetryDeadReceipt {
         receipt_id: String,
     },
+    ResolveCard {
+        session_id: String,
+        card_id: String,
+        selection: CardSelection,
+    },
 }
 
 /// Result of applying one [`CardAction`] inside the host kernel.
@@ -143,6 +156,7 @@ pub enum CardActionOutcome {
     ArtifactDelivered { artifact_id: String },
     DeliveryRetried,
     ReceiptRequeued { receipt_id: String },
+    CardResolved { card_id: String, resumed: bool },
 }
 
 /// One accepted receipt claimed by `run_accepted_once`.
@@ -183,6 +197,13 @@ struct Live {
     workspace: Option<AgentWorkspace>,
     origin: SessionOrigin,
     session_workspace: Option<SessionWorkspace>,
+    heartbeat: Option<BranchHeartbeat>,
+}
+
+pub struct ResumedSubmission {
+    pub(super) contract: Option<crate::verify::BriefContract>,
+    pub(super) model_prompt_override: Option<String>,
+    pub(super) skip_push_user_line: bool,
 }
 
 #[derive(Clone)]
@@ -678,6 +699,7 @@ impl AgentHandle {
                         workspace: record.workspace,
                         origin: record.origin,
                         session_workspace: record.session_workspace,
+                        heartbeat: None,
                     },
                 );
             }
@@ -778,9 +800,19 @@ impl AgentHandle {
         );
         // Desktop is single-instance: any remaining unexpired lease belongs to
         // a crashed predecessor process and must transition immediately to
-        // Retrying rather than falsely displaying Running until lease expiry.
+        // Retrying rather than falsely displaying Running until lease expiry,
+        // EXCEPT sessions intentionally parked in WaitingForUser / pending_cards.
+        let waiting_sessions: BTreeSet<String> = engine
+            .sessions()
+            .into_iter()
+            .filter(|rec| {
+                rec.status == TurnState::WaitingForUser
+                    || !rec.pending_cards.is_empty()
+            })
+            .map(|rec| rec.id)
+            .collect();
         if let Ok(released_ids) = AcceptanceQueue::new(state.root.clone())
-            .release_uncommitted_leases(now_ms())
+            .release_uncommitted_leases_except(now_ms(), &waiting_sessions)
         {
             for id in released_ids {
                 receipt_updates.push((id, ReceiptState::Retrying));
@@ -914,7 +946,9 @@ impl AgentHandle {
             .is_some_and(|session| {
                 if matches!(
                     session.status,
-                    TurnStatus::Error { .. } | TurnStatus::DeliveryFailed
+                    TurnStatus::Error { .. }
+                        | TurnStatus::DeliveryFailed
+                        | TurnStatus::WaitingForUser
                 ) {
                     return true;
                 }
@@ -945,6 +979,11 @@ impl AgentHandle {
             .as_ref()
             .and_then(|engine| {
                 engine.with_session(session_id, |record| {
+                    if !record.pending_cards.is_empty()
+                        || record.status == TurnState::WaitingForUser
+                    {
+                        return true;
+                    }
                     latest_session_submission_id(record).is_some_and(|sub_id| {
                         matches!(
                             record.submission_outcomes.get(&sub_id),
@@ -973,6 +1012,43 @@ impl AgentHandle {
         lock(&self.inner.state.live)
             .get(session_id)
             .map_or_default(|session| session.projection.lines.clone())
+    }
+
+    /// Returns persisted interactive cards awaiting user resolution on
+    /// `session_id` (disambiguation or tool-approval gates).
+    #[must_use]
+    pub fn session_pending_cards(&self, session_id: &str) -> Vec<PendingCard> {
+        let engine = lock(&self.inner.engine).clone();
+        engine
+            .as_ref()
+            .and_then(|engine| {
+                engine.with_session(session_id, |rec| rec.pending_cards.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the most recent persisted [`StopHandoffManifest`] recorded for
+    /// `session_id` after cancellation cleanup settled, if any.
+    #[must_use]
+    pub fn session_stop_handoff(
+        &self,
+        session_id: &str,
+    ) -> Option<StopHandoffManifest> {
+        let engine = lock(&self.inner.engine).clone();
+        engine.as_ref().and_then(|engine| {
+            engine.with_session(session_id, |rec| rec.last_stop_handoff.clone())
+        })?
+    }
+
+    /// Returns the latest honest 3-part execution heartbeat for `session_id`.
+    #[must_use]
+    pub fn session_heartbeat(
+        &self,
+        session_id: &str,
+    ) -> Option<BranchHeartbeat> {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .and_then(|session| session.heartbeat.clone())
     }
 
     /// Memory-only selection revision, including empty Home/Project contexts.
@@ -1149,6 +1225,7 @@ impl AgentHandle {
                 workspace,
                 origin,
                 session_workspace,
+                heartbeat: None,
             },
         );
         *lock(&self.inner.state.active) = Some(id.clone());
@@ -1265,6 +1342,24 @@ impl AgentHandle {
         self.submit_message(text, Some(submission), None)
     }
 
+    /// Submit a prompt targeted at an explicit `reply_to_object_id` (0ms
+    /// deterministic fast-path bypassing multi-object ambiguity).
+    pub fn submit_chat_for_object(
+        &self,
+        submission: u128,
+        text: &str,
+        reply_to_object_id: Option<&str>,
+    ) -> Result<String, &'static str> {
+        self.inner.submit_message_targeted(
+            None,
+            text,
+            Some(submission),
+            None,
+            None,
+            reply_to_object_id,
+        )
+    }
+
     /// Submit the captured UI request only while its original selection is
     /// still current. Retried durable submission IDs keep their original receipt.
     pub fn submit_chat_if_active(
@@ -1334,8 +1429,9 @@ impl AgentHandle {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
-        self.inner
-            .submit_message_targeted(None, text, submission, selection, None)
+        self.inner.submit_message_targeted(
+            None, text, submission, selection, None, None,
+        )
     }
 }
 
@@ -1386,6 +1482,23 @@ impl Harness {
         engine.as_ref().is_some_and(|engine| engine.is_active(id))
     }
 
+    pub(super) fn is_session_waiting_for_user(&self, id: &str) -> bool {
+        if lock(&self.state.live).get(id).is_some_and(|session| {
+            matches!(session.status, TurnStatus::WaitingForUser)
+        }) {
+            return true;
+        }
+        let engine = lock(&self.engine).clone();
+        engine.as_ref().is_some_and(|engine| {
+            engine
+                .with_session(id, |rec| {
+                    rec.status == TurnState::WaitingForUser
+                        || !rec.pending_cards.is_empty()
+                })
+                .unwrap_or(false)
+        })
+    }
+
     /// Create a new durable Home session in the background without ever
     /// mutating the UI's active selection or `context_generation`.
     pub(super) fn create_background_home_session(
@@ -1433,6 +1546,7 @@ impl Harness {
                 workspace: None,
                 origin: SessionOrigin::Home,
                 session_workspace,
+                heartbeat: None,
             },
         );
         if persist_index(&self.state).is_err() {
@@ -1449,6 +1563,33 @@ impl Harness {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
         pending_claim: Option<AcceptedClaim>,
+        reply_to_object_id: Option<&str>,
+    ) -> Result<String, &'static str> {
+        let _dispatch = lock(&self.state.dispatch);
+        self.submit_message_targeted_locked(
+            explicit_session_id,
+            text,
+            submission,
+            selection,
+            pending_claim,
+            reply_to_object_id,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal dispatch entrypoint shares one lock-validated path across direct chat, receipts, and card resume"
+    )]
+    pub(super) fn submit_message_targeted_locked(
+        self: &Arc<Self>,
+        explicit_session_id: Option<&str>,
+        text: &str,
+        submission: Option<u128>,
+        selection: Option<SubmissionSelection<'_>>,
+        pending_claim: Option<AcceptedClaim>,
+        reply_to_object_id: Option<&str>,
+        resumed: Option<ResumedSubmission>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
@@ -1468,7 +1609,6 @@ impl Harness {
         if *lock(&state.load_failed) {
             return Err("notice.session_storage_failed");
         }
-        let _dispatch = lock(&state.dispatch);
         // Re-verify receipt liveness inside `dispatch` so a concurrent
         // `cancel_task(TaskTarget::Receipt)` between `bind` and submit never
         // dispatches a cancelled prompt (closes Window A TOCTOU).
@@ -1530,7 +1670,17 @@ impl Harness {
         }
         let config = lock(&self.config).clone();
         let skills = self.skill_catalog();
-        let (prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let (mut prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let skip_push_user_line = resumed
+            .as_ref()
+            .is_some_and(|item| item.skip_push_user_line);
+        if let Some(override_model) = resumed
+            .as_ref()
+            .and_then(|item| item.model_prompt_override.clone())
+        {
+            prompt = PromptTurn::with_display(override_model, text);
+        }
+        let pre_resolved_contract = resumed.and_then(|item| item.contract);
         let title_prompt = text.to_owned();
         let stream = config
             .api_key
@@ -1551,6 +1701,102 @@ impl Harness {
             && let Some(session_workspace) = core_session.workspace.as_ref()
             && let Some(store) = state.artifact_store.get().cloned()
         {
+            let contract = if let Some(resolved) = pre_resolved_contract {
+                resolved
+            } else {
+                match crate::verify::resolve_contract_sync(
+                    core_session.work_contract.as_ref(),
+                    text,
+                    reply_to_object_id,
+                    now_ms(),
+                ) {
+                    crate::verify::ResolveOutcome::Ambiguous {
+                        card, ..
+                    } => {
+                        let now = now_ms();
+                        engine.park_pending_card(&id, card, None).map_err(
+                            |error| {
+                                log_storage_io_error(
+                                    "park disambiguation card",
+                                    &flowy_agent_core::SessionIndex::path(
+                                        &state.root,
+                                    ),
+                                    &error,
+                                );
+                                state.report_storage_error();
+                                "notice.session_storage_failed"
+                            },
+                        )?;
+                        let fallback_title = {
+                            let mut live = lock(&state.live);
+                            let session = live
+                                .get_mut(&id)
+                                .expect("active session exists");
+                            session.status = TurnStatus::WaitingForUser;
+                            session.turn_started_at = None;
+                            session.updated_at = now;
+                            if !skip_push_user_line {
+                                session.projection.push_user(text);
+                            }
+                            session.projection.lines.push(ChatLine::Status {
+                                text: TurnStatus::WaitingForUser.key().into(),
+                            });
+                            let title = if session.titled {
+                                None
+                            } else {
+                                session.title = title::clamp_title(
+                                    &title::fallback_title(
+                                        text,
+                                        TITLE_MAX_CHARS,
+                                    ),
+                                    TITLE_MAX_CHARS,
+                                );
+                                session.titled = true;
+                                Some(session.title.clone())
+                            };
+                            drop(live);
+                            title
+                        };
+                        if let Some(title) = fallback_title
+                            && engine
+                                .set_session_title(&id, title, true)
+                                .is_err()
+                        {
+                            state.report_storage_error();
+                        }
+                        if let Some(claim) = pending_claim {
+                            claim.heartbeat_cancel.cancel();
+                            let queue =
+                                AcceptanceQueue::new(state.root.clone());
+                            if queue
+                                .complete(
+                                    &claim.receipt_id,
+                                    &claim.attempt_id,
+                                    now,
+                                )
+                                .unwrap_or(false)
+                            {
+                                state.push_update(AgentUpdate::Receipt {
+                                    id: claim.receipt_id,
+                                    state: ReceiptState::Completed,
+                                });
+                            }
+                        }
+                        if persist_index(state).is_err() {
+                            state.report_storage_error();
+                        }
+                        state.push_update(AgentUpdate::Session {
+                            id: id.clone(),
+                        });
+                        state.push_update(AgentUpdate::Sessions);
+                        return Ok(id);
+                    }
+                    crate::verify::ResolveOutcome::Resolved {
+                        contract,
+                        ..
+                    } => contract,
+                }
+            };
             let submission_id = format!("submission-{submission:032x}");
             let output_root =
                 session_workspace.root.join("outputs").join(&submission_id);
@@ -1565,13 +1811,13 @@ impl Harness {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
-            let contract = crate::verify::BriefContract::evolve(
-                core_session.work_contract.as_ref(),
-                text,
-            );
             if core_session.work_contract.is_some() || !contract.is_empty() {
                 run_config.work_contract = Some(contract.to_work_contract());
             }
+            let expected_revision = run_config
+                .work_contract
+                .as_ref()
+                .map(|wc| wc.revision.max(1));
             let semantic_brief =
                 compose_semantic_brief(&core_session.messages, text);
             let semantic = state
@@ -1605,12 +1851,13 @@ impl Harness {
                     Some(failures),
                 ),
             );
-            run_config
-                .registry
-                .register(crate::publish_tool::definition(
+            run_config.registry.register(
+                crate::publish_tool::definition_with_revision(
                     store.clone(),
                     Some(delivery),
-                ));
+                    expected_revision,
+                ),
+            );
             run_config.delivery_committer = Some(Arc::new(store));
             run_config.system = format!(
                 "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
@@ -1656,7 +1903,9 @@ impl Harness {
             session.status = TurnStatus::Running;
             session.turn_started_at = Some(now);
             session.updated_at = now;
-            session.projection.push_user(text);
+            if !skip_push_user_line {
+                session.projection.push_user(text);
+            }
             let title = if session.titled {
                 (None, None)
             } else {
@@ -1871,6 +2120,7 @@ impl Harness {
                 workspace,
                 origin,
                 session_workspace,
+                heartbeat: None,
             },
         );
         *lock(&self.state.active) = Some(id.clone());

@@ -16,9 +16,9 @@ use rpi_ai::types::AssistantMessageEvent;
 use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
-    DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
-    WorkContract,
+    DeliveryCommit, DeliveryCommitter, ObjectVerifyState, PendingCard,
+    SessionIndex, SessionOrigin, SessionRecord, SessionWorkspace,
+    StopHandoffManifest, SubmissionOutcome, TurnState, WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -363,6 +363,139 @@ impl Engine {
             .submission_outcomes
             .insert(submission_id.to_owned(), outcome);
         inner.index.save(&self.root)
+    }
+
+    /// Persist a pending interactive card on `id` and transition its durable
+    /// status to [`TurnState::WaitingForUser`] without acquiring a run fence.
+    pub fn park_pending_card(
+        &self,
+        id: &str,
+        card: PendingCard,
+        updated_contract: Option<WorkContract>,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record
+            .pending_cards
+            .retain(|existing| existing.card_id() != card.card_id());
+        record.pending_cards.push(card);
+        if let Some(contract) = updated_contract {
+            record.work_contract = Some(contract);
+        }
+        record.status = TurnState::WaitingForUser;
+        record.updated_at = now_ms();
+        inner.index.save(&self.root)
+    }
+
+    /// Remove and return a persisted pending card by `card_id`, optionally
+    /// updating `work_contract` and durable status atomically.
+    pub fn take_pending_card(
+        &self,
+        id: &str,
+        card_id: &str,
+        next_status: TurnState,
+        updated_contract: Option<WorkContract>,
+    ) -> std::io::Result<Option<PendingCard>> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        let Some(pos) = record
+            .pending_cards
+            .iter()
+            .position(|card| card.card_id() == card_id)
+        else {
+            return Ok(None);
+        };
+        let removed = record.pending_cards.remove(pos);
+        if let Some(contract) = updated_contract {
+            record.work_contract = Some(contract);
+        }
+        if record.pending_cards.is_empty() {
+            record.status = next_status;
+        }
+        record.updated_at = now_ms();
+        inner.index.save(&self.root)?;
+        drop(inner);
+        Ok(Some(removed))
+    }
+
+    /// Persist a [`StopHandoffManifest`] and transition the session status.
+    pub fn set_stop_handoff(
+        &self,
+        id: &str,
+        manifest: StopHandoffManifest,
+        next_status: TurnState,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record.last_stop_handoff = Some(manifest);
+        record.status = next_status;
+        record.updated_at = now_ms();
+        inner.index.save(&self.root)
+    }
+
+    /// Update the [`ObjectVerifyState`] of a tracked object matching
+    /// `artifact_path` inside `id`'s active `work_contract`, if present.
+    pub fn set_object_verify_state(
+        &self,
+        id: &str,
+        artifact_path: &Path,
+        state: ObjectVerifyState,
+    ) -> std::io::Result<bool> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(record) = inner.index.get_mut(id) else {
+            return Ok(false);
+        };
+        let Some(contract) = record.work_contract.as_mut() else {
+            return Ok(false);
+        };
+        let file_name = artifact_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let ext = artifact_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let idx = contract
+            .objects
+            .iter()
+            .position(|obj| {
+                obj.filename
+                    .as_deref()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(file_name))
+            })
+            .or_else(|| {
+                let mut same_ext = contract
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, obj)| obj.extension.eq_ignore_ascii_case(ext))
+                    .map(|(i, _)| i);
+                let first = same_ext.next()?;
+                same_ext.next().is_none().then_some(first)
+            });
+        let Some(idx) = idx else {
+            return Ok(false);
+        };
+        contract.objects[idx].verify_state = state;
+        inner.index.save(&self.root)?;
+        drop(inner);
+        Ok(true)
     }
 
     /// Insert or replace one durable session record.

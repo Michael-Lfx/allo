@@ -119,6 +119,8 @@ pub enum TurnStatus {
     #[default]
     Idle,
     Running,
+    WaitingForUser,
+    Stopping,
     SavingFiles,
     DeliveryFailed,
     Completed,
@@ -134,6 +136,8 @@ impl TurnStatus {
         match self {
             Self::Idle => "chat.status_idle",
             Self::Running => "chat.status_running",
+            Self::WaitingForUser => "chat.status_waiting_for_user",
+            Self::Stopping => "chat.status_stopping",
             Self::SavingFiles => "chat.status_saving_files",
             Self::DeliveryFailed => "chat.status_delivery_failed",
             Self::Completed => "chat.status_completed",
@@ -144,7 +148,7 @@ impl TurnStatus {
 
     #[must_use]
     pub const fn is_busy(&self) -> bool {
-        matches!(self, Self::Running | Self::SavingFiles)
+        matches!(self, Self::Running | Self::Stopping | Self::SavingFiles)
     }
 }
 

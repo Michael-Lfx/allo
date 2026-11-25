@@ -309,6 +309,7 @@ mod background_init_tests {
                 workspace: None,
                 origin: SessionOrigin::Home,
                 session_workspace: None,
+                heartbeat: None,
             },
         );
 
@@ -1529,6 +1530,205 @@ mod guard_tests {
             Some(ReceiptState::Retrying)
         );
         drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disambiguation_card_survives_restart_and_resolves_only_selected_object()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s1-disambig-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        // Turn 1: BASE contract (xlsx + pptx, 30万, 2026-11-27)
+        handle
+            .submit_chat(
+                101,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 2: Pending proposal recorded as Record (must not mutate 30万)
+        handle
+            .submit_chat(
+                102,
+                "会议记录：客户口头提到报价可考虑 35 万元，尚待确认，先别改正式文件。",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 3: Twin PPT added
+        handle
+            .submit_chat(
+                103,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 4: Ambiguous edit -> must park in WaitingForUser WITHOUT running a worker
+        handle
+            .submit_chat(104, "把刚才那份的报价改成 32 万元。")
+            .unwrap();
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert!(!handle.has_busy_session());
+        assert!(handle.session_needs_attention(&sid));
+        let cards = handle.session_pending_cards(&sid);
+        assert_eq!(cards.len(), 1);
+        let (card_id, ppt1_id, ppt2_id, xlsx_id) = match &cards[0] {
+            super::PendingCard::Disambiguation {
+                card_id,
+                options,
+                impact_boundary,
+                ..
+            } => {
+                assert_eq!(
+                    options.len(),
+                    3,
+                    "2 PPTs + 1 XLSX, Record excluded"
+                );
+                assert!(impact_boundary.contains("只改所选"));
+                let p1 = options
+                    .iter()
+                    .find(|o| o.label == "青禾项目报价汇报.pptx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                let p2 = options
+                    .iter()
+                    .find(|o| o.label == "青禾项目内部讨论稿.pptx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                let x = options
+                    .iter()
+                    .find(|o| o.extension == "xlsx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                (card_id.clone(), p1, p2, x)
+            }
+            other @ super::PendingCard::ToolApproval { .. } => {
+                panic!("expected Disambiguation card, got {other:?}")
+            }
+        };
+
+        // Bind a queued receipt to this WaitingForUser session to prove boot
+        // protects its lease from being forcibly released/requeued.
+        let queue = AcceptanceQueue::new(root.clone());
+        let now = super::now_ms();
+        let pinned_receipt = queue
+            .accept(Some(&sid), "deferred while waiting", now)
+            .unwrap();
+        queue
+            .take(&pinned_receipt.id, "wait-att", now, 120_000)
+            .unwrap()
+            .unwrap();
+        queue
+            .bind(&pinned_receipt.id, "wait-att", &sid, "sub-wait", now)
+            .unwrap();
+
+        // Graceful shutdown must NOT cancel a WaitingForUser session.
+        handle.prepare_shutdown_with_timeout(std::time::Duration::from_millis(
+            200,
+        ));
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        drop(handle);
+
+        // Cold restart must restore WaitingForUser + PendingCard + protect lease.
+        let reopened = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        assert_eq!(
+            reopened.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(reopened.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            reopened.receipt_state(&pinned_receipt.id),
+            Some(ReceiptState::Running),
+            "WaitingForUser session's lease must not be forcibly released at boot"
+        );
+
+        // Invalid object_id is rejected fail-closed.
+        assert_eq!(
+            reopened.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: card_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec!["record-nonexistent".to_owned()],
+                },
+            }),
+            Err("notice.card_selection_invalid")
+        );
+
+        // Resolve card selecting ONLY PPT #1 -> resumes and isolates sibling objects.
+        let outcome = reopened
+            .apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: card_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec![ppt1_id.clone()],
+                },
+            })
+            .expect("resolve disambiguation card");
+        assert_eq!(
+            outcome,
+            super::CardActionOutcome::CardResolved {
+                card_id,
+                resumed: true,
+            }
+        );
+        wait_idle(&reopened, &sid);
+        assert_eq!(reopened.session_pending_cards(&sid), Vec::new());
+
+        let engine = lock(&reopened.inner.engine).clone().expect("engine");
+        let rec = engine.session(&sid).expect("session record");
+        let wc = rec.work_contract.expect("work contract");
+        assert_eq!(
+            wc.confirmed_facts_for(&ppt1_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("32万")
+        );
+        assert_eq!(
+            wc.confirmed_facts_for(&ppt2_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("30万")
+        );
+        assert_eq!(
+            wc.confirmed_facts_for(&xlsx_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("30万")
+        );
+        drop(reopened);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
