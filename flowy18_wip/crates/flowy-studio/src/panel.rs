@@ -161,6 +161,7 @@ pub struct StudioPanel {
     pub credits_close: Option<Task<()>>,
     pub model_info_open: bool,
     pub model_menu_open: bool,
+    pub bg_tasks_open: bool,
     pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
@@ -314,6 +315,7 @@ impl StudioPanel {
                     "model-list" => panel.model_menu_open = false,
                     "model-info" => panel.model_info_open = false,
                     "credit-card" => panel.credits_hover = false,
+                    "bg-tasks-popover" => panel.bg_tasks_open = false,
                     _ => return,
                 }
                 cx.notify();
@@ -461,6 +463,7 @@ impl StudioPanel {
             credits_close: None,
             model_info_open,
             model_menu_open: false,
+            bg_tasks_open: false,
             tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
             i18n,
@@ -783,6 +786,7 @@ impl StudioPanel {
         self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
+        self.bg_tasks_open = false;
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
@@ -824,6 +828,7 @@ impl StudioPanel {
         self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
+        self.bg_tasks_open = false;
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         self.submission = None;
@@ -833,6 +838,62 @@ impl StudioPanel {
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
+    }
+
+    /// Toggles the floating background-tasks popover anchored above the composer.
+    pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = !self.bg_tasks_open;
+        if self.bg_tasks_open {
+            self.model_menu_open = false;
+            self.model_info_open = false;
+            self.credits_hover = false;
+        }
+        cx.notify();
+    }
+
+    /// Total number of active/queued works visible in the background-tasks pill.
+    #[must_use]
+    pub fn background_work_count(&self) -> usize {
+        let mut running = self.agent.running_session_count();
+        if (self.status.is_busy() || self.submission_pending) && running == 0 {
+            running = 1;
+        }
+        running + self.pending_receipts.len()
+    }
+
+    /// Non-destructively folds the active table back to the calm Home stage
+    /// while leaving any running turns or queued background tasks untouched.
+    pub fn fold_desk(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = false;
+        self.model_menu_open = false;
+        self.surface = StudioSurface::Home;
+        self.starter_carousel.reset();
+        cx.notify();
+    }
+
+    /// Jumps to the Chief Assistant's active default-workspace thread, or lands
+    /// calmly on the Home stage ready for a fresh instruction.
+    pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = false;
+        if self.agent.active_session_id().is_some()
+            && self.active_project_id.is_none()
+            && self.agent.has_messages()
+        {
+            self.surface = StudioSurface::Chat;
+            self.refresh_chat(cx);
+            cx.notify();
+            return;
+        }
+        let latest_default = self
+            .agent
+            .list_sessions()
+            .into_iter()
+            .find(|session| session.project_id.is_none());
+        if let Some(session) = latest_default {
+            self.open_session(&session.id, cx);
+        } else {
+            self.new_task(cx);
+        }
     }
 
     /// Creates an empty session in the workspace `open_project` just prepared.

@@ -12,6 +12,7 @@ mod context;
 mod controls;
 
 mod feedback;
+pub mod motion;
 mod overlays;
 mod theme;
 mod tooltip;

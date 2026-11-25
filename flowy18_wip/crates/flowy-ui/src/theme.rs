@@ -356,6 +356,30 @@ impl ResolvedTheme {
     pub fn auth_brand_canvas(self) -> Rgba {
         rgb(if self.dark { 0x0024_2422 } else { 0x00e8_e6e1 })
     }
+    /// Warm-ink surface behind the Chief Assistant / Router geometric mark.
+    pub fn assistant_badge_bg(self) -> Rgba {
+        rgb(if self.dark { 0x0038_3530 } else { 0x0023_211e })
+    }
+    /// High-contrast warm ivory glyph on top of [`Self::assistant_badge_bg`].
+    pub fn assistant_badge_fg(self) -> Rgba {
+        rgb(if self.dark { 0x00f4_f1ea } else { 0x00f7_f5f0 })
+    }
+    /// Calm live/running accent dot and indicator tint.
+    pub fn status_active(self) -> Rgba {
+        rgb(if self.dark { 0x002d_d4bf } else { 0x000f_766e })
+    }
+    /// Subtle verified-receipt accent tint.
+    pub fn status_verified(self) -> Rgba {
+        rgb(if self.dark { 0x0034_d399 } else { 0x0015_803d })
+    }
+    /// Warm amber tint for attention states and override audit records.
+    pub fn status_attention(self) -> Rgba {
+        rgb(if self.dark { 0x00fb_bf24 } else { 0x00b4_5309 })
+    }
+    /// Elevated capsule surface for floating pills above the composer.
+    pub fn pill_surface(self) -> Rgba {
+        rgb(if self.dark { 0x0028_2826 } else { 0x00ff_ffff })
+    }
 }
 
 #[derive(Debug)]
