@@ -83,6 +83,17 @@ const { Text, Title, Paragraph } = Typography;
  * 给一次缓冲窗口内的重试，仍失败才落隐藏臂（命名常量，测试按同节拍推进）。 */
 const QUIZ_PROGRESS_RETRY_DELAY_MS = 2_000;
 
+/** 修补 / 挂载回合的终态帧（m2）：结构改了、挂载变了，结构投影随之重取。开始
+ * 帧不在其中——那一刻投影还没变。 */
+const STRUCTURE_ROUND_TERMINAL_FRAMES: ReadonlySet<string> = new Set([
+  'structure_repair_completed',
+  'structure_repair_failed',
+  'structure_repair_cancelled',
+  'structure_mount_completed',
+  'structure_mount_failed',
+  'structure_mount_cancelled',
+]);
+
 /** 顶条在跑态徽章（o6 顶条单一状态；F7 去重）：同一枚 processing Tag 渲染
  * 结构生成（v2 实时读数徽章）/ 生长 / 自动准备三种态——文案由调用方渲染，
  * 数据源（structureBadge 等）留在调用处，徽章只负责外观。 */
@@ -370,6 +381,10 @@ const LearningGraphWorkspace: React.FC<{
     // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
     // 失败必须显式清 running——否则首次生成失败会永久停在「生成中…」
     // （快照仍为 null，load 里无法自行消解）。
+    // 修补 / 挂载的终态帧同样重取投影（m2）：定时臂跑起来之后，修补与修补后
+    // 重挂会在后台改结构、改挂载——只听生成帧的话，结构图页签会停在修补前
+    // 的图和过期的「待重新检查」横幅上，直到用户手动做点什么。这里只重取投
+    // 影，不动运行旗（修补 / 挂载的在跑态另有注册表快照与会话旗）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id !== detail.course.id) return;
       if (event.event === 'structure_started') setStructureRunningWs(true);
@@ -378,6 +393,7 @@ const LearningGraphWorkspace: React.FC<{
         setStructureRunningWs(false);
         load();
       }
+      if (STRUCTURE_ROUND_TERMINAL_FRAMES.has(event.event ?? '')) load();
     });
     return () => {
       cancelled = true;

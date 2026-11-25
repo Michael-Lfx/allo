@@ -2754,8 +2754,8 @@ static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
 static LEARNING_MAINTENANCE_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 学习维护调度器的唤醒步长（不是间隔本身——间隔每醒重读设置，改设置
-/// 无需重启；learnhub maintenance.rs sleep-then-work 同构）。
+/// 学习维护调度器的唤醒步长（不是间隔本身——间隔在每个定时臂 tick 重读设置，
+/// 改设置无需重启；learnhub maintenance.rs sleep-then-work 同构）。
 const LEARNING_MAINTENANCE_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 学习维护调度器的存活守卫：spawn 任务体任何退出路径（含 panic 展开）都会
@@ -2781,8 +2781,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// 学习维护回合的 panic 兜底：回合体 panic 就地收编为 `Err(死因)`，调度循环
-/// 存活、下个 tick 重新拉起——panic 与 `Err` 同样不再杀死调度任务（写法同
-/// nomi-agent 工具执行面的 catch_unwind 隔离）。
+/// 存活——panic 不再杀死调度任务（写法同 nomi-agent 工具执行面的 catch_unwind
+/// 隔离）。下一次尝试仍按节拍走：到期时已先记过节拍（见
+/// [`MaintenanceCadence`]），不是下个 tick。
 async fn learning_maintenance_tick_guarded<T>(
     tick: std::panic::AssertUnwindSafe<impl std::future::Future<Output = T>>,
 ) -> Result<T, String> {
@@ -2797,7 +2798,8 @@ async fn learning_maintenance_tick_guarded<T>(
 enum LearningMaintenanceWake {
     /// 定时臂到点（`LEARNING_MAINTENANCE_TICK` 的固定时点）。
     Timer,
-    /// 被生长唤醒：非空手生长批落库后登记了仅挂载回合。
+    /// 被唤醒：非空手生长批落库后登记了仅挂载回合；或结构修补 `applied` 后
+    /// 登记了全量重挂（m2）。两种意图共用同一个信号，由唤醒分支各自排空。
     Growth,
 }
 
@@ -2872,6 +2874,64 @@ async fn run_learning_growth_wake_mount(
     }
 }
 
+/// 修补后重挂分支（m2）：取走被登记的课程，逐课 `spawn` 一个重挂任务并立即
+/// 返回——与生长唤醒分支同形，调度循环不 await 任何一个回合。两种意图共用同
+/// 一个唤醒信号，只是各有一张登记表。返回派发的课程数。
+fn spawn_learning_repair_followup_wakes(
+    service: &std::sync::Arc<nomifun_learning::LearningService>,
+) -> usize {
+    let wakes = service.take_repair_followup_wakes();
+    let spawned = wakes.len();
+    for wake in wakes {
+        tokio::spawn(run_learning_repair_followup_mount(
+            std::sync::Arc::clone(service),
+            wake,
+        ));
+    }
+    spawned
+}
+
+/// 一门课的修补后重挂回合（修补后重挂分支派发的任务体）：判定、开关与回合
+/// 纪律都在 learning crate（`run_repair_followup_mount`），这里只包 panic 兜底
+/// 并留结果日志。失败只留痕：Failed 动作簿行由回合自己写，不重试——挂载保持
+/// 失效，横幅提示手动「重新检查」，定时臂到点也会补挂。
+async fn run_learning_repair_followup_mount(
+    service: std::sync::Arc<nomifun_learning::LearningService>,
+    wake: nomifun_learning::RepairFollowupWake,
+) {
+    let course = wake.course_id.as_str().to_owned();
+    let round = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
+        service
+            .run_repair_followup_mount(&wake.user_id, &wake.course_id, None)
+            .await
+    }))
+    .await;
+    match round {
+        Ok(Ok(Some(summary))) => tracing::info!(
+            course = %course,
+            status = summary.status,
+            pending = summary.pending_nodes,
+            mounted = summary.mounted_nodes,
+            "learning repair followup mount round finished"
+        ),
+        // 未启动（无事可重挂 / 自动维护关 / 从未挂载）与失败：原因已由回合
+        // 侧留日志与账本行，这里不再重复。
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                course = %course,
+                %error,
+                "learning repair followup mount round failed"
+            );
+        }
+        Err(cause) => tracing::error!(
+            course = %course,
+            cause = %cause,
+            "learning repair followup mount round panicked; no retry, mounts stay stale"
+        ),
+    }
+}
+
 /// 学习域自动维护回合调度（k02，learnhub ADR-0028 / maintenance.rs）：
 /// 定时醒来 → 重读设置 → 到期则跑**一轮**维护（先修补后挂载、纯读判定、
 /// 零工作不提交）。单轮在途由「本任务 await 回合」保证；回合内部逐课在
@@ -2880,11 +2940,15 @@ async fn run_learning_growth_wake_mount(
 /// 两枚开关都生效：`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册调度器；
 /// `learning.maintenanceAutoEnabled=false` 运行期关（设置页/配置写入即生效）。
 ///
+/// 这里只管注册（环境闸 + 每进程一枚 + 存活守卫）并接上真实的三件外部依赖；
+/// 循环本体与节拍语义见 [`learning_maintenance_loop`]。
+///
 /// sb2（ADR-0018 决定 4）另有一条唤醒臂：非空手生长批落库后登记的课程让
-/// 这里的等待立即返回，循环把每门被登记的课程 `spawn` 成一个**仅挂载**回
-/// 合（不修补、不 await）后直接回到等待，不进定时臂——定时节拍、定时臂的
-/// 行为与开关语义不变（等待原语从块内 `sleep` 改为块外 `sleep_until` 固定
-/// 时点，到期判定与收尾逐字节保留）。唤醒回合同样受上面两枚开关约束。
+/// 等待立即返回，循环把每门被登记的课程 `spawn` 成一个**仅挂载**回合（不修
+/// 补、不 await）后直接回到等待，不进定时臂。唤醒回合同样受上面两枚开关约束。
+/// m2 之后同一条臂还承载**修补后重挂**：结构修补 `applied` 后登记的课程被
+/// `spawn` 成一个全量重挂回合（同样仅挂载、不 await）——两种意图共用信号与
+/// 唤醒分支，各有一张登记表。
 pub fn start_learning_auto_maintenance(
     service: std::sync::Arc<nomifun_learning::LearningService>,
     pool: nomifun_db::sqlx::SqlitePool,
@@ -2903,34 +2967,19 @@ pub fn start_learning_auto_maintenance(
         // 死亡守卫：任务退出（含 panic 展开）复位标志位——标志位不再谎报
         // 「调度器在位」，死亡后可再拉起。
         let _liveness = LearningMaintenanceLivenessGuard;
-        // 首轮不立即跑：启动流量留给预热，先等一个缺省间隔。
-        let mut last_run = std::time::Instant::now();
-        // 定时臂的固定时点（sb2）：每轮定时臂收尾时重定。被生长唤醒只追加
-        // 一轮仅挂载回合，不重置它——定时节拍不因唤醒漂移。
-        let mut next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
-        loop {
-            // 定时到点，或被生长唤醒（ADR-0018 决定 4）。
-            let wake = wait_learning_maintenance_wake(&service, next_tick).await;
-            if wake == LearningMaintenanceWake::Growth {
-                // 仅挂载回合逐课 spawn，循环不 await（见 spawn 文档）。
+        learning_maintenance_loop(
+            |deadline| wait_learning_maintenance_wake(&service, deadline),
+            || async {
+                // 两种唤醒意图各排各的登记表，回合逐课 spawn、循环不 await
+                // （见两个 spawn 的文档）。
                 spawn_learning_growth_wakes(&service);
-                // 唤醒臂不进定时臂：不读设置、不动 last_run——定时臂行为逐字
-                // 节不变（R-b）。定时臂到点时若有未排空的唤醒，`notify_one`
-                // 存下的许可让下一轮 select 立刻以 Growth 返回，不会滞留。
-                continue;
-            }
-            // 回合体 panic 就地记死因并吞掉（见 guarded 文档）：循环存活，
-            // 下个 tick 重新拉起；last_run 照常推进，防 panic 热循环重试。
-            let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
-                // 每醒重读设置：开关/间隔改动下个周期生效。
-                let settings = service.maintenance_settings().await;
-                if !settings.enabled {
-                    return;
-                }
-                let due = std::time::Duration::from_secs(settings.interval_minutes as u64 * 60);
-                if last_run.elapsed() < due {
-                    return;
-                }
+                spawn_learning_repair_followup_wakes(&service);
+            },
+            || service.maintenance_settings(),
+            // 到期回合：解析安装者 → 跑一轮维护 → 留结果日志。panic 兜底在
+            // 循环里；属主解析失败 / 属主 id 非法只告警、本轮不跑——但到期时
+            // 节拍已先记过，仍算「尝试过」，不在下个 tick 反复重试。
+            || async {
                 // 单轮在途：本任务 await 回合，不会重入。
                 let owner = match nomifun_db::installation_owner_id(&pool).await {
                     Ok(owner) => owner,
@@ -2961,17 +3010,156 @@ pub fn start_learning_auto_maintenance(
                         tracing::warn!(%error, "learning auto maintenance tick failed");
                     }
                 }
-            }));
-            if let Err(cause) = tick.await {
-                tracing::error!(
-                    cause = %cause,
-                    "learning maintenance tick panicked; loop survives and retries next tick"
-                );
-            }
-            last_run = std::time::Instant::now();
-            next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
-        }
+            },
+        )
+        .await;
     });
+}
+
+/// 定时臂的节拍状态（m2 / W1 修复）：last_run 只在本类型内部推进。
+///
+/// W1 的病灶是循环体末尾一句无条件的 `last_run = now()`：30 秒一步的定时臂
+/// 永远凑不满到期判定（下限 30 分钟），定时维护自上线从未运行。把推进收进
+/// 类型、并以 [`TickPermit`] 作「到期并尝试过」的凭证，循环体就再没有一处能
+/// 顺手改写节拍。
+#[derive(Debug, Clone, Copy)]
+struct MaintenanceCadence {
+    last_run: tokio::time::Instant,
+}
+
+/// 到期并尝试过一轮的凭证——只有拿到它才能记「跑完」。
+struct TickPermit;
+
+/// 定时臂一步的判定结果。
+enum TimerTick {
+    /// 运行期关 / 未到期：不跑，`last_run` 原样。
+    Held,
+    /// 到期：这一步跑一轮，`last_run` 已先记为到点时刻。
+    Ran(TickPermit),
+}
+
+impl MaintenanceCadence {
+    fn starting_at(now: tokio::time::Instant) -> Self {
+        Self { last_run: now }
+    }
+
+    /// 只读观测：上次记下的时点（到期判定以它为基准）。只有测试读它——生产
+    /// 循环只经 `on_timer_tick` / `on_tick_finished` 推进，不外露读数。
+    #[cfg(test)]
+    fn last_run(&self) -> tokio::time::Instant {
+        self.last_run
+    }
+
+    /// 运行期关 / 未到期 → Held，last_run 原样。到期 → 先把 last_run 记为到点
+    /// 时刻（失败 / panic 也算尝试过，防热循环），返回凭证。
+    ///
+    /// 关着的时候不记「尝试过」：关了很久再打开，下一个 30 秒 tick 就跑（距上
+    /// 次记下的时点早已超过间隔），不必再干等一个完整间隔。
+    fn on_timer_tick(
+        &mut self,
+        now: tokio::time::Instant,
+        settings: &nomifun_learning::MaintenanceSettings,
+    ) -> TimerTick {
+        if !settings.enabled {
+            return TimerTick::Held;
+        }
+        let due = std::time::Duration::from_secs(settings.interval_minutes as u64 * 60);
+        if now.saturating_duration_since(self.last_run) < due {
+            return TimerTick::Held;
+        }
+        self.last_run = now;
+        TimerTick::Ran(TickPermit)
+    }
+
+    /// 回合结束后把 last_run 记为完成时刻（「跑完一轮」才重置）。
+    fn on_tick_finished(&mut self, _permit: TickPermit, now: tokio::time::Instant) {
+        self.last_run = now;
+    }
+}
+
+/// 学习维护调度循环（m2：生产循环本体）。四件外部依赖经闭包注入——一步等待、
+/// 唤醒分支、设置读取、到期回合——所以测试驱动的是**这一个**循环：此前循环
+/// 只能 spawn 真服务、没有时钟口子，测试里只能另抄一份循环体，W1 因此漏网。
+///
+/// 循环只有两条臂：
+///
+/// - **唤醒臂**（`wait` 返回 [`LearningMaintenanceWake::Growth`]）：调一次
+///   `on_wake` 后直接回到等待。不读设置、不碰节拍、不重定定时臂时点——定
+///   时节拍不因唤醒漂移。
+/// - **定时臂**（每 [`LEARNING_MAINTENANCE_TICK`] 一步的固定时点）：
+///   1. 每个 tick 重读设置（`settings`）：开关 / 间隔改动下一个 tick 生效；
+///   2. 节拍判定（[`MaintenanceCadence::on_timer_tick`]）——运行期关或未到
+///      期不跑、节拍原样；到期则**先**把节拍记为到点时刻，再调 `timer_tick`
+///      跑一轮；
+///   3. 回合结束后把节拍记为完成时刻（间隔从跑完起算）；
+///   4. 重定下一个定时臂时点——只有定时臂重定它。
+///
+/// 节拍的口径是「到期并**尝试过**就推进，不论结果」：回合 `Ok` / `Err`、
+/// panic、属主解析失败、属主 id 非法都算尝试过，不会因为一轮没跑成而在下个
+/// tick 反复重试。反过来，运行期关着的时候不算尝试过：关了很久再打开，下一
+/// 个 tick 就跑（距上次记下的时点早已超过间隔）。
+///
+/// panic 兜底在循环里（设置读取与回合各一层）：panic 就地记日志并吞掉，循环
+/// 存活；循环存活不取决于注入的回合怎么写。
+async fn learning_maintenance_loop<W, WF, A, AF, S, SF, T, TF>(
+    mut wait: W,
+    mut on_wake: A,
+    mut settings: S,
+    mut timer_tick: T,
+) where
+    W: FnMut(tokio::time::Instant) -> WF,
+    WF: std::future::Future<Output = LearningMaintenanceWake>,
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = ()>,
+    S: FnMut() -> SF,
+    SF: std::future::Future<Output = nomifun_learning::MaintenanceSettings>,
+    T: FnMut() -> TF,
+    TF: std::future::Future<Output = ()>,
+{
+    // 首轮不立即跑：节拍从循环起步起算，首轮在一个间隔之后（启动流量留给
+    // 预热）。
+    let mut cadence = MaintenanceCadence::starting_at(tokio::time::Instant::now());
+    let mut next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
+    loop {
+        // 唤醒臂：调一次唤醒分支就回去等——不进定时臂。
+        let wake = wait(next_tick).await;
+        if wake == LearningMaintenanceWake::Growth {
+            on_wake().await;
+            continue;
+        }
+        // 定时臂。时点在本臂收尾时无条件重定（含设置读取 panic 的那一拍），
+        // 否则下一轮等到的是一个早已过去的时点，会空转。
+        match learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(settings())).await {
+            Ok(current) => match cadence.on_timer_tick(tokio::time::Instant::now(), &current) {
+                TimerTick::Held => {}
+                TimerTick::Ran(permit) => {
+                    // 回合体 panic 就地记死因并吞掉（见 guarded 文档）：循环存
+                    // 活。节拍在到期时已先记过，下一次尝试仍是一个间隔之后——
+                    // panic 不会热循环重试。兜底放在循环里而不是回合闭包里，
+                    // 循环存活不取决于注入的回合怎么写；闭包调用本身也包在
+                    // async 块里，调用时同步 panic 同样收编。
+                    let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(
+                        async {
+                            timer_tick().await;
+                        },
+                    ))
+                    .await;
+                    if let Err(cause) = tick {
+                        tracing::error!(
+                            cause = %cause,
+                            "learning maintenance tick panicked; loop survives and the next attempt waits one interval"
+                        );
+                    }
+                    cadence.on_tick_finished(permit, tokio::time::Instant::now());
+                }
+            },
+            Err(cause) => tracing::error!(
+                cause = %cause,
+                "learning maintenance settings read panicked; timer arm skipped"
+            ),
+        }
+        next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
+    }
 }
 
 /// How often the scheduler wakes up to ask whether a sweep is due (doc `37`
@@ -9135,46 +9323,379 @@ mod tests {
         LEARNING_MAINTENANCE_STARTED.store(false, Ordering::SeqCst); // 清场
     }
 
-    /// 假 service 的回合体：第一轮 panic（模拟维护任务中途炸掉），第二轮
-    /// 正常返回——用于在包裹层复刻真实 spawn 循环的推进语义。
-    async fn fake_service_tick(round: u32) -> u32 {
-        if round == 0 {
-            panic!("模拟 service 回合 panic");
-        }
-        round
+    // ── m2：调度循环本体（定时臂节拍）───────────────────────────────────────
+    //
+    // W1：旧循环在每个 30 秒 tick 之后无条件重置 `last_run`，而到期判定要求满设
+    // 定间隔（下限 30 分钟）——定时臂永远凑不满，定时维护自上线从未运行。这个
+    // bug 当初漏网，是因为循环只能 spawn 真服务、没有时钟口子，测试里只能另抄
+    // 一份循环体。现在 [`learning_maintenance_loop`] 的四件外部依赖全部注入，下面
+    // 驱动的是**生产那一个**循环：虚拟时钟（`start_paused`）+ 假等待 / 假回合。
+
+    fn minutes(count: u64) -> std::time::Duration {
+        std::time::Duration::from_secs(count * 60)
     }
 
-    #[tokio::test]
-    async fn maintenance_loop_absorbs_panicking_service_tick_and_advances_next_round() {
-        // 真实 spawn 链无法注入假 service（`start_learning_auto_maintenance`
-        // 收具体 `Arc<LearningService>`，无 trait/时钟口子；tick 间隔为私有
-        // 常量），按退路在 [`learning_maintenance_tick_guarded`] 包裹层复刻
-        // `start_learning_auto_maintenance` 循环体的真实形状：回合 panic →
-        // `Err(死因)`（生产侧进 tracing::error），循环不死于 panic、照常推进
-        // 到下一轮；下一轮重新拉起且原样透传。标志位复位由上面的 liveness
-        // 守卫测试单独覆盖。
-        let mut round_outputs: Vec<Result<u32, String>> = Vec::new();
-        for round in 0..2u32 {
-            let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(
-                fake_service_tick(round),
-            ));
-            round_outputs.push(tick.await);
+    /// 自动维护开、间隔 `interval_minutes` 分钟的设置。
+    fn maintenance_enabled(interval_minutes: i64) -> nomifun_learning::MaintenanceSettings {
+        nomifun_learning::MaintenanceSettings {
+            enabled: true,
+            interval_minutes,
         }
-        let cause = round_outputs[0].as_ref().expect_err("panic 必须收编为 Err 死因");
-        assert!(cause.contains("模拟 service 回合 panic"), "{cause}");
-        assert_eq!(
-            *round_outputs[1]
-                .as_ref()
-                .expect("panic 后循环必须存活并推进到下一轮"),
-            1,
-            "下一轮重新拉起且原样透传"
+    }
+
+    /// 注入的一条唤醒：在 `at`（距循环起步）让一步等待以 `wake` 返回。
+    #[derive(Clone, Copy)]
+    struct InjectedWake {
+        at: std::time::Duration,
+        wake: LearningMaintenanceWake,
+    }
+
+    /// 一次驱动读数：每次到期回合的起跑时刻（距循环起步，依序）+ 唤醒分支被
+    /// 调用的次数。
+    struct LoopRun {
+        runs: Vec<std::time::Duration>,
+        wakes_handled: usize,
+    }
+
+    /// 驱动**生产**调度循环 [`learning_maintenance_loop`] 走完 `window` 这段
+    /// 虚拟时间：`injected` 按时刻先后插队进等待；`settings_at` 按当前虚拟时刻
+    /// 给设置；`panics_on(序号)` 为真的那次到期回合 panic。循环永不退出——窗口
+    /// 到期由超时掐断，所以走到返回的前提就是 `Err(Elapsed)`。
+    async fn drive_loop(
+        window: std::time::Duration,
+        injected: Vec<InjectedWake>,
+        settings_at: fn(std::time::Duration) -> nomifun_learning::MaintenanceSettings,
+        panics_on: fn(u32) -> bool,
+    ) -> LoopRun {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let start = tokio::time::Instant::now();
+        let runs: Arc<Mutex<Vec<std::time::Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let wakes_handled = Arc::new(AtomicUsize::new(0));
+        let injected: Arc<Mutex<std::collections::VecDeque<InjectedWake>>> =
+            Arc::new(Mutex::new(injected.into()));
+
+        let wait = {
+            let injected = Arc::clone(&injected);
+            move |deadline: tokio::time::Instant| {
+                let injected = Arc::clone(&injected);
+                async move {
+                    // 下一条注入唤醒不晚于定时臂时点：睡到它、以它返回。
+                    let next = injected
+                        .lock()
+                        .unwrap()
+                        .front()
+                        .copied()
+                        .filter(|mark| start + mark.at <= deadline);
+                    match next {
+                        Some(mark) => {
+                            injected.lock().unwrap().pop_front();
+                            tokio::time::sleep_until(start + mark.at).await;
+                            mark.wake
+                        }
+                        None => {
+                            tokio::time::sleep_until(deadline).await;
+                            LearningMaintenanceWake::Timer
+                        }
+                    }
+                }
+            }
+        };
+        let on_wake = {
+            let wakes_handled = Arc::clone(&wakes_handled);
+            move || {
+                let wakes_handled = Arc::clone(&wakes_handled);
+                async move {
+                    wakes_handled.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        };
+        let settings = move || async move { settings_at(start.elapsed()) };
+        let timer_tick = {
+            let runs = Arc::clone(&runs);
+            move || {
+                let runs = Arc::clone(&runs);
+                async move {
+                    let at = start.elapsed();
+                    let attempt = runs.lock().unwrap().len() as u32 + 1;
+                    runs.lock().unwrap().push(at);
+                    if panics_on(attempt) {
+                        panic!("模拟 service 回合 panic");
+                    }
+                }
+            }
+        };
+
+        let looped = tokio::time::timeout(
+            window,
+            learning_maintenance_loop(wait, on_wake, settings, timer_tick),
+        )
+        .await;
+        assert!(looped.is_err(), "循环永不退出：窗口走完仍应在等下一拍");
+        LoopRun {
+            runs: runs.lock().unwrap().clone(),
+            wakes_handled: wakes_handled.load(Ordering::SeqCst),
+        }
+    }
+
+    /// ①（W1 的正面钉）：定时臂只在到点后跑。间隔 30 分钟（下限）：首轮不早于
+    /// 一个间隔，之后每轮相隔 ≥ 一个间隔；30 秒 / 60 秒 / … 这些 tick 上零运行
+    /// （回合全部落在整间隔的倍数上，窗口内恰 `窗口 / 间隔` 轮）。旧循环——每个
+    /// tick 之后无条件重置 `last_run`——在这里记下的是**零次**运行。
+    #[tokio::test(start_paused = true)]
+    async fn timer_arm_runs_only_when_due_and_never_before() {
+        const INTERVAL_MINUTES: u64 = 30;
+        let interval = minutes(INTERVAL_MINUTES);
+        // 窗口 = 3 小时 15 分：不落在任何到点上，窗口边缘不与回合同时刻。
+        let window = minutes(3 * 60 + 15);
+        let run = drive_loop(
+            window,
+            Vec::new(),
+            |_| maintenance_enabled(INTERVAL_MINUTES as i64),
+            |_| false,
+        )
+        .await;
+
+        assert!(
+            !run.runs.is_empty(),
+            "W1：定时臂到点必须跑一轮——零运行 = last_run 又被每个 tick 无条件重置"
         );
+        assert!(run.runs[0] >= interval, "首轮不早于一个间隔：{:?}", run.runs);
+        assert!(
+            run.runs.windows(2).all(|pair| pair[1] - pair[0] >= interval),
+            "相邻两轮相隔不小于一个间隔：{:?}",
+            run.runs
+        );
+        assert!(
+            run.runs.iter().all(|at| at.as_secs() % interval.as_secs() == 0),
+            "回合只落在到点上，30 秒一步的 tick 上零运行：{:?}",
+            run.runs
+        );
+        assert_eq!(
+            run.runs.len(),
+            (window.as_secs() / interval.as_secs()) as usize,
+            "窗口内恰「窗口 / 间隔」轮：{:?}",
+            run.runs
+        );
+    }
+
+    fn growth_wake_at(at: std::time::Duration) -> InjectedWake {
+        InjectedWake {
+            at,
+            wake: LearningMaintenanceWake::Growth,
+        }
+    }
+
+    /// ②（票面验收 ②，唤醒分支的现有语义回归）：首个到点之前被生长唤醒数次，
+    /// 到期回合的起跑时刻与 ① 逐一相同——唤醒臂不读设置、不碰节拍，也不重定
+    /// 定时臂的时点；每次唤醒恰调一次唤醒分支。
+    ///
+    /// 唤醒时刻刻意**不落在** 30 秒的 tick 网格上：唤醒之后循环仍等原来那个固
+    /// 定时点，网格不挪；一旦唤醒分支顺手重定了 `next_tick`，整张网格会漂到别
+    /// 处，这里立刻红。
+    #[tokio::test(start_paused = true)]
+    async fn growth_wakes_do_not_shift_the_timer_cadence() {
+        const INTERVAL_MINUTES: i64 = 30;
+        let run = drive_loop(
+            minutes(3 * 60 + 15),
+            vec![
+                growth_wake_at(minutes(5) + std::time::Duration::from_secs(10)),
+                growth_wake_at(minutes(17) + std::time::Duration::from_secs(10)),
+                growth_wake_at(minutes(22) + std::time::Duration::from_secs(20)),
+                growth_wake_at(minutes(40) + std::time::Duration::from_secs(10)),
+            ],
+            |_| maintenance_enabled(INTERVAL_MINUTES),
+            |_| false,
+        )
+        .await;
+
+        assert_eq!(
+            run.runs,
+            vec![
+                minutes(30),
+                minutes(60),
+                minutes(90),
+                minutes(120),
+                minutes(150),
+                minutes(180)
+            ],
+            "唤醒不挪动到期回合（与无唤醒时逐一相同）"
+        );
+        assert_eq!(run.wakes_handled, 4, "每次唤醒恰调一次唤醒分支");
+    }
+
+    /// ③（A1）：运行期关不记「尝试过」。前 45 分钟关着：零回合、节拍原样；打开
+    /// 之后的**下一个 tick** 就跑（距上次记下的时点早已超过间隔），而不是再干
+    /// 等一个完整间隔——之后仍按间隔走。
+    #[tokio::test(start_paused = true)]
+    async fn disabled_settings_hold_the_timer_arm_and_reenable_runs_promptly() {
+        const INTERVAL_MINUTES: i64 = 30;
+        const REENABLED_AT_MINUTES: u64 = 45;
+        let run = drive_loop(
+            minutes(120),
+            Vec::new(),
+            |elapsed| nomifun_learning::MaintenanceSettings {
+                enabled: elapsed >= minutes(REENABLED_AT_MINUTES),
+                interval_minutes: INTERVAL_MINUTES,
+            },
+            |_| false,
+        )
+        .await;
+
+        assert_eq!(
+            run.runs,
+            vec![minutes(45), minutes(75), minutes(105)],
+            "关着零回合；一开即下一个 tick 跑，此后每隔一个间隔"
+        );
+    }
+
+    /// ④：回合 panic 不热循环。第一次到期回合 panic：循环存活，且下一次尝试是
+    /// 一个间隔之后（到点时已先记过节拍）——不是 30 秒之后的下一个 tick。
+    ///
+    /// 顶替旧的循环复刻测试（它只能在 panic 兜底层另抄一份循环体）：这里
+    /// panic 发生在**生产那一个**循环里。
+    #[tokio::test(start_paused = true)]
+    async fn panicking_tick_does_not_hot_loop() {
+        const INTERVAL_MINUTES: i64 = 30;
+        let run = drive_loop(
+            minutes(3 * 60 + 15),
+            Vec::new(),
+            |_| maintenance_enabled(INTERVAL_MINUTES),
+            |attempt| attempt == 1,
+        )
+        .await;
+
+        assert_eq!(
+            run.runs,
+            vec![
+                minutes(30),
+                minutes(60),
+                minutes(90),
+                minutes(120),
+                minutes(150),
+                minutes(180)
+            ],
+            "panic 之后循环存活；下一次尝试在一个间隔之后，而不是下一个 tick"
+        );
+    }
+
+    // ── MaintenanceCadence：节拍推进的纯判定（显式时刻，不用虚拟时钟）────────
+
+    /// Held 一步不改 last_run：未到期（差一秒也不行）、关着（哪怕早已到期），
+    /// 读数都原样。
+    #[test]
+    fn cadence_holds_last_run_while_disabled_or_not_due() {
+        let one_second = std::time::Duration::from_secs(1);
+        let start = tokio::time::Instant::now();
+        let mut cadence = MaintenanceCadence::starting_at(start);
+        let thirty = maintenance_enabled(30);
+
+        assert!(matches!(
+            cadence.on_timer_tick(start + minutes(30) - one_second, &thirty),
+            TimerTick::Held
+        ));
+        assert_eq!(cadence.last_run(), start, "未到期：last_run 原样");
+
+        let off = nomifun_learning::MaintenanceSettings {
+            enabled: false,
+            interval_minutes: 30,
+        };
+        assert!(matches!(
+            cadence.on_timer_tick(start + minutes(300), &off),
+            TimerTick::Held
+        ));
+        assert_eq!(
+            cadence.last_run(),
+            start,
+            "关着不记「尝试过」：早已到期也不动 last_run"
+        );
+    }
+
+    /// Ran 一步：到点即把 last_run 记为到点时刻（回合还没跑就已经记过——失败 /
+    /// panic 也算尝试过），回合结束再记为完成时刻；下一轮的间隔从**完成时刻**
+    /// 起算。
+    #[test]
+    fn cadence_records_a_ran_tick_when_due_and_again_when_finished() {
+        let start = tokio::time::Instant::now();
+        let mut cadence = MaintenanceCadence::starting_at(start);
+        let thirty = maintenance_enabled(30);
+        let due = start + minutes(30);
+
+        let permit = match cadence.on_timer_tick(due, &thirty) {
+            TimerTick::Ran(permit) => permit,
+            TimerTick::Held => panic!("恰满间隔即到期"),
+        };
+        assert_eq!(cadence.last_run(), due, "到期即记，不等回合结果");
+
+        // 回合跑了 40 秒。
+        let finished = due + std::time::Duration::from_secs(40);
+        cadence.on_tick_finished(permit, finished);
+        assert_eq!(cadence.last_run(), finished, "跑完才记完成时刻");
+
+        // 距到点时刻已满 30 分钟，但距完成时刻还差 40 秒：仍未到期。
+        assert!(matches!(
+            cadence.on_timer_tick(due + minutes(30), &thirty),
+            TimerTick::Held
+        ));
+        assert!(
+            matches!(
+                cadence.on_timer_tick(finished + minutes(30), &thirty),
+                TimerTick::Ran(_)
+            ),
+            "距完成时刻满一个间隔才到期"
+        );
+    }
+
+    /// 改了间隔，下一步就按新间隔判（间隔每个 tick 重读，改设置无需重启）。
+    #[test]
+    fn cadence_honours_a_changed_interval_on_the_next_tick() {
+        let one_second = std::time::Duration::from_secs(1);
+        let start = tokio::time::Instant::now();
+        let mut cadence = MaintenanceCadence::starting_at(start);
+        let at_30 = start + minutes(30);
+
+        // 间隔 60：第 30 分钟未到期。
+        assert!(matches!(
+            cadence.on_timer_tick(at_30, &maintenance_enabled(60)),
+            TimerTick::Held
+        ));
+        assert_eq!(cadence.last_run(), start);
+        // 改成 30：同一时刻即到期。
+        let permit = match cadence.on_timer_tick(at_30, &maintenance_enabled(30)) {
+            TimerTick::Ran(permit) => permit,
+            TimerTick::Held => panic!("新间隔下已到期"),
+        };
+        cadence.on_tick_finished(permit, at_30);
+        // 再改成 120：按旧间隔 30 早已到期，新间隔却要满 120 分钟。
+        assert!(
+            matches!(
+                cadence.on_timer_tick(at_30 + minutes(120) - one_second, &maintenance_enabled(120)),
+                TimerTick::Held
+            ),
+            "差一秒也不到期"
+        );
+        assert!(matches!(
+            cadence.on_timer_tick(at_30 + minutes(120), &maintenance_enabled(120)),
+            TimerTick::Ran(_)
+        ));
     }
 
     /// sb2 唤醒分支夹具：内存库 + 一门带结构的图课程（一个未挂载节点）+ 一条
     /// fresh 挂载行（10 分钟前落盘，避开去抖）——正好满足登记准入。
     async fn wakeable_course() -> (
         std::sync::Arc<nomifun_learning::LearningService>,
+        nomifun_common::LearningCourseId,
+        nomifun_common::UserId,
+    ) {
+        let (service, _pool, course, user) = wakeable_course_with_pool().await;
+        (service, course, user)
+    }
+
+    /// 同 [`wakeable_course`]，另给连接池——要直接改库的用例（m2：把挂载行改
+    /// 成失效）用。
+    async fn wakeable_course_with_pool() -> (
+        std::sync::Arc<nomifun_learning::LearningService>,
+        nomifun_db::sqlx::SqlitePool,
         nomifun_common::LearningCourseId,
         nomifun_common::UserId,
     ) {
@@ -9241,11 +9762,11 @@ mod tests {
         .bind(course.as_str())
         .bind(hash as i64)
         .bind(version)
-        .bind(now - 10 * 60 * 1000)
-        .execute(&pool)
-        .await
-        .unwrap();
-        (service, course, user)
+            .bind(now - 10 * 60 * 1000)
+            .execute(&pool)
+            .await
+            .unwrap();
+        (service, pool, course, user)
     }
 
     /// 该课的仅挂载任务在生成任务注册表里的状态（未入册 = `None`）。
@@ -9319,6 +9840,87 @@ mod tests {
         let wake = wait_learning_maintenance_wake(&service, tokio::time::Instant::now()).await;
         assert_eq!(wake, LearningMaintenanceWake::Timer);
         assert_eq!(spawn_learning_growth_wakes(&service), 0);
+    }
+
+    /// m2 调度循环的唤醒分支（修补后重挂）：挂载**失效**的课上登记一次修补后
+    /// 重挂（结构变过——这里直接把挂载行存的 hash 改掉，即修补 applied 之后的
+    /// 样子；这种课恰恰是生长唤醒的准入第一道就拒的）→
+    /// [`wait_learning_maintenance_wake`] 立即以 Growth 返回（两种意图共用同一
+    /// 个信号）→ [`spawn_learning_repair_followup_wakes`] 取空登记，把**这一课**
+    /// 派发为一个仅挂载任务；派发不 await 回合。生长登记表全程为空。
+    ///
+    /// 同样不碰进程级 `LEARNING_MAINTENANCE_STARTED`，可与其它测试并行。
+    #[tokio::test]
+    async fn repair_followup_wake_dispatches_a_mount_only_task() {
+        let (service, pool, course, user) = wakeable_course_with_pool().await;
+        nomifun_db::sqlx::query(
+            "UPDATE learning_structure_mounts SET structure_hash = structure_hash + 1 \
+             WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let needs = service.maintenance_needs(&course).await.unwrap();
+        assert!(
+            needs.mounts_stale && needs.pending_mounts == 1,
+            "夹具前提：结构变过 = 全量待重挂：{needs:?}"
+        );
+        service.register_repair_followup_wake(&course, &user).await;
+
+        // 被唤醒：定时臂的时点在一小时后，等待没有走到它。
+        let far_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_learning_maintenance_wake(&service, far_deadline),
+        )
+        .await
+        .expect("登记修补后重挂之后调度循环的等待必须被唤醒");
+        assert_eq!(wake, LearningMaintenanceWake::Growth);
+
+        // 派发：登记取空、恰一门课；生长登记表不受影响。调用方不 await——
+        // 单线程运行时下 spawn 出的任务要到本任务让出才起步。
+        assert_eq!(spawn_learning_repair_followup_wakes(&service), 1);
+        assert!(
+            service.take_repair_followup_wakes().is_empty(),
+            "登记已取空"
+        );
+        assert!(
+            service.take_growth_wakes().is_empty(),
+            "重挂不进生长登记表"
+        );
+        assert_eq!(
+            mount_task_state(&service, course.as_str()),
+            None,
+            "派发返回时回合尚未起步（循环没有被它卡住）"
+        );
+
+        // 任务自行收尾：这一课的仅挂载任务入册并走到终态（夹具未配模型）。
+        let mut settled = None;
+        for _ in 0..500 {
+            if let Some(state) = mount_task_state(&service, course.as_str()) {
+                if !matches!(state.as_str(), "queued" | "running") {
+                    settled = Some(state);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            settled.as_deref(),
+            Some("failed"),
+            "被登记的课程拿到一个仅挂载任务并自行收尾"
+        );
+        assert_eq!(
+            spawn_learning_repair_followup_wakes(&service),
+            0,
+            "一条登记只派发一次"
+        );
+
+        // 无登记：等待落定时臂（时点已过即到点），零派发。
+        let wake = wait_learning_maintenance_wake(&service, tokio::time::Instant::now()).await;
+        assert_eq!(wake, LearningMaintenanceWake::Timer);
+        assert_eq!(spawn_learning_repair_followup_wakes(&service), 0);
     }
 
     fn request() -> InitializeRequest {

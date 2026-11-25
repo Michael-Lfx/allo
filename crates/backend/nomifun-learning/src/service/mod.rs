@@ -164,9 +164,15 @@ pub struct LearningService {
     /// [`Self::take_growth_wakes`] 一次性取空。内存态，重启即失——未及处理
     /// 的唤醒随进程消失，节点仍在待挂集，下次生长再登记。
     growth_wakes: Arc<Mutex<HashMap<LearningCourseId, UserId>>>,
-    /// 唤醒信号（跨 crate 端点）：登记后 `notify_one`，调度器经
-    /// [`Self::growth_wake_notified`] 在 `select!` 里等它。
+    /// 唤醒信号（跨 crate 端点）：生长唤醒与修补后重挂登记后都 `notify_one`，
+    /// 调度器经 [`Self::growth_wake_notified`] 在 `select!` 里等它。
     growth_wake_notify: Arc<tokio::sync::Notify>,
+    /// 修补后重挂登记表（m2）：结构修补 `applied` 后登记的课程 → 重挂意图
+    /// （一课至多一条，后登记覆盖先登记）。与生长唤醒分表、共用上面同一个信
+    /// 号；维护调度器（app-server）经 [`Self::take_repair_followup_wakes`] 一
+    /// 次性取空。内存态，重启即失——未及处理的重挂随进程消失，挂载保持失效
+    /// （横幅提示手动「重新检查」，定时臂到点也会补挂）。
+    repair_followup_wakes: Arc<Mutex<HashMap<LearningCourseId, UserId>>>,
 }
 
 /// 生长循环的重试读数（learning-smoke grow/loop 输出用；读数面非门禁）。
@@ -233,6 +239,7 @@ impl LearningService {
             companion_xp_sink: Arc::new(RwLock::new(None)),
             growth_wakes: Arc::new(Mutex::new(HashMap::new())),
             growth_wake_notify: Arc::new(tokio::sync::Notify::new()),
+            repair_followup_wakes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -600,6 +607,7 @@ mod memory;
 mod open_judge;
 mod progress;
 mod quiz;
+mod repair_followup;
 mod review;
 mod system_actions;
 mod tags;
@@ -616,6 +624,10 @@ pub(crate) use system_actions::{
 /// 生长唤醒意图（sb2，ADR-0018 决定 4）：维护调度器（app-server）取走后对
 /// 这一课跑一个仅挂载回合。
 pub use growth_wake::GrowthWake;
+
+/// 修补后重挂意图（m2）：维护调度器（app-server）取走后对这一课跑一个全量
+/// 重挂回合（仅挂载，触发源 `repair_followup`）。
+pub use repair_followup::RepairFollowupWake;
 
 pub(crate) use crate::learning_graph::system_action::{
     SystemActionKind, SystemActionResult, SystemActionTrigger,

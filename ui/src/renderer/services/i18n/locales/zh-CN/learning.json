@@ -485,6 +485,7 @@
   "learningGraphSystemActionTriggerSettlement": "学习结算",
   "learningGraphSystemActionTriggerAutoRefill": "自动补批",
   "learningGraphSystemActionTriggerGrowthFollowup": "随生长附带",
+  "learningGraphSystemActionTriggerRepairFollowup": "修补后重挂",
   "learningGraphSystemActionTriggerUnknown": "自动",
   "learningGraphSystemActionResultDone": "完成",
   "learningGraphSystemActionResultFailed": "失败",

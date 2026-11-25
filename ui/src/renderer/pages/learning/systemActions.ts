@@ -16,6 +16,7 @@ export const typeLabelKeys = {
     settlement: 'learning.learningGraphSystemActionTriggerSettlement',
     auto_refill: 'learning.learningGraphSystemActionTriggerAutoRefill',
     growth_followup: 'learning.learningGraphSystemActionTriggerGrowthFollowup',
+    repair_followup: 'learning.learningGraphSystemActionTriggerRepairFollowup',
     unknown: 'learning.learningGraphSystemActionTriggerUnknown',
   },
   result: {

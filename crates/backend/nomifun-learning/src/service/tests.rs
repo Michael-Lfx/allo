@@ -17565,3 +17565,692 @@ mod structure_findings_route {
         assert_eq!(body["code"], json!("NOT_FOUND"));
     }
 }
+
+// ── m2：修补后自动重挂（applied → 全量重挂意图 → repair_followup 挂载回合）────
+//
+// 修补应用 = 结构 hash 变 = **全部挂载失效**（mounts_stale）。此前没有「修补后
+// 重挂」的链路：只能手动点「重新检查」，或等定时臂（而定时臂因 W1 从未跑过）；
+// sb2 的生长唤醒又**刻意**不接全量重挂（ADR-0018 决定 4：挂载失效时不由唤醒触
+// 发——它的准入第一道就拒 stale）。所以修补后重挂是**另一种意图**：登记不设准
+// 入（它只跟在一次刚改了结构的修补之后），执行时另有一套准入（从未挂载过的课
+// 仍退回手动——首次对齐是手动的）。两种意图共用 sb2 的通道设施（登记表 +
+// Notify + 调度器的唤醒分支），各自的闸互不影响。
+
+/// ③：修补 `applied` → 恰登记**一条**修补后重挂意图（带这次修补的身份），取
+/// 走即清空；生长唤醒登记表不受影响（两种意图各归各的登记表）。
+#[tokio::test]
+#[serial_test::serial]
+async fn applied_repair_registers_exactly_one_repair_followup_wake() {
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new(rename_block_ops(), false),
+        ledger_valid_structure(),
+    )
+    .await;
+
+    let summary = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.status, "applied", "夹具前提：这一轮确实改了结构");
+    assert!(summary.mounts_stale, "夹具前提：结构变了 = 挂载失效");
+
+    let wakes = service.take_repair_followup_wakes();
+    assert_eq!(
+        wakes,
+        vec![RepairFollowupWake {
+            course_id: course.clone(),
+            user_id: user_id.clone(),
+        }],
+        "applied 恰登记一条修补后重挂意图，身份取自这次修补"
+    );
+    assert!(
+        service.take_repair_followup_wakes().is_empty(),
+        "取走即清空"
+    );
+    assert!(
+        service.take_growth_wakes().is_empty(),
+        "修补不登记生长唤醒（两种意图各归各的登记表）"
+    );
+}
+
+/// 跑一轮手动修补（`findings` 条留痕 + 能过全量复核的结构），断言它**没有**登记
+/// 修补后重挂意图；返回 service 与回合结果，供调用方核对这条路径确实走到了。
+async fn repair_without_followup(
+    completer: Arc<dyn LearningCompleter>,
+    findings: usize,
+) -> (
+    LearningService,
+    Result<crate::models::StructureRepairSummary, AppError>,
+) {
+    let (service, user_id, course) =
+        seed_maintenance_course_with_structure(findings, 1, completer, ledger_valid_structure())
+            .await;
+    let outcome = service.run_structure_repair(&user_id, &course, None).await;
+    assert!(
+        service.take_repair_followup_wakes().is_empty(),
+        "这一路径不得登记修补后重挂：{outcome:?}"
+    );
+    (service, outcome)
+}
+
+/// ③ 反面（零工作）：noop（评估过、无 op——结构没变、挂载没失效，不必重挂）与
+/// skipped（零留痕零观察，零 LLM）都不登记。
+#[tokio::test]
+#[serial_test::serial]
+async fn noop_and_skipped_repair_rounds_register_no_repair_followup_wake() {
+    let (_service, noop) =
+        repair_without_followup(ScriptedCompleter::new(r#"{"ops": []}"#, false), 1).await;
+    assert_eq!(noop.unwrap().status, "noop");
+
+    let (_service, skipped) =
+        repair_without_followup(ScriptedCompleter::new("{}", false), 0).await;
+    assert_eq!(skipped.unwrap().status, "skipped");
+}
+
+/// ③ 反面（失败）：LLM 失败、op 应用不了（改一个不存在的块）、全量复核红条
+/// （L0 纯标点块名）——回合以 Err 收场，结构与审计未改动，零重挂意图。
+#[tokio::test]
+#[serial_test::serial]
+async fn failed_repair_rounds_register_no_repair_followup_wake() {
+    let (_service, unavailable) =
+        repair_without_followup(ScriptedCompleter::new("{}", true), 1).await;
+    let error = unavailable.unwrap_err();
+    assert!(error.to_string().contains("model unavailable"), "{error}");
+
+    let unapplicable = r#"{"ops":[{"op":"rename_block","from":"块99","to":"块99新","reason":"依据留痕"}]}"#;
+    let (_service, rejected) =
+        repair_without_followup(ScriptedCompleter::new(unapplicable, false), 1).await;
+    let error = rejected.unwrap_err();
+    assert!(matches!(error, AppError::UnprocessableEntity(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("st.ops.endpoints"),
+        "条款门点名 op 引用了不存在的块：{error}"
+    );
+
+    let red_recheck = r#"{"ops":[{"op":"rename_block","from":"块00","to":"双进程、窗口","reason":"依据留痕"}]}"#;
+    let (_service, rejected) =
+        repair_without_followup(ScriptedCompleter::new(red_recheck, false), 1).await;
+    let error = rejected.unwrap_err();
+    assert!(
+        error.to_string().contains("gd.blocks.one_name"),
+        "全量复核红条拒整回合：{error}"
+    );
+}
+
+/// ③ 反面（取消）：LLM 调用进行中全局取消。回包本可以 applied——取消照样零重
+/// 挂意图：取消不是失败，结构也没改。
+#[tokio::test]
+#[serial_test::serial]
+async fn cancelled_repair_round_registers_no_repair_followup_wake() {
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new("{}", false),
+        ledger_valid_structure(),
+    )
+    .await;
+    *service.course_completer.write().unwrap() = Some(Arc::new(CancelMidCallCompleter {
+        service: service.clone(),
+        calls: AtomicUsize::new(0),
+        reply: rename_block_ops(),
+    }));
+
+    let error = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains(CANCELLED_MESSAGE), "{error}");
+    assert!(
+        service.take_repair_followup_wakes().is_empty(),
+        "取消不登记修补后重挂"
+    );
+}
+
+/// 修补回合进行中把一张表删掉的 completer：LLM 一回来就 `DROP TABLE`，再回
+/// 给定产物——用来制造「结构已写、后一步写库失败」的窗口（水位推进排在结构
+/// 写之后；回合开头已读过水位表，读数正常，这里让回合末尾的推进必然失败）。
+struct DropTableCompleter {
+    pool: sqlx::SqlitePool,
+    table: &'static str,
+    reply: String,
+}
+
+#[async_trait::async_trait]
+impl LearningCompleter for DropTableCompleter {
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, AppError> {
+        unreachable!("修补管线只走 json 接缝")
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+        _temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        sqlx::query(&format!("DROP TABLE {}", self.table))
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        Ok(self.reply.clone())
+    }
+}
+
+/// 登记排在水位推进**之前**（R-b）：修补已 applied（结构写了、Done 行落了），
+/// 紧接着的水位推进写库失败让回合以 Err 收场——重挂意图必须还在。变了的结构
+/// 不能因为后一步记账失败就没有重挂。
+#[tokio::test]
+#[serial_test::serial]
+async fn applied_repair_still_registers_the_remount_when_the_watermark_advance_fails() {
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new("{}", false),
+        ledger_valid_structure(),
+    )
+    .await;
+    *service.course_completer.write().unwrap() = Some(Arc::new(DropTableCompleter {
+        pool: service.pool_for_tests().clone(),
+        table: "learning_maintenance_state",
+        reply: rename_block_ops(),
+    }));
+
+    let error = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .expect_err("水位推进写库失败：回合以 Err 收场");
+
+    // 夹具前提：结构确实已经改了（失败发生在结构写之后）。
+    let structure_raw: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(course.as_str())
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        structure_raw.contains("块00新"),
+        "结构已写：{error}"
+    );
+
+    assert_eq!(
+        service.take_repair_followup_wakes(),
+        vec![RepairFollowupWake {
+            course_id: course.clone(),
+            user_id: user_id.clone(),
+        }],
+        "结构变了就必须有重挂意图，哪怕后一步水位推进失败"
+    );
+}
+
+/// R-e 读数（账本）：applied 的 Done 行 basis 在原有的 `unconsumed=…
+/// observations=…` 之后追加 op 条数与挂载失效读数（`ops=… stale=…`）——动作簿
+/// 里能直接读到「改了几处、挂载是否因此失效」。失败行保持原样（没改结构，
+/// 没有这两项可报）。
+#[tokio::test]
+#[serial_test::serial]
+async fn applied_repair_ledger_basis_carries_ops_and_stale() {
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new(rename_block_ops(), false),
+        ledger_valid_structure(),
+    )
+    .await;
+    service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    let rows = system_action_rows(&service, &course).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].result, "done");
+    assert_eq!(
+        rows[0].basis,
+        "unconsumed=1 observations=0 ops=1 stale=1",
+        "basis 保留原前缀，追加 op 条数与挂载失效读数"
+    );
+
+    // 失败行：basis 不带 ops / stale。
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        2,
+        1,
+        ScriptedCompleter::new("{}", true),
+        ledger_valid_structure(),
+    )
+    .await;
+    service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap_err();
+    let rows = system_action_rows(&service, &course).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].result, "failed");
+    assert_eq!(rows[0].basis, "unconsumed=2 observations=0", "失败行保持原样");
+}
+
+/// 节点一挂到 block-00 的挂载回包（ledger 结构夹具里唯一的节点）。
+fn one_node_mount_artifact() -> String {
+    json!({
+        "mounts": [
+            { "node": "节点一", "blocks": ["block-00"], "reason": "同主题" }
+        ],
+        "note": "n"
+    })
+    .to_string()
+}
+
+/// 挂载过的课程夹具：先手动挂一次（得到 fresh 挂载行）；`stale` 为真时再跑
+/// 一轮 applied 修补把结构改掉——挂载随之整体失效，并留下一条重挂意图。此后
+/// completer 的回包恒为挂载回包。返回 (service, user_id, course, completer)。
+async fn mounted_course(
+    stale: bool,
+    enabled: i64,
+) -> (
+    LearningService,
+    UserId,
+    LearningCourseId,
+    Arc<SequencedCompleter>,
+) {
+    let replies = if stale {
+        vec![
+            one_node_mount_artifact(),
+            rename_block_ops(),
+            one_node_mount_artifact(),
+        ]
+    } else {
+        vec![one_node_mount_artifact()]
+    };
+    let completer = SequencedCompleter::new(replies);
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        enabled,
+        completer.clone(),
+        ledger_valid_structure(),
+    )
+    .await;
+    let mounted = service
+        .run_structure_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(mounted.status, "mounted", "夹具前提：先挂一次");
+    if stale {
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "applied", "夹具前提：修补改了结构");
+    }
+    (service, user_id, course, completer)
+}
+
+/// 挂载失效（修补刚改了结构）→ 重挂回合启动：全量重挂，账本行 =
+/// maintenance_mount / repair_followup / done（无操作者），之后挂载不再失效。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_followup_mount_remounts_a_stale_course_as_repair_followup() {
+    let (service, user_id, course, completer) = mounted_course(true, 1).await;
+    let needs = service.maintenance_needs(&course).await.unwrap();
+    assert!(
+        needs.mounts_stale && needs.pending_mounts == 1,
+        "夹具前提：结构变过 = 全量待重挂：{needs:?}"
+    );
+    // 取走修补登记的那条意图（这里直接调回合，不经调度器）。
+    assert_eq!(service.take_repair_followup_wakes().len(), 1);
+    let calls_before = completer.call_count();
+
+    let summary = service
+        .run_repair_followup_mount(&user_id, &course, None)
+        .await
+        .unwrap()
+        .expect("挂载失效：重挂回合启动");
+    assert_eq!(summary.status, "mounted");
+    assert_eq!(
+        (summary.pending_nodes, summary.mounted_nodes),
+        (1, 1),
+        "全量重挂：全部节点都在待挂集"
+    );
+
+    let needs = service.maintenance_needs(&course).await.unwrap();
+    assert!(!needs.mounts_stale, "重挂之后挂载与结构一致");
+    assert_eq!(needs.pending_mounts, 0);
+    let rows = system_action_rows(&service, &course).await;
+    let mount = rows
+        .iter()
+        .find(|row| row.kind == "maintenance_mount" && row.trigger == "repair_followup")
+        .unwrap_or_else(|| panic!("缺 repair_followup 挂载账本行：{rows:?}"));
+    assert_eq!(mount.result, "done");
+    assert_eq!(mount.actor_user_id, None, "自动动作不记操作者");
+    assert!(
+        mount.basis.contains("pending_mount=1") && mount.basis.contains("stale=true"),
+        "全量重挂的读数：{}",
+        mount.basis
+    );
+    assert_eq!(
+        completer.call_count(),
+        calls_before + 1,
+        "重挂恰一次 LLM 调用"
+    );
+}
+
+/// 自动维护运行期关（`learning.maintenanceAutoEnabled=false`）→ 重挂回合不启
+/// 动：零挂载调用、零账本行。重挂回合是自动维护的一种，与调度器同一组开关。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_followup_mount_does_not_start_when_auto_maintenance_is_off() {
+    let (service, user_id, course, completer) = mounted_course(true, 1).await;
+    assert_eq!(service.take_repair_followup_wakes().len(), 1);
+    let calls_before = completer.call_count();
+    let rows_before = system_action_rows(&service, &course).await.len();
+    set_auto_maintenance(&service, false).await;
+
+    let round = service
+        .run_repair_followup_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert!(round.is_none(), "自动维护关：回合不启动：{round:?}");
+    assert_eq!(completer.call_count(), calls_before, "零挂载调用");
+    assert_eq!(
+        system_action_rows(&service, &course).await.len(),
+        rows_before,
+        "零账本行"
+    );
+    // 挂载保持失效：开关打开后手动「重新检查」或定时臂到点补挂。
+    assert!(
+        service
+            .maintenance_needs(&course)
+            .await
+            .unwrap()
+            .mounts_stale
+    );
+}
+
+/// 从未挂载过的课程 → 重挂回合不启动（零 LLM 调用）：首次对齐是手动的
+/// （ADR-0018 这一条照旧）。`maintenance_needs` 把「没有挂载行」也读作
+/// `mounts_stale`，所以只看那个读数分不出来——回合得直接看挂载行在不在。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_followup_mount_does_not_start_for_a_never_mounted_course() {
+    // 修补 applied，但这门课从未挂载过（没有挂载行）。
+    let completer = SequencedCompleter::new(vec![
+        rename_block_ops(),
+        one_node_mount_artifact(),
+    ]);
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        completer.clone(),
+        ledger_valid_structure(),
+    )
+    .await;
+    let summary = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.status, "applied");
+    assert_eq!(
+        service.take_repair_followup_wakes().len(),
+        1,
+        "修补照常登记（登记不设准入）"
+    );
+    let needs = service.maintenance_needs(&course).await.unwrap();
+    assert!(
+        needs.mounts_stale,
+        "没有挂载行也读作 stale——所以回合不能只看这个读数：{needs:?}"
+    );
+    let calls_before = completer.call_count();
+
+    let round = service
+        .run_repair_followup_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert!(
+        round.is_none(),
+        "从未挂载：回合不启动，首次对齐留给手动：{round:?}"
+    );
+    assert_eq!(completer.call_count(), calls_before, "零 LLM 调用");
+}
+
+/// 挂载 fresh 且无待挂节点 → 不重复挂（零 LLM 调用）：登记到执行之间已经有人
+/// 重挂过（定时臂在同一回合内补挂、用户点了「重新检查」）。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_followup_mount_does_not_start_when_mounts_are_fresh() {
+    let (service, user_id, course, completer) = mounted_course(false, 1).await;
+    let needs = service.maintenance_needs(&course).await.unwrap();
+    assert!(
+        !needs.mounts_stale && needs.pending_mounts == 0,
+        "夹具前提：挂载 fresh、无待挂：{needs:?}"
+    );
+    let calls_before = completer.call_count();
+
+    let round = service
+        .run_repair_followup_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert!(round.is_none(), "已经有人挂过：不重复挂：{round:?}");
+    assert_eq!(completer.call_count(), calls_before, "零 LLM 调用");
+}
+
+/// 进程级垫一个写进 io::sink 的全局订阅者（sb2 `structured_course` 同款理由）：
+/// tracing 的 callsite interest 是进程级缓存，本组用例断言的 info 行若先在一个
+/// 没有订阅者的线程上首次触发，interest 会被永久算成 Never，捕获断言落空。
+/// 首个成功者定全局订阅者；已被别的用例垫过时这里的 Err 忽略即可。
+fn pad_global_tracing_subscriber() {
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(std::io::sink)
+            .finish(),
+    );
+}
+
+const REMOUNT_NOT_STARTED_MESSAGE: &str = "repair followup remount round not started";
+
+/// 捕获日志里「重挂回合未启动」各行的 reason 字段（fmt 层按 Debug 打印字符串
+/// 值，带引号）。
+fn remount_not_started_reasons(captured: &str) -> Vec<&str> {
+    captured
+        .lines()
+        .filter(|line| line.contains(REMOUNT_NOT_STARTED_MESSAGE))
+        .map(|line| {
+            let start = line
+                .find("reason=\"")
+                .expect("未启动行必带 reason") + "reason=\"".len();
+            let end = start + line[start..].find('"').expect("reason 值有闭合引号");
+            &line[start..end]
+        })
+        .collect()
+}
+
+/// 归档课（enabled = 0）→ 重挂回合不启动（零 LLM 调用）：不在维护面。登记
+/// 之后归档同样成立（归档发生在登记到执行之间）。不启动的原因如实写日志
+/// （R-e）：是 `ineligible`，不是「无事可重挂」。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_followup_mount_does_not_start_for_an_archived_course() {
+    pad_global_tracing_subscriber();
+    let (service, user_id, course, completer) = mounted_course(true, 1).await;
+    sqlx::query("UPDATE learning_courses SET enabled = 0 WHERE course_id = ?")
+        .bind(course.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let needs = service.maintenance_needs(&course).await.unwrap();
+    assert!(!needs.eligible, "夹具前提：归档课不在维护面");
+    let calls_before = completer.call_count();
+
+    let (buffer, _logs) = capture_thread_logs();
+    let round = service
+        .run_repair_followup_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert!(round.is_none(), "归档课：回合不启动：{round:?}");
+    assert_eq!(completer.call_count(), calls_before, "零 LLM 调用");
+    assert_eq!(
+        remount_not_started_reasons(&captured_log_text(&buffer)),
+        vec!["ineligible"],
+        "不启动的原因如实写日志"
+    );
+}
+
+/// 定时臂路径：tick 里修补 applied 之后，tick 自己已在同一回合内补挂（先修补
+/// 后挂载）。修补照样登记了一条重挂意图——调度器稍后排空它时无事可做：回合
+/// 不启动，不多一次 LLM 调用、不多一行账本。
+///
+/// 夹具在 tick **之前**先挂过一次：没有挂载行的话回合会因「从未挂载」不启
+/// 动，那就不是因为「tick 已补挂」了。
+#[tokio::test]
+#[serial_test::serial]
+async fn timer_tick_leaves_nothing_for_the_repair_followup_to_remount() {
+    let completer = SequencedCompleter::new(vec![
+        // 夹具：先手动挂一次，得到 fresh 挂载行。
+        one_node_mount_artifact(),
+        // tick：修补。
+        rename_block_ops(),
+        // tick：同一回合内补挂（此后恒为挂载回包）。
+        one_node_mount_artifact(),
+    ]);
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        completer.clone(),
+        ledger_valid_structure(),
+    )
+    .await;
+    service
+        .run_structure_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    let calls_before = completer.call_count();
+    let rows_before = system_action_rows(&service, &course).await.len();
+
+    let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+    let outcome = &report.courses[0];
+    assert_eq!(outcome.repair.as_deref(), Some("applied"));
+    assert_eq!(
+        outcome.mount.as_deref(),
+        Some("mounted"),
+        "tick 自己在同一回合内补挂"
+    );
+    assert_eq!(completer.call_count(), calls_before + 2, "修补 + 补挂");
+    let wakes = service.take_repair_followup_wakes();
+    assert_eq!(
+        wakes,
+        vec![RepairFollowupWake {
+            course_id: course.clone(),
+            user_id: user_id.clone(),
+        }],
+        "tick 里的修补照常登记重挂意图"
+    );
+
+    // 调度器稍后排空这条意图：无事可做。
+    let round = service
+        .run_repair_followup_mount(&wakes[0].user_id, &wakes[0].course_id, None)
+        .await
+        .unwrap();
+    assert!(round.is_none(), "tick 已补挂：回合不启动：{round:?}");
+    assert_eq!(
+        completer.call_count(),
+        calls_before + 2,
+        "不多一次 LLM 调用"
+    );
+    let rows = system_action_rows(&service, &course).await;
+    assert_eq!(rows.len(), rows_before + 2, "修补 Done + 补挂 Done，不多一行");
+    assert!(
+        rows.iter().all(|row| row.trigger != "repair_followup"),
+        "没有 repair_followup 账本行：{rows:?}"
+    );
+}
+
+const REPAIR_FINISHED_MESSAGE: &str = "structure repair round finished";
+
+/// 捕获日志里「修补回合结束」那一行（找不到即 panic，带上整段捕获）。
+fn repair_finished_line(captured: &str) -> &str {
+    captured
+        .lines()
+        .find(|line| line.contains(REPAIR_FINISHED_MESSAGE))
+        .unwrap_or_else(|| panic!("缺修补回合结束的 info 行：\n{captured}"))
+}
+
+/// R-e 读数（日志）：修补回合每个 `Ok` 出口各留一行结果级 info——课程、触发
+/// 源、终态（applied / noop / skipped）、op 条数、结构 hash 前后值、挂载是否
+/// 失效。此前修补回合没有任何结果级日志（只有逐次 LLM 调用行与名字提示）。
+#[tokio::test]
+#[serial_test::serial]
+async fn repair_round_logs_its_outcome_readings() {
+    pad_global_tracing_subscriber();
+
+    // applied：改了 1 处、hash 前后不同、挂载失效。
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new(rename_block_ops(), false),
+        ledger_valid_structure(),
+    )
+    .await;
+    let (buffer, _logs) = capture_thread_logs();
+    let summary = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.status, "applied");
+    let captured = captured_log_text(&buffer);
+    let line = repair_finished_line(&captured);
+    for field in [
+        "course=\"".to_owned() + course.as_str() + "\"",
+        "trigger=\"manual\"".to_owned(),
+        "status=\"applied\"".to_owned(),
+        "ops=1".to_owned(),
+        format!("old_hash={}", summary.old_hash),
+        format!("new_hash={}", summary.new_hash),
+        "mounts_stale=true".to_owned(),
+    ] {
+        assert!(line.contains(&field), "applied 结束行缺 {field:?}：{line}");
+    }
+    drop(_logs);
+
+    // noop：跑过 LLM、零 op，结构没变。
+    let (service, user_id, course) =
+        seed_maintenance_course(1, 1, ScriptedCompleter::new(r#"{"ops": []}"#, false)).await;
+    let (buffer, _logs) = capture_thread_logs();
+    let summary = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.status, "noop");
+    let captured = captured_log_text(&buffer);
+    let line = repair_finished_line(&captured);
+    for field in [
+        "status=\"noop\"".to_owned(),
+        "ops=0".to_owned(),
+        "mounts_stale=false".to_owned(),
+        format!("old_hash={}", summary.old_hash),
+        format!("new_hash={}", summary.old_hash),
+    ] {
+        assert!(line.contains(&field), "noop 结束行缺 {field:?}：{line}");
+    }
+    drop(_logs);
+
+    // skipped：零 LLM。
+    let (service, user_id, course) =
+        seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
+    let (buffer, _logs) = capture_thread_logs();
+    service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap();
+    let captured = captured_log_text(&buffer);
+    let line = repair_finished_line(&captured);
+    for field in ["status=\"skipped\"", "ops=0", "mounts_stale=false"] {
+        assert!(line.contains(field), "skipped 结束行缺 {field:?}：{line}");
+    }
+}

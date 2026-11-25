@@ -162,7 +162,9 @@ pub use models::{
 /// learning（A1），ai-agent 工具 handler 直调——零新依赖。
 pub use verify_math::{ClaimVerdict, ExprError, MathClaim, eval_expr, verify_claim};
 pub use routes::learning_routes;
-pub use service::{CompanionXpSink, GrowthRunStats, GrowthWake, LearningService};
+pub use service::{
+    CompanionXpSink, GrowthRunStats, GrowthWake, LearningService, RepairFollowupWake,
+};
 /// 课时生成双模面（e4）：异步臂 202 响应体 + 门面重试环读数（smoke 判据）。
 pub use service::{LessonGenerationAccepted, LessonRunStats};
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档注册进 `ArchivingCompleter`

@@ -485,6 +485,7 @@
   "learningGraphSystemActionTriggerSettlement": "Session settlement",
   "learningGraphSystemActionTriggerAutoRefill": "Auto refill",
   "learningGraphSystemActionTriggerGrowthFollowup": "Following growth",
+  "learningGraphSystemActionTriggerRepairFollowup": "Remount after repair",
   "learningGraphSystemActionTriggerUnknown": "Automatic",
   "learningGraphSystemActionResultDone": "Done",
   "learningGraphSystemActionResultFailed": "Failed",

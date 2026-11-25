@@ -3846,6 +3846,7 @@ export type I18nKey =
   | 'learning.learningGraphSystemActionTriggerAutoRefill'
   | 'learning.learningGraphSystemActionTriggerGrowthFollowup'
   | 'learning.learningGraphSystemActionTriggerManual'
+  | 'learning.learningGraphSystemActionTriggerRepairFollowup'
   | 'learning.learningGraphSystemActionTriggerSettlement'
   | 'learning.learningGraphSystemActionTriggerTimer'
   | 'learning.learningGraphSystemActionTriggerUnknown'

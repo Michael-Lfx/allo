@@ -943,7 +943,8 @@ impl LearningService {
     /// 挂载观察非空（皆空 = skipped 零 LLM 零写）；ops 空 = noop（LLM 已跑
     /// 不写盘）；ops 应用后 gd.* 全量重过零放宽 → 结构快照原子写 → 修补审
     /// 计行落表。**级联口径（ADR-0017）**：本回合不动挂载——hash 变即既有
-    /// 挂载待重评估（mounts_stale），下回合全量重挂，不建逐 op 跟迁。
+    /// 挂载待重评估（mounts_stale），不建逐 op 跟迁；全量重挂是**另一个回合**
+    /// （m2：applied 之后登记一次修补后重挂，见 `service::repair_followup`）。
     ///
     /// y04：默认 manual 触发包装（路由/显式命令）；维护 tick 走
     /// [`Self::run_structure_repair_with_trigger`] 传 `timer`。
@@ -965,6 +966,11 @@ impl LearningService {
     /// 结构修补回合（trigger 显式版）：终态写一条系统动作账——applied =
     /// Done，真失败 = Failed；noop/skipped（零工作）、同键忙拒/任务键在途
     /// （Conflict）与用户取消都零行。账本 fail-open，写失败不阻断回合。
+    ///
+    /// m2（R-b）：applied 的 Done 行落了之后、水位推进之前，登记一次修补后重
+    /// 挂意图——结构变了挂载就整体失效，重挂作为独立的仅挂载回合跑（触发源
+    /// `repair_followup`，见 [`Self::register_repair_followup_wake`]）。noop
+    /// 结构没变、失败 / 取消没改结构，都不登记。
     pub async fn run_structure_repair_with_trigger(
         &self,
         user_id: &UserId,
@@ -1121,6 +1127,17 @@ impl LearningService {
         // 触发门槛：皆空 = skipped（零 LLM 零写）。
         if finding_rows.is_empty() && observations.is_empty() {
             task.finish_done("修补跳过：无留痕与观察");
+            // R-e 读数：回合结果级 info，每个 Ok 出口一行。
+            tracing::info!(
+                course = course_id.as_str(),
+                trigger = trigger.as_str(),
+                status = "skipped",
+                ops = 0_usize,
+                old_hash = old_hash as i64,
+                new_hash = old_hash as i64,
+                mounts_stale = false,
+                "structure repair round finished"
+            );
             self.emit_graph_event(
                 course_id,
                 "structure_repair_completed",
@@ -1292,6 +1309,9 @@ impl LearningService {
         let new_structure_raw = serde_json::to_string(&next_envelope).map_err(internal)?;
         let (new_hash, new_hash_version) =
             crate::learning_graph::mounting::hash_structure_column(&new_structure_raw);
+        // 结构已改 = 既有挂载待重评估。Done 行的 basis 与重挂登记都要用它，所以
+        // 在写盘之前先算。
+        let mounts_stale = old_hash != new_hash;
         if !noop {
             // 结构快照原子写（唯一权威）+ 修补审计行。
             sqlx::query("UPDATE learning_courses SET structure_json = ?, updated_at = ? WHERE course_id = ?")
@@ -1331,7 +1351,9 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-            // y04：applied = 终态 Done 行。
+            // y04：applied = 终态 Done 行。basis 追加 op 条数与挂载失效读数
+            // （R-e：动作簿里能直接读到「改了几处、挂载是否因此失效」）；失败
+            // 行保持原样。
             self.record_system_action(
                 ledger_action(
                     course_id,
@@ -1340,14 +1362,22 @@ impl LearningService {
                     SystemActionResult::Done,
                     user_id,
                 )
-                .basis(&ledger_basis),
+                .basis(&format!(
+                    "{ledger_basis} ops={} stale={}",
+                    ops.len(),
+                    i32::from(mounts_stale)
+                )),
             )
             .await;
+            // m2（R-b / D1）：结构已改 = 既有挂载整体失效 → 登记一次全量重挂。
+            // 必须排在水位推进**之前**：推进可能失败并让本函数返回 Err，而结构
+            // 已经变了——变了的结构不能没有重挂。失败 / 取消路径在前面就
+            // return 了，到不了这里；noop 也不进这个分支。
+            self.register_repair_followup_wake(course_id, user_id).await;
         }
         // noop 不落审计行（learnhub 同款「无修补动作不留档案」——评估过、
         // 无修补动作是合法结论，但没发生的事不造档案）。
         let applied: Vec<String> = ops.iter().map(|op| op.label()).collect();
-        let mounts_stale = old_hash != new_hash;
         // 水位推进（k02）：applied/noop 才算本回合读到的留痕已消费；失败
         // 路径在函数前面已 return，skipped 路径没有可推进的留痕。
         if watermark_enabled {
@@ -1360,6 +1390,18 @@ impl LearningService {
         } else {
             format!("修补完成：{} 条 op 应用", applied.len())
         });
+        let status = if noop { "noop" } else { "applied" };
+        // R-e 读数：回合结果级 info，每个 Ok 出口一行（applied / noop）。
+        tracing::info!(
+            course = course_id.as_str(),
+            trigger = trigger.as_str(),
+            status,
+            ops = applied.len(),
+            old_hash = old_hash as i64,
+            new_hash = new_hash as i64,
+            mounts_stale,
+            "structure repair round finished"
+        );
         self.emit_graph_event(
             course_id,
             "structure_repair_completed",
@@ -1370,7 +1412,7 @@ impl LearningService {
             }),
         );
         Ok(crate::models::StructureRepairSummary {
-            status: if noop { "noop".into() } else { "applied".into() },
+            status: status.into(),
             old_hash: old_hash as i64,
             new_hash: new_hash as i64,
             applied,

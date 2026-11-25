@@ -117,6 +117,15 @@ describe('buildSystemActionRow', () => {
     expect(row.triggerKey).toBe('learning.learningGraphSystemActionTriggerGrowthFollowup');
     expect(row.triggerKey).not.toBe(typeLabelKeys.trigger.unknown);
   });
+
+  test('repair_followup 触发源有专属标签 key（m2：修补后的全量重挂，与生长唤醒的挂载行可区分）', () => {
+    const row = buildSystemActionRow(
+      action({ kind: 'maintenance_mount', trigger: 'repair_followup' })
+    );
+    expect(row.triggerKey).toBe('learning.learningGraphSystemActionTriggerRepairFollowup');
+    expect(row.triggerKey).not.toBe(typeLabelKeys.trigger.unknown);
+    expect(row.triggerKey).not.toBe(typeLabelKeys.trigger.growth_followup);
+  });
 });
 
 describe('buildSystemActionRows', () => {

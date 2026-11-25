@@ -36,4 +36,8 @@ toml_edit.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+# `test-util` is not in tokio's `full`, and the learning maintenance scheduler
+# tests drive the real loop under the paused clock
+# (`#[tokio::test(start_paused = true)]`), so hours of cadence run instantly.
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
