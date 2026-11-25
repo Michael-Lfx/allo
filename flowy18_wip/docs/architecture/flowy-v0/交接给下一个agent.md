@@ -23,7 +23,7 @@ V0（`ExecInput`）、V1（追加日志受理）、V2/S3b（租约泵 + 会话�
 | 二进制 | `Flowy.exe` | **`flowy18_wip/target/debug/flowy-app.exe`** |
 | 和本任务的关系 | **无关，一行没碰** | **全部工作在它下面** |
 
-`docs/architecture/flowy-v0/` 里的架构方案描述的是 `flowy18_wip`。
+`flowy18_wip/docs/architecture/flowy-v0/` 里的架构方案描述的是 `flowy18_wip`。
 目标书里提到的 `messages.status='pending'`、`conversation_delivery_receipts`、`bun run typecheck`
 **都是根 workspace 的东西，`flowy18_wip` 里不存在**（它用 JSON 文件，没有 SQLite，也没有 TypeScript）。
 
@@ -38,8 +38,8 @@ V0（`ExecInput`）、V1（追加日志受理）、V2/S3b（租约泵 + 会话�
 | 路径 | 内容 |
 | --- | --- |
 | `flowy18_wip/crates/flowy-agent-core/src/acceptance.rs` | **受理队列**，追加式日志，约 300 行 |
-| `docs/architecture/flowy-v0/`（11 份文档） | 从交接目录迁入的架构方案 ＋ PROGRESS ＋ BLOCKED ＋ 索引 |
-| `docs/architecture/flowy-v0/evidence/` | 10 份实测证据（截图、真实回执日志） |
+| `flowy18_wip/docs/architecture/flowy-v0/`（11 份文档） | 从交接目录迁入的架构方案 ＋ PROGRESS ＋ BLOCKED ＋ 索引 |
+| `flowy18_wip/docs/architecture/flowy-v0/evidence/` | 10 份实测证据（截图、真实回执日志） |
 
 ### 3.2 改动的既有文件
 
@@ -74,7 +74,7 @@ V0（`ExecInput`）、V1（追加日志受理）、V2/S3b（租约泵 + 会话�
 
 ## 4. 架构坐标：我在 V1，全程是七段路
 
-方案 `docs/architecture/flowy-v0/最终方案.md` §12：
+方案 `flowy18_wip/docs/architecture/flowy-v0/最终方案.md` §12：
 
 ```
 V0 地基 → V1 受理 → V2 调度 → V3 执行 → V4 产物 → V5 核验 → V6 外发
@@ -287,8 +287,8 @@ cargo test -p flowy-studio       # 82 passed
 cargo test -p flowy-i18n         # 8 passed
 
 # 一条命令验完纵线
-cd .. && bash docs/architecture/flowy-v0/accept.sh
-WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh   # 含真实启动
+cd .. && bash flowy18_wip/docs/architecture/flowy-v0/accept.sh
+WITH_APP=1 bash flowy18_wip/docs/architecture/flowy-v0/accept.sh   # 含真实启动
 
 # 构建二进制（必须先杀进程）
 taskkill /F /IM flowy-app.exe
@@ -298,13 +298,13 @@ cargo build -p flowy-desktop --bin flowy-app
 cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 ```
 
-**回执文件**：`C:/Users/38788/AppData/Roaming/Flowy/Flowy/data/acceptance/journal.jsonl`
+**回执文件**：`<APPDATA>/Flowy/Flowy/data/acceptance/journal.jsonl`
 
 ---
 
 ## 10. 当前未提交的改动
 
-> 实时工作区状态以 §15 导语及 `git -C .agents/worktrees/feat-flowy-local-receipt status` 为准（代码工作树干净，`HEAD` 为 `03a69348f`；本轮仅整理 `docs/architecture/flowy-v0/` 文档与方案）。
+> 实时工作区状态以 §15 导语及 `git -C .agents/worktrees/feat-flowy-local-receipt status` 为准（代码工作树干净，`HEAD` 为 `03a69348f`；本轮仅整理 `flowy18_wip/docs/architecture/flowy-v0/` 文档与方案）。
 
 ---
 
@@ -326,10 +326,10 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 先做（半小时）：
 1. git status 确认只有 flowy-studio/src/{panel,studio}.rs 两个文件已改；提交它们。
-2. 读 docs/architecture/flowy-v0/PROGRESS.md 的「任务 8」「老爷爷审查结论」两节。
+2. 读 flowy18_wip/docs/architecture/flowy-v0/PROGRESS.md 的「任务 8」「老爷爷审查结论」两节。
 
 然后做（主线）：
-3. 在 docs/architecture/flowy-v0/最终方案.md 的 §4 找到「五条硬约束」，
+3. 在 flowy18_wip/docs/architecture/flowy-v0/最终方案.md 的 §4 找到「五条硬约束」，
    在 §12 找到「六条不变量逐条写成断言」。第六条没有内容。
    先在 最终方案.md 里把第六条写死，再往下做。写不成第六条就停下来报告原因。
 4. 把 ExecInput 落成 Rust 类型（含 decided），放 flowy-agent-core，
@@ -359,7 +359,7 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 - 反引号在 python -c "..." 里会被 shell 执行，补丁必须写成脚本文件
 - 回归测试必须验证「会红」：把 bug 放回去跑一遍
 
-遇到卡住：写进 docs/architecture/flowy-v0/BLOCKED.md 再继续别的，不要硬闯。
+遇到卡住：写进 flowy18_wip/docs/architecture/flowy-v0/BLOCKED.md 再继续别的，不要硬闯。
 ```
 
 ---
@@ -368,11 +368,11 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 | 路径 | 内容 |
 | --- | --- |
-| `docs/architecture/flowy-v0/最终方案.md` | 架构方案（2167 行，修订 9.1）。**要动手只读这份** |
-| `docs/architecture/flowy-v0/PROGRESS.md` | 我踩的每个坑、每轮实测结果。**接手先读它** |
-| `docs/architecture/flowy-v0/BLOCKED.md` | 卡住的事、待裁决 |
-| `docs/architecture/flowy-v0/evidence/` | 10 份实测证据 |
-| `docs/architecture/flowy-v0/accept.sh` | 一条命令验完纵线 |
+| `flowy18_wip/docs/architecture/flowy-v0/最终方案.md` | 架构方案（2167 行，修订 9.1）。**要动手只读这份** |
+| `flowy18_wip/docs/architecture/flowy-v0/PROGRESS.md` | 我踩的每个坑、每轮实测结果。**接手先读它** |
+| `flowy18_wip/docs/architecture/flowy-v0/BLOCKED.md` | 卡住的事、待裁决 |
+| `flowy18_wip/docs/architecture/flowy-v0/evidence/` | 10 份实测证据 |
+| `flowy18_wip/docs/architecture/flowy-v0/accept.sh` | 一条命令验完纵线 |
 | `flowy18_wip/docs/gpui-pre-and-kit.md` | **写任何 GPUI 代码前必读** |
 | `flowy18_wip/AGENTS.md` | 项目规则 |
 
@@ -396,7 +396,7 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 ## 15. 2026-11-25 现役总账：Phase 1–4 全部收口，停在 V6 外发单向门
 
 > **本节是唯一现役真相，覆盖 §1–§14 的历史状态**；旧节保留作踩坑实录。
-> - **注意工作树位置**：根工作区 `d:/workSpace/git_clone_test/allo` 在 `main`，不含本目录；全部代码与文档均在独立 worktree **`.agents/worktrees/feat-flowy-local-receipt`**（分支 `feat-flowy-local-receipt`）。
+> - **注意工作树位置**：根工作区 `<REPO_ROOT>` 在 `main`，不含本目录；全部代码与文档均在独立 worktree **`.agents/worktrees/feat-flowy-local-receipt`**（分支 `feat-flowy-local-receipt`）。
 > - **Git 状态**：V0–V5 及 Phase 1–4（任务 14–18）代码与文档已全部在本地分支提交（**只本地、未推送**）；现停在 **V6 外发通道**（`BLOCKED.md` §5 单向门）等待需求方拍板。
 > - 旧段落若残留 rebase 前哈希，一律以本节表格为准。
 
@@ -441,13 +441,13 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 3. **偶发文件锁**：Windows 清理临时目录偶发 `AlreadyExists` / `PermissionDenied`，单独重跑确认，不要误改业务被测逻辑。
 4. **Git 纪律**：提交身份固定 `-c user.name="RiKa0-0" -c user.email="2206491416@qq.com"`，严禁任何 AI 署名或 `Co-authored-by`，Conventional Commits，**只本地 commit、不 push**；未获明确指令前不自动 commit。
 5. **GPUI 铁律**：写界面代码前必读 `flowy18_wip/docs/gpui-pre-and-kit.md`；UI 变更后跑 `bun flowy18_wip/scripts/check-ui-contracts.mjs` 并用 `agent-desktop` 实测。
-6. **PowerShell 下的 `bash` 陷阱**：Windows PowerShell 裸跑 `bash` 会命中 `C:\Windows\System32\bash.exe`（WSL Relay）报 `execvpe(/bin/bash) failed`；必须显式调 Git Bash：`"D:\Git\bin\bash.exe" docs/architecture/flowy-v0/accept.sh`。
+6. **PowerShell 下的 `bash` 陷阱**：Windows PowerShell 裸跑 `bash` 会命中 `C:\Windows\System32\bash.exe`（WSL Relay）报 `execvpe(/bin/bash) failed`；必须显式调 Git Bash：`"<GIT_BASH>" flowy18_wip/docs/architecture/flowy-v0/accept.sh`。
 7. **CI `--all-targets` Pedantic Clippy 门禁**：`.github/workflows/flowy18-ui.yml` 对 `flowy-agent` 等五 crate 检查 `--all-targets -- -D warnings`（含单测里的 `clippy::assert_is_empty`、`default_trait_access`）；只跑 `--lib` 会漏掉测试代码里的 lint 错误。
 
 ### 15.5 下一单任务书（Phase 1 + Phase 2 核心门禁收口，完整四阶段见 [`V0-执行计划.md`](V0-执行计划.md)）
 
 ```text
-【目标】按 docs/architecture/flowy-v0/V0-执行计划.md 推进 Phase 1（堵住真机三大 P0 断层 + INFO 业务 Trace）与 Phase 2（全类型交付硬门 + 方案 A 显式豁免表 + deliver_intent 崩溃窗口 + 普通入口审计落盘），不碰根工作区，不碰 V6 外发。
+【目标】按 flowy18_wip/docs/architecture/flowy-v0/V0-执行计划.md 推进 Phase 1（堵住真机三大 P0 断层 + INFO 业务 Trace）与 Phase 2（全类型交付硬门 + 方案 A 显式豁免表 + deliver_intent 崩溃窗口 + 普通入口审计落盘），不碰根工作区，不碰 V6 外发。
 
 【工作区】独立 worktree .agents/worktrees/feat-flowy-local-receipt（分支 feat-flowy-local-receipt）。先读 V0-执行计划.md、证据.md §11.26、BLOCKED.md、最终方案.md §6.4/§12.1/§13.1。
 
@@ -462,7 +462,7 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
    - cargo test -p flowy-agent -- --test-threads=1
    - cargo test -p flowy-studio
    - cargo test -p flowy-i18n
-   - "D:/Git/bin/bash.exe" ../docs/architecture/flowy-v0/accept.sh
+   - "<GIT_BASH>" flowy18_wip/docs/architecture/flowy-v0/accept.sh
    - cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets -- -D warnings
    - rustfmt --edition 2024 --check <全部改动 .rs 文件>
    - bun scripts/check-ui-contracts.mjs
@@ -474,7 +474,7 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 1. 进 `.agents/worktrees/feat-flowy-local-receipt`，读 [`V0-执行计划.md`](V0-执行计划.md) + [`证据.md` §11.26](证据.md) + [`BLOCKED.md`](BLOCKED.md)。
 2. `git log --oneline -8`、`git branch --list "*flowy*"` 与 `git status` 核对分支、HEAD 与未提交文件。
-3. 串行跑一遍 §15.5 第 4 步基线门禁（注意 PowerShell 下用 `"D:\Git\bin\bash.exe"` 跑 `accept.sh`，真机测试务必先备份并在 `finally` 还原 `%APPDATA%\Flowy\Flowy\data`）。
+3. 串行跑一遍 §15.5 第 4 步基线门禁（注意 PowerShell 下用 `"<GIT_BASH>"` 跑 `accept.sh`，真机测试务必先备份并在 `finally` 还原 `%APPDATA%\Flowy\Flowy\data`）。
 4. 按 [`V0-执行计划.md`](V0-执行计划.md) Phase 1 → Phase 4 依序推进；遇到需拍板边界先查/写 `BLOCKED.md`，绝不猜着碰 V6 外发或根工作区。
 
 ---
@@ -524,7 +524,7 @@ cargo test -p flowy-agent                                      # 165 passed, 0 f
 cargo clippy -p flowy-agent-core -p flowy-agent -- -D warnings # 0 warnings
 cargo check -p flowy-app                                       # 0 errors (UI 100% 兼容)
 ```
-GUI 自动化实测工具：`C:\Users\38788\.gemini\config\skills\flowy-gpui-e2e\scripts\ui-shot.ps1`（支持 `-Preflight`、原子 AppData 隔离、`-KeepAuth`、`seed_receipt` + `restart` 热重启、Win32 DPI 感知 `resize`）。
+GUI 自动化实测工具：`<USER_HOME>\.gemini\config\skills\flowy-gpui-e2e\scripts\ui-shot.ps1`（支持 `-Preflight`、原子 AppData 隔离、`-KeepAuth`、`seed_receipt` + `restart` 热重启、Win32 DPI 感知 `resize`）。
 
 ---
 

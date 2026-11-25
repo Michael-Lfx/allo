@@ -83,7 +83,7 @@ flowchart LR
 | 类别 | 明确边界 |
 | --- | --- |
 | **核心目标** | ① 全局可视化工作台 + 宽幅居中流程图弹窗；② 4 筹码本机驾驶舱与三模抽屉；③ 全面切换 `71cdb8e92` + `65772f857` 全部 6+4 接口并将 UI 降维为纯订阅层；④ 外部打开白名单门禁、23 语言对称与双主题零硬编码；⑤ 模块解耦与 0 冲突文件边界。 |
-| **明确非目标** | ① 严禁修改 `flowy-agent`、`flowy-agent-core`、`flowy-shell` 及共享文档 `docs/architecture/flowy-v0/*`；② 严禁引入新第三方 Rust crate 或调用 `gpui_kit::init(cx)`；③ 严禁在生产代码中塞入 mock 数据或直读磁盘状态文件；④ 严禁 UI 猜测并拼接内核内部 `submission-{id:032x}` 格式。 |
+| **明确非目标** | ① 严禁修改 `flowy-agent`、`flowy-agent-core`、`flowy-shell` 及共享文档 `flowy18_wip/docs/architecture/flowy-v0/*`；② 严禁引入新第三方 Rust crate 或调用 `gpui_kit::init(cx)`；③ 严禁在生产代码中塞入 mock 数据或直读磁盘状态文件；④ 严禁 UI 猜测并拼接内核内部 `submission-{id:032x}` 格式。 |
 
 ### 2.3 五条架构不变量（后续维护不可打破）
 1. **0 冲突硬边界**：UI 侧只允许改动 `flowy18_wip/crates/{flowy-ui, flowy-studio, flowy-app, flowy-i18n}/` 与 `flowy18_wip/docs/plans/`。需要新内核只读能力时一律通过协同需求单由内核侧补充。
@@ -353,7 +353,7 @@ cargo build --manifest-path flowy18_wip/Cargo.toml -p flowy-desktop --bin flowy-
 | 边界项 | 严格约定 |
 | --- | --- |
 | **UI 允许修改范围** | 仅限 `flowy18_wip/crates/{flowy-ui, flowy-studio, flowy-app, flowy-i18n}/` 与 `flowy18_wip/docs/plans/` |
-| **严禁触碰范围** | `flowy-agent-core/`、`flowy-agent/`、`docs/architecture/flowy-v0/{PROGRESS.md, 交接给下一个agent.md, 证据.md}`、根 Tauri/React 工作区 |
+| **严禁触碰范围** | `flowy-agent-core/`、`flowy-agent/`、`flowy18_wip/docs/architecture/flowy-v0/{PROGRESS.md, 交接给下一个agent.md, 证据.md}`、根 Tauri/React 工作区 |
 | **调度边界** | UI 仅做纯订阅展示层，不围绕 `has_active_claim` / `run_accepted_once` 建新状态机 |
 | **核验放行边界** | `override_deliver_artifact(session_id, report_id, artifact_path)` 严格透传 `ChatLine::Verification` 的真实非空 `report_id`，保留两步确认门禁并承接内核报错 |
 | **存储与性能边界** | 严禁 UI 直读 `sessions/{history,index}.json`、`delivery/*.jsonl`、`acceptance/journal.jsonl`；磁盘查询类 `AgentHandle` 方法（`overridden_artifact_hashes` / `receipt_state`）仅在 `AgentUpdate` / 项目变更 / 打开看板时重建缓存快照，绝不在 `render()` 或空闲 33ms 节拍调用 |
@@ -445,7 +445,7 @@ flowchart TD
 ## 5. 验证梯子
 
 ```powershell
-# 1. 0 冲突文件边界审计（必须 0 命中 flowy-agent-core / flowy-agent / docs/architecture/flowy-v0）
+# 1. 0 冲突文件边界审计（必须 0 命中 flowy-agent-core / flowy-agent / flowy18_wip/docs/architecture/flowy-v0）
 git diff --name-only feat/flowy-v0-rc
 
 # 2. UI 静态契约与 23 语言对称检查

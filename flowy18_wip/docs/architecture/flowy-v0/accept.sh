@@ -7,17 +7,17 @@
 #   3. 应用能用 bash 后台启动（不需要点任何确认）
 #
 # 用法：
-#   bash docs/architecture/flowy-v0/accept.sh              # 契约测试（默认，快）
-#   WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh   # 额外验证启动链
+#   bash flowy18_wip/docs/architecture/flowy-v0/accept.sh              # 契约测试（默认，快）
+#   WITH_APP=1 bash flowy18_wip/docs/architecture/flowy-v0/accept.sh   # 额外验证启动链
 #
 # 退出码：0 全过；非 0 表示有断言失败。
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/../../.." && pwd)"
-WS="$REPO/flowy18_wip"
-EXE="$WS/target/debug/flowy-app.exe"
+WS="$(cd "$HERE/../../.." && pwd)"
+EXE="$WS/build.noindex/debug/flowy-app.exe"
+[[ -x "$EXE" ]] || EXE="$WS/target/debug/flowy-app.exe"
 
 pass=0
 fail=0

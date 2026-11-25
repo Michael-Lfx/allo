@@ -147,7 +147,7 @@ if lock(&state.live)
 
 ## 任务 1 · 文档落地 ✅
 
-`docs/architecture/flowy-v0/` 共 11 个文件，已 commit `10fedc0a6`。
+`flowy18_wip/docs/architecture/flowy-v0/` 共 11 个文件，已 commit `10fedc0a6`。
 
 ---
 
@@ -359,10 +359,10 @@ Windows 下必须先 `taskkill /F /IM flowy-app.exe` 再构建，否则
 
 ## 任务 6 · 可重跑验收脚本（已完成）
 
-`docs/architecture/flowy-v0/accept.sh`
+`flowy18_wip/docs/architecture/flowy-v0/accept.sh`
 
 ```
-$ bash docs/architecture/flowy-v0/accept.sh
+$ bash flowy18_wip/docs/architecture/flowy-v0/accept.sh
 == 1/3 存储契约：受理后可被新句柄读到 ==
   [PASS] acceptance 队列 4 条测试全过（含「新句柄重开仍可查」）
 == 2/3 agent 契约：忙时受理返回回执，另一个 handle 读得回 ==
@@ -375,9 +375,9 @@ $ bash docs/architecture/flowy-v0/accept.sh
 带真实启动：
 
 ```
-$ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
+$ WITH_APP=1 bash flowy18_wip/docs/architecture/flowy-v0/accept.sh
   [PASS] bash 后台启动成功，进程存活（无人工点击）
-  回执落盘位置：C:/Users/38788/AppData/Roaming/Flowy/Flowy/data/acceptance/journal.jsonl
+  回执落盘位置：<APPDATA>/Flowy/Flowy/data/acceptance/journal.jsonl
   通过 4，失败 0
 ```
 
@@ -405,7 +405,7 @@ $ WITH_APP=1 bash docs/architecture/flowy-v0/accept.sh
 | A | 忙时不再禁用提交 | ✅ | 运行中无障碍树同时有「停止」「发送」；`evidence/03-running-both-buttons.png` |
 | B | 提交后立即落盘并分配编号 | ✅ | 真实 UI 点击写入 `evidence/07-real-journal-two-receipts.jsonl`；另有 `sending_while_running_is_accepted_into_the_durable_queue` 走真实 `send_prompt` |
 | C | 重开可查 | ✅ | 杀进程重开后文件字节一致；单测里换队列句柄重读同一条 |
-| D | 文档迁移 + 索引 | ✅ | `docs/architecture/flowy-v0/` 11 份 |
+| D | 文档迁移 + 索引 | ✅ | `flowy18_wip/docs/architecture/flowy-v0/` 11 份 |
 | E | 只用 bash 后台启动 | ✅ | `accept.sh` 第 4 步；全程无 PowerShell、无签名弹窗 |
 | F | 踩坑即时更新 | ✅ | PROGRESS 记了 9 个坑，BLOCKED 3 条 |
 | G | 只 commit 不推送 | ✅ | 见 `git log ba5ace40a..HEAD` |
@@ -467,7 +467,7 @@ panel.send_prompt(cx);                              // 走真实发送路径
 ```
 cargo check -p flowy-agent -p flowy-agent-core -p flowy-studio
 cargo test  -p flowy-agent-core / flowy-agent / flowy-studio
-bash docs/architecture/flowy-v0/accept.sh
+bash flowy18_wip/docs/architecture/flowy-v0/accept.sh
 ```
 
 ---

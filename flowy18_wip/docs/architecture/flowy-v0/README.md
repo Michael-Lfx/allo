@@ -1,7 +1,9 @@
 # Flowy 首版架构方案（v0）· 索引
 
-> 从仓库外的交接目录迁入，2026-11-23。
-> 这里放的是**设计与证据**，不是代码。实现进度见 `PROGRESS.md`，待裁决见 `BLOCKED.md`。
+[← 架构与决策](../README.md)
+
+> 归属 `flowy18_wip/docs/architecture/flowy-v0/`（原根目录 `docs/architecture/flowy-v0/` 已整体迁回 `flowy18_wip/`）。
+> 这里放的是**设计与文字实测证据**，不是代码。原临时 `evidence/` 下的桌面截图（PNG）与本机原始 JSONL 日志已移出 Git 仓库以控制仓库体积并避免包含本机路径，完整实测记录见 `证据.md`；实现进度见 `PROGRESS.md`，待裁决见 `BLOCKED.md`。
 
 ## 按你想知道的查
 
