@@ -38,14 +38,19 @@ impl StudioPanel {
         }
     }
 
-    /// Clears cloud credentials, cancels any in-flight turns across all
-    /// sessions via `TaskTarget::Session`, applies the disconnected config,
-    /// and resets UI v2 overlays, filters, and retry state on sign-out.
+    /// Clears cloud credentials, stops any in-flight submission, applies the
+    /// disconnected config (locking out autonomous drain), synchronously
+    /// cancels all running sessions and non-terminal receipts, and resets UI v2
+    /// overlays, filters, cache, and retry state on sign-out.
     pub fn prepare_for_sign_out(
         &mut self,
         disconnected: flowy_agent::LlmConfig,
         cx: &mut Context<'_, Self>,
     ) {
+        if let Some(stop) = &self.submission_stop {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.invalidate_submission(cx);
         self.cloud_ready = false;
         self.catalog_loading = false;
         self.catalog = flowy_agent::ProviderCatalog::new();
@@ -54,13 +59,17 @@ impl StudioPanel {
         self.credits = crate::CreditsViewState::Unavailable;
         self.selected_skill = None;
         self.board_project_filter = None;
-        self.retrying_receipt = None;
+        self.retrying_receipts.clear();
         self.retrying_delivery = None;
         self.close_all_popovers();
         self.flow_modal_session = None;
         self.flow_modal_branch = None;
         self.flow_modal_override_ack = false;
         self.clear_right_sheet();
+        self.cached_trace = None;
+        // Apply disconnected config first so autonomous drain cannot claim new
+        // receipts while we synchronously cancel in-flight work.
+        let _ = self.agent.apply_config(disconnected);
         let mut busy = self.agent.busy_session_ids();
         if busy.is_empty()
             && let Some(active) = self.agent.active_session_id()
@@ -70,11 +79,98 @@ impl StudioPanel {
         for session_id in busy {
             let _ = self.agent.cancel_task(TaskTarget::Session(session_id));
         }
-        let _ = self.agent.apply_config(disconnected);
+        for (receipt, state) in self.agent.visible_acceptances() {
+            if matches!(
+                state,
+                ReceiptState::Queued
+                    | ReceiptState::Running
+                    | ReceiptState::Retrying
+            ) {
+                let _ = self.agent.cancel_task(TaskTarget::Receipt(receipt.id));
+            }
+        }
         self.sync_receipts();
         self.refresh_local_env();
         self.refresh_board_snapshot();
         cx.notify();
+    }
+
+    /// Rebinds new sessions to the default workspace without discarding the
+    /// user's in-progress composer draft.
+    pub(crate) fn bind_default_workspace(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.active_project_id.is_none()
+            && self.agent.active_session_id().is_none()
+        {
+            self.agent.set_workspace_for_new_sessions(None);
+            self.agent
+                .set_origin_for_new_sessions(flowy_agent::SessionOrigin::Home);
+            self.refresh_local_env();
+            cx.notify();
+            return;
+        }
+        let clear_error = self.agent.clear_active().err();
+        self.invalidate_submission(cx);
+        self.active_project_id = None;
+        self.agent.set_workspace_for_new_sessions(None);
+        self.agent
+            .set_origin_for_new_sessions(flowy_agent::SessionOrigin::Home);
+        if self.surface == StudioSurface::Chat {
+            self.surface = StudioSurface::Home;
+            self.refresh_chat(cx);
+        }
+        self.refresh_local_env();
+        self.emit_notice(clear_error, cx);
+        cx.emit(crate::panel::StudioEvent::SessionsChanged);
+        cx.notify();
+    }
+
+    /// Resolves whichever session (or synthetic unassigned bucket) is currently
+    /// displaying the Trace tab across the Flowchart Modal or Right Drawer.
+    #[must_use]
+    pub(crate) fn active_trace_session_id(&self) -> Option<String> {
+        if self.flow_modal_tab == crate::overview::FlowModalTab::Trace
+            && let Some(sid) = &self.flow_modal_session
+        {
+            return Some(sid.clone());
+        }
+        if self.right_drawer_open
+            && self.drawer_tab == crate::deliverables::RightDrawerTab::Trace
+        {
+            return match &self.inspected_work {
+                Some(crate::deliverables::InspectedWork::Session {
+                    id,
+                    ..
+                }) => Some(id.clone()),
+                Some(crate::deliverables::InspectedWork::Receipt(r)) => Some(
+                    r.target_session_id
+                        .clone()
+                        .or_else(|| r.session_hint.clone())
+                        .unwrap_or_else(|| {
+                            crate::ports::UNASSIGNED_QUEUE_SESSION_ID.to_owned()
+                        }),
+                ),
+                None => self.agent.active_session_id(),
+            };
+        }
+        None
+    }
+
+    /// Recomputes the dirty-cached redacted Trace rows for the open Trace tab
+    /// (never called inside `Render::render`).
+    pub(crate) fn refresh_trace_cache(&mut self) {
+        let Some(session_id) = self.active_trace_session_id() else {
+            self.cached_trace = None;
+            return;
+        };
+        let entries = crate::ports::collect_session_traces(
+            &self.agent,
+            &session_id,
+            &self.visible_receipts,
+        );
+        self.cached_trace = Some((session_id, entries));
     }
 
     /// Closes all mutually exclusive transient popovers in one place so new
@@ -153,10 +249,9 @@ impl StudioPanel {
         receipt_id: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.retrying_receipt.as_deref() == Some(receipt_id) {
+        if !self.retrying_receipts.insert(receipt_id.to_owned()) {
             return;
         }
-        self.retrying_receipt = Some(receipt_id.to_owned());
         cx.notify();
         let agent = self.agent.clone();
         let target_id = receipt_id.to_owned();
@@ -172,10 +267,7 @@ impl StudioPanel {
         cx.spawn(async move |weak, cx| {
             let (result, updates) = job.await;
             let _ = weak.update(cx, |panel, cx| {
-                if panel.retrying_receipt.as_deref() == Some(target_id.as_str())
-                {
-                    panel.retrying_receipt = None;
-                }
+                panel.retrying_receipts.remove(target_id.as_str());
                 panel.process_agent_updates(updates, cx);
                 match result {
                     Ok(CardActionOutcome::ReceiptRequeued { .. }) => {
@@ -202,10 +294,12 @@ impl StudioPanel {
         use crate::ports::BoardDataSource as _;
         self.board_generation = self.board_generation.wrapping_add(1);
         let default_label = self.t("studio.space_default_sub");
+        let unassigned_title = self.t("chat.bg_tasks_title");
         self.board_snapshot = self.agent.build_board_snapshot(
             &self.projects,
             &self.visible_receipts,
             &default_label,
+            &unassigned_title,
             self.board_generation,
         );
         if let Some(open_sid) = self.flow_modal_session.as_deref()
@@ -219,6 +313,7 @@ impl StudioPanel {
             self.flow_modal_branch = None;
             self.flow_modal_override_ack = false;
         }
+        self.refresh_trace_cache();
         self.last_board_refresh = Some(std::time::Instant::now());
     }
 
@@ -280,6 +375,7 @@ impl StudioPanel {
         self.flow_modal_session = None;
         self.flow_modal_branch = None;
         self.flow_modal_override_ack = false;
+        self.refresh_trace_cache();
         cx.notify();
     }
 

@@ -14,6 +14,10 @@ use crate::projects::Project;
 /// Synthetic session group id used to surface unassigned queued/failed receipts.
 pub const UNASSIGNED_QUEUE_SESSION_ID: &str = "unassigned-queue";
 
+/// Maximum branches retained for visual display per session card/modal.
+/// KPI totals are always accumulated across all branches before truncation.
+const MAX_DISPLAY_BRANCHES: usize = 6;
+
 /// High-level deliverable format bucket for KPI visualization and file pills.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DeliverableFormat {
@@ -163,6 +167,7 @@ pub struct SessionBoardGroup {
     pub workspace_display: String,
     pub updated_at: u64,
     pub branches: Vec<WorkBranchSummary>,
+    pub session_contract: Option<WorkContractProgress>,
     pub has_blocker: bool,
     pub is_running: bool,
     pub is_active: bool,
@@ -210,6 +215,7 @@ pub trait BoardDataSource {
         projects: &[Project],
         visible_receipts: &[(AcceptedMessage, ReceiptState)],
         default_space_label: &str,
+        unassigned_queue_title: &str,
         generation: u64,
     ) -> WorkBoardSnapshot;
 }
@@ -255,6 +261,7 @@ impl BoardDataSource for AgentHandle {
         projects: &[Project],
         visible_receipts: &[(AcceptedMessage, ReceiptState)],
         default_space_label: &str,
+        unassigned_queue_title: &str,
         generation: u64,
     ) -> WorkBoardSnapshot {
         let sessions = self.list_sessions();
@@ -317,13 +324,13 @@ impl BoardDataSource for AgentHandle {
                 |proj| display_path(&proj.root),
             );
 
-            let branches = project_session_branches(
+            let mut branches = project_session_branches(
                 summary,
                 &lines,
                 is_busy,
                 &session_receipts,
                 &overridden_hashes,
-                session_contract,
+                session_contract.clone(),
                 |work_id| self.work_status(work_id),
             );
 
@@ -339,9 +346,21 @@ impl BoardDataSource for AgentHandle {
                 kpi.active_sessions += 1;
             }
 
+            // Accumulate KPIs across every branch BEFORE visual truncation so
+            // sessions with >6 branches never under-report counts.
             for branch in &branches {
                 accumulate_kpi(&mut kpi, branch);
             }
+            branches.sort_by_key(|branch| {
+                if branch_is_blocker(&branch.phase) {
+                    0_u8
+                } else if branch_is_running(&branch.phase) {
+                    1
+                } else {
+                    2
+                }
+            });
+            branches.truncate(MAX_DISPLAY_BRANCHES);
 
             let title = if summary.title.trim().is_empty() {
                 self.session_preview(&summary.id)
@@ -358,17 +377,20 @@ impl BoardDataSource for AgentHandle {
                 workspace_display,
                 updated_at: summary.updated_at,
                 branches,
+                session_contract,
                 has_blocker,
                 is_running,
                 is_active,
             });
         }
 
-        // Surface unassigned queued/failed receipts (no session owner) as one
-        // group so nothing in AcceptanceQueue goes invisible on the board.
-        if let Some(unassigned) = receipts_by_session.remove(&None)
-            && !unassigned.is_empty()
-        {
+        // Surface all remaining unassigned or orphaned receipts (no session
+        // owner, or owner session was deleted/not yet created) as one group so
+        // nothing in AcceptanceQueue goes invisible on the board.
+        let mut unassigned: Vec<(AcceptedMessage, ReceiptState)> =
+            receipts_by_session.into_values().flatten().collect();
+        unassigned.sort_by_key(|(r, _)| r.created_at_ms);
+        if !unassigned.is_empty() {
             let branches: Vec<WorkBranchSummary> = unassigned
                 .iter()
                 .map(|(receipt, state)| {
@@ -409,14 +431,17 @@ impl BoardDataSource for AgentHandle {
                 0,
                 SessionBoardGroup {
                     session_id: UNASSIGNED_QUEUE_SESSION_ID.to_owned(),
-                    title: default_space_label.to_owned(),
+                    title: unassigned_queue_title.to_owned(),
                     project_id: None,
                     project_name: None,
                     workspace_display: default_space_label.to_owned(),
                     updated_at: unassigned
-                        .first()
-                        .map_or(0, |(r, _)| r.created_at_ms / 1000),
+                        .iter()
+                        .map(|(r, _)| r.created_at_ms / 1000)
+                        .max()
+                        .unwrap_or(0),
                     branches,
+                    session_contract: None,
                     has_blocker,
                     is_running,
                     is_active,
@@ -441,13 +466,15 @@ impl BoardDataSource for AgentHandle {
 }
 
 const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
-    kpi.total_branches += 1;
     match &branch.phase {
         BranchPhase::NeedsApproval { .. }
         | BranchPhase::Queued {
             state: ReceiptState::Dead | ReceiptState::Quarantined,
             ..
-        } => kpi.approval_count += 1,
+        } => {
+            kpi.total_branches += 1;
+            kpi.approval_count += 1;
+        }
         BranchPhase::Running { .. }
         | BranchPhase::Queued {
             state:
@@ -456,9 +483,11 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
                 | ReceiptState::Retrying,
             ..
         } => {
+            kpi.total_branches += 1;
             kpi.running_count += 1;
         }
         BranchPhase::Delivered { .. } => {
+            kpi.total_branches += 1;
             kpi.delivered_count += 1;
             match branch.format {
                 DeliverableFormat::Sheet => kpi.sheet_count += 1,
@@ -735,7 +764,6 @@ where
         }
     }
 
-    branches.truncate(6);
     branches
 }
 
@@ -888,5 +916,167 @@ mod tests {
         };
         assert!(!branch_is_blocker(&retrying_phase));
         assert!(branch_is_running(&retrying_phase));
+    }
+
+    fn temp_board_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-board-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn idle_qa_session_keeps_kpi_donut_counts_consistent() {
+        let summary = SessionSummary {
+            id: "qa-1".into(),
+            title: "Pure Q&A".into(),
+            updated_at: 100,
+            project_id: None,
+        };
+        let lines = vec![
+            ChatLine::User {
+                text: "What is 1 + 1?".into(),
+            },
+            ChatLine::Assistant { text: "2".into() },
+        ];
+        let branches = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            |_| None,
+        );
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].phase, BranchPhase::Idle);
+
+        let mut kpi = BoardKpiSummary {
+            total_sessions: 1,
+            ..BoardKpiSummary::default()
+        };
+        for branch in &branches {
+            accumulate_kpi(&mut kpi, branch);
+        }
+        assert_eq!(kpi.total_branches, 0);
+        assert_eq!(
+            kpi.total_branches,
+            kpi.approval_count + kpi.running_count + kpi.delivered_count
+        );
+    }
+
+    #[test]
+    fn orphan_receipt_for_deleted_session_surfaces_in_unassigned_group() {
+        let root = temp_board_root("orphan-receipt");
+        let queue = flowy_agent::AcceptanceQueue::new(root.clone());
+        let orphan = queue
+            .accept(Some("deleted-session-404"), "orphan task", 10)
+            .unwrap();
+        let unowned = queue.accept(None, "unassigned task", 20).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            flowy_agent::LlmConfig::default(),
+        );
+        let visible = vec![
+            (orphan, ReceiptState::Queued),
+            (unowned, ReceiptState::Dead),
+        ];
+        let snap = handle.build_board_snapshot(
+            &[],
+            &visible,
+            "Default space",
+            "Background tasks",
+            1,
+        );
+        let group = snap
+            .sessions
+            .iter()
+            .find(|g| g.session_id == UNASSIGNED_QUEUE_SESSION_ID)
+            .expect("orphan and unowned receipts surface in unassigned group");
+        assert_eq!(group.title, "Background tasks");
+        assert_eq!(group.workspace_display, "Default space");
+        assert_eq!(group.branches.len(), 2);
+        assert_eq!(snap.kpi.total_branches, 2);
+        assert_eq!(snap.kpi.running_count, 1);
+        assert_eq!(snap.kpi.approval_count, 1);
+        assert_eq!(
+            snap.kpi.total_branches,
+            snap.kpi.approval_count
+                + snap.kpi.running_count
+                + snap.kpi.delivered_count
+        );
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn kpi_counts_all_branches_before_six_branch_display_truncation() {
+        let summary = SessionSummary {
+            id: "many-1".into(),
+            title: "Bulk Deliverables".into(),
+            updated_at: 200,
+            project_id: None,
+        };
+        let mut lines = Vec::new();
+        for i in 0..8 {
+            lines.push(ChatLine::FileChange {
+                path: format!(r"D:\Work\report_{i}.docx"),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 10,
+                removed: 0,
+                binary: false,
+            });
+        }
+        lines.push(ChatLine::Verification {
+            report_id: "rep-blocker".into(),
+            artifact_path: r"D:\Work\summary.xlsx".into(),
+            artifact_hash: "1122334455667788".into(),
+            ok: false,
+            issues: vec![VerificationIssue {
+                code: "ERR".into(),
+                field: "A1".into(),
+            }],
+            semantic_hint: None,
+            override_used: false,
+        });
+        let mut branches = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            |_| None,
+        );
+        let mut kpi = BoardKpiSummary::default();
+        for branch in &branches {
+            accumulate_kpi(&mut kpi, branch);
+        }
+        branches.sort_by_key(|branch| {
+            if branch_is_blocker(&branch.phase) {
+                0_u8
+            } else if branch_is_running(&branch.phase) {
+                1
+            } else {
+                2
+            }
+        });
+        branches.truncate(MAX_DISPLAY_BRANCHES);
+
+        assert_eq!(kpi.total_branches, 9);
+        assert_eq!(kpi.delivered_count, 8);
+        assert_eq!(kpi.approval_count, 1);
+        assert_eq!(kpi.doc_count, 8);
+        assert_eq!(branches.len(), MAX_DISPLAY_BRANCHES);
+        assert!(matches!(
+            branches[0].phase,
+            BranchPhase::NeedsApproval { .. }
+        ));
     }
 }

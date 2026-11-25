@@ -186,7 +186,7 @@ impl StudioPanel {
 
         let tile_donut = div()
             .flex_1()
-            .min_w(px(210.))
+            .min_w(px(190.))
             .p(self.theme.space(12.))
             .rounded_xl()
             .border_1()
@@ -264,7 +264,7 @@ impl StudioPanel {
             &self.theme,
         )
         .flex_1()
-        .min_w(px(210.))
+        .min_w(px(190.))
         .p(self.theme.space(12.))
         .rounded_xl()
         .border_1()
@@ -347,7 +347,7 @@ impl StudioPanel {
         }
         let tile_formats = div()
             .flex_1()
-            .min_w(px(210.))
+            .min_w(px(190.))
             .p(self.theme.space(12.))
             .rounded_xl()
             .border_1()
@@ -427,10 +427,15 @@ impl StudioPanel {
                 self.theme.status_verified().opacity(0.55)
             };
             let sid = group.session_id.clone();
+            let spark_label = format!(
+                "{} \u{00b7} {}",
+                self.t("board.kpi_sessions"),
+                group.title
+            );
             spark_bars = spark_bars.child(
                 theme::interactive(
                     ("board-spark", idx as u64),
-                    group.title.clone(),
+                    spark_label,
                     &self.theme,
                 )
                 .flex_1()
@@ -447,7 +452,7 @@ impl StudioPanel {
         }
         let tile_sessions = div()
             .flex_1()
-            .min_w(px(210.))
+            .min_w(px(190.))
             .p(self.theme.space(12.))
             .rounded_xl()
             .border_1()
@@ -491,15 +496,30 @@ impl StudioPanel {
                     .child(self.t("board.click_hint")),
             );
 
+        // Two paired rows guarantee 4x1 on wide viewports and a symmetric 2x2
+        // grid at 960px (never a 3+1 orphan row).
+        let pair_left = div()
+            .flex_1()
+            .min_w(px(420.))
+            .flex()
+            .gap(self.theme.space(12.))
+            .child(tile_donut)
+            .child(tile_blocker);
+        let pair_right = div()
+            .flex_1()
+            .min_w(px(420.))
+            .flex()
+            .gap(self.theme.space(12.))
+            .child(tile_formats)
+            .child(tile_sessions);
+
         div()
             .w_full()
             .flex()
             .flex_wrap()
             .gap(self.theme.space(12.))
-            .child(tile_donut)
-            .child(tile_blocker)
-            .child(tile_formats)
-            .child(tile_sessions)
+            .child(pair_left)
+            .child(pair_right)
             .into_any_element()
     }
 

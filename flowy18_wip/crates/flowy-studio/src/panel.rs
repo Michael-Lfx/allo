@@ -136,8 +136,8 @@ pub struct StudioPanel {
     /// `AgentHandle::visible_acceptances()`, surviving restarts cleanly.
     pub(crate) visible_receipts:
         Vec<(flowy_agent::AcceptedMessage, ReceiptState)>,
-    /// Receipt currently being requeued via `CardAction::RetryDeadReceipt`.
-    pub(crate) retrying_receipt: Option<String>,
+    /// Receipts currently being requeued via `CardAction::RetryDeadReceipt`.
+    pub(crate) retrying_receipts: std::collections::HashSet<String>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -147,7 +147,7 @@ pub struct StudioPanel {
     submission: Option<u128>,
     pub(crate) submission_pending: bool,
     submission_generation: u64,
-    submission_stop: Option<Arc<AtomicBool>>,
+    pub(crate) submission_stop: Option<Arc<AtomicBool>>,
     /// Session whose durable delivery marker is currently being retried.
     pub(crate) retrying_delivery: Option<String>,
     pub(crate) working: Entity<WorkingIndicator>,
@@ -182,6 +182,10 @@ pub struct StudioPanel {
     pub(crate) flow_modal_tab: crate::overview::FlowModalTab,
     pub(crate) flow_modal_override_ack: bool,
     pub(crate) trace_filter: crate::overview::TraceFilter,
+    /// Dirty-cached redacted traces for the currently open Trace tab so
+    /// `Render::render` never touches kernel journal files on disk.
+    pub(crate) cached_trace:
+        Option<(String, Vec<crate::ports::RedactedTraceEntry>)>,
     pub(crate) drawer_tab: crate::deliverables::RightDrawerTab,
     pub(crate) right_drawer_open: bool,
     pub(crate) selected_skill: Option<crate::ports::SkillChip>,
@@ -352,6 +356,7 @@ impl StudioPanel {
                         panel.flow_modal_session = None;
                         panel.flow_modal_branch = None;
                         panel.flow_modal_override_ack = false;
+                        panel.refresh_trace_cache();
                     }
                     _ => return,
                 }
@@ -499,7 +504,7 @@ impl StudioPanel {
             composer,
             pending_receipts,
             visible_receipts,
-            retrying_receipt: None,
+            retrying_receipts: std::collections::HashSet::new(),
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -542,6 +547,7 @@ impl StudioPanel {
             flow_modal_tab: crate::overview::FlowModalTab::Action,
             flow_modal_override_ack: false,
             trace_filter: crate::overview::TraceFilter::All,
+            cached_trace: None,
             drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
             right_drawer_open: false,
             selected_skill: None,
@@ -805,12 +811,22 @@ impl StudioPanel {
         });
     }
 
-    fn invalidate_submission(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn invalidate_submission(&mut self, cx: &mut Context<'_, Self>) {
         self.submission_generation = self.submission_generation.wrapping_add(1);
         self.submission_pending = false;
         self.submission_stop = None;
         self.submission = None;
         self.refresh_working(cx);
+    }
+
+    /// Whether the composer should allow submitting immediately (or queueing
+    /// during cold-start catalog loading) rather than showing the model-setup
+    /// amber warning state.
+    #[must_use]
+    pub(crate) fn can_submit_prompt(&self) -> bool {
+        self.cloud_ready
+            || self.catalog_loading
+            || !self.agent.requires_cloud_ready()
     }
 
     pub fn set_surface(
@@ -938,6 +954,7 @@ impl StudioPanel {
         self.inspected_work = None;
         self.preview_file = None;
         self.preview_body = None;
+        self.refresh_trace_cache();
     }
 
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
@@ -1266,6 +1283,7 @@ impl StudioPanel {
                     StudioSurface::Home
                 };
                 self.refresh_chat(cx);
+                self.refresh_trace_cache();
                 self.emit_notice(
                     workspace
                         .as_ref()
@@ -2097,9 +2115,7 @@ impl Render for StudioPanel {
     ) -> impl IntoElement {
         self.apply_prompt_pending(window, cx);
         let model_label = self.model_label();
-        let can_submit = self.cloud_ready
-            || self.catalog_loading
-            || self.agent.requires_cloud_ready();
+        let can_submit = self.can_submit_prompt();
         let workspace_label = self
             .active_project_id
             .as_deref()
@@ -3515,6 +3531,108 @@ mod tests {
             panel.notify_cloud_ready(cx);
             assert!(panel.agent.autonomous_drain());
             let _ = receipt;
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn prepare_for_sign_out_cancels_queued_receipts_and_invalidates_submission(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "signout-cancel");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_check = stop.clone();
+        panel.update(cx, |panel, cx| {
+            let receipt = panel
+                .agent
+                .accept_deferred("queued before sign-out")
+                .expect("accept deferred");
+            panel.sync_receipts();
+            assert_eq!(panel.visible_receipts.len(), 1);
+            panel.submission_pending = true;
+            panel.submission = Some(42);
+            panel.submission_stop = Some(stop);
+            panel.retrying_receipts.insert(receipt.id);
+            panel.cached_trace = Some(("s1".into(), Vec::new()));
+
+            panel.prepare_for_sign_out(
+                LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: "flowy".into(),
+                    ..LlmConfig::default()
+                },
+                cx,
+            );
+
+            assert!(stop_check.load(Ordering::Acquire));
+            assert!(!panel.submission_pending);
+            assert!(panel.submission.is_none());
+            assert!(!panel.cloud_ready);
+            assert!(!panel.catalog_loading);
+            assert!(!panel.can_submit_prompt());
+            assert_eq!(panel.retrying_receipts.len(), 0);
+            assert!(panel.cached_trace.is_none());
+            assert_eq!(panel.visible_receipts.len(), 0);
+            assert_eq!(panel.agent.pending_acceptances().len(), 0);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn bind_default_workspace_preserves_prompt_draft(cx: &mut TestAppContext) {
+        let (panel, root) = submission_panel(cx, "bind-default-workspace");
+        let project_dir = root.join("alpha-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        panel.update(cx, |panel, cx| {
+            panel
+                .create_project("Alpha", &project_dir, cx)
+                .expect("create project");
+            assert!(panel.active_project_id.is_some());
+
+            panel.fill_prompt("draft must survive workspace unbind", cx);
+            panel.bind_default_workspace(cx);
+
+            assert!(panel.active_project_id.is_none());
+            assert!(panel.agent.active_workspace().is_none());
+            assert_eq!(
+                visible_prompt(panel, cx),
+                "draft must survive workspace unbind"
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn cloud_ready_gate_blocks_when_offline_and_allows_during_catalog_loading(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "cloud-gate");
+        panel.update(cx, |panel, _cx| {
+            panel
+                .agent
+                .apply_config(LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: "flowy".into(),
+                    ..LlmConfig::default()
+                })
+                .unwrap();
+            panel.cloud_ready = false;
+            panel.catalog_loading = false;
+            assert!(!panel.can_submit_prompt());
+
+            panel.catalog_loading = true;
+            assert!(panel.can_submit_prompt());
+
+            panel.catalog_loading = false;
+            panel.cloud_ready = true;
+            assert!(panel.can_submit_prompt());
         });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);

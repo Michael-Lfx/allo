@@ -24,15 +24,18 @@ pub struct RedactedTraceEntry {
     pub summary: String,
 }
 
-/// Projects structured, redacted trace events for a single session purely from
-/// `AgentHandle` in-memory projections (never reads kernel disk files).
+/// Projects structured, redacted trace events for a single session (or the
+/// synthetic `UNASSIGNED_QUEUE_SESSION_ID` bucket).
+///
+/// May query kernel work-contract status on disk via `AgentHandle`, so callers
+/// must invoke this from dirty-cache refresh paths — never inside `Render::render`.
 #[must_use]
 pub fn collect_session_traces(
     agent: &AgentHandle,
     session_id: &str,
     visible_receipts: &[(AcceptedMessage, ReceiptState)],
 ) -> Vec<RedactedTraceEntry> {
-    let lines = agent.session_lines(session_id);
+    let is_unassigned = session_id == super::UNASSIGNED_QUEUE_SESSION_ID;
     let mut entries = Vec::new();
     let mut seen_work_ids = std::collections::HashSet::new();
     let mut push = |level: TraceLevel, event: &'static str, raw: String| {
@@ -45,81 +48,100 @@ pub fn collect_session_traces(
         });
     };
 
-    for line in &lines {
-        match line {
-            ChatLine::User { text } => {
-                push(TraceLevel::Info, "turn_start", clip_label(text, 120));
-            }
-            ChatLine::ToolCall {
-                name,
-                target,
-                running,
-                ..
-            } => {
-                let state = if *running { "running" } else { "done" };
-                push(
-                    TraceLevel::Info,
-                    "tool_call",
-                    format!(
-                        "tool={name} state={state} target={}",
-                        display_path_str(target)
-                    ),
-                );
-            }
-            ChatLine::ToolResult { text, is_error } if *is_error => {
-                push(TraceLevel::Error, "tool_error", clip_label(text, 180));
-            }
-            ChatLine::Verification {
-                report_id,
-                artifact_path,
-                artifact_hash,
-                ok,
-                issues,
-                override_used,
-                ..
-            } => {
-                let level = if *ok {
-                    TraceLevel::Info
-                } else {
-                    TraceLevel::Warn
-                };
-                let short_hash: String =
-                    artifact_hash.chars().take(12).collect();
-                push(
-                    level,
-                    if *override_used {
-                        "verify_override"
+    if !is_unassigned {
+        let lines = agent.session_lines(session_id);
+        for line in &lines {
+            match line {
+                ChatLine::User { text } => {
+                    push(TraceLevel::Info, "turn_start", clip_label(text, 120));
+                }
+                ChatLine::ToolCall {
+                    name,
+                    target,
+                    running,
+                    ..
+                } => {
+                    let state = if *running { "running" } else { "done" };
+                    push(
+                        TraceLevel::Info,
+                        "tool_call",
+                        format!(
+                            "tool={name} state={state} target={}",
+                            display_path_str(target)
+                        ),
+                    );
+                }
+                ChatLine::ToolResult { text, is_error } if *is_error => {
+                    push(
+                        TraceLevel::Error,
+                        "tool_error",
+                        clip_label(text, 180),
+                    );
+                }
+                ChatLine::Verification {
+                    report_id,
+                    artifact_path,
+                    artifact_hash,
+                    ok,
+                    issues,
+                    override_used,
+                    ..
+                } => {
+                    let level = if *ok {
+                        TraceLevel::Info
                     } else {
-                        "verify_result"
-                    },
-                    format!(
-                        "report={report_id} ok={ok} override={override_used} issues={} sha256={short_hash} file={}",
-                        issues.len(),
-                        display_path_str(artifact_path)
-                    ),
-                );
+                        TraceLevel::Warn
+                    };
+                    let short_hash: String =
+                        artifact_hash.chars().take(12).collect();
+                    push(
+                        level,
+                        if *override_used {
+                            "verify_override"
+                        } else {
+                            "verify_result"
+                        },
+                        format!(
+                            "report={report_id} ok={ok} override={override_used} issues={} sha256={short_hash} file={}",
+                            issues.len(),
+                            display_path_str(artifact_path)
+                        ),
+                    );
+                }
+                ChatLine::FileChanges { files } => {
+                    push(
+                        TraceLevel::Info,
+                        "delivery_files",
+                        format!("count={}", files.len()),
+                    );
+                }
+                ChatLine::TaskReceipt { task_id, goal } => {
+                    push(
+                        TraceLevel::Info,
+                        "task_receipt",
+                        format!("id={task_id} goal={}", clip_label(goal, 80)),
+                    );
+                }
+                _ => {}
             }
-            ChatLine::FileChanges { files } => {
-                push(
-                    TraceLevel::Info,
-                    "delivery_files",
-                    format!("count={}", files.len()),
-                );
-            }
-            ChatLine::TaskReceipt { task_id, goal } => {
-                push(
-                    TraceLevel::Info,
-                    "task_receipt",
-                    format!("id={task_id} goal={}", clip_label(goal, 80)),
-                );
-            }
-            _ => {}
         }
     }
 
+    let known_sessions: std::collections::HashSet<String> = if is_unassigned {
+        agent.list_sessions().into_iter().map(|s| s.id).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
     for (receipt, state) in visible_receipts.iter().filter(|(r, _)| {
-        r.target_session_id.as_deref() == Some(session_id)
-            || r.session_hint.as_deref() == Some(session_id)
+        if is_unassigned {
+            let owner =
+                r.target_session_id.as_deref().or(r.session_hint.as_deref());
+            owner.is_none_or(|id| !known_sessions.contains(id))
+        } else {
+            r.target_session_id.as_deref() == Some(session_id)
+                || r.session_hint.as_deref() == Some(session_id)
+        }
     }) {
         let (level, event) = match *state {
             ReceiptState::Retrying => (TraceLevel::Warn, "receipt_retrying"),
@@ -157,7 +179,8 @@ pub fn collect_session_traces(
         }
     }
 
-    if let Some(ws) = agent.session_work_status(session_id)
+    if !is_unassigned
+        && let Some(ws) = agent.session_work_status(session_id)
         && !ws.missing_items.is_empty()
         && seen_work_ids.insert(ws.work_id.clone())
     {
@@ -208,7 +231,7 @@ fn looks_like_secret_token(raw: &str) -> bool {
     let core = raw.trim_matches(|c: char| {
         matches!(
             c,
-            '"' | '\'' | ',' | ';' | '{' | '}' | '[' | ']' | '(' | ')'
+            '"' | '\'' | '\\' | ',' | ';' | '{' | '}' | '[' | ']' | '(' | ')'
         )
     });
     core.len() >= 12
@@ -217,65 +240,106 @@ fn looks_like_secret_token(raw: &str) -> bool {
             || core.starts_with("eyJ"))
 }
 
-/// Masks secret tokens/keys (including JSON key-value pairs and JWTs) and
-/// clamps payload length before displaying or exporting trace text.
+const fn is_trace_delim(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            ',' | '&' | ';' | '?' | '{' | '}' | '(' | ')' | '[' | ']'
+        )
+}
+
+const fn resets_pending_redaction(c: char) -> bool {
+    matches!(c, ',' | '&' | ';' | '?' | '{' | '}' | '(' | ')' | '[' | ']')
+}
+
+fn find_first_kv_sep(segment: &str) -> Option<(usize, char)> {
+    segment.char_indices().find(|&(_, c)| c == '=' || c == ':')
+}
+
+fn push_redacted_segment(
+    segment: &str,
+    redact_next: &mut bool,
+    out: &mut String,
+) {
+    let stripped =
+        segment.trim_matches(|c: char| matches!(c, '"' | '\'' | '\\'));
+    if stripped.eq_ignore_ascii_case("bearer") {
+        out.push_str("Bearer");
+        *redact_next = true;
+        return;
+    }
+    if *redact_next {
+        *redact_next = false;
+        out.push_str("[REDACTED]");
+        return;
+    }
+    if let Some((sep_idx, sep_char)) = find_first_kv_sep(segment) {
+        let lhs = &segment[..sep_idx];
+        let rhs = &segment[sep_idx + 1..];
+        let rhs_stripped =
+            rhs.trim_matches(|c: char| matches!(c, '"' | '\'' | '\\'));
+        if is_secret_key(lhs) {
+            out.push_str(lhs);
+            out.push(sep_char);
+            if rhs.is_empty() {
+                *redact_next = true;
+            } else if rhs_stripped.eq_ignore_ascii_case("bearer") {
+                out.push_str("Bearer");
+                *redact_next = true;
+            } else {
+                out.push_str("[REDACTED]");
+            }
+            return;
+        }
+        if looks_like_secret_token(rhs) {
+            out.push_str(lhs);
+            out.push(sep_char);
+            out.push_str("[REDACTED]");
+            return;
+        }
+    }
+    if looks_like_secret_token(segment) {
+        out.push_str("[REDACTED]");
+        return;
+    }
+    out.push_str(segment);
+}
+
+/// Masks secret tokens/keys (including compact JSON key-value pairs, URL query
+/// parameters, Bearer headers, and JWTs) and clamps payload length before
+/// displaying or exporting trace text.
 #[must_use]
 pub fn redact_trace_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len().min(MAX_TRACE_SUMMARY_BYTES));
-    let mut words = raw.split_whitespace();
     let mut redact_next = false;
-    while let Some(word) = words.next() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        if redact_next {
-            redact_next = false;
-            out.push_str("[REDACTED]");
-            continue;
-        }
-        let stripped = word.trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | ',' | ';' | '{' | '}' | '[' | ']')
-        });
-        let lower = stripped.to_ascii_lowercase();
-        if lower == "bearer" {
-            out.push_str("Bearer [REDACTED]");
-            let _ = words.next();
-            continue;
-        }
-        if let Some((lhs, rhs)) = word.split_once('=')
-            && is_secret_key(lhs)
-        {
-            out.push_str(lhs);
-            out.push_str("=[REDACTED]");
-            if rhs.is_empty() {
-                redact_next = true;
+    let mut seg_start: Option<usize> = None;
+
+    for (idx, ch) in raw.char_indices() {
+        if is_trace_delim(ch) {
+            if let Some(start) = seg_start.take() {
+                push_redacted_segment(
+                    &raw[start..idx],
+                    &mut redact_next,
+                    &mut out,
+                );
             }
-            continue;
-        }
-        if let Some((lhs, rhs)) = word.split_once(':')
-            && is_secret_key(lhs)
-        {
-            out.push_str(lhs);
-            if rhs
-                .trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '}'))
-                .is_empty()
-            {
-                out.push(':');
-                redact_next = true;
-            } else {
-                out.push_str(":[REDACTED]");
+            if resets_pending_redaction(ch) {
+                redact_next = false;
             }
-            continue;
-        }
-        if looks_like_secret_token(word) {
-            out.push_str("[REDACTED]");
-            continue;
-        }
-        out.push_str(word);
-        if out.len() >= MAX_TRACE_SUMMARY_BYTES {
-            break;
+            out.push(ch);
+            if out.len() > MAX_TRACE_SUMMARY_BYTES {
+                break;
+            }
+        } else if seg_start.is_none() {
+            seg_start = Some(idx);
         }
     }
+    if out.len() <= MAX_TRACE_SUMMARY_BYTES
+        && let Some(start) = seg_start
+    {
+        push_redacted_segment(&raw[start..], &mut redact_next, &mut out);
+    }
+
     if out.len() > MAX_TRACE_SUMMARY_BYTES {
         let mut end = MAX_TRACE_SUMMARY_BYTES;
         while end > 0 && !out.is_char_boundary(end) {
@@ -305,5 +369,68 @@ mod tests {
         let huge = "a ".repeat(3000);
         let clamped = redact_trace_text(&huge);
         assert!(clamped.len() <= MAX_TRACE_SUMMARY_BYTES + 4);
+    }
+
+    #[test]
+    fn redact_trace_text_masks_compact_json_non_first_keys_and_url_queries() {
+        let json = r#"{"user":"alice","api_key":"top-secret-1","token":"opaque-tok-2","Authorization":"Bearer opaque-bearer-3","note":"sk-proj-abcdefghijklmno","ok":true}"#;
+        let clean_json = redact_trace_text(json);
+        assert!(!clean_json.contains("top-secret-1"), "{clean_json}");
+        assert!(!clean_json.contains("opaque-tok-2"), "{clean_json}");
+        assert!(!clean_json.contains("opaque-bearer-3"), "{clean_json}");
+        assert!(
+            !clean_json.contains("sk-proj-abcdefghijklmno"),
+            "{clean_json}"
+        );
+        assert!(clean_json.contains(r#""user":"alice""#), "{clean_json}");
+        assert!(clean_json.contains(r#""ok":true"#), "{clean_json}");
+
+        let url = "GET https://server.flowyaipc.com/v1?x=1&api_key=url-secret-1&access_token=url-tok-2&ok=true";
+        let clean_url = redact_trace_text(url);
+        assert!(!clean_url.contains("url-secret-1"), "{clean_url}");
+        assert!(!clean_url.contains("url-tok-2"), "{clean_url}");
+        assert!(clean_url.contains("x=1"), "{clean_url}");
+        assert!(clean_url.contains("ok=true"), "{clean_url}");
+    }
+
+    #[test]
+    fn collect_session_traces_surfaces_unassigned_queue_receipts() {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-trace-unassigned-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let queue = flowy_agent::AcceptanceQueue::new(root.clone());
+        let unowned = queue
+            .accept(None, "queued with api_key=leak-me-not", 10)
+            .unwrap();
+        let orphan = queue
+            .accept(Some("gone-session"), "dead orphan task", 20)
+            .unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            flowy_agent::LlmConfig::default(),
+        );
+        let visible = vec![
+            (unowned, ReceiptState::Queued),
+            (orphan, ReceiptState::Dead),
+        ];
+        let entries = collect_session_traces(
+            &handle,
+            crate::ports::UNASSIGNED_QUEUE_SESSION_ID,
+            &visible,
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].event, "receipt_queued");
+        assert!(!entries[0].summary.contains("leak-me-not"));
+        assert_eq!(entries[1].event, "receipt_dead");
+        assert_eq!(entries[1].level, TraceLevel::Error);
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

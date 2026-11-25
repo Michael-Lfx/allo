@@ -10,8 +10,7 @@ use gpui::{
 
 use crate::panel::StudioPanel;
 use crate::ports::{
-    TraceLevel, WorkContractProgress, collect_session_traces,
-    format_traces_jsonl,
+    RedactedTraceEntry, TraceLevel, WorkContractProgress, format_traces_jsonl,
 };
 
 /// Trace filter level shared between Flowchart Modal and Right Drawer.
@@ -162,11 +161,11 @@ impl StudioPanel {
         session_id: &str,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let entries = collect_session_traces(
-            &self.agent,
-            session_id,
-            &self.visible_receipts,
-        );
+        let entries: &[RedactedTraceEntry] = self
+            .cached_trace
+            .as_ref()
+            .filter(|(cached_sid, _)| cached_sid == session_id)
+            .map_or(&[], |(_, rows)| rows.as_slice());
         let filtered: Vec<_> = entries
             .iter()
             .filter(|entry| match self.trace_filter {
@@ -176,7 +175,7 @@ impl StudioPanel {
                 }
             })
             .collect();
-        let copy_jsonl = format_traces_jsonl(&entries);
+        let copy_sid = session_id.to_owned();
 
         let controls = div()
             .w_full()
@@ -210,9 +209,14 @@ impl StudioPanel {
                 .render(
                     &self.theme,
                     cx.listener(move |panel, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            copy_jsonl.clone(),
-                        ));
+                        let jsonl = panel
+                            .cached_trace
+                            .as_ref()
+                            .filter(|(cached_sid, _)| cached_sid == &copy_sid)
+                            .map_or_else(String::new, |(_, rows)| {
+                                format_traces_jsonl(rows)
+                            });
+                        cx.write_to_clipboard(ClipboardItem::new_string(jsonl));
                         panel.emit_notice(Some("trace.copied"), cx);
                     }),
                 ),

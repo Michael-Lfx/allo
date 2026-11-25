@@ -260,12 +260,12 @@ sequenceDiagram
 | **TC-UI-02** | UI 静态契约与 23 语言对称 | `check-ui-contracts.mjs` + `every_locale_has_the_same_keys` 0 错误 | ✅ 已通过 |
 | **TC-UI-03** | 零全局 GPU 图表与动效原语 | `flowy-ui` 42 项单测（含 `charts_paint_without_global_component_theme_init`） | ✅ 已通过（42/42） |
 | **TC-UI-04** | 严格静态检查与二进制编译 | `cargo clippy --tests -- -D warnings` 0 告警 + `flowy-desktop` 编译通过 | ✅ 已通过 |
-| **TC-UI-05** | 契约投影（含 `session_work_status`）与死信卡点分类 | `ports::board::tests::{projection_classifies_failed_verification_as_blocker_with_report_id, work_contract_progress_projects_partial_missing_and_dead_receipts_as_blockers}` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-06** | 死信/隔离提示与 `visible_acceptances()` 同步 | `panel::tests::dead_receipt_lifecycle_surfaces_notice_and_syncs_visible_receipts` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-07** | `apply_config` 自动唤醒 + 云就绪队列同步 | `panel::tests::autonomous_drain_apply_config_and_notify_cloud_ready_syncs_queue` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-08** | 核验两步放行审计链持久化 | `panel::tests::override_delivery_writes_audit_chain_and_persists_badge_across_reopen` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-09** | 外部打开白名单安全门禁（拦 `.ps1`/缺失文件、放 `.pdf`） | `deliverables::tests::external_open_gate_blocks_executables_and_missing_files` | ✅ 编译通过（待本机桌面会话运行） |
-| **TC-UI-10** | 双主题 × 960px/1280px 实机视觉与关窗刷盘 | 在本机普通桌面终端通过 `flowy-gpui-e2e` 截屏与行为验证 | ⏳ 待宿主机交互桌面环境复测 |
+| **TC-UI-05** | 契约投影（含 `session_work_status`）与死信卡点分类 | `ports::board::tests::{projection_classifies_failed_verification_as_blocker_with_report_id, work_contract_progress_projects_partial_missing_and_dead_receipts_as_blockers, idle_qa_session_keeps_kpi_donut_counts_consistent, orphan_receipt_for_deleted_session_surfaces_in_unassigned_group, kpi_counts_all_branches_before_six_branch_display_truncation}` | ✅ 已实跑通过（`flowy-studio` 101/101） |
+| **TC-UI-06** | 死信/隔离提示、登出同步取消与 `visible_acceptances()` 同步 | `panel::tests::{dead_receipt_lifecycle_surfaces_notice_and_syncs_visible_receipts, prepare_for_sign_out_cancels_queued_receipts_and_invalidates_submission, bind_default_workspace_preserves_prompt_draft, cloud_ready_gate_blocks_when_offline_and_allows_during_catalog_loading}` | ✅ 已实跑通过（`flowy-studio` 101/101） |
+| **TC-UI-07** | `apply_config` 自动唤醒 + 云就绪队列同步 | `panel::tests::autonomous_drain_apply_config_and_notify_cloud_ready_syncs_queue` | ✅ 已实跑通过（`flowy-studio` 101/101） |
+| **TC-UI-08** | 核验两步放行审计链持久化 | `panel::tests::override_delivery_writes_audit_chain_and_persists_badge_across_reopen` | ✅ 已实跑通过（`flowy-studio` 101/101） |
+| **TC-UI-09** | 外部打开白名单安全门禁与 Trace 结构化脱敏 | `deliverables::tests::external_open_gate_blocks_executables_and_missing_files` + `ports::trace::tests::{redact_trace_text_masks_secrets_and_clamps_long_payloads, redact_trace_text_masks_compact_json_non_first_keys_and_url_queries, collect_session_traces_surfaces_unassigned_queue_receipts}` | ✅ 已实跑通过（`flowy-studio` 101/101） |
+| **TC-UI-10** | 双主题 × 960px/1280px 实机视觉、弹层交互、离线拦截与远端真实积分闭环 | 通过加固后的 `flowy-gpui-e2e`（Low-IL 自动暂存）实机执行离线 960×700（35/35 步）+ 远端真实 API 1280×820（20/20 步）并全量目检 18 张截图 | ✅ 已实机通过（`log_error_count=0`，`APPDATA_RESTORED`） |
 
 ### 6.2 验证梯子（Verification Ladder）
 
@@ -296,6 +296,34 @@ cargo build --manifest-path flowy18_wip/Cargo.toml -p flowy-desktop --bin flowy-
 3. **✅ `CardAction::RetryDeadReceipt` 自动取代旧死信**：内核重投成功后自动在日志中终结旧死信并推送 `Cancelled` + 新 `Queued`；UI 侧 `retry_dead_receipt` 删除了本地 `failed_receipts.retain` 手动清理。
 4. **✅ `AgentHandle::session_work_status(&self, session_id: &str) -> Option<WorkStatus>`**：看板分支投影（`ports/board.rs`）、右侧会话检视抽屉（`deliverables.rs`）与脱敏 Trace（`ports/trace.rs`）已全面接入，直提会话无需拼装内部 `submission-*` ID 即可跨重启展示完整契约进度与缺失项告警。
 5. **✅ `Quarantined` 事件与外部打开安全门禁加固**：同步修复深度审查发现的 5 项问题——Flowchart 弹窗与交付物预览外部打开强制接入 `flowy_agent::can_open_with_default_app` + `Path::is_file()` 白名单门禁（防 `.exe`/`.ps1` 误执行）、语言切换同步刷新看板与技能清单、`sign_out` 统一 `prepare_for_sign_out` 显式取消全量在跑会话并清理 UI v2 状态、切资料库复用 `close_all_popovers()`、会话删除自动关闭过期 Modal、清理 `charts.rs` 死代码与硬编码动画 ID。
+
+### 6.4 深度审查与实机 E2E 闭环收口记录（2026-11-25）
+
+> 经 `/code-review` + `/laoyeye` 深度对抗审查与 Windows 实机 E2E 闭环验证，严守 **0 冲突文件边界**（零改动内核、`flowy-shell` 及 23 语种字典），补齐并验证以下 14 项收口修复：
+
+1. **消灭渲染帧磁盘 I/O（不变量 #3）**：
+   - `SessionBoardGroup` 缓存 `session_contract: Option<WorkContractProgress>`，`deliverables.rs` 的 `inspect_session_view` / `inspect_receipt_view` 改为纯读取 `board_snapshot` 与 `visible_receipts`；
+   - `StudioPanel` 新增 `cached_trace: Option<(String, Vec<RedactedTraceEntry>)>` 与 `refresh_trace_cache()`，在切 Trace 页签、更新看板、切换会话与关闭弹窗/抽屉时脏刷新；`modal_trace_panel` 零调用 `collect_session_traces`，并将 `format_traces_jsonl` 移入「复制 JSONL」点击回调。
+2. **看板 KPI 守恒与孤儿回执收拢（`ports/board.rs`）**：
+   - `accumulate_kpi` 移至 `branches.truncate(6)` 之前执行（截断前按卡点/运行优先稳定排序），且不再对 `BranchPhase::Idle` / `Completed` / `Cancelled` 虚增 `total_branches`，确保 `total_branches == approval_count + running_count + delivered_count` 严格守恒；
+   - 收拢 `receipts_by_session` 中所有未归属或指向已删除会话的孤儿回执至 `UNASSIGNED_QUEUE_SESSION_ID`，标题复用既有对称 i18n key `"chat.bg_tasks_title"`（「后台任务队列」/ `"Background tasks"`），消除标题与副标题重复。
+3. **Trace 未归属队列与密钥结构化脱敏（`ports/trace.rs`）**：
+   - `collect_session_traces` 显式支持 `UNASSIGNED_QUEUE_SESSION_ID`（跳过 `session_lines`，收集全部无归属/孤儿回执及契约缺失告警），`deliverables.rs` 回执 Trace 同步接入兜底；
+   - 重写 `redact_trace_text` 结构化分隔符扫描器，全面覆盖紧凑 JSON 非首键（`{"user":"a","api_key":"..."}`）、URL Query 参数（`?x=1&api_key=...`）、`Authorization: Bearer <token>`（含 JSON 内嵌）及非敏感键下的 `sk-`/`ghp_`/`eyJ` 凭据。
+4. **`!cloud_ready` 发送门禁（方案 A）与登出竞态收口（`panel.rs` / `work_actions.rs`）**：
+   - 修正 `StudioPanel::can_submit_prompt()` 布尔反转（`self.cloud_ready || self.catalog_loading || !self.agent.requires_cloud_ready()`），冷启动加载期仍安全入队，断网/未就绪时正确呈现琥珀警示态并触发 `ComposerEvent::CloudNotReady` + `notice.model_setup_required`；
+   - `prepare_for_sign_out` 改为先置位 `submission_stop` 并 `invalidate_submission` → 立即 `apply_config(disconnected)` 锁死自治排空 → 同步取消全部 `busy_session_ids` 与非终态 `visible_receipts`（防跨账号扣费竞态）；
+   - `retrying_receipt` 升级为 `HashSet<String>` 支持多条死信并发重投锁；新增 `bind_default_workspace()` 供工作区菜单解绑项目时保留输入草稿。
+5. **960px 响应式布局、无障碍/UIA 交互与图表测试（`overview/mod.rs` / `studio.rs` / `composer.rs` / `starter/mod.rs` / `charts.rs`）**：
+   - `board_kpi_strip` 改为两组 2 卡配对容器，实现 1280px `4×1` 与 960px 对称 `2×2`（消灭 `3+1` 孤行）；
+   - 移除 `env-status-pill` 与 `cockpit_chip` 的 `.aria_expanded(...)`（规避 `gpui-pre 0.3.14` 丢弃 `accesskit::Action::Expand` 导致 Windows UIA 点击失效），并为已绑定工作区的 `workspace_chip`（`项目: {name}`）与看板 `board-spark`（`活跃会话 · {title}`）补充作用域无障碍名，彻底消除与侧栏项目行/看板卡片的重名冲突；
+   - 放宽英文启动卡技能徽章 `max_w(144px)`（消除 `Code Script Helper` 截断）、增大输入框 `min_h(48px)` + `pb(2px)`、参数化 `charts.rs` `ChartHarness` 真实覆盖空甜甜圈与 `MotionPolicy::Reduced`。
+6. **全量验证证据**：
+   - **静态门禁**：`git diff --name-only 10b99bac0..HEAD` 0 越界；`cargo fmt --check`、`node flowy18_wip/scripts/check-ui-contracts.mjs`、`cargo clippy --tests -p flowy-i18n -p flowy-ui -p flowy-studio -p flowy-app -- -D warnings` 全部 0 告警通过。
+   - **全量单元测试（5 组 201/201 实跑通过）**：`anchor_measurement` 2/2、`flowy-ui` 40/40、`flowy-i18n` 8/8、`flowy-studio` 101/101（含 8 项新增对抗单测）、`flowy-app` 50/50（含此前因工作区筹码重名失败的 3 项项目行交互测试）。
+   - **实机 E2E 闭环（`flowy-gpui-e2e` 自动暂存直接指向 `flowy18_wip`）**：
+     - 离线 960×700 深/浅 + 中/英（0 积分）：**35/35 步通过**，11 张截图目检通过，`log_error_count=0`，`APPDATA_RESTORED`；
+     - 远端真实 API 1280×820（`offline: false`，消耗 10 真实积分 `223,280 -> 223,270`）：**20/20 步通过**，7 张截图目检通过，验证纯对话看板甜甜圈 `0` 守恒、缓存 Trace 真实事件、聊天时间线与余额实时刷新，`log_error_count=0`，`lingering_flowy_app=0`。
 
 ---
 

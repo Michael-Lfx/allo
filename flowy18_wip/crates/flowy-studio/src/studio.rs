@@ -1045,7 +1045,9 @@ impl crate::panel::StudioPanel {
                 })
                 .cursor_pointer()
                 .hover(|style| style.bg(self.theme.dock_hover()))
-                .aria_expanded(self.env_popover_open)
+                // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+                // `Action::Expand`, so keeping the plain button role matches
+                // `model-menu-trigger` and stays clickable via Windows UIA.
                 .on_click(cx.listener(|panel, _, _, cx| {
                     let opening = !panel.env_popover_open;
                     panel.close_all_popovers();

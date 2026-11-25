@@ -202,10 +202,15 @@ impl ChatComposer {
                     .child(
                         // The kit multi-line editor is `h_full` inside, so it
                         // needs a bounded parent or it collapses to one row.
-                        div().w_full().min_h(px(44.)).max_h(px(160.)).child(
-                            text_area("chat-prompt", &self.prompt)
-                                .into_any_element(),
-                        ),
+                        div()
+                            .w_full()
+                            .min_h(px(48.))
+                            .max_h(px(160.))
+                            .pb(px(2.))
+                            .child(
+                                text_area("chat-prompt", &self.prompt)
+                                    .into_any_element(),
+                            ),
                     )
                     .child(
                         div()
@@ -246,31 +251,38 @@ impl ChatComposer {
     fn cockpit_chip(
         &self,
         id: &'static str,
-        label: String,
+        labels: (String, Option<String>),
         colors: (gpui::Rgba, gpui::Rgba),
         icon: theme::icons::Icon,
-        layout: (Option<f32>, Option<bool>),
+        layout: (Option<f32>, bool),
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> impl gpui::StatefulInteractiveElement + gpui::Element {
+        let (label, accessible_label) = labels;
+        let aria_label = accessible_label.unwrap_or_else(|| label.clone());
         let (bg, fg) = colors;
-        let (max_w, expanded) = layout;
+        let (max_w, open) = layout;
         let label_el = if max_w.is_some() {
             div()
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .truncate()
-                .child(label.clone())
+                .child(label)
                 .into_any_element()
         } else {
-            label.clone().into_any_element()
+            label.into_any_element()
         };
-        theme::interactive(id, label, &self.theme)
+        // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+        // `Action::Expand`, so keeping the plain button role ensures both mouse
+        // and Windows UIA clicks work identically.
+        theme::interactive(id, aria_label, &self.theme)
             .focus_visible(|style| style.border_color(self.theme.focus_ring()))
             .min_h(self.theme.control_height(theme::ControlSize::Small))
             .when_some(max_w, |chip, width| chip.max_w(px(width)))
             .px(self.theme.space(8.))
             .rounded_full()
+            .border_1()
+            .border_color(if open { self.theme.border_strong() } else { bg })
             .bg(bg)
             .flex()
             .items_center()
@@ -279,10 +291,6 @@ impl ChatComposer {
             .text_color(fg)
             .cursor_pointer()
             .hover(|style| style.bg(self.theme.dock_hover()))
-            .when_some(
-                expanded,
-                gpui::StatefulInteractiveElement::aria_expanded,
-            )
             .on_click(on_click)
             .child(icon)
             .child(label_el)
@@ -301,10 +309,10 @@ impl ChatComposer {
         theme::anchor_trigger(
             self.cockpit_chip(
                 "composer-model",
-                label,
+                (label, None),
                 (bg, fg),
                 theme::icons::sparkles().size(px(12.)),
-                (None, Some(self.model_menu_open)),
+                (None, self.model_menu_open),
                 cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
                 }),
@@ -320,6 +328,12 @@ impl ChatComposer {
         } else {
             self.workspace_label.to_string()
         };
+        // Scope the accessible name when bound to a project so screen readers
+        // and UIA distinguish the composer workspace picker from the sidebar's
+        // project folder button with the same project name.
+        let aria_label = self
+            .workspace_bound
+            .then(|| format!("{}: {label}", self.t("dock.projects")));
         let (bg, fg) = if self.workspace_bound {
             (self.theme.status_active_bg(), self.theme.status_active())
         } else {
@@ -328,10 +342,10 @@ impl ChatComposer {
         theme::anchor_trigger(
             self.cockpit_chip(
                 "composer-workspace",
-                label,
+                (label, aria_label),
                 (bg, fg),
                 theme::icons::folder().size(px(12.)),
-                (Some(148.0), Some(self.workspace_menu_open)),
+                (Some(148.0), self.workspace_menu_open),
                 cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::WorkspaceMenu);
                 }),
@@ -357,10 +371,10 @@ impl ChatComposer {
         };
         self.cockpit_chip(
             "composer-verify",
-            label,
+            (label, None),
             (bg, fg),
             theme::icons::check().size(px(11.)),
-            (None, None),
+            (None, false),
             cx.listener(|_, _, _, cx| {
                 cx.emit(ComposerEvent::VerifyToggle);
             }),
@@ -381,10 +395,10 @@ impl ChatComposer {
         theme::anchor_trigger(
             self.cockpit_chip(
                 "composer-skill",
-                label,
+                (label, None),
                 (bg, fg),
                 theme::icons::sparkles().size(px(11.)),
-                (Some(136.0), Some(self.skill_menu_open)),
+                (Some(136.0), self.skill_menu_open),
                 cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::SkillMenu);
                 }),

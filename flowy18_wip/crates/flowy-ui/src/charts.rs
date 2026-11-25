@@ -307,6 +307,12 @@ mod tests {
 
     struct ChartHarness {
         theme: ResolvedTheme,
+        segments: Vec<DonutSegment>,
+        center_label: &'static str,
+        percent: f32,
+        running: bool,
+        edge_style: FlowEdgeStyle,
+        policy: MotionPolicy,
     }
 
     impl Render for ChartHarness {
@@ -315,11 +321,6 @@ mod tests {
             _window: &mut Window,
             _cx: &mut Context<'_, Self>,
         ) -> impl IntoElement {
-            let segments = vec![
-                DonutSegment::new(2.0, self.theme.status_attention()),
-                DonutSegment::new(3.0, self.theme.status_active()),
-                DonutSegment::new(5.0, self.theme.status_verified()),
-            ];
             div()
                 .w(px(320.))
                 .h(px(160.))
@@ -329,24 +330,24 @@ mod tests {
                 .child(donut_chart(
                     "test-donut",
                     54.0,
-                    segments,
-                    "10",
+                    self.segments.clone(),
+                    self.center_label,
                     &self.theme,
                 ))
                 .child(progress_ring(
                     "test-ring",
                     26.0,
-                    72.0,
+                    self.percent,
                     self.theme.status_active(),
-                    true,
+                    self.running,
                     &self.theme,
                 ))
                 .child(flow_connector(
                     "test-edge",
                     32.0,
                     self.theme.status_verified(),
-                    FlowEdgeStyle::Flowing,
-                    MotionPolicy::Full,
+                    self.edge_style,
+                    self.policy,
                 ))
         }
     }
@@ -355,8 +356,20 @@ mod tests {
     fn charts_paint_without_global_component_theme_init(
         cx: &mut gpui::TestAppContext,
     ) {
+        let theme = ResolvedTheme::default();
+        let segments = vec![
+            DonutSegment::new(2.0, theme.status_attention()),
+            DonutSegment::new(3.0, theme.status_active()),
+            DonutSegment::new(5.0, theme.status_verified()),
+        ];
         let (_view, cx) = cx.add_window_view(|_, _| ChartHarness {
-            theme: ResolvedTheme::default(),
+            theme,
+            segments,
+            center_label: "10",
+            percent: 72.0,
+            running: true,
+            edge_style: FlowEdgeStyle::Flowing,
+            policy: MotionPolicy::Full,
         });
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -368,8 +381,15 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let dark = ResolvedTheme::resolve(crate::ThemeOptions::default(), true);
-        let (_view, cx) =
-            cx.add_window_view(|_, _| ChartHarness { theme: dark });
+        let (_view, cx) = cx.add_window_view(|_, _| ChartHarness {
+            theme: dark,
+            segments: Vec::new(),
+            center_label: "0",
+            percent: 0.0,
+            running: false,
+            edge_style: FlowEdgeStyle::Pending,
+            policy: MotionPolicy::Reduced,
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 }

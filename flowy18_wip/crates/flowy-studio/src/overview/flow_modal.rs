@@ -675,6 +675,7 @@ impl StudioPanel {
         .child(label)
         .on_click(cx.listener(move |panel, _, _, cx| {
             panel.flow_modal_tab = tab;
+            panel.refresh_trace_cache();
             cx.notify();
         }))
         .into_any_element()
@@ -1011,7 +1012,7 @@ impl StudioPanel {
                 | ReceiptState::Retrying
         );
         let is_dead = state == ReceiptState::Dead;
-        let retrying = self.retrying_receipt.as_deref() == Some(receipt_id);
+        let retrying = self.retrying_receipts.contains(receipt_id);
         div()
             .flex_1()
             .min_w(px(240.))

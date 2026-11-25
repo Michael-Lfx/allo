@@ -181,7 +181,7 @@ impl StudioPanel {
                         .when_some(skill_badge_title, |row, skill_name| {
                             row.child(
                                 div()
-                                    .max_w(px(110.))
+                                    .max_w(px(144.))
                                     .px(px(6.))
                                     .py(px(1.))
                                     .rounded_full()

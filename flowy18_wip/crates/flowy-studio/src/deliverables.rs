@@ -117,14 +117,17 @@ impl StudioPanel {
                         .child(self.modal_trace_panel(id, cx))
                         .into_any_element(),
                     InspectedWork::Receipt(r) => {
-                        if let Some(sid) = &r.session_hint {
-                            div()
-                                .p(self.theme.space(12.))
-                                .child(self.modal_trace_panel(sid, cx))
-                                .into_any_element()
-                        } else {
-                            self.work_inspector_view(work, cx)
-                        }
+                        let sid = r
+                            .target_session_id
+                            .as_deref()
+                            .or(r.session_hint.as_deref())
+                            .unwrap_or(
+                                crate::ports::UNASSIGNED_QUEUE_SESSION_ID,
+                            );
+                        div()
+                            .p(self.theme.space(12.))
+                            .child(self.modal_trace_panel(sid, cx))
+                            .into_any_element()
                     }
                 },
                 _ => self.work_inspector_view(work, cx),
@@ -207,6 +210,7 @@ impl StudioPanel {
                                     panel.feed.read(cx).latest_deliverables();
                             }
                         }
+                        panel.refresh_trace_cache();
                         cx.notify();
                     }))
             };
@@ -402,9 +406,11 @@ impl StudioPanel {
         let needs_attention = self.agent.session_needs_attention(id);
         let steps = self.session_steps(id);
         let work_progress = self
-            .agent
-            .session_work_status(id)
-            .and_then(|s| crate::ports::WorkContractProgress::from_status(&s));
+            .board_snapshot
+            .sessions
+            .iter()
+            .find(|group| group.session_id == id)
+            .and_then(|group| group.session_contract.as_ref());
         let open_id = id.to_owned();
         let stop_id = id.to_owned();
 
@@ -529,7 +535,7 @@ impl StudioPanel {
                             .child(status_badge),
                     )
                     .when_some(work_progress, |card, progress| {
-                        card.child(self.contract_progress_block(&progress))
+                        card.child(self.contract_progress_block(progress))
                     })
                     .child(
                         div()
@@ -586,14 +592,24 @@ impl StudioPanel {
             .clone()
             .or_else(|| receipt.session_hint.clone());
         let state = self
-            .agent
-            .receipt_state(&receipt.id)
-            .unwrap_or(ReceiptState::Queued);
+            .visible_receipts
+            .iter()
+            .find(|(item, _)| item.id == receipt.id)
+            .map_or(ReceiptState::Queued, |(_, state)| *state);
         let (state_fg, state_label, _) = self.receipt_state_visual(state);
         let work_progress = self
-            .agent
-            .work_status(&receipt.id)
-            .and_then(|s| crate::ports::WorkContractProgress::from_status(&s));
+            .board_snapshot
+            .sessions
+            .iter()
+            .flat_map(|group| group.branches.iter())
+            .find(|branch| {
+                matches!(
+                    &branch.phase,
+                    crate::ports::BranchPhase::Queued { receipt_id, .. }
+                        if receipt_id == &receipt.id
+                )
+            })
+            .and_then(|branch| branch.work_progress.as_ref());
         let cancel_id = receipt.id.clone();
         let retry_id = receipt.id.clone();
         let can_cancel = matches!(
@@ -603,8 +619,7 @@ impl StudioPanel {
                 | ReceiptState::Retrying
         );
         let is_dead = state == ReceiptState::Dead;
-        let retrying =
-            self.retrying_receipt.as_deref() == Some(receipt.id.as_str());
+        let retrying = self.retrying_receipts.contains(receipt.id.as_str());
         div()
             .w_full()
             .p(self.theme.space(12.))
@@ -654,7 +669,7 @@ impl StudioPanel {
                             .child(receipt.text.clone()),
                     )
                     .when_some(work_progress, |card, progress| {
-                        card.child(self.contract_progress_block(&progress))
+                        card.child(self.contract_progress_block(progress))
                     })
                     .child(
                         div()

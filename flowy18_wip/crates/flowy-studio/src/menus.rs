@@ -168,7 +168,7 @@ impl StudioPanel {
             .when(default_selected, |row| row.child(theme::icons::check()))
             .on_click(cx.listener(|panel, _, _, cx| {
                 panel.workspace_menu_open = false;
-                panel.new_task(cx);
+                panel.bind_default_workspace(cx);
             })),
         );
 
