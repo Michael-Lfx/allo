@@ -8,6 +8,7 @@ mod deliverables;
 mod feed;
 mod file_kind;
 mod history;
+mod home;
 pub mod library;
 mod markdown;
 mod motion;

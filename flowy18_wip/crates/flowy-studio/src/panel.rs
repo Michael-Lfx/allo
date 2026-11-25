@@ -137,7 +137,7 @@ pub struct StudioPanel {
     _artifact_sub: gpui::Subscription,
     _working_sub: gpui::Subscription,
     submission: Option<u128>,
-    submission_pending: bool,
+    pub(crate) submission_pending: bool,
     submission_generation: u64,
     submission_stop: Option<Arc<AtomicBool>>,
     /// Session whose durable delivery marker is currently being retried.
@@ -161,6 +161,7 @@ pub struct StudioPanel {
     pub credits_close: Option<Task<()>>,
     pub model_info_open: bool,
     pub model_menu_open: bool,
+    pub bg_tasks_open: bool,
     pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
@@ -177,14 +178,14 @@ pub struct StudioPanel {
     /// Starter copy held back until the user confirms replacing the draft.
     /// Category whose examples the home stage shows.
     pub(crate) starter_category: Category,
-    /// Paging state of the example row; reset when the row's contents change.
-    pub(crate) starter_carousel: flowy_ui::CarouselState,
     /// Set once the user opens a conversation in this run. Startup initialization
     /// must not pull the app back into the last thread, but a session restored
     /// because the user asked for it should land on Chat.
     pub(crate) session_opened_by_user: bool,
     /// Files the deliverables drawer lists; `None` keeps it closed.
     pub(crate) deliverables: Option<Vec<FileEntry>>,
+    /// Single background work or queued receipt inspected in the right sheet.
+    pub(crate) inspected_work: Option<crate::deliverables::InspectedWork>,
     /// Path being previewed inside the drawer.
     pub(crate) preview_file: Option<String>,
     /// Loaded once when the file is picked, so rendering never touches disk.
@@ -314,6 +315,7 @@ impl StudioPanel {
                     "model-list" => panel.model_menu_open = false,
                     "model-info" => panel.model_info_open = false,
                     "credit-card" => panel.credits_hover = false,
+                    "bg-tasks-popover" => panel.bg_tasks_open = false,
                     _ => return,
                 }
                 cx.notify();
@@ -461,6 +463,7 @@ impl StudioPanel {
             credits_close: None,
             model_info_open,
             model_menu_open: false,
+            bg_tasks_open: false,
             tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
             i18n,
@@ -475,9 +478,9 @@ impl StudioPanel {
             surface,
             notice: initial_notice,
             starter_category: Category::Website,
-            starter_carousel: flowy_ui::CarouselState::new(),
             session_opened_by_user: false,
             deliverables: None,
+            inspected_work: None,
             preview_file: None,
             preview_body: None,
             drafts: std::collections::HashMap::new(),
@@ -779,10 +782,19 @@ impl StudioPanel {
         });
     }
 
+    fn clear_right_sheet(&mut self) {
+        self.deliverables = None;
+        self.inspected_work = None;
+        self.preview_file = None;
+        self.preview_body = None;
+    }
+
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
+        self.bg_tasks_open = false;
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
@@ -801,13 +813,11 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
+                self.clear_right_sheet();
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
                 self.surface = StudioSurface::Home;
-                // A fresh task starts at the first card, not wherever the last
-                // row happened to be scrolled to.
-                self.starter_carousel.reset();
                 self.refresh_chat(cx);
                 self.emit_notice(None, cx);
                 self.set_prompt_text("", cx);
@@ -824,6 +834,8 @@ impl StudioPanel {
         self.invalidate_submission(cx);
         self.model_info_open = false;
         self.model_menu_open = false;
+        self.bg_tasks_open = false;
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         self.submission = None;
@@ -833,6 +845,101 @@ impl StudioPanel {
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
+    }
+
+    /// Toggles the floating background-tasks popover anchored above the composer.
+    pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = !self.bg_tasks_open;
+        if self.bg_tasks_open {
+            self.model_menu_open = false;
+            self.model_info_open = false;
+            self.credits_hover = false;
+        }
+        cx.notify();
+    }
+
+    /// Running sessions shown in the background-works popover: on Chat,
+    /// excludes the active foreground session (already surfaced by the inline
+    /// process capsule and `WorkingIndicator`); on Home, includes all running
+    /// sessions so folded work stays reachable.
+    #[must_use]
+    pub(crate) fn background_running_session_ids(&self) -> Vec<String> {
+        let active = self.agent.active_session_id();
+        let exclude_active = self.surface == StudioSurface::Chat;
+        let mut ids: Vec<String> = self
+            .agent
+            .busy_session_ids()
+            .into_iter()
+            .filter(|id| {
+                !(exclude_active && active.as_deref() == Some(id.as_str()))
+            })
+            .collect();
+        if !exclude_active
+            && ids.is_empty()
+            && (self.status.is_busy() || self.submission_pending)
+            && let Some(active_id) = active
+        {
+            ids.push(active_id);
+        }
+        ids
+    }
+
+    /// Total active/queued works shown in the background-tasks pill.
+    #[must_use]
+    pub fn background_work_count(&self) -> usize {
+        let mut running = self.background_running_session_ids().len();
+        if self.surface != StudioSurface::Chat
+            && running == 0
+            && (self.status.is_busy() || self.submission_pending)
+        {
+            running = 1;
+        }
+        running + self.pending_receipts.len()
+    }
+
+    /// Total active/queued works across all sessions (including foreground),
+    /// for the sidebar Chief Assistant status badge.
+    #[must_use]
+    pub fn total_active_work_count(&self) -> usize {
+        let mut running = self.agent.running_session_count();
+        if (self.status.is_busy() || self.submission_pending) && running == 0 {
+            running = 1;
+        }
+        running + self.pending_receipts.len()
+    }
+
+    /// Non-destructively folds the active table back to the calm Home stage
+    /// while leaving any running turns or queued background tasks untouched.
+    pub fn fold_desk(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = false;
+        self.model_menu_open = false;
+        self.surface = StudioSurface::Home;
+        cx.notify();
+    }
+
+    /// Jumps to the Chief Assistant's active default-workspace thread, or lands
+    /// calmly on the Home stage ready for a fresh instruction.
+    pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
+        self.bg_tasks_open = false;
+        if self.agent.active_session_id().is_some()
+            && self.active_project_id.is_none()
+            && self.agent.has_messages()
+        {
+            self.surface = StudioSurface::Chat;
+            self.refresh_chat(cx);
+            cx.notify();
+            return;
+        }
+        let latest_default = self
+            .agent
+            .list_sessions()
+            .into_iter()
+            .find(|session| session.project_id.is_none());
+        if let Some(session) = latest_default {
+            self.open_session(&session.id, cx);
+        } else {
+            self.new_task(cx);
+        }
     }
 
     /// Creates an empty session in the workspace `open_project` just prepared.
@@ -1473,9 +1580,6 @@ impl StudioPanel {
             return;
         }
         self.starter_category = category;
-        // Each category is a different row; carrying the old offset over would
-        // open the new one mid-scroll, potentially past its own end.
-        self.starter_carousel.reset();
         cx.notify();
     }
 
@@ -1493,16 +1597,29 @@ impl StudioPanel {
         files: Vec<FileEntry>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.clear_right_sheet();
         self.deliverables = Some(files);
-        self.preview_file = None;
-        self.preview_body = None;
+        self.bg_tasks_open = false;
+        cx.notify();
+    }
+
+    /// Opens the right-hand inspector sheet for one running session or queued
+    /// receipt without interrupting the user's current conversation.
+    pub(crate) fn open_work_inspector(
+        &mut self,
+        work: crate::deliverables::InspectedWork,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.clear_right_sheet();
+        self.inspected_work = Some(work);
+        self.bg_tasks_open = false;
         cx.notify();
     }
 
     /// Opens the drawer with the latest turn's files, or closes it if open.
     pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
         if self.deliverables.is_some() {
-            self.close_deliverables(cx);
+            self.close_right_sheet(cx);
             return;
         }
         let files = self.feed.read(cx).latest_deliverables();
@@ -1512,10 +1629,34 @@ impl StudioPanel {
         }
     }
 
-    pub(crate) fn close_deliverables(&mut self, cx: &mut Context<'_, Self>) {
-        self.deliverables = None;
-        self.preview_file = None;
-        self.preview_body = None;
+    /// Closes whichever right-hand sheet is open (deliverables or single-work
+    /// step inspector).
+    pub(crate) fn close_right_sheet(&mut self, cx: &mut Context<'_, Self>) {
+        self.clear_right_sheet();
+        cx.notify();
+    }
+
+    /// Number of deliverables available in the current session's latest turn.
+    pub(crate) fn deliverable_count(&self, cx: &Context<'_, Self>) -> usize {
+        self.feed
+            .read(cx)
+            .latest_deliverables()
+            .map_or(0, |files| files.len())
+    }
+
+    /// Requests a graceful stop for one specific background or active session.
+    pub(crate) fn stop_session_turn(
+        &self,
+        session_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let agent = self.agent.clone();
+        let target = session_id.to_owned();
+        cx.background_executor()
+            .spawn(async move {
+                agent.stop_if_active(Some(&target));
+            })
+            .detach();
         cx.notify();
     }
 

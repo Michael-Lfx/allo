@@ -46,6 +46,31 @@ const ACCEPTED_RELEASE_MAX_MS: u64 = 5 * 60_000;
 /// is surfaced to the user; the tenth is terminal.
 const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 
+/// Maximum Unicode scalar characters kept in a sidebar session preview.
+const PREVIEW_MAX_CHARS: usize = 56;
+
+fn extract_session_preview(lines: &[ChatLine]) -> Option<String> {
+    let raw = lines.iter().rev().find_map(|line| match line {
+        ChatLine::Assistant { text } | ChatLine::User { text } => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        }
+        _ => None,
+    })?;
+    let collapsed: String =
+        raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars = collapsed.chars();
+    let head: String = chars.by_ref().take(PREVIEW_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        Some(format!("{head}\u{2026}"))
+    } else {
+        Some(head)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
     pub id: String,
@@ -606,6 +631,73 @@ impl AgentHandle {
 
     pub fn active_session_id(&self) -> Option<String> {
         lock(&self.inner.state.active).clone()
+    }
+
+    /// Returns the IDs of sessions whose turn is currently running.
+    #[must_use]
+    pub fn busy_session_ids(&self) -> Vec<String> {
+        let live = lock(&self.inner.state.live);
+        let mut ids: Vec<(u64, String)> = live
+            .iter()
+            .filter(|(_, session)| session.status.is_busy())
+            .map(|(id, session)| (session.updated_at, id.clone()))
+            .collect();
+        drop(live);
+        ids.sort_by_key(|(updated_at, _)| std::cmp::Reverse(*updated_at));
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Number of sessions currently executing a turn.
+    #[must_use]
+    pub fn running_session_count(&self) -> usize {
+        lock(&self.inner.state.live)
+            .values()
+            .filter(|session| session.status.is_busy())
+            .count()
+    }
+
+    /// Returns a compact single-line preview of the latest user or assistant
+    /// message in `session_id`, if any.
+    #[must_use]
+    pub fn session_preview(&self, session_id: &str) -> Option<String> {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .and_then(|session| {
+                extract_session_preview(&session.projection.lines)
+            })
+    }
+
+    /// Returns `true` when `session_id` has an unsettled failed verification
+    /// gate or a turn/delivery error awaiting user attention.
+    #[must_use]
+    pub fn session_needs_attention(&self, session_id: &str) -> bool {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .is_some_and(|session| {
+                matches!(
+                    session.status,
+                    TurnStatus::Error { .. } | TurnStatus::DeliveryFailed
+                ) || session.projection.lines.iter().any(|line| {
+                    matches!(
+                        line,
+                        ChatLine::Verification {
+                            ok: false,
+                            override_used: false,
+                            ..
+                        }
+                    )
+                })
+            })
+    }
+
+    /// Returns the projected lines of `session_id` so UI inspectors can
+    /// render localized progress without mixing presentation copy into the
+    /// agent layer.
+    #[must_use]
+    pub fn session_lines(&self, session_id: &str) -> Vec<ChatLine> {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .map_or_default(|session| session.projection.lines.clone())
     }
 
     /// Memory-only selection revision, including empty Home/Project contexts.

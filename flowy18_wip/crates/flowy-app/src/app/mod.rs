@@ -204,6 +204,7 @@ impl FlowyApp {
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
+            panel.bg_tasks_open = false;
             panel.credits_hover = false;
             panel.credits_close = None;
             cx.notify();
@@ -232,7 +233,8 @@ impl FlowyApp {
             "task-menu" => {
                 self.task_menu = None;
             }
-            "model-list" | "model-info" | "credit-card" => {
+            "model-list" | "model-info" | "credit-card"
+            | "bg-tasks-popover" => {
                 self.studio.update(cx, |panel, cx| {
                     match scope {
                         "model-list" => {
@@ -240,6 +242,9 @@ impl FlowyApp {
                         }
                         "model-info" => {
                             panel.model_info_open = false;
+                        }
+                        "bg-tasks-popover" => {
+                            panel.bg_tasks_open = false;
                         }
                         _ => {
                             panel.credits_hover = false;

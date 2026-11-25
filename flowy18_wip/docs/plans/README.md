@@ -4,6 +4,7 @@
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
+| [super-agent-ui-and-motion.zh.md](super-agent-ui-and-motion.zh.md) | 计划（2026-11-25 架构与交互定稿） | Super Agent 常驻助理/项目空间侧栏、全程实时折叠时间线、悬浮任务胶囊、GPUI 120fps 丝滑动效映射与双分支并行方案 |
 | [clawhub-skill-market.md](clawhub-skill-market.md) | 已实现（2026-11-23） | ClawHub 社区货架、官方 JSON、SQLite 缓存、审核过滤与安装门禁 |
 | [conversation-artifact-library-execution.zh.md](conversation-artifact-library-execution.zh.md) | 实施与验证中 | 代码链路、自动化证据、TC-01–35 与待完成原生/发行门禁 |
 | [conversation-artifact-library.zh.md](conversation-artifact-library.zh.md) | 计划（2026-11-21，产品范围已确认） | 首页对话文件交付、自动归集、独立存储、共享预览与来源定位的完整实施计划 |

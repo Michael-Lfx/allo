@@ -138,19 +138,20 @@ impl ChatComposer {
             ))
             .px(self.theme.space(32.))
             .pb(self.theme.space(20.))
-            .pt(self.theme.space(8.))
+            .pt(self.theme.space(4.))
             .flex()
             .justify_center()
             .child(
                 div()
-                    .w_full()
+                    .flex_1()
+                    .min_w_0()
                     .max_w(px(760.))
-                    .rounded_xl()
+                    .rounded(px(20.))
                     .border_1()
                     .border_color(self.theme.line())
                     .bg(self.theme.card())
                     .shadow_sm()
-                    .px(self.theme.space(12.))
+                    .px(self.theme.space(16.))
                     .pt(self.theme.space(12.))
                     .pb(self.theme.space(8.))
                     .flex()
@@ -169,7 +170,7 @@ impl ChatComposer {
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap(self.theme.space(4.))
+                            .gap(self.theme.space(6.))
                             .child(div().flex_1())
                             .child(self.model_chip(cx))
                             .child(
@@ -195,17 +196,17 @@ impl ChatComposer {
                     style.border_color(self.theme.focus_ring())
                 })
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(8.))
-                .rounded_md()
+                .px(self.theme.space(10.))
+                .rounded_full()
                 .flex()
                 .items_center()
                 .gap(self.theme.space(4.))
                 .text_xs()
                 .text_color(self.theme.ink())
-                .child(theme::icons::sparkles())
+                .child(theme::icons::sparkles().size(px(12.)))
                 .child(label)
                 .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
+                .hover(|style| style.bg(self.theme.soft().opacity(0.45)))
                 .aria_expanded(self.model_menu_open)
                 .on_click(cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
@@ -227,7 +228,11 @@ impl ChatComposer {
         // While a turn is running the stop affordance must stay reachable, and
         // a new message must still be submittable: the host accepts it into its
         // durable queue (`AgentHandle::accept_deferred`) instead of dropping it.
-        let mut row = div().flex().flex_row().items_center();
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(self.theme.space(4.));
         if running {
             row = row.child(
                 theme::IconButton::new(
@@ -245,16 +250,14 @@ impl ChatComposer {
                 ),
             );
         }
+        let send_colors =
+            self.theme.control_colors(theme::ControlVariant::Primary);
+        let send_size = self.theme.control_height(theme::ControlSize::Small);
         row.child(
-            theme::IconButton::new(
+            theme::button(
                 "chat-send",
                 self.t("studio.send"),
-                theme::icons::arrow_right(),
-            )
-            .size(theme::ControlSize::Small)
-            .variant(theme::ControlVariant::Primary)
-            .disabled(!has_draft)
-            .render(
+                !has_draft,
                 &self.theme,
                 cx.listener(|_, _, _, cx| {
                     tracing::debug!(
@@ -264,7 +267,20 @@ impl ChatComposer {
                     );
                     cx.emit(ComposerEvent::Send);
                 }),
-            ),
+            )
+            .w(send_size)
+            .h(send_size)
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(send_colors.background)
+            .text_color(send_colors.foreground)
+            .when(!has_draft, |el| el.opacity(0.45))
+            .when(has_draft, move |el| {
+                el.hover(move |style| style.bg(send_colors.hover))
+            })
+            .child(theme::icons::arrow_right().size(px(14.))),
         )
     }
 }
