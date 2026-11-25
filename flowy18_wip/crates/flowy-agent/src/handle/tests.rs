@@ -1589,6 +1589,21 @@ mod guard_tests {
             handle.session_status(&sid),
             super::TurnStatus::WaitingForUser
         );
+        // Retrying the exact same submission id is idempotent (no duplicate card or user bubble).
+        let lines_before_retry = handle.session_lines(&sid).len();
+        assert_eq!(
+            handle
+                .submit_chat(104, "把刚才那份的报价改成 32 万元。")
+                .unwrap(),
+            sid
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(handle.session_lines(&sid).len(), lines_before_retry);
+        // Sending a brand-new fresh message while a PendingCard exists must be refused.
+        assert_eq!(
+            handle.submit_chat(105, "再补充一个新需求"),
+            Err("notice.card_pending")
+        );
         assert!(!handle.has_busy_session());
         assert!(handle.session_needs_attention(&sid));
         let cards = handle.session_pending_cards(&sid);
@@ -1810,6 +1825,240 @@ mod guard_tests {
         assert_eq!(snap3.current_action, "");
         assert_eq!(snap3.next_check_hint, None);
         assert!(!snap3.awaiting_evidence);
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_card_action_rolls_back_card_status_and_grants_when_resume_fails()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-card-rollback-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        let engine = lock(&handle.inner.engine).clone().expect("engine");
+        let card = super::PendingCard::ToolApproval {
+            card_id: "approval-rollback-1".into(),
+            created_at_ms: 100,
+            tool_name: "bash".into(),
+            target_summary: "bash".into(),
+            args_hash: "a".repeat(64),
+            risk_reason: "destructive".into(),
+            command_preview: "rm -rf ./deliverables".into(),
+        };
+        engine.park_pending_card(&sid, card, None).unwrap();
+        lock(&handle.inner.state.live).get_mut(&sid).unwrap().status =
+            super::TurnStatus::WaitingForUser;
+
+        // Force `submit_message_targeted_locked` to fail with storage error.
+        *lock(&handle.inner.state.load_failed) = true;
+
+        assert_eq!(
+            handle.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: "approval-rollback-1".into(),
+                selection: super::CardSelection::ApproveTool {
+                    args_hash: "a".repeat(64),
+                },
+            }),
+            Err("notice.session_storage_failed")
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert!(
+            lock(&handle.inner.state.approved_tool_calls)
+                .get(&sid)
+                .is_none_or(Vec::is_empty),
+            "failed ApproveTool resume must roll back approved_tool_calls grant"
+        );
+
+        assert_eq!(
+            handle.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: "approval-rollback-1".into(),
+                selection: super::CardSelection::DenyTool {
+                    reason: Some("nope".into()),
+                },
+            }),
+            Err("notice.session_storage_failed")
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert!(
+            !lock(&handle.inner.state.denied_tool_turns).contains_key(&sid),
+            "failed DenyTool resume must roll back denied_tool_turns"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unconsumed_tool_approval_expires_and_user_denied_blocks_all_non_readonly_tools()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-approval-expiry-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        let state = Arc::clone(&handle.inner.state);
+
+        // 1) Unconsumed approved_tool_calls must clear on finished, stop_settled, and waiting_for_user.
+        use flowy_agent_core::TurnObserver as _;
+        let observer = super::UiObserver {
+            state: Arc::clone(&state),
+        };
+        for event in 0..3 {
+            lock(&state.approved_tool_calls)
+                .entry(sid.clone())
+                .or_default()
+                .push(("bash".into(), "f".repeat(64)));
+            match event {
+                0 => observer
+                    .finished(&sid, flowy_agent_core::LoopOutcome::Completed),
+                1 => observer.stop_settled(
+                    &sid,
+                    &flowy_agent_core::StopHandoffManifest::default(),
+                ),
+                _ => observer.waiting_for_user(
+                    &sid,
+                    &super::PendingCard::ToolApproval {
+                        card_id: "c-exp".into(),
+                        created_at_ms: 1,
+                        tool_name: "bash".into(),
+                        target_summary: "bash".into(),
+                        args_hash: "e".repeat(64),
+                        risk_reason: "risk".into(),
+                        command_preview: "rm -rf ./out".into(),
+                    },
+                ),
+            }
+            assert!(
+                !lock(&state.approved_tool_calls).contains_key(&sid),
+                "approved_tool_calls must expire at turn boundary #{event}"
+            );
+        }
+
+        // 2) Turn-scoped UserDenied uses a read-only allowlist so publish_file
+        //    and any future mutating tool are blocked while read_file/verify_deck stay allowed.
+        lock(&state.denied_tool_turns)
+            .insert(sid.clone(), "user rejected delete".into());
+        let hook =
+            super::build_pre_tool_hook(sid, root.clone(), Arc::clone(&state));
+        for blocked_tool in [
+            "publish_file",
+            "write_file",
+            "edit_file",
+            "bash",
+            "powershell",
+            "create_deck",
+            "future_mutating_tool",
+        ] {
+            assert!(
+                matches!(
+                    hook(blocked_tool, &serde_json::json!({})),
+                    flowy_agent_core::PreToolDecision::Deny { ref reason }
+                        if reason.contains("USER_DENIED")
+                ),
+                "UserDenied must block non-readonly tool {blocked_tool}"
+            );
+        }
+        for allowed_tool in [
+            "read_file",
+            "glob",
+            "grep",
+            "ls",
+            "list_dir",
+            "find_files",
+            "verify_deck",
+            "verify_artifact",
+        ] {
+            assert_eq!(
+                hook(allowed_tool, &serde_json::json!({})),
+                flowy_agent_core::PreToolDecision::Allow,
+                "UserDenied must keep read-only tool {allowed_tool} allowed"
+            );
+        }
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revise_active_contract_reports_waiting_for_disambiguation_on_ambiguous_prompt()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-revise-ambig-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        handle
+            .submit_chat(
+                201,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        handle
+            .submit_chat(
+                202,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+
+        let outcome = handle
+            .revise_active_contract_or_queue(
+                &sid,
+                "把刚才那份的报价改成 32 万元。",
+                None,
+            )
+            .expect("ambiguous revise");
+        assert!(
+            matches!(
+                outcome,
+                super::ReviseOutcome::WaitingForDisambiguation {
+                    ref session_id,
+                    ref card_id,
+                } if session_id == &sid && !card_id.is_empty()
+            ),
+            "ambiguous revise must return WaitingForDisambiguation, got {outcome:?}"
+        );
 
         drop(handle);
         let _ = std::fs::remove_dir_all(&root);

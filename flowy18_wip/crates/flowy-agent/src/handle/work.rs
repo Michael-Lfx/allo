@@ -1,5 +1,9 @@
 //! Work-level status reconciliation, UI-decoupled cancellation, card actions, and graceful shutdown.
 
+use std::sync::Arc;
+
+use flowy_agent_core::WorkContract;
+
 use super::{
     AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate, ArtifactStore,
     BTreeSet, CancelOutcome, CardAction, CardActionOutcome, CardSelection,
@@ -9,6 +13,25 @@ use super::{
     now_ms, persist_index,
 };
 use crate::artifact_store::PublicationState;
+
+type ReapTarget = (Arc<Engine>, String);
+
+enum DenialRollback {
+    Unchanged,
+    Restore(Option<String>),
+}
+
+struct CardResumeSpec<'a> {
+    engine: &'a Engine,
+    session_id: &'a str,
+    card_id: &'a str,
+    removed_card: PendingCard,
+    previous_contract: Option<WorkContract>,
+    visible_prompt: &'a str,
+    resumed: ResumedSubmission,
+    approval_grant: Option<(String, String)>,
+    denial_rollback: DenialRollback,
+}
 
 impl AgentHandle {
     /// Unified host view of a work item identified by either its `receipt_id`
@@ -293,15 +316,19 @@ impl AgentHandle {
         &self,
         target: TaskTarget,
     ) -> Result<CancelOutcome, &'static str> {
-        let _dispatch = lock(&self.inner.state.dispatch);
-        match target {
-            TaskTarget::Session(session_id) => {
-                self.cancel_session_locked(&session_id)
+        let (outcome, reap_wait) = {
+            let _dispatch = lock(&self.inner.state.dispatch);
+            match target {
+                TaskTarget::Session(session_id) => {
+                    self.cancel_session_locked(&session_id)?
+                }
+                TaskTarget::Receipt(receipt_id) => {
+                    self.cancel_receipt_locked(&receipt_id)?
+                }
             }
-            TaskTarget::Receipt(receipt_id) => {
-                self.cancel_receipt_locked(&receipt_id)
-            }
-        }
+        };
+        self.await_fast_cancel_settle(reap_wait);
+        Ok(outcome)
     }
 
     /// Apply a structured card-level action inside the host kernel without
@@ -433,7 +460,7 @@ impl AgentHandle {
                         now_ms(),
                     )?;
                 let updated_wc = updated_brief.to_work_contract();
-                engine
+                let removed_card = engine
                     .take_pending_card(
                         session_id,
                         card_id,
@@ -443,20 +470,8 @@ impl AgentHandle {
                     .map_err(|_| {
                         self.inner.state.report_storage_error();
                         "notice.session_storage_failed"
-                    })?;
-                {
-                    let mut live = lock(&self.inner.state.live);
-                    if let Some(session) = live.get_mut(session_id) {
-                        session.status = TurnStatus::Idle;
-                        session.projection.lines.retain(|line| {
-                            !matches!(
-                                line,
-                                ChatLine::Status { text }
-                                    if text == TurnStatus::WaitingForUser.key()
-                            )
-                        });
-                    }
-                }
+                    })?
+                    .ok_or("notice.card_not_found")?;
                 let selected_labels: Vec<String> = options
                     .iter()
                     .filter(|opt| object_ids.contains(&opt.object_id))
@@ -466,27 +481,24 @@ impl AgentHandle {
                     "{prompt}\n\n[已确认修改目标：{}；影响边界：{impact_boundary}]",
                     selected_labels.join("、")
                 );
-                let mut bytes = [0_u8; 16];
-                getrandom::fill(&mut bytes)
-                    .map_err(|_| "notice.agent_failed")?;
-                let submission = u128::from_le_bytes(bytes);
-                self.inner.submit_message_targeted_locked(
-                    Some(session_id),
-                    &prompt,
-                    Some(submission),
-                    None,
-                    None,
-                    None,
-                    Some(ResumedSubmission {
+                self.resume_after_card_resolution(CardResumeSpec {
+                    engine: &engine,
+                    session_id,
+                    card_id,
+                    removed_card,
+                    previous_contract: record.work_contract.clone(),
+                    visible_prompt: &prompt,
+                    resumed: ResumedSubmission {
                         contract: Some(updated_brief),
+                        skip_contract_evolve: false,
                         model_prompt_override: Some(model_prompt),
+                        display_text_override: None,
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
-                    }),
-                )?;
-                Ok(CardActionOutcome::CardResolved {
-                    card_id: card_id.to_owned(),
-                    resumed: true,
+                        preserve_tool_approval: false,
+                    },
+                    approval_grant: None,
+                    denial_rollback: DenialRollback::Unchanged,
                 })
             }
             (
@@ -501,7 +513,7 @@ impl AgentHandle {
                 if args_hash != expected_hash {
                     return Err("notice.approval_hash_mismatch");
                 }
-                engine
+                let removed_card = engine
                     .take_pending_card(
                         session_id,
                         card_id,
@@ -511,48 +523,33 @@ impl AgentHandle {
                     .map_err(|_| {
                         self.inner.state.report_storage_error();
                         "notice.session_storage_failed"
-                    })?;
+                    })?
+                    .ok_or("notice.card_not_found")?;
                 lock(&self.inner.state.approved_tool_calls)
                     .entry(session_id.to_owned())
                     .or_default()
-                    .push((tool_name.clone(), args_hash));
-                {
-                    let mut live = lock(&self.inner.state.live);
-                    if let Some(session) = live.get_mut(session_id) {
-                        session.status = TurnStatus::Idle;
-                        session.projection.lines.retain(|line| {
-                            !matches!(
-                                line,
-                                ChatLine::Status { text }
-                                    if text == TurnStatus::WaitingForUser.key()
-                            )
-                        });
-                    }
-                }
+                    .push((tool_name.clone(), args_hash.clone()));
                 let resume_prompt = format!(
                     "[ToolApproved] 用户已批准执行 `{tool_name}`（命令预览：`{command_preview}`）。请使用与上次完全一致的参数继续完成该操作。"
                 );
-                let mut bytes = [0_u8; 16];
-                getrandom::fill(&mut bytes)
-                    .map_err(|_| "notice.agent_failed")?;
-                let submission = u128::from_le_bytes(bytes);
-                self.inner.submit_message_targeted_locked(
-                    Some(session_id),
-                    &resume_prompt,
-                    Some(submission),
-                    None,
-                    None,
-                    None,
-                    Some(ResumedSubmission {
+                self.resume_after_card_resolution(CardResumeSpec {
+                    engine: &engine,
+                    session_id,
+                    card_id,
+                    removed_card,
+                    previous_contract: None,
+                    visible_prompt: &resume_prompt,
+                    resumed: ResumedSubmission {
                         contract: None,
+                        skip_contract_evolve: true,
                         model_prompt_override: Some(resume_prompt.clone()),
+                        display_text_override: Some(String::new()),
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
-                    }),
-                )?;
-                Ok(CardActionOutcome::CardResolved {
-                    card_id: card_id.to_owned(),
-                    resumed: true,
+                        preserve_tool_approval: true,
+                    },
+                    approval_grant: Some((tool_name, args_hash)),
+                    denial_rollback: DenialRollback::Unchanged,
                 })
             }
             (
@@ -569,7 +566,7 @@ impl AgentHandle {
                     .filter(|s| !s.is_empty())
                     .unwrap_or("user denied tool execution")
                     .to_owned();
-                engine
+                let removed_card = engine
                     .take_pending_card(
                         session_id,
                         card_id,
@@ -579,50 +576,134 @@ impl AgentHandle {
                     .map_err(|_| {
                         self.inner.state.report_storage_error();
                         "notice.session_storage_failed"
-                    })?;
-                lock(&self.inner.state.denied_tool_turns)
+                    })?
+                    .ok_or("notice.card_not_found")?;
+                let previous_denial = lock(&self.inner.state.denied_tool_turns)
                     .insert(session_id.to_owned(), deny_reason.clone());
-                {
-                    let mut live = lock(&self.inner.state.live);
-                    if let Some(session) = live.get_mut(session_id) {
-                        session.status = TurnStatus::Idle;
-                        session.projection.lines.retain(|line| {
-                            !matches!(
-                                line,
-                                ChatLine::Status { text }
-                                    if text == TurnStatus::WaitingForUser.key()
-                            )
-                        });
-                    }
-                }
                 let deny_prompt = format!(
                     "[UserDenied] 用户已拒绝执行 `{tool_name}`（`{command_preview}`；原因：{deny_reason}）。严禁使用任何等价写命令或替代工具绕过此拒绝，请直接向用户确认已停止该操作。"
                 );
-                let mut bytes = [0_u8; 16];
-                getrandom::fill(&mut bytes)
-                    .map_err(|_| "notice.agent_failed")?;
-                let submission = u128::from_le_bytes(bytes);
-                self.inner.submit_message_targeted_locked(
-                    Some(session_id),
-                    &deny_prompt,
-                    Some(submission),
-                    None,
-                    None,
-                    None,
-                    Some(ResumedSubmission {
+                self.resume_after_card_resolution(CardResumeSpec {
+                    engine: &engine,
+                    session_id,
+                    card_id,
+                    removed_card,
+                    previous_contract: None,
+                    visible_prompt: &deny_prompt,
+                    resumed: ResumedSubmission {
                         contract: None,
+                        skip_contract_evolve: true,
                         model_prompt_override: Some(deny_prompt.clone()),
+                        display_text_override: Some(String::new()),
                         skip_push_user_line: true,
                         preserve_turn_denial: true,
-                    }),
-                )?;
-                Ok(CardActionOutcome::CardResolved {
-                    card_id: card_id.to_owned(),
-                    resumed: true,
+                        preserve_tool_approval: false,
+                    },
+                    approval_grant: None,
+                    denial_rollback: DenialRollback::Restore(previous_denial),
                 })
             }
             _ => Err("notice.card_selection_invalid"),
         }
+    }
+
+    fn resume_after_card_resolution(
+        &self,
+        spec: CardResumeSpec<'_>,
+    ) -> Result<CardActionOutcome, &'static str> {
+        let CardResumeSpec {
+            engine,
+            session_id,
+            card_id,
+            removed_card,
+            previous_contract,
+            visible_prompt,
+            resumed,
+            approval_grant,
+            denial_rollback,
+        } = spec;
+        {
+            let mut live = lock(&self.inner.state.live);
+            if let Some(session) = live.get_mut(session_id) {
+                session.status = TurnStatus::Idle;
+                session.projection.lines.retain(|line| {
+                    !matches!(
+                        line,
+                        ChatLine::Status { text }
+                            if text == TurnStatus::WaitingForUser.key()
+                    )
+                });
+            }
+        }
+        let dispatch_result = (|| -> Result<(), &'static str> {
+            let mut bytes = [0_u8; 16];
+            getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
+            let submission = u128::from_le_bytes(bytes);
+            self.inner.submit_message_targeted_locked(
+                Some(session_id),
+                visible_prompt,
+                Some(submission),
+                None,
+                None,
+                None,
+                Some(resumed),
+            )?;
+            Ok(())
+        })();
+        if let Err(err) = dispatch_result {
+            let _ = engine.park_pending_card(
+                session_id,
+                removed_card,
+                previous_contract,
+            );
+            if let Some((tool, hash)) = approval_grant {
+                let mut grants = lock(&self.inner.state.approved_tool_calls);
+                if let Some(list) = grants.get_mut(session_id) {
+                    if let Some(pos) =
+                        list.iter().rposition(|(t, h)| *t == tool && *h == hash)
+                    {
+                        list.remove(pos);
+                    }
+                    if list.is_empty() {
+                        grants.remove(session_id);
+                    }
+                }
+            }
+            if let DenialRollback::Restore(prev) = denial_rollback {
+                let mut denials = lock(&self.inner.state.denied_tool_turns);
+                if let Some(old) = prev {
+                    denials.insert(session_id.to_owned(), old);
+                } else {
+                    denials.remove(session_id);
+                }
+            }
+            {
+                let mut live = lock(&self.inner.state.live);
+                if let Some(session) = live.get_mut(session_id) {
+                    session.status = TurnStatus::WaitingForUser;
+                    let already_waiting = matches!(
+                        session.projection.lines.last(),
+                        Some(ChatLine::Status { text })
+                            if text == TurnStatus::WaitingForUser.key()
+                    );
+                    if !already_waiting {
+                        session.projection.lines.push(ChatLine::Status {
+                            text: TurnStatus::WaitingForUser.key().into(),
+                        });
+                    }
+                }
+            }
+            let _ = persist_index(&self.inner.state);
+            self.inner.state.push_update(AgentUpdate::Session {
+                id: session_id.to_owned(),
+            });
+            self.inner.state.push_update(AgentUpdate::Sessions);
+            return Err(err);
+        }
+        Ok(CardActionOutcome::CardResolved {
+            card_id: card_id.to_owned(),
+            resumed: true,
+        })
     }
 
     /// Optional graceful-close hint: pauses autonomous draining, cancels
@@ -698,28 +779,65 @@ impl AgentHandle {
     }
 
     pub fn stop(&self) {
-        let _dispatch = lock(&self.inner.state.dispatch);
-        self.stop_locked();
+        let reap_wait = {
+            let _dispatch = lock(&self.inner.state.dispatch);
+            self.stop_locked()
+        };
+        self.await_fast_cancel_settle(reap_wait);
     }
 
     pub fn stop_if_active(&self, expected: Option<&str>) {
-        let _dispatch = lock(&self.inner.state.dispatch);
-        if lock(&self.inner.state.active).as_deref() == expected {
-            self.stop_locked();
-        }
+        let reap_wait = {
+            let _dispatch = lock(&self.inner.state.dispatch);
+            if lock(&self.inner.state.active).as_deref() == expected {
+                self.stop_locked()
+            } else {
+                None
+            }
+        };
+        self.await_fast_cancel_settle(reap_wait);
     }
 
-    fn stop_locked(&self) {
-        let Some(id) = lock(&self.inner.state.active).clone() else {
+    fn stop_locked(&self) -> Option<ReapTarget> {
+        let id = lock(&self.inner.state.active).clone()?;
+        self.cancel_session_locked(&id)
+            .ok()
+            .and_then(|(_, wait)| wait)
+    }
+
+    /// Fast stream aborts unwind within a few milliseconds; wait briefly
+    /// OUTSIDE `_dispatch` so other sessions are never blocked while genuinely
+    /// slow-reaping child tools remain honestly observable in `Stopping`.
+    fn await_fast_cancel_settle(&self, target: Option<ReapTarget>) {
+        let Some((eng, id)) = target else {
             return;
         };
-        let _ = self.cancel_session_locked(&id);
+        if eng.wait_until_idle(&id, std::time::Duration::from_millis(50)) {
+            let mut live = lock(&self.inner.state.live);
+            if let Some(session) = live.get_mut(&id)
+                && matches!(session.status, TurnStatus::Stopping)
+            {
+                session.status = TurnStatus::Stopped;
+                session.turn_started_at = None;
+                let already_stopped = matches!(
+                    session.projection.lines.last(),
+                    Some(ChatLine::Status { text })
+                        if text == TurnStatus::Stopped.key()
+                );
+                if !already_stopped {
+                    session.projection.lines.push(ChatLine::Status {
+                        text: TurnStatus::Stopped.key().into(),
+                    });
+                }
+            }
+            drop(live);
+        }
     }
 
     fn cancel_session_locked(
         &self,
         id: &str,
-    ) -> Result<CancelOutcome, &'static str> {
+    ) -> Result<(CancelOutcome, Option<ReapTarget>), &'static str> {
         let engine = lock(&self.inner.engine).clone();
         let (live_busy, live_stopping) = lock(&self.inner.state.live)
             .get(id)
@@ -732,20 +850,20 @@ impl AgentHandle {
         let engine_cancelling =
             engine.as_ref().is_some_and(|eng| eng.is_cancelling(id));
         if live_stopping || engine_cancelling {
-            return Ok(CancelOutcome::AlreadySettled);
+            return Ok((CancelOutcome::AlreadySettled, None));
         }
         let engine_busy = engine.as_ref().is_some_and(|eng| {
             eng.session(id).is_some_and(|rec| rec.status.is_busy())
                 || eng.is_active(id)
         });
         if !live_busy && !engine_busy {
-            return Ok(CancelOutcome::AlreadySettled);
+            return Ok((CancelOutcome::AlreadySettled, None));
         }
         let mut storage_err: Option<&'static str> = None;
         if let Some(eng) = &engine {
             match eng.request_cancel(id) {
                 Ok(false) => {
-                    return Ok(CancelOutcome::FinalizingNotCancellable);
+                    return Ok((CancelOutcome::FinalizingNotCancellable, None));
                 }
                 Ok(true) => {}
                 Err(error) => {
@@ -824,36 +942,15 @@ impl AgentHandle {
             .state
             .push_update(AgentUpdate::Session { id: id.to_owned() });
         self.inner.state.push_update(AgentUpdate::Sessions);
-        // Fast stream aborts unwind within a few milliseconds; wait briefly so
-        // they settle cleanly while genuinely slow-reaping child tools remain
-        // honestly observable in `TurnStatus::Stopping`.
-        if still_reaping
-            && let Some(eng) = &engine
-            && eng.wait_until_idle(id, std::time::Duration::from_millis(50))
-        {
-            let mut live = lock(&self.inner.state.live);
-            if let Some(session) = live.get_mut(id)
-                && matches!(session.status, TurnStatus::Stopping)
-            {
-                session.status = TurnStatus::Stopped;
-                session.turn_started_at = None;
-                let already_stopped = matches!(
-                    session.projection.lines.last(),
-                    Some(ChatLine::Status { text })
-                        if text == TurnStatus::Stopped.key()
-                );
-                if !already_stopped {
-                    session.projection.lines.push(ChatLine::Status {
-                        text: TurnStatus::Stopped.key().into(),
-                    });
-                }
-            }
-            drop(live);
-        }
         if let Some(err) = storage_err {
             return Err(err);
         }
-        Ok(CancelOutcome::Cancelled)
+        let reap_wait = if still_reaping {
+            engine.map(|eng| (eng, id.to_owned()))
+        } else {
+            None
+        };
+        Ok((CancelOutcome::Cancelled, reap_wait))
     }
 
     /// Submit a contract-revising follow-up against `session_id`:
@@ -862,8 +959,8 @@ impl AgentHandle {
     ///   reaping to settle, and redispatches with the incremented
     ///   `contract_revision` (preventing stale-contract self-blocking without
     ///   mutating an in-flight tool stream).
-    /// - If finalizing or still reaping past the grace wait: queues durably in
-    ///   `AcceptanceQueue` pinned to `session_id`.
+    /// - If finalizing, still reaping past the grace wait, or raced by another
+    ///   turn: queues durably in `AcceptanceQueue` pinned to `session_id`.
     pub fn revise_active_contract_or_queue(
         &self,
         session_id: &str,
@@ -884,53 +981,77 @@ impl AgentHandle {
             return Err("notice.agent_failed");
         }
         let busy = self.inner.is_session_busy_or_active(session_id);
-        if !busy {
-            let mut bytes = [0_u8; 16];
-            getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
-            let submission = u128::from_le_bytes(bytes);
-            self.inner.submit_message_targeted(
-                Some(session_id),
-                text,
-                Some(submission),
-                None,
-                None,
-                reply_to_object_id,
-            )?;
-            return Ok(ReviseOutcome::Dispatched {
-                session_id: session_id.to_owned(),
+        let was_active = if busy {
+            match self
+                .cancel_task(TaskTarget::Session(session_id.to_owned()))?
+            {
+                CancelOutcome::FinalizingNotCancellable => {
+                    let receipt =
+                        self.accept_deferred_for_session(session_id, text)?;
+                    return Ok(ReviseOutcome::QueuedAfterFinalizing {
+                        receipt_id: receipt.id,
+                    });
+                }
+                CancelOutcome::Cancelled | CancelOutcome::AlreadySettled => {}
+            }
+            let engine = lock(&self.inner.engine).clone();
+            let settled = engine.as_ref().is_none_or(|eng| {
+                eng.wait_until_idle(
+                    session_id,
+                    std::time::Duration::from_secs(2),
+                )
             });
-        }
-        match self.cancel_task(TaskTarget::Session(session_id.to_owned()))? {
-            CancelOutcome::FinalizingNotCancellable => {
+            if !settled {
                 let receipt =
                     self.accept_deferred_for_session(session_id, text)?;
-                return Ok(ReviseOutcome::QueuedAfterFinalizing {
+                return Ok(ReviseOutcome::QueuedWhileStopping {
                     receipt_id: receipt.id,
                 });
             }
-            CancelOutcome::Cancelled | CancelOutcome::AlreadySettled => {}
-        }
-        let engine = lock(&self.inner.engine).clone();
-        let settled = engine.as_ref().is_none_or(|eng| {
-            eng.wait_until_idle(session_id, std::time::Duration::from_secs(2))
-        });
-        if !settled {
-            let receipt = self.accept_deferred_for_session(session_id, text)?;
-            return Ok(ReviseOutcome::QueuedWhileStopping {
-                receipt_id: receipt.id,
-            });
-        }
+            true
+        } else {
+            false
+        };
         let mut bytes = [0_u8; 16];
         getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
         let submission = u128::from_le_bytes(bytes);
-        self.inner.submit_message_targeted(
+        match self.inner.submit_message_targeted(
             Some(session_id),
             text,
             Some(submission),
             None,
             None,
             reply_to_object_id,
-        )?;
+        ) {
+            Ok(_) => {}
+            Err("notice.agent_busy") => {
+                // Another worker (e.g. autonomous drain) raced into the session
+                // right after settle; queue durably instead of dropping the edit.
+                let receipt =
+                    self.accept_deferred_for_session(session_id, text)?;
+                return Ok(ReviseOutcome::QueuedWhileStopping {
+                    receipt_id: receipt.id,
+                });
+            }
+            Err(err) => return Err(err),
+        }
+        if let Some(card) = self
+            .session_pending_cards(session_id)
+            .into_iter()
+            .rev()
+            .find(|card| matches!(card, PendingCard::Disambiguation { .. }))
+        {
+            return Ok(ReviseOutcome::WaitingForDisambiguation {
+                session_id: session_id.to_owned(),
+                card_id: card.card_id().to_owned(),
+            });
+        }
+        if !was_active {
+            return Ok(ReviseOutcome::Dispatched {
+                session_id: session_id.to_owned(),
+            });
+        }
+        let engine = lock(&self.inner.engine).clone();
         let revision = engine
             .as_ref()
             .and_then(|eng| {
@@ -969,7 +1090,7 @@ impl AgentHandle {
     fn cancel_receipt_locked(
         &self,
         receipt_id: &str,
-    ) -> Result<CancelOutcome, &'static str> {
+    ) -> Result<(CancelOutcome, Option<ReapTarget>), &'static str> {
         let active_session = lock(&self.inner.state.accepted_claim)
             .as_ref()
             .filter(|claim| claim.receipt_id == receipt_id)
@@ -984,9 +1105,9 @@ impl AgentHandle {
                     id: receipt_id.to_owned(),
                     state: ReceiptState::Cancelled,
                 });
-                Ok(CancelOutcome::Cancelled)
+                Ok((CancelOutcome::Cancelled, None))
             }
-            Ok(false) => Ok(CancelOutcome::AlreadySettled),
+            Ok(false) => Ok((CancelOutcome::AlreadySettled, None)),
             Err(_) => {
                 self.inner.state.report_storage_error();
                 Err("notice.session_storage_failed")

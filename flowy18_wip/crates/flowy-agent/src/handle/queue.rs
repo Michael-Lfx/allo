@@ -345,7 +345,7 @@ impl Harness {
             if error == RECEIPT_SUPERSEDED_ERR {
                 return Ok(None);
             }
-            if error == "notice.agent_busy" {
+            if error == "notice.agent_busy" || error == "notice.card_pending" {
                 if queue
                     .release(&claimed.id, &attempt_id, now_ms(), 0)
                     .unwrap_or(false)

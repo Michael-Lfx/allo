@@ -304,6 +304,9 @@ pub async fn run_turn(
             cb
         });
     let stop_slot = Arc::clone(&suspended_card);
+    let tripped_breaker: Arc<Mutex<Option<SameErrorTrip>>> =
+        Arc::new(Mutex::new(None));
+    let breaker_slot = Arc::clone(&tripped_breaker);
     let should_stop_after_turn: rpi_agent::hooks::ShouldStopAfterTurn =
         Arc::new(move |ctx| {
             let awaiting_approval = stop_slot
@@ -340,6 +343,10 @@ pub async fn run_turn(
                     transient = trip.transient,
                     "same-error zero-new-evidence circuit breaker tripped; stopping submission loop"
                 );
+                *breaker_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(trip.clone());
             }
             let stop =
                 awaiting_approval || hit_cap || same_error_trip.is_some();
@@ -379,12 +386,28 @@ pub async fn run_turn(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
-    let outcome = if pending_approval.is_some() {
-        LoopOutcome::WaitingForUser
+    let breaker_trip = tripped_breaker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let raw_outcome = outcome_of(&new_messages);
+    let (outcome, error) = if pending_approval.is_some() {
+        (LoopOutcome::WaitingForUser, None)
+    } else if raw_outcome == LoopOutcome::Aborted {
+        (LoopOutcome::Aborted, None)
+    } else if let Some(trip) = breaker_trip {
+        (
+            LoopOutcome::Failed,
+            Some(format!(
+                "SAME_ERROR_CIRCUIT_BREAKER: tool `{}` failed {} consecutive times with identical error ({}) and zero new evidence",
+                trip.tool_name,
+                trip.streak,
+                log_preview(&trip.error_sig, 120),
+            )),
+        )
     } else {
-        outcome_of(&new_messages)
+        (raw_outcome, failure_detail(&new_messages))
     };
-    let error = failure_detail(&new_messages);
     let messages = to_host_messages(&new_messages);
     if outcome == LoopOutcome::Failed {
         tracing::warn!(
@@ -718,27 +741,6 @@ fn normalize_signature(raw: &str, max_chars: usize) -> String {
     collapsed.chars().take(max_chars).collect()
 }
 
-fn tool_target_signature(args: &serde_json::Value) -> String {
-    if let Some(obj) = args.as_object() {
-        for key in [
-            "path",
-            "file_path",
-            "command",
-            "cmd",
-            "pattern",
-            "url",
-            "query",
-        ] {
-            if let Some(val) = obj.get(key).and_then(serde_json::Value::as_str)
-                && !val.trim().is_empty()
-            {
-                return normalize_signature(val, 160);
-            }
-        }
-    }
-    normalize_signature(&args.to_string(), 160)
-}
-
 fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
     let raw = result
         .content
@@ -766,13 +768,14 @@ fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
     (normalize_signature(&raw, 160), raw)
 }
 
-/// Detect repeating `(tool_name, target_sig, error_sig)` failures across turns
-/// with zero intervening successful tool evidence.
+/// Detect repeating `(tool_name, canonical_args_json, error_sig)` failures
+/// across turns with zero intervening successful tool evidence.
 ///
-/// - Non-transient errors (or any write/side-effecting tool error) trip as soon
-///   as the identical failure recurs (`streak >= 2`).
-/// - Transient errors on read-only/idempotent tools allow 1 extra retry before
-///   tripping (`streak >= 3`).
+/// - Non-transient errors (or any mutating tool error) trip immediately upon
+///   identical recurrence (`streak >= 2`: initial failure + 1 futile identical
+///   repeat, 0 extra retries).
+/// - Transient errors on read-only/idempotent tools allow 1 identical retry
+///   and trip if the subsequent identical attempt still fails (`streak >= 3`).
 /// - Any successful tool result (`!is_error`) provides new evidence and resets
 ///   the streak.
 fn should_trip_same_error_breaker(
@@ -789,7 +792,10 @@ fn should_trip_same_error_breaker(
                     if let Content::ToolCall(call) = block {
                         call_targets.insert(
                             call.id.as_str(),
-                            tool_target_signature(&call.arguments),
+                            canonical_tool_args_json(
+                                &call.name,
+                                &call.arguments,
+                            ),
                         );
                     }
                 }
@@ -2205,11 +2211,19 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(result.outcome, LoopOutcome::Failed);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("SAME_ERROR_CIRCUIT_BREAKER")),
+            "circuit breaker trip must return Failed with diagnostic error: {:?}",
+            result.error
+        );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             2,
-            "identical non-transient error must trip after 2 turns, never burning all 24"
+            "identical non-transient error must trip on 2nd identical failure (0 extra retries), never burning all 24"
         );
     }
 
@@ -2250,11 +2264,115 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(result.outcome, LoopOutcome::Failed);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("SAME_ERROR_CIRCUIT_BREAKER")),
+            "transient circuit breaker trip must return Failed with diagnostic error: {:?}",
+            result.error
+        );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             3,
-            "transient read-only error gets 1 retry before circuit breaker stops"
+            "transient read-only error gets 1 identical retry (attempt 2) and trips on attempt 3"
+        );
+    }
+
+    #[tokio::test]
+    async fn different_args_on_same_file_do_not_false_trip_circuit_breaker() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_stream = Arc::clone(&calls);
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "edit_file",
+            "succeeds only when old_string matches target line",
+            serde_json::json!({"type": "object"}),
+            |args, _ctx| {
+                let matched = args
+                    .arguments
+                    .get("old_string")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("needle_3");
+                Box::pin(async move {
+                    if matched {
+                        crate::types::ToolExecutionResult::success_text(
+                            "edited",
+                            serde_json::json!({"ok": true}),
+                        )
+                    } else {
+                        crate::types::ToolExecutionResult::error(
+                            "NOT_FOUND",
+                            "old_string not found",
+                        )
+                    }
+                })
+            },
+        ));
+        let stream = rpi_agent::stream_fn(move |model, _, _| {
+            let idx =
+                calls_stream.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut msg = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            let (reason, stop) = if idx < 3 {
+                msg.content =
+                    vec![Content::ToolCall(rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: format!("edit-call-{idx}"),
+                        name: "edit_file".into(),
+                        arguments: serde_json::json!({
+                            "path": "src/lib.rs",
+                            "old_string": format!("needle_{}", idx + 1),
+                            "new_string": "replacement",
+                        }),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    })];
+                (DoneReason::ToolUse, StopReason::ToolUse)
+            } else {
+                msg.content = vec![Content::text("edit applied")];
+                (DoneReason::Stop, StopReason::Stop)
+            };
+            msg.stop_reason = stop;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: None,
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "edit src/lib.rs".into(),
+                route: route(),
+                tools: vec![tool],
+                signal: CancelToken::new(),
+                pre_tool_hook: None,
+            },
+            stream,
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "different edit_file arguments on the same path must never false-trip the breaker"
         );
     }
 
@@ -2286,7 +2404,7 @@ mod tests {
             },
         ));
         let (emitter, _events) = CollectorEmitter::new();
-        let _ = run_turn(
+        let result = run_turn(
             TurnRequest {
                 session_id: None,
                 system: String::new(),
@@ -2306,6 +2424,7 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Failed);
         // Turn 0: err (streak=1) -> Turn 1: ok (streak=0) -> Turn 2: err (streak=1) -> Turn 3: err (streak=2 -> stop)
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }

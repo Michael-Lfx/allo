@@ -293,27 +293,6 @@ impl WorkContract {
         self.objects.iter().find(|obj| obj.object_id == object_id)
     }
 
-    pub fn find_object_mut(
-        &mut self,
-        object_id: &str,
-    ) -> Option<&mut TrackedObject> {
-        self.objects
-            .iter_mut()
-            .find(|obj| obj.object_id == object_id)
-    }
-
-    #[must_use]
-    pub fn find_object_by_filename(
-        &self,
-        filename: &str,
-    ) -> Option<&TrackedObject> {
-        self.objects.iter().find(|obj| {
-            obj.filename
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case(filename))
-        })
-    }
-
     /// Writable deliverable objects (excludes read-only/archival [`TrackedObjectKind::Record`]).
     #[must_use]
     pub fn writable_deliverables(&self) -> Vec<&TrackedObject> {

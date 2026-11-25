@@ -391,9 +391,18 @@ impl Engine {
                 format!("session {id} not found"),
             )
         })?;
-        record
-            .pending_cards
-            .retain(|existing| existing.card_id() != card.card_id());
+        record.pending_cards.retain(|existing| {
+            if existing.card_id() == card.card_id() {
+                return false;
+            }
+            !matches!(
+                (existing, &card),
+                (
+                    PendingCard::Disambiguation { prompt: a, .. },
+                    PendingCard::Disambiguation { prompt: b, .. }
+                ) if a == b
+            )
+        });
         record.pending_cards.push(card);
         if let Some(contract) = updated_contract {
             record.work_contract = Some(contract);
@@ -437,76 +446,6 @@ impl Engine {
         inner.index.save(&self.root)?;
         drop(inner);
         Ok(Some(removed))
-    }
-
-    /// Persist a [`StopHandoffManifest`] and transition the session status.
-    pub fn set_stop_handoff(
-        &self,
-        id: &str,
-        manifest: StopHandoffManifest,
-        next_status: TurnState,
-    ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        let record = inner.index.get_mut(id).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("session {id} not found"),
-            )
-        })?;
-        record.last_stop_handoff = Some(manifest);
-        record.status = next_status;
-        record.updated_at = now_ms();
-        inner.index.save(&self.root)
-    }
-
-    /// Update the [`ObjectVerifyState`] of a tracked object matching
-    /// `artifact_path` inside `id`'s active `work_contract`, if present.
-    pub fn set_object_verify_state(
-        &self,
-        id: &str,
-        artifact_path: &Path,
-        state: ObjectVerifyState,
-    ) -> std::io::Result<bool> {
-        let mut inner = self.inner.lock().unwrap();
-        let Some(record) = inner.index.get_mut(id) else {
-            return Ok(false);
-        };
-        let Some(contract) = record.work_contract.as_mut() else {
-            return Ok(false);
-        };
-        let file_name = artifact_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let ext = artifact_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        let idx = contract
-            .objects
-            .iter()
-            .position(|obj| {
-                obj.filename
-                    .as_deref()
-                    .is_some_and(|f| f.eq_ignore_ascii_case(file_name))
-            })
-            .or_else(|| {
-                let mut same_ext = contract
-                    .objects
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, obj)| obj.extension.eq_ignore_ascii_case(ext))
-                    .map(|(i, _)| i);
-                let first = same_ext.next()?;
-                same_ext.next().is_none().then_some(first)
-            });
-        let Some(idx) = idx else {
-            return Ok(false);
-        };
-        contract.objects[idx].verify_state = state;
-        inner.index.save(&self.root)?;
-        drop(inner);
-        Ok(true)
     }
 
     /// Insert or replace one durable session record.
@@ -762,6 +701,37 @@ impl Engine {
         }
         self.observer.stop_settled(session_id, &manifest);
         let _ = ticket.finish();
+    }
+
+    /// Emit terminal observer callbacks while `ticket` still holds the
+    /// session's `RunFence` and `inner.finalizing` blocks concurrent
+    /// `request_cancel`, then release `ticket` under `self.inner`.
+    fn finish_after_observer<F>(
+        &self,
+        session_id: &str,
+        ticket: &RunTicket,
+        notify: F,
+    ) -> bool
+    where
+        F: FnOnce(),
+    {
+        let mut guard = FinalizingGuard {
+            engine: self,
+            session_id: session_id.to_owned(),
+            armed: true,
+        };
+        if ticket.is_current() {
+            notify();
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.armed = false;
+        let clean = ticket.finish();
+        inner.finalizing.remove(session_id);
+        drop(inner);
+        clean
     }
 
     /// Run one turn against the configured provider. The caller spawns this;
@@ -1186,12 +1156,14 @@ impl Engine {
                     );
                     return Ok(LoopOutcome::Aborted);
                 }
-                if !ticket.finish() {
+                inner.finalizing.insert(session_id.to_owned());
+                drop(inner);
+                if !self.finish_after_observer(session_id, &ticket, || {
+                    self.observer.storage_error(session_id);
+                    self.observer.finished(session_id, LoopOutcome::Failed);
+                }) {
                     return Ok(LoopOutcome::Aborted);
                 }
-                drop(inner);
-                self.observer.storage_error(session_id);
-                self.observer.finished(session_id, LoopOutcome::Failed);
                 return Err(RunError::Storage(error));
             }
             match result {
@@ -1213,17 +1185,21 @@ impl Engine {
                         );
                         return Ok(LoopOutcome::Aborted);
                     }
-                    if !ticket.finish() {
+                    inner.finalizing.insert(session_id.to_owned());
+                    drop(inner);
+                    if !self.finish_after_observer(session_id, &ticket, || {
+                        self.observer.waiting_for_user(session_id, &card);
+                    }) {
                         return Ok(LoopOutcome::Aborted);
                     }
-                    drop(inner);
-                    self.observer.waiting_for_user(session_id, &card);
                     return Ok(LoopOutcome::WaitingForUser);
                 }
                 Ok((outcome, None, _)) => {
-                    // History is durably saved; finish under the same lock so
-                    // `request_cancel` cannot split durable history from live
-                    // observer/queue state in a gap before `ticket.finish()`.
+                    // History is durably saved; keep `inner.finalizing` armed
+                    // across `observer.finished` so `request_cancel` cannot
+                    // split durable history from live UI state and
+                    // `wait_until_idle` never wakes up before live status leaves
+                    // `Running`.
                     if !ticket.is_current() {
                         drop(inner);
                         self.settle_cancelled_run(
@@ -1234,11 +1210,13 @@ impl Engine {
                         );
                         return Ok(LoopOutcome::Aborted);
                     }
-                    if !ticket.finish() {
+                    inner.finalizing.insert(session_id.to_owned());
+                    drop(inner);
+                    if !self.finish_after_observer(session_id, &ticket, || {
+                        self.observer.finished(session_id, outcome);
+                    }) {
                         return Ok(LoopOutcome::Aborted);
                     }
-                    drop(inner);
-                    self.observer.finished(session_id, outcome);
                     return Ok(outcome);
                 }
                 Err(error) => {
@@ -1252,11 +1230,13 @@ impl Engine {
                         );
                         return Ok(LoopOutcome::Aborted);
                     }
-                    if !ticket.finish() {
+                    inner.finalizing.insert(session_id.to_owned());
+                    drop(inner);
+                    if !self.finish_after_observer(session_id, &ticket, || {
+                        self.observer.finished(session_id, LoopOutcome::Failed);
+                    }) {
                         return Ok(LoopOutcome::Aborted);
                     }
-                    drop(inner);
-                    self.observer.finished(session_id, LoopOutcome::Failed);
                     return Err(error);
                 }
             }
@@ -1556,6 +1536,7 @@ struct CancelTrace {
     in_flight_tools: HashMap<String, (String, Option<String>)>,
     modified_files: Vec<String>,
     verified_effects: Vec<String>,
+    verified_paths: Vec<String>,
 }
 
 impl CancelTrace {
@@ -1583,7 +1564,13 @@ impl CancelTrace {
             .insert(call_id.to_owned(), (name.to_owned(), target));
     }
 
-    fn record_tool_end(&mut self, call_id: &str, name: &str, is_error: bool) {
+    fn record_tool_end(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        result_text: &str,
+        is_error: bool,
+    ) {
         let entry = self.in_flight_tools.remove(call_id);
         if is_error {
             return;
@@ -1602,14 +1589,59 @@ impl CancelTrace {
                 self.verified_effects.push(effect);
             }
         } else if matches!(name, "verify_deck" | "verify_artifact") {
-            let effect = match target {
+            let parsed =
+                serde_json::from_str::<serde_json::Value>(result_text).ok();
+            let passed = parsed
+                .as_ref()
+                .and_then(|val| val.get("ok"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            if !passed {
+                return;
+            }
+            let verified_path = parsed
+                .as_ref()
+                .and_then(|val| val.get("artifact"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or(target);
+            let effect = match &verified_path {
                 Some(path) => format!("{name} ({path})"),
                 None => name.to_owned(),
             };
             if !self.verified_effects.contains(&effect) {
                 self.verified_effects.push(effect);
             }
+            if let Some(path) = verified_path
+                && !self.verified_paths.contains(&path)
+            {
+                self.verified_paths.push(path);
+            }
         }
+    }
+
+    fn is_object_verified(&self, obj: &crate::session::TrackedObject) -> bool {
+        if matches!(
+            obj.verify_state,
+            ObjectVerifyState::Passed { .. }
+                | ObjectVerifyState::Overridden { .. }
+        ) {
+            return true;
+        }
+        self.verified_paths.iter().any(|raw| {
+            let path = Path::new(raw);
+            if let Some(expected) = obj.filename.as_deref() {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            } else {
+                path.extension().and_then(|e| e.to_str()).is_some_and(
+                    |actual| actual.eq_ignore_ascii_case(&obj.extension),
+                )
+            }
+        })
     }
 
     fn build_manifest(
@@ -1640,11 +1672,7 @@ impl CancelTrace {
         pending_checks.sort();
         if let Some(contract) = &record.work_contract {
             for obj in contract.writable_deliverables() {
-                if !matches!(
-                    obj.verify_state,
-                    ObjectVerifyState::Passed { .. }
-                        | ObjectVerifyState::Overridden { .. }
-                ) {
+                if !self.is_object_verified(obj) {
                     pending_checks
                         .push(format!("unverified:{}", obj.display_label()));
                 }
@@ -1681,18 +1709,40 @@ impl AgentEmitter for EngineEmitter {
         let publisher = self.publisher.clone();
         let trace = self.trace.clone();
         Box::pin(async move {
-            if let AgentEvent::ToolExecutionEnd {
-                tool_call_id,
-                tool_name,
-                is_error,
-                ..
-            } = &event
-                && let Some(trace) = &trace
+            let trace_end = match &event {
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id,
+                    tool_name,
+                    result,
+                    is_error,
+                } if trace.is_some() => {
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            rpi_agent::TextContentOrImage::Text(text) => {
+                                Some(text.text.as_str())
+                            }
+                            rpi_agent::TextContentOrImage::Image(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    Some((
+                        tool_call_id.clone(),
+                        tool_name.clone(),
+                        text,
+                        *is_error,
+                    ))
+                }
+                _ => None,
+            };
+            if let (Some(trace), Some((call_id, name, text, is_error))) =
+                (&trace, trace_end)
             {
                 trace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .record_tool_end(tool_call_id, tool_name, *is_error);
+                    .record_tool_end(&call_id, &name, &text, is_error);
             }
             publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
@@ -3153,5 +3203,160 @@ mod tests {
         );
         assert_ne!(manifest.rollback_hint, "");
         assert_eq!(observer.settled.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cancel_trace_only_records_passing_verify_and_updates_pending_checks() {
+        let mut trace = super::CancelTrace::default();
+        let record = crate::session::SessionRecord {
+            work_contract: Some(crate::session::WorkContract {
+                revision: 2,
+                min_slides: Some(3),
+                required_items: vec![
+                    crate::session::RequiredDeliverable {
+                        extension: "pptx".into(),
+                        filename: Some("deck.pptx".into()),
+                    },
+                    crate::session::RequiredDeliverable {
+                        extension: "xlsx".into(),
+                        filename: Some("quote.xlsx".into()),
+                    },
+                ],
+                pinned_facts: std::collections::BTreeMap::new(),
+                objects: vec![
+                    crate::session::TrackedObject {
+                        object_id: "obj-pptx-1".into(),
+                        kind: crate::session::TrackedObjectKind::Deliverable,
+                        filename: Some("deck.pptx".into()),
+                        extension: "pptx".into(),
+                        anchor_summary: String::new(),
+                        overrides: std::collections::BTreeMap::new(),
+                        verify_state:
+                            crate::session::ObjectVerifyState::Unverified,
+                    },
+                    crate::session::TrackedObject {
+                        object_id: "obj-xlsx-2".into(),
+                        kind: crate::session::TrackedObjectKind::Deliverable,
+                        filename: Some("quote.xlsx".into()),
+                        extension: "xlsx".into(),
+                        anchor_summary: String::new(),
+                        overrides: std::collections::BTreeMap::new(),
+                        verify_state:
+                            crate::session::ObjectVerifyState::Unverified,
+                    },
+                ],
+            }),
+            ..crate::session::SessionRecord::default()
+        };
+
+        // Failed verify_deck returns is_error == false with {"ok": false} ->
+        // must NOT appear in verified_effects or clear pending_checks.
+        trace.record_tool_start(
+            "c1",
+            "verify_deck",
+            &serde_json::json!({"path": "outputs/deck.pptx"}),
+        );
+        trace.record_tool_end(
+            "c1",
+            "verify_deck",
+            r#"{"ok":false,"artifact":"outputs/deck.pptx","issues":[{"code":"STRUCTURE"}]}"#,
+            false,
+        );
+        // Passing verify_artifact with {"ok": true} clears quote.xlsx from pending_checks.
+        trace.record_tool_start(
+            "c2",
+            "verify_artifact",
+            &serde_json::json!({"path": "outputs/quote.xlsx"}),
+        );
+        trace.record_tool_end(
+            "c2",
+            "verify_artifact",
+            r#"{"ok":true,"artifact":"outputs/quote.xlsx","issues":[]}"#,
+            false,
+        );
+
+        let manifest = trace.build_manifest(&record, "build deliverables");
+        assert!(
+            !manifest
+                .verified_effects
+                .iter()
+                .any(|e| e.contains("deck.pptx")),
+            "failed verify_deck (ok=false) must not appear in verified_effects: {:?}",
+            manifest.verified_effects
+        );
+        assert!(
+            manifest
+                .verified_effects
+                .iter()
+                .any(|e| e.contains("quote.xlsx")),
+            "passing verify_artifact (ok=true) must appear in verified_effects: {:?}",
+            manifest.verified_effects
+        );
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
+                .any(|p| p == "unverified:deck.pptx"),
+            "failed deck.pptx must stay in pending_checks: {:?}",
+            manifest.pending_checks
+        );
+        assert!(
+            !manifest
+                .pending_checks
+                .iter()
+                .any(|p| p == "unverified:quote.xlsx"),
+            "passing quote.xlsx must be cleared from pending_checks: {:?}",
+            manifest.pending_checks
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_until_idle_never_returns_before_observer_finished_runs() {
+        struct SlowFinishedObserver {
+            finished_ran: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl TurnObserver for SlowFinishedObserver {
+            fn finished(&self, _session: &str, _outcome: LoopOutcome) {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                self.finished_ran
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let scratch = Scratch::new("observer-before-finish");
+        let finished_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observer: Arc<dyn TurnObserver> = Arc::new(SlowFinishedObserver {
+            finished_ran: Arc::clone(&finished_ran),
+        });
+        let engine = Arc::new(
+            Engine::open(scratch.0.clone(), config(), observer).unwrap(),
+        );
+        engine.create_session("s-race".into(), 1).unwrap();
+        let run = engine
+            .start_with_config(
+                "s-race".into(),
+                crate::types::PromptTurn::plain("quick"),
+                config(),
+                Some(text_stream("done")),
+                Some(77),
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        let engine_wait = Arc::clone(&engine);
+        let ran_when_idle =
+            tokio::task::spawn_blocking(move || {
+                assert!(engine_wait.wait_until_idle(
+                    "s-race",
+                    std::time::Duration::from_secs(5),
+                ));
+                finished_ran.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Completed);
+        assert!(
+            ran_when_idle,
+            "observer.finished must complete before RunTicket releases wait_until_idle"
+        );
     }
 }

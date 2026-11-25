@@ -132,11 +132,14 @@ pub enum ReviseOutcome {
     /// Active turn was cancelled via `RunFence`, waited to settle, and
     /// redispatched with the incremented `contract_revision`.
     Redispatched { session_id: String, revision: u32 },
+    /// Revision prompt was ambiguous across multiple writable deliverables and
+    /// parked a persisted [`PendingCard::Disambiguation`] (`TurnStatus::WaitingForUser`).
+    WaitingForDisambiguation { session_id: String, card_id: String },
     /// Active turn crossed its finalizing delivery commit point and cannot be
     /// cancelled; follow-up was queued durably for automatic dispatch next.
     QueuedAfterFinalizing { receipt_id: String },
-    /// Cancelled turn is still reaping child processes past the bounded wait;
-    /// follow-up was queued durably to run once the `RunFence` releases.
+    /// Cancelled turn is still reaping child processes past the bounded wait
+    /// (or another turn raced into the session); follow-up was queued durably.
     QueuedWhileStopping { receipt_id: String },
 }
 
@@ -222,9 +225,12 @@ struct Live {
 
 pub struct ResumedSubmission {
     pub(super) contract: Option<crate::verify::BriefContract>,
+    pub(super) skip_contract_evolve: bool,
     pub(super) model_prompt_override: Option<String>,
+    pub(super) display_text_override: Option<String>,
     pub(super) skip_push_user_line: bool,
     pub(super) preserve_turn_denial: bool,
+    pub(super) preserve_tool_approval: bool,
 }
 
 #[derive(Clone)]
@@ -1487,6 +1493,23 @@ impl Harness {
             )
     }
 
+    /// If `UiObserver::finished`/`waiting_for_user`/`stop_settled` has already
+    /// flipped `live[id].status` out of a busy state, `Engine::finish_after_observer`
+    /// is microseconds away from calling `ticket.finish()`. Wait briefly for the
+    /// `RunFence` drop so callers polling `session_status` never observe a
+    /// spurious `notice.agent_busy` or stale `has_busy_session() == true`.
+    fn settle_finishing_fence(&self, engine: &Engine, id: &str) {
+        if engine.is_active(id)
+            && !engine.is_cancelling(id)
+            && lock(&self.state.live)
+                .get(id)
+                .is_some_and(|session| !session.status.is_busy())
+        {
+            let _ = engine
+                .wait_until_idle(id, std::time::Duration::from_millis(50));
+        }
+    }
+
     pub(super) fn has_busy_session(&self) -> bool {
         let live_busy = lock(&self.state.live)
             .values()
@@ -1494,10 +1517,17 @@ impl Harness {
         if live_busy {
             return true;
         }
-        let engine = lock(&self.engine).clone();
-        engine
-            .as_ref()
-            .is_some_and(|engine| !engine.active_session_ids().is_empty())
+        let Some(engine) = lock(&self.engine).clone() else {
+            return false;
+        };
+        let active = engine.active_session_ids();
+        if active.is_empty() {
+            return false;
+        }
+        for sid in &active {
+            self.settle_finishing_fence(&engine, sid);
+        }
+        !engine.active_session_ids().is_empty()
     }
 
     pub(super) fn is_session_busy_or_active(&self, id: &str) -> bool {
@@ -1507,8 +1537,11 @@ impl Harness {
         {
             return true;
         }
-        let engine = lock(&self.engine).clone();
-        engine.as_ref().is_some_and(|engine| engine.is_active(id))
+        let Some(engine) = lock(&self.engine).clone() else {
+            return false;
+        };
+        self.settle_finishing_fence(&engine, id);
+        engine.is_active(id)
     }
 
     pub(super) fn is_session_waiting_for_user(&self, id: &str) -> bool {
@@ -1665,6 +1698,19 @@ impl Harness {
         {
             return Ok(session);
         }
+        if let Some(sub) = submission {
+            let expected_card_id = format!("disambig-submission-{sub:032x}");
+            if let Some(existing_sid) =
+                engine.sessions().into_iter().find_map(|rec| {
+                    rec.pending_cards
+                        .iter()
+                        .any(|card| card.card_id() == expected_card_id)
+                        .then_some(rec.id)
+                })
+            {
+                return Ok(existing_sid);
+            }
+        }
         if selection.is_some_and(|selection| {
             self.state.context_generation.load(Ordering::Acquire)
                 != selection.generation
@@ -1681,6 +1727,7 @@ impl Harness {
             }
             None => self.ensure_active_session_locked()?,
         };
+        self.settle_finishing_fence(&engine, &id);
         if lock(&state.live)
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
@@ -1700,17 +1747,28 @@ impl Harness {
         let config = lock(&self.config).clone();
         let skills = self.skill_catalog();
         let (mut prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let is_resumed = resumed.is_some();
         let skip_push_user_line = resumed
             .as_ref()
             .is_some_and(|item| item.skip_push_user_line);
+        let skip_contract_evolve = resumed
+            .as_ref()
+            .is_some_and(|item| item.skip_contract_evolve);
         let preserve_turn_denial = resumed
             .as_ref()
             .is_some_and(|item| item.preserve_turn_denial);
+        let preserve_tool_approval = resumed
+            .as_ref()
+            .is_some_and(|item| item.preserve_tool_approval);
         if let Some(override_model) = resumed
             .as_ref()
             .and_then(|item| item.model_prompt_override.clone())
         {
-            prompt = PromptTurn::with_display(override_model, text);
+            let display = resumed
+                .as_ref()
+                .and_then(|item| item.display_text_override.as_deref())
+                .unwrap_or(text);
+            prompt = PromptTurn::with_display(override_model, display);
         }
         let pre_resolved_contract = resumed.and_then(|item| item.contract);
         let title_prompt = text.to_owned();
@@ -1722,12 +1780,24 @@ impl Harness {
             .get(&id)
             .and_then(|session| session.workspace.clone());
         let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
+        if !is_resumed
+            && (!core_session.pending_cards.is_empty()
+                || core_session.status == TurnState::WaitingForUser
+                || lock(&state.live).get(&id).is_some_and(|session| {
+                    session.status == TurnStatus::WaitingForUser
+                }))
+        {
+            return Err("notice.card_pending");
+        }
         let cwd = core_session.workspace.as_ref().map_or_else(
             || session_working_directory(&state.root, workspace.as_ref()),
             |workspace| workspace.root.clone(),
         );
         if !preserve_turn_denial {
             lock(&state.denied_tool_turns).remove(&id);
+        }
+        if !preserve_tool_approval {
+            lock(&state.approved_tool_calls).remove(&id);
         }
         let mut run_config = engine_config(&config, &cwd);
         run_config.registry = tool_registry(&cwd, &skills, active_skills);
@@ -1740,6 +1810,10 @@ impl Harness {
         {
             let contract = if let Some(resolved) = pre_resolved_contract {
                 resolved
+            } else if skip_contract_evolve {
+                core_session.work_contract.as_ref().map_or_default(
+                    crate::verify::BriefContract::from_work_contract,
+                )
             } else {
                 match crate::verify::resolve_contract_sync(
                     core_session.work_contract.as_ref(),
@@ -1748,101 +1822,24 @@ impl Harness {
                     now_ms(),
                 ) {
                     crate::verify::ResolveOutcome::Ambiguous {
-                        card, ..
+                        mut card,
+                        ..
                     } => {
-                        let now = now_ms();
-                        engine.park_pending_card(&id, card, None).map_err(
-                            |error| {
-                                log_storage_io_error(
-                                    "park disambiguation card",
-                                    &flowy_agent_core::SessionIndex::path(
-                                        &state.root,
-                                    ),
-                                    &error,
-                                );
-                                state.report_storage_error();
-                                "notice.session_storage_failed"
-                            },
-                        )?;
-                        let fallback_title = {
-                            let mut live = lock(&state.live);
-                            let session = live
-                                .get_mut(&id)
-                                .expect("active session exists");
-                            session.status = TurnStatus::WaitingForUser;
-                            session.turn_started_at = None;
-                            session.updated_at = now;
-                            session.heartbeat = Some(BranchHeartbeat {
-                                last_completed: session
-                                    .heartbeat
-                                    .as_ref()
-                                    .and_then(|hb| hb.last_completed.clone()),
-                                last_completed_at_ms: session
-                                    .heartbeat
-                                    .as_ref()
-                                    .and_then(|hb| hb.last_completed_at_ms),
-                                current_action: "waiting_for_user".to_owned(),
-                                next_check_hint: Some(
-                                    "awaiting disambiguation card selection"
-                                        .to_owned(),
-                                ),
-                                awaiting_evidence: true,
-                            });
-                            if !skip_push_user_line {
-                                session.projection.push_user(text);
-                            }
-                            session.projection.lines.push(ChatLine::Status {
-                                text: TurnStatus::WaitingForUser.key().into(),
-                            });
-                            let title = if session.titled {
-                                None
-                            } else {
-                                session.title = title::clamp_title(
-                                    &title::fallback_title(
-                                        text,
-                                        TITLE_MAX_CHARS,
-                                    ),
-                                    TITLE_MAX_CHARS,
-                                );
-                                session.titled = true;
-                                Some(session.title.clone())
-                            };
-                            drop(live);
-                            title
-                        };
-                        if let Some(title) = fallback_title
-                            && engine
-                                .set_session_title(&id, title, true)
-                                .is_err()
+                        if let PendingCard::Disambiguation { card_id, .. } =
+                            &mut card
                         {
-                            state.report_storage_error();
+                            *card_id = format!(
+                                "disambig-submission-{submission:032x}"
+                            );
                         }
-                        if let Some(claim) = pending_claim {
-                            claim.heartbeat_cancel.cancel();
-                            let queue =
-                                AcceptanceQueue::new(state.root.clone());
-                            if queue
-                                .complete(
-                                    &claim.receipt_id,
-                                    &claim.attempt_id,
-                                    now,
-                                )
-                                .unwrap_or(false)
-                            {
-                                state.push_update(AgentUpdate::Receipt {
-                                    id: claim.receipt_id,
-                                    state: ReceiptState::Completed,
-                                });
-                            }
-                        }
-                        if persist_index(state).is_err() {
-                            state.report_storage_error();
-                        }
-                        state.push_update(AgentUpdate::Session {
-                            id: id.clone(),
-                        });
-                        state.push_update(AgentUpdate::Sessions);
-                        return Ok(id);
+                        return self.park_disambiguation_locked(
+                            &engine,
+                            &id,
+                            card,
+                            text,
+                            skip_push_user_line,
+                            pending_claim,
+                        );
                     }
                     crate::verify::ResolveOutcome::Resolved {
                         contract,
@@ -1871,8 +1868,10 @@ impl Harness {
                 .work_contract
                 .as_ref()
                 .map(|wc| wc.revision.max(1));
-            let semantic_brief =
-                compose_semantic_brief(&core_session.messages, text);
+            let semantic_brief = compose_semantic_brief(
+                &core_session.messages,
+                if skip_contract_evolve { "" } else { text },
+            );
             let semantic = state
                 .semantic_verify_enabled
                 .load(Ordering::Acquire)
@@ -2059,16 +2058,35 @@ impl Harness {
                 );
             }
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
-                // Release the active queue claim slot so independent sessions
-                // can drain unimpeded while this session stays durably parked
-                // in WaitingForUser with its persisted ToolApproval card.
-                let mut slot = lock(&state.accepted_claim);
-                if slot.as_ref().is_some_and(|c| c.session_id == id)
-                    && let Some(claim) = slot.take()
-                {
+                // PendingCard::ToolApproval is durably persisted in
+                // `history.json`. Complete the AcceptanceQueue receipt (matching
+                // the Disambiguation handoff) so 30s lease expiry or a later
+                // `DenyTool` never causes autonomous_drain to re-run this prompt.
+                let claim = {
+                    let mut slot = lock(&state.accepted_claim);
+                    if slot.as_ref().is_some_and(|c| c.session_id == id) {
+                        slot.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(claim) = claim {
                     claim.heartbeat_cancel.cancel();
+                    let queue = AcceptanceQueue::new(state.root.clone());
+                    if queue
+                        .complete(
+                            &claim.receipt_id,
+                            &claim.attempt_id,
+                            now_ms(),
+                        )
+                        .unwrap_or(false)
+                    {
+                        state.push_update(AgentUpdate::Receipt {
+                            id: claim.receipt_id,
+                            state: ReceiptState::Completed,
+                        });
+                    }
                 }
-                drop(slot);
                 if state.autonomous_drain.load(Ordering::Acquire)
                     && let Some(harness) = weak_harness.upgrade()
                 {
@@ -2131,6 +2149,92 @@ impl Harness {
             }
         });
         Ok(receipt)
+    }
+
+    fn park_disambiguation_locked(
+        &self,
+        engine: &Engine,
+        id: &str,
+        card: PendingCard,
+        text: &str,
+        skip_push_user_line: bool,
+        pending_claim: Option<AcceptedClaim>,
+    ) -> Result<String, &'static str> {
+        let state = &self.state;
+        let now = now_ms();
+        engine.park_pending_card(id, card, None).map_err(|error| {
+            log_storage_io_error(
+                "park disambiguation card",
+                &flowy_agent_core::SessionIndex::path(&state.root),
+                &error,
+            );
+            state.report_storage_error();
+            "notice.session_storage_failed"
+        })?;
+        let fallback_title = {
+            let mut live = lock(&state.live);
+            let session = live.get_mut(id).expect("active session exists");
+            session.status = TurnStatus::WaitingForUser;
+            session.turn_started_at = None;
+            session.updated_at = now;
+            session.heartbeat = Some(BranchHeartbeat {
+                last_completed: session
+                    .heartbeat
+                    .as_ref()
+                    .and_then(|hb| hb.last_completed.clone()),
+                last_completed_at_ms: session
+                    .heartbeat
+                    .as_ref()
+                    .and_then(|hb| hb.last_completed_at_ms),
+                current_action: "waiting_for_user".to_owned(),
+                next_check_hint: Some(
+                    "awaiting disambiguation card selection".to_owned(),
+                ),
+                awaiting_evidence: true,
+            });
+            if !skip_push_user_line {
+                session.projection.push_user(text);
+            }
+            session.projection.lines.push(ChatLine::Status {
+                text: TurnStatus::WaitingForUser.key().into(),
+            });
+            let title = if session.titled {
+                None
+            } else {
+                session.title = title::clamp_title(
+                    &title::fallback_title(text, TITLE_MAX_CHARS),
+                    TITLE_MAX_CHARS,
+                );
+                session.titled = true;
+                Some(session.title.clone())
+            };
+            drop(live);
+            title
+        };
+        if let Some(title) = fallback_title
+            && engine.set_session_title(id, title, true).is_err()
+        {
+            state.report_storage_error();
+        }
+        if let Some(claim) = pending_claim {
+            claim.heartbeat_cancel.cancel();
+            let queue = AcceptanceQueue::new(state.root.clone());
+            if queue
+                .complete(&claim.receipt_id, &claim.attempt_id, now)
+                .unwrap_or(false)
+            {
+                state.push_update(AgentUpdate::Receipt {
+                    id: claim.receipt_id,
+                    state: ReceiptState::Completed,
+                });
+            }
+        }
+        if persist_index(state).is_err() {
+            state.report_storage_error();
+        }
+        state.push_update(AgentUpdate::Session { id: id.to_owned() });
+        state.push_update(AgentUpdate::Sessions);
+        Ok(id.to_owned())
     }
 
     fn ensure_active_session_locked(&self) -> Result<String, &'static str> {
@@ -2226,11 +2330,21 @@ fn compose_semantic_brief(
     let prior: Vec<String> = messages
         .iter()
         .filter(|msg| {
-            msg.role == Role::User && matches!(msg.source, MessageSource::User)
+            msg.role == Role::User
+                && matches!(msg.source, MessageSource::User)
+                && msg.display_text.as_deref() != Some("")
         })
         .map(|msg| msg.text().trim().to_owned())
         .filter(|text| !text.is_empty())
         .collect();
+    if current_prompt.trim().is_empty() {
+        let start = prior.len().saturating_sub(4);
+        return prior[start..]
+            .join("\n\n")
+            .chars()
+            .take(MAX_BRIEF_CHARS)
+            .collect();
+    }
     if prior.is_empty() {
         return current_prompt.to_owned();
     }

@@ -2039,8 +2039,13 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
 
     // 1) Session A hits medium-risk shell command -> pre_tool_hook Ask parks it
     //    in WaitingForUser BEFORE spawning any subprocess!
+    //    Use a brief with real WorkContract facts (rev=1) to verify ApproveTool
+    //    NEVER mutates or increments WorkContract.revision.
     handle
-        .submit_chat(951, "clean up old deliverables folder")
+        .submit_chat(
+            951,
+            "请做一份三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27，顺便清理旧 deliverables 目录",
+        )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline
@@ -2149,6 +2154,18 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
     }
     assert_eq!(reopened.session_status(&session_a), TurnStatus::Completed);
     assert_eq!(reopened.session_pending_cards(&session_a), Vec::new());
+    let rev_after_approve = flowy_agent_core::SessionIndex::load(&scratch.0)
+        .unwrap()
+        .get(&session_a)
+        .unwrap()
+        .work_contract
+        .as_ref()
+        .expect("session A work contract preserved")
+        .revision;
+    assert_eq!(
+        rev_after_approve, 1,
+        "ApproveTool resume must NEVER increment or evolve WorkContract.revision"
+    );
 
     // 6) DenyTool triggers turn-scoped UserDenied anti-bypass: adversarial
     //    model trying `write_file` in the same resumed turn is blocked by host!
@@ -2163,7 +2180,10 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
         .root
         .clone();
     reopened
-        .submit_chat(953, "clean deliverables on session C")
+        .submit_chat(
+            953,
+            "请做一份三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27，清理 session C deliverables",
+        )
         .unwrap();
     let c_wait = Instant::now() + Duration::from_secs(10);
     while Instant::now() < c_wait
@@ -2197,6 +2217,18 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
         thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(reopened.session_status(&session_c), TurnStatus::Completed);
+    let rev_after_deny = flowy_agent_core::SessionIndex::load(&scratch.0)
+        .unwrap()
+        .get(&session_c)
+        .unwrap()
+        .work_contract
+        .as_ref()
+        .expect("session C work contract preserved")
+        .revision;
+    assert_eq!(
+        rev_after_deny, 1,
+        "DenyTool resume must NEVER increment or evolve WorkContract.revision"
+    );
     assert!(
         !ws_c.join("bypassed.txt").exists(),
         "turn-scoped UserDenied must block equivalent write_file bypass in the same turn"
@@ -2212,4 +2244,220 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
         "blocked bypass must surface USER_DENIED error result: {:?}",
         reopened.session_lines(&session_c)
     );
+
+    // 7) Cold restart after ApproveTool & DenyTool must NEVER leak internal
+    //    `[ToolApproved]`/`[UserDenied]` prompts as ChatLine::User or duplicate
+    //    resumed lines (both with index.json intact and when rebuilt from history.json).
+    let lines_a_before = reopened.session_lines(&session_a);
+    let lines_c_before = reopened.session_lines(&session_c);
+    drop(reopened);
+
+    let after_restart =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let lines_a_after = after_restart.session_lines(&session_a);
+    let lines_c_after = after_restart.session_lines(&session_c);
+    assert_eq!(
+        lines_a_after.len(),
+        lines_a_before.len(),
+        "cold restart after ApproveTool must not duplicate projected lines"
+    );
+    assert_eq!(
+        lines_c_after.len(),
+        lines_c_before.len(),
+        "cold restart after DenyTool must not duplicate projected lines"
+    );
+    for lines in [&lines_a_after, &lines_c_after] {
+        assert!(
+            !lines.iter().any(|line| matches!(
+                line,
+                ChatLine::User { text }
+                    if text.contains("[ToolApproved]")
+                        || text.contains("[UserDenied]")
+            )),
+            "internal card-resume prompt must never leak into visible ChatLine::User: {lines:?}"
+        );
+    }
+    drop(after_restart);
+
+    // Also verify rebuilding UI index purely from history.json hides internal markers.
+    let _ = fs::remove_file(scratch.0.join("sessions").join("index.json"));
+    let rebuilt =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    for sid in [&session_a, &session_c] {
+        let lines = rebuilt.session_lines(sid);
+        assert!(
+            !lines.iter().any(|line| matches!(
+                line,
+                ChatLine::User { text }
+                    if text.contains("[ToolApproved]")
+                        || text.contains("[UserDenied]")
+            )),
+            "rebuilt history for {sid} must not leak internal card-resume prompt: {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn override_deliver_artifact_audits_stale_ok_report_after_contract_revision_bump()
+ {
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let workspace_root = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let output = workspace_root.join("outputs").join("submission-stale-ov");
+    fs::create_dir_all(&output).unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    let deck = output.join("sample.pptx");
+    fs::copy(fixtures.join("sample.pptx"), &deck).unwrap();
+
+    // Advance session WorkContract to rev=2 while the report on disk is ok=true at rev=1.
+    handle
+        .submit_chat(
+            961,
+            "请做一份三页 sample.pptx，报价 30 万元，汇报日期 2026-11-27",
+        )
+        .unwrap();
+    let wait_idle = |h: &AgentHandle| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && h.session_status(&session).is_busy()
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_idle(&handle);
+    handle
+        .submit_chat(962, "只把汇报日期改成 2026-12-02")
+        .unwrap();
+    wait_idle(&handle);
+
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let deck_bytes = fs::read(&deck).unwrap();
+    let report = gate
+        .record_report_bytes_with_revision(
+            &deck,
+            &deck_bytes,
+            Vec::new(),
+            Some(1),
+            100,
+        )
+        .unwrap();
+    assert!(report.ok);
+
+    let artifact_id = handle
+        .override_deliver_artifact(
+            &session,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("override deliver stale rev=1 report");
+    assert_ne!(artifact_id, "");
+    let events =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert!(
+        events.contains("\"deliver_blocked\""),
+        "stale rev=1 override must record DeliverBlocked audit: {events}"
+    );
+    assert!(
+        events.contains("\"deliver_override\""),
+        "stale rev=1 override must record DeliverOverride audit: {events}"
+    );
+    assert!(
+        events.contains("DELIVERY_CONTRACT_REVISION_MISMATCH"),
+        "stale rev=1 override must record DELIVERY_CONTRACT_REVISION_MISMATCH code: {events}"
+    );
+}
+
+#[test]
+fn queued_receipt_completes_when_turn_pauses_at_tool_approval_and_never_reruns_after_deny()
+ {
+    use flowy_agent_core::ReceiptState;
+
+    let scratch = Scratch::new();
+    let (shell_tool, risky_cmd) = if cfg!(windows) {
+        (
+            "powershell",
+            "Remove-Item -Recurse -Force ./deliverables -ErrorAction SilentlyContinue",
+        )
+    } else {
+        ("bash", "rm -rf ./deliverables")
+    };
+    let provider = ProviderFixture::start_tool_approval_scenario(
+        shell_tool,
+        risky_cmd,
+        "never_rerun.txt",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    // Use a very short lease (80ms) so any uncompleted receipt would quickly
+    // expire and get re-claimed by autonomous_drain!
+    handle.set_accepted_lease_ms_for_test(80);
+    handle.set_autonomous_drain(true);
+
+    let receipt = handle
+        .accept_deferred("clean deliverables via queued receipt")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if handle.receipt_state(&receipt.id) == Some(ReceiptState::Completed) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Completed),
+        "queued receipt must transition to Completed once PendingCard::ToolApproval is durably persisted"
+    );
+    assert!(!handle.has_active_claim());
+
+    let waiting_session = handle
+        .receipt_by_id(&receipt.id)
+        .and_then(|r| r.target_session_id)
+        .expect("receipt bound to session");
+    assert_eq!(
+        handle.session_status(&waiting_session),
+        TurnStatus::WaitingForUser
+    );
+    let cards = handle.session_pending_cards(&waiting_session);
+    assert_eq!(cards.len(), 1);
+    let card_id = cards[0].card_id().to_owned();
+
+    // Deny the tool and sleep well past the 80ms lease window: autonomous_drain
+    // must NEVER re-run the denied queued prompt.
+    handle
+        .apply_card_action(crate::CardAction::ResolveCard {
+            session_id: waiting_session.clone(),
+            card_id,
+            selection: crate::CardSelection::DenyTool {
+                reason: Some("do not delete".into()),
+            },
+        })
+        .expect("deny queued tool");
+    let done = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < done
+        && handle.session_status(&waiting_session) != TurnStatus::Completed
+    {
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(
+        handle.session_status(&waiting_session),
+        TurnStatus::Completed
+    );
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        handle.session_status(&waiting_session),
+        TurnStatus::Completed,
+        "denied queued prompt must never re-run after lease window elapses"
+    );
+    assert_eq!(handle.session_pending_cards(&waiting_session), Vec::new());
+    handle.prepare_shutdown();
 }

@@ -22,6 +22,19 @@ pub fn canonical_tool_args_hash(
     crate::delivery::hash_bytes(canonical.as_bytes())
 }
 
+/// Read-only inspection and verification tools that remain permitted even
+/// after a user denies a risky mutating action in the current turn.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "read_file",
+    "glob",
+    "grep",
+    "ls",
+    "list_dir",
+    "find_files",
+    "verify_deck",
+    "verify_artifact",
+];
+
 /// Build the host `PreToolHook` wired into `rpi_agent`'s `before_tool_call`
 /// enforcing turn-scoped `UserDenied` anti-bypass, 3-way `shell_policy`
 /// (`Allow | Ask | Deny`), and one-shot `args_hash` approval grants.
@@ -31,10 +44,7 @@ pub(super) fn build_pre_tool_hook(
     state: Arc<super::UiState>,
 ) -> flowy_agent_core::PreToolHook {
     Arc::new(move |tool_name: &str, args: &serde_json::Value| {
-        if matches!(
-            tool_name,
-            "bash" | "powershell" | "write_file" | "edit_file" | "create_deck"
-        ) {
+        if !READ_ONLY_TOOLS.contains(&tool_name) {
             let denied =
                 lock(&state.denied_tool_turns).get(&session_id).cloned();
             if let Some(reason) = denied {

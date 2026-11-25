@@ -541,6 +541,314 @@ fn sync_objects_with_required_items(
     refresh_anchor_summaries(objects, pinned_facts);
 }
 
+struct EvolvedStructure {
+    required_items: Vec<flowy_agent_core::RequiredDeliverable>,
+    inherited_min_slides: Option<usize>,
+    pinned_facts: BTreeMap<String, String>,
+}
+
+fn evolve_deliverable_structure(
+    prev: &WorkContract,
+    prompt: &str,
+    delta: &BriefContract,
+    objects: &mut Vec<TrackedObject>,
+) -> EvolvedStructure {
+    let mut required_items = prev.required_items.clone();
+    let is_rename = is_rename_prompt(prompt);
+    let prompt_lower = prompt.to_ascii_lowercase();
+    let mut inherited_min_slides = prev.min_slides;
+
+    let revoke_xlsx = [
+        "不用做报价表",
+        "不需要报价表",
+        "不要报价表",
+        "去掉报价表",
+        "删除报价表",
+        "不用做excel",
+        "不需要excel",
+        "不需要xlsx",
+        "去掉excel",
+        "去掉表格",
+        "只做ppt",
+        "只要ppt",
+        "only ppt",
+    ]
+    .iter()
+    .any(|cue| prompt_lower.contains(cue));
+    let revoke_pptx =
+        ["不用做ppt", "不需要ppt", "去掉ppt", "no ppt", "no slides"]
+            .iter()
+            .any(|cue| prompt_lower.contains(cue));
+    let revoke_docx = ["不用做word", "不需要word", "不需要docx", "去掉word"]
+        .iter()
+        .any(|cue| prompt_lower.contains(cue));
+
+    for item in &delta.required_items {
+        if is_rename && let Some(new_name) = item.filename.as_deref() {
+            if let Some(slot) = required_items.iter_mut().find(|existing| {
+                existing.extension.eq_ignore_ascii_case(&item.extension)
+                    && existing.filename.as_deref().is_some_and(|old| {
+                        !old.eq_ignore_ascii_case(new_name)
+                            && prompt_lower.contains(&old.to_ascii_lowercase())
+                    })
+            }) {
+                let old_name = slot.filename.clone();
+                *slot = item.clone();
+                if let Some(old_name) = old_name
+                    && let Some(obj) = objects.iter_mut().find(|o| {
+                        o.filename
+                            .as_deref()
+                            .is_some_and(|f| f.eq_ignore_ascii_case(&old_name))
+                    })
+                {
+                    obj.filename.clone_from(&item.filename);
+                }
+                continue;
+            }
+            let same_ext_indices: Vec<usize> = required_items
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, existing)| {
+                    existing
+                        .extension
+                        .eq_ignore_ascii_case(&item.extension)
+                        .then_some(idx)
+                })
+                .collect();
+            if same_ext_indices.len() == 1 {
+                let old_name =
+                    required_items[same_ext_indices[0]].filename.clone();
+                required_items[same_ext_indices[0]] = item.clone();
+                if let Some(obj) = objects.iter_mut().find(|o| {
+                    o.kind == TrackedObjectKind::Deliverable
+                        && o.extension.eq_ignore_ascii_case(&item.extension)
+                        && (old_name.is_none() || o.filename == old_name)
+                }) {
+                    obj.filename.clone_from(&item.filename);
+                }
+                continue;
+            }
+        }
+        let duplicate = required_items.iter().any(|existing| {
+            existing.extension.eq_ignore_ascii_case(&item.extension)
+                && match (&existing.filename, &item.filename) {
+                    (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
+        if !duplicate {
+            if item.filename.is_some()
+                && let Some(slot) = required_items.iter_mut().find(|e| {
+                    e.filename.is_none()
+                        && e.extension.eq_ignore_ascii_case(&item.extension)
+                })
+            {
+                *slot = item.clone();
+            } else {
+                required_items.push(item.clone());
+            }
+        }
+    }
+    if revoke_xlsx {
+        required_items.retain(|existing| {
+            !existing.extension.eq_ignore_ascii_case("xlsx")
+                && !existing.extension.eq_ignore_ascii_case("csv")
+        });
+    }
+    if revoke_pptx {
+        required_items.retain(|existing| {
+            !existing.extension.eq_ignore_ascii_case("pptx")
+        });
+        inherited_min_slides = None;
+    }
+    if revoke_docx {
+        required_items.retain(|existing| {
+            !existing.extension.eq_ignore_ascii_case("docx")
+        });
+    }
+
+    let mut pinned_facts = prev.pinned_facts.clone();
+    if [
+        "去掉日期",
+        "去掉具体日期",
+        "删除日期",
+        "不需要日期",
+        "不用日期",
+        "不要日期",
+        "remove date",
+        "no date",
+    ]
+    .iter()
+    .any(|cue| prompt_lower.contains(cue))
+    {
+        pinned_facts.remove("date");
+        for obj in objects.iter_mut() {
+            obj.overrides.remove("date");
+        }
+    }
+    if [
+        "去掉报价",
+        "删除报价",
+        "不需要报价",
+        "不要报价",
+        "remove quote",
+        "no price",
+    ]
+    .iter()
+    .any(|cue| prompt_lower.contains(cue))
+    {
+        pinned_facts.remove("quote");
+        for obj in objects.iter_mut() {
+            obj.overrides.remove("quote");
+        }
+    }
+
+    sync_objects_with_required_items(objects, &required_items, &pinned_facts);
+    EvolvedStructure {
+        required_items,
+        inherited_min_slides,
+        pinned_facts,
+    }
+}
+
+fn apply_scoped_facts_or_disambiguate(
+    prev: &WorkContract,
+    prompt: &str,
+    delta: BriefContract,
+    structure: EvolvedStructure,
+    mut objects: Vec<TrackedObject>,
+    now_ms: u64,
+) -> ResolveOutcome {
+    let EvolvedStructure {
+        required_items,
+        inherited_min_slides,
+        mut pinned_facts,
+    } = structure;
+    let deliverable_count = objects
+        .iter()
+        .filter(|obj| obj.kind == TrackedObjectKind::Deliverable)
+        .count();
+
+    // Per-clause object-scoped fact targeting (handles Case 4 & Case 6).
+    let clauses = split_clauses(prompt);
+    let mut clause_targets: BTreeSet<String> = BTreeSet::new();
+    let mut scoped_any_fact = false;
+    for clause in &clauses {
+        if clause_is_untouched_marker(clause) {
+            continue;
+        }
+        let targets = match_clause_deliverables(clause, &objects);
+        if targets.is_empty() {
+            continue;
+        }
+        let clause_quote = extract_quote_fact(clause);
+        let clause_date = extract_date_fact(clause);
+        if clause_quote.is_none() && clause_date.is_none() {
+            continue;
+        }
+        scoped_any_fact = true;
+        for target_id in targets {
+            clause_targets.insert(target_id.clone());
+            if let Some(obj) =
+                objects.iter_mut().find(|o| o.object_id == target_id)
+            {
+                if let Some(quote) = &clause_quote {
+                    obj.overrides.insert(
+                        "quote".to_owned(),
+                        FactEntry {
+                            value: quote.clone(),
+                            status: FactStatus::Confirmed,
+                            updated_at_ms: now_ms,
+                        },
+                    );
+                }
+                if let Some(date) = &clause_date {
+                    obj.overrides.insert(
+                        "date".to_owned(),
+                        FactEntry {
+                            value: date.clone(),
+                            status: FactStatus::Confirmed,
+                            updated_at_ms: now_ms,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // Detect multi-object ambiguity when NO explicit object was targeted.
+    let mutates_facts = !delta.pinned_facts.is_empty();
+    let same_ext_duplicates = {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for obj in &objects {
+            if obj.kind == TrackedObjectKind::Deliverable {
+                *counts
+                    .entry(obj.extension.to_ascii_lowercase())
+                    .or_insert(0) += 1;
+            }
+        }
+        counts.values().any(|&count| count >= 2)
+    };
+    let ambiguous = !scoped_any_fact
+        && deliverable_count >= 2
+        && mutates_facts
+        && !has_all_objects_scope_cue(prompt)
+        && (has_demonstrative_ambiguity_cue(prompt) || same_ext_duplicates);
+
+    if ambiguous {
+        let mut snapshot = prev.clone();
+        snapshot.objects = objects;
+        refresh_anchor_summaries(&mut snapshot.objects, &snapshot.pinned_facts);
+        return ResolveOutcome::Ambiguous {
+            card: build_disambiguation_card(&snapshot, prompt, now_ms),
+            used_llm: false,
+        };
+    }
+
+    // Global fact update when single deliverable or explicitly unscoped/all-files.
+    if !scoped_any_fact {
+        for (key, value) in delta.pinned_facts {
+            pinned_facts.insert(key.clone(), value);
+            if has_all_objects_scope_cue(prompt) {
+                for obj in &mut objects {
+                    if obj.kind == TrackedObjectKind::Deliverable {
+                        obj.overrides.remove(&key);
+                    }
+                }
+            }
+        }
+    }
+
+    refresh_anchor_summaries(&mut objects, &pinned_facts);
+    let expected_filenames: Vec<String> = required_items
+        .iter()
+        .filter_map(|item| item.filename.clone())
+        .collect();
+    let target_object_ids: Vec<String> = if clause_targets.is_empty() {
+        objects
+            .iter()
+            .filter(|o| o.kind == TrackedObjectKind::Deliverable)
+            .map(|o| o.object_id.clone())
+            .collect()
+    } else {
+        clause_targets.into_iter().collect()
+    };
+
+    ResolveOutcome::Resolved {
+        contract: BriefContract {
+            revision: prev.revision.saturating_add(1).max(1),
+            min_slides: delta.min_slides.or(inherited_min_slides),
+            expected_filenames,
+            required_items,
+            pinned_facts,
+            objects,
+        },
+        target_object_ids,
+        used_llm: false,
+    }
+}
+
 /// Deterministic contract evolution with multi-object isolation, proposal
 /// guarding, and ambiguity detection (0ms fast-path).
 #[must_use]
@@ -609,287 +917,13 @@ pub fn resolve_contract_sync(
         }
     }
 
-    // 3. Evolve structural deliverables (additions, renames, revocations, min_slides).
+    // 3. Evolve structural deliverables, then apply per-object facts or park ambiguity.
     let delta = BriefContract::from_brief(prompt);
-    let mut required_items = prev.required_items.clone();
-    let is_rename = is_rename_prompt(prompt);
-    let prompt_lower = prompt.to_ascii_lowercase();
-    let mut inherited_min_slides = prev.min_slides;
-
-    let revoke_xlsx = [
-        "不用做报价表",
-        "不需要报价表",
-        "不要报价表",
-        "去掉报价表",
-        "删除报价表",
-        "不用做excel",
-        "不需要excel",
-        "不需要xlsx",
-        "去掉excel",
-        "去掉表格",
-        "只做ppt",
-        "只要ppt",
-        "only ppt",
-    ]
-    .iter()
-    .any(|cue| prompt_lower.contains(cue));
-    let revoke_pptx =
-        ["不用做ppt", "不需要ppt", "去掉ppt", "no ppt", "no slides"]
-            .iter()
-            .any(|cue| prompt_lower.contains(cue));
-    let revoke_docx = ["不用做word", "不需要word", "不需要docx", "去掉word"]
-        .iter()
-        .any(|cue| prompt_lower.contains(cue));
-
-    for item in delta.required_items {
-        if is_rename && let Some(new_name) = item.filename.as_deref() {
-            if let Some(slot) = required_items.iter_mut().find(|existing| {
-                existing.extension.eq_ignore_ascii_case(&item.extension)
-                    && existing.filename.as_deref().is_some_and(|old| {
-                        !old.eq_ignore_ascii_case(new_name)
-                            && prompt_lower.contains(&old.to_ascii_lowercase())
-                    })
-            }) {
-                let old_name = slot.filename.clone();
-                *slot = item.clone();
-                if let Some(old_name) = old_name
-                    && let Some(obj) = objects.iter_mut().find(|o| {
-                        o.filename
-                            .as_deref()
-                            .is_some_and(|f| f.eq_ignore_ascii_case(&old_name))
-                    })
-                {
-                    obj.filename = item.filename;
-                }
-                continue;
-            }
-            let same_ext_indices: Vec<usize> = required_items
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, existing)| {
-                    existing
-                        .extension
-                        .eq_ignore_ascii_case(&item.extension)
-                        .then_some(idx)
-                })
-                .collect();
-            if same_ext_indices.len() == 1 {
-                let old_name =
-                    required_items[same_ext_indices[0]].filename.clone();
-                required_items[same_ext_indices[0]] = item.clone();
-                if let Some(obj) = objects.iter_mut().find(|o| {
-                    o.kind == TrackedObjectKind::Deliverable
-                        && o.extension.eq_ignore_ascii_case(&item.extension)
-                        && (old_name.is_none() || o.filename == old_name)
-                }) {
-                    obj.filename = item.filename;
-                }
-                continue;
-            }
-        }
-        let duplicate = required_items.iter().any(|existing| {
-            existing.extension.eq_ignore_ascii_case(&item.extension)
-                && match (&existing.filename, &item.filename) {
-                    (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                    (None, None) => true,
-                    _ => false,
-                }
-        });
-        if !duplicate {
-            if item.filename.is_some()
-                && let Some(slot) = required_items.iter_mut().find(|e| {
-                    e.filename.is_none()
-                        && e.extension.eq_ignore_ascii_case(&item.extension)
-                })
-            {
-                *slot = item;
-            } else {
-                required_items.push(item);
-            }
-        }
-    }
-    if revoke_xlsx {
-        required_items.retain(|existing| {
-            !existing.extension.eq_ignore_ascii_case("xlsx")
-                && !existing.extension.eq_ignore_ascii_case("csv")
-        });
-    }
-    if revoke_pptx {
-        required_items.retain(|existing| {
-            !existing.extension.eq_ignore_ascii_case("pptx")
-        });
-        inherited_min_slides = None;
-    }
-    if revoke_docx {
-        required_items.retain(|existing| {
-            !existing.extension.eq_ignore_ascii_case("docx")
-        });
-    }
-
-    let mut pinned_facts = prev.pinned_facts.clone();
-    if [
-        "去掉日期",
-        "去掉具体日期",
-        "删除日期",
-        "不需要日期",
-        "不用日期",
-        "不要日期",
-        "remove date",
-        "no date",
-    ]
-    .iter()
-    .any(|cue| prompt_lower.contains(cue))
-    {
-        pinned_facts.remove("date");
-        for obj in &mut objects {
-            obj.overrides.remove("date");
-        }
-    }
-    if [
-        "去掉报价",
-        "删除报价",
-        "不需要报价",
-        "不要报价",
-        "remove quote",
-        "no price",
-    ]
-    .iter()
-    .any(|cue| prompt_lower.contains(cue))
-    {
-        pinned_facts.remove("quote");
-        for obj in &mut objects {
-            obj.overrides.remove("quote");
-        }
-    }
-
-    sync_objects_with_required_items(
-        &mut objects,
-        &required_items,
-        &pinned_facts,
-    );
-
-    let deliverable_count = objects
-        .iter()
-        .filter(|obj| obj.kind == TrackedObjectKind::Deliverable)
-        .count();
-
-    // 4. Per-clause object-scoped fact targeting (handles Case 4 & Case 6!).
-    let clauses = split_clauses(prompt);
-    let mut clause_targets: BTreeSet<String> = BTreeSet::new();
-    let mut scoped_any_fact = false;
-    for clause in &clauses {
-        if clause_is_untouched_marker(clause) {
-            continue;
-        }
-        let targets = match_clause_deliverables(clause, &objects);
-        if targets.is_empty() {
-            continue;
-        }
-        let clause_quote = extract_quote_fact(clause);
-        let clause_date = extract_date_fact(clause);
-        if clause_quote.is_none() && clause_date.is_none() {
-            continue;
-        }
-        scoped_any_fact = true;
-        for target_id in targets {
-            clause_targets.insert(target_id.clone());
-            if let Some(obj) =
-                objects.iter_mut().find(|o| o.object_id == target_id)
-            {
-                if let Some(quote) = &clause_quote {
-                    obj.overrides.insert(
-                        "quote".to_owned(),
-                        FactEntry {
-                            value: quote.clone(),
-                            status: FactStatus::Confirmed,
-                            updated_at_ms: now_ms,
-                        },
-                    );
-                }
-                if let Some(date) = &clause_date {
-                    obj.overrides.insert(
-                        "date".to_owned(),
-                        FactEntry {
-                            value: date.clone(),
-                            status: FactStatus::Confirmed,
-                            updated_at_ms: now_ms,
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    // 5. Detect multi-object ambiguity when NO explicit object was targeted.
-    let mutates_facts = !delta.pinned_facts.is_empty();
-    let same_ext_duplicates = {
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for obj in &objects {
-            if obj.kind == TrackedObjectKind::Deliverable {
-                *counts
-                    .entry(obj.extension.to_ascii_lowercase())
-                    .or_insert(0) += 1;
-            }
-        }
-        counts.values().any(|&count| count >= 2)
-    };
-    let ambiguous = !scoped_any_fact
-        && deliverable_count >= 2
-        && mutates_facts
-        && !has_all_objects_scope_cue(prompt)
-        && (has_demonstrative_ambiguity_cue(prompt) || same_ext_duplicates);
-
-    if ambiguous {
-        let mut snapshot = prev.clone();
-        snapshot.objects = objects;
-        refresh_anchor_summaries(&mut snapshot.objects, &snapshot.pinned_facts);
-        return ResolveOutcome::Ambiguous {
-            card: build_disambiguation_card(&snapshot, prompt, now_ms),
-            used_llm: false,
-        };
-    }
-
-    // 6. Global fact update when single deliverable or explicitly unscoped/all-files.
-    if !scoped_any_fact {
-        for (key, value) in delta.pinned_facts {
-            pinned_facts.insert(key.clone(), value);
-            if has_all_objects_scope_cue(prompt) {
-                for obj in &mut objects {
-                    if obj.kind == TrackedObjectKind::Deliverable {
-                        obj.overrides.remove(&key);
-                    }
-                }
-            }
-        }
-    }
-
-    refresh_anchor_summaries(&mut objects, &pinned_facts);
-    let expected_filenames: Vec<String> = required_items
-        .iter()
-        .filter_map(|item| item.filename.clone())
-        .collect();
-    let target_object_ids: Vec<String> = if clause_targets.is_empty() {
-        objects
-            .iter()
-            .filter(|o| o.kind == TrackedObjectKind::Deliverable)
-            .map(|o| o.object_id.clone())
-            .collect()
-    } else {
-        clause_targets.into_iter().collect()
-    };
-
-    ResolveOutcome::Resolved {
-        contract: BriefContract {
-            revision: prev.revision.saturating_add(1).max(1),
-            min_slides: delta.min_slides.or(inherited_min_slides),
-            expected_filenames,
-            required_items,
-            pinned_facts,
-            objects,
-        },
-        target_object_ids,
-        used_llm: false,
-    }
+    let structure =
+        evolve_deliverable_structure(prev, prompt, &delta, &mut objects);
+    apply_scoped_facts_or_disambiguate(
+        prev, prompt, delta, structure, objects, now_ms,
+    )
 }
 
 /// Apply a user's explicit [`DisambiguationOption`] selection to `previous`,
@@ -899,6 +933,22 @@ pub fn apply_disambiguation_selection(
     previous: &WorkContract,
     prompt: &str,
     selected_object_ids: &[String],
+    now_ms: u64,
+) -> Result<BriefContract, &'static str> {
+    apply_object_fact_updates(
+        previous,
+        selected_object_ids,
+        extract_quote_fact(prompt),
+        extract_date_fact(prompt),
+        now_ms,
+    )
+}
+
+fn apply_object_fact_updates(
+    previous: &WorkContract,
+    selected_object_ids: &[String],
+    quote: Option<String>,
+    date: Option<String>,
     now_ms: u64,
 ) -> Result<BriefContract, &'static str> {
     if selected_object_ids.is_empty() {
@@ -913,8 +963,6 @@ pub fn apply_disambiguation_selection(
             return Err("notice.card_selection_invalid");
         }
     }
-    let quote = extract_quote_fact(prompt);
-    let date = extract_date_fact(prompt);
     for target_id in selected_object_ids {
         if let Some(obj) =
             objects.iter_mut().find(|o| o.object_id == *target_id)
@@ -1028,11 +1076,26 @@ pub fn validate_structured_proposal(
                     used_llm: true,
                 };
             }
-            match apply_disambiguation_selection(
-                previous,
-                &prompt_with_overrides(prompt, proposal),
-                &valid_ids,
-                now_ms,
+            let quote = proposal
+                .get("quote")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|raw| {
+                    extract_quote_fact(raw).unwrap_or_else(|| raw.to_owned())
+                })
+                .or_else(|| extract_quote_fact(prompt));
+            let date = proposal
+                .get("date")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|raw| {
+                    extract_date_fact(raw).unwrap_or_else(|| raw.to_owned())
+                })
+                .or_else(|| extract_date_fact(prompt));
+            match apply_object_fact_updates(
+                previous, &valid_ids, quote, date, now_ms,
             ) {
                 Ok(contract) => ResolveOutcome::Resolved {
                     contract,
@@ -1069,27 +1132,6 @@ pub fn validate_structured_proposal(
             used_llm: true,
         },
     }
-}
-
-fn prompt_with_overrides(prompt: &str, proposal: &Value) -> String {
-    let mut parts = vec![prompt.to_owned()];
-    if let Some(quote) = proposal
-        .get("quote")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        parts.push(format!("报价 {quote}"));
-    }
-    if let Some(date) = proposal
-        .get("date")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        parts.push(format!("日期 {date}"));
-    }
-    parts.join("，")
 }
 
 /// Hybrid on-demand resolver:

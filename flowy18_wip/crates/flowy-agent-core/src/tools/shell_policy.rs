@@ -143,7 +143,7 @@ fn rules() -> &'static CompiledRules {
         )
         .expect("git destructive regex"),
         network_write: Regex::new(
-            r"(?im)(?:(?:^|[;&|(`\r\n]\s*)curl\b[^\r\n;&|]*(?:(?:-x|--request)\s+(?:post|put|delete|patch)\b|\s(?:-d|--data(?:-[a-z]+)?|-f|--form|-t|--upload-file)\b|\|\s*(?:sh|bash|zsh)\b)|(?:^|[;&|(`\r\n]\s*)(?:invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\r\n;&|]*-method\s+(?:post|put|delete|patch)\b|(?:^|[;&|(`\r\n]\s*)(?:scp|rsync)\s+)",
+            r"(?im)(?:(?:^|[;&|(`\r\n]\s*)curl\b[^\r\n;&|]*(?:(?:(?-i:-X)|--request)\s+(?:post|put|delete|patch)\b|\s(?:(?-i:-d|-F|-T)|--data(?:-[a-z]+)?|--form|--upload-file)\b|\|\s*(?:sh|bash|zsh)\b)|(?:^|[;&|(`\r\n]\s*)(?:invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\r\n;&|]*-method\s+(?:post|put|delete|patch)\b|(?:^|[;&|(`\r\n]\s*)(?:scp|rsync)\s+)",
         )
         .expect("network write regex"),
         global_pkg_install: Regex::new(
@@ -181,7 +181,18 @@ fn recursive_delete_targets_non_scratch(rest: &str) -> bool {
         if matches!(lower.as_str(), "-path" | "-literalpath") {
             continue;
         }
-        if matches!(lower.as_str(), "-include" | "-exclude" | "-filter") {
+        if matches!(
+            lower.as_str(),
+            "-include"
+                | "-exclude"
+                | "-filter"
+                | "-erroraction"
+                | "-ea"
+                | "-warningaction"
+                | "-wa"
+                | "-informationaction"
+                | "-ia"
+        ) {
             skip_next = true;
             continue;
         }
@@ -570,6 +581,42 @@ mod tests {
             assert!(!decision.is_allowed());
             assert!(decision.requires_approval());
             assert!(decision.denial_message().is_none());
+        }
+    }
+
+    #[test]
+    fn readonly_curl_flags_and_scratch_remove_item_error_action_stay_allowed() {
+        let cwd = Path::new("workspace");
+        for allowed_cmd in [
+            "curl -f https://example.com/data.json",
+            "curl -fsSL https://example.com/archive.tar.gz",
+            "curl -D headers.txt https://example.com/index.html",
+            "Remove-Item -Recurse -Force ./tmp_build -ErrorAction SilentlyContinue",
+            "Remove-Item -Recurse -Force ./build/cache -EA SilentlyContinue",
+            "Remove-Item -Recurse -Force ./tmp_out -WarningAction Ignore -InformationAction SilentlyContinue",
+        ] {
+            assert_eq!(
+                evaluate_shell_command(allowed_cmd, cwd),
+                ShellPolicyDecision::Allow,
+                "expected read-only curl / scratch Remove-Item to stay Allow: {allowed_cmd:?}"
+            );
+        }
+        for ask_cmd in [
+            "curl -d 'a=1' https://api.example.com/items",
+            "curl -F 'file=@deck.pptx' https://api.example.com/upload",
+            "curl -T deck.pptx https://api.example.com/upload",
+            "Remove-Item -Recurse -Force ./deliverables -ErrorAction SilentlyContinue",
+        ] {
+            assert!(
+                matches!(
+                    evaluate_shell_command(ask_cmd, cwd),
+                    ShellPolicyDecision::Ask {
+                        code: super::SHELL_CONFIRM_REQUIRED,
+                        ..
+                    }
+                ),
+                "expected write curl / non-scratch Remove-Item to stay Ask: {ask_cmd:?}"
+            );
         }
     }
 }

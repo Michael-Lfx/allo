@@ -273,12 +273,12 @@ impl TurnObserver for UiObserver {
     }
 
     fn finished(&self, session: &str, outcome: LoopOutcome) {
-        {
+        let next_status = {
             let mut live = lock(&self.state.live);
-            if let Some(live) = live.get_mut(session) {
+            live.get_mut(session).map(|live| {
                 live.projection.flush();
                 promote_latest_turn_verifications(&mut live.projection.lines);
-                live.status = match outcome {
+                let next_status = match outcome {
                     LoopOutcome::Completed => TurnStatus::Completed,
                     LoopOutcome::Aborted => TurnStatus::Stopped,
                     LoopOutcome::WaitingForUser => TurnStatus::WaitingForUser,
@@ -301,7 +301,7 @@ impl TurnObserver for UiObserver {
                 if outcome != LoopOutcome::Completed {
                     live.auto_title_pending = false;
                     live.projection.lines.push(ChatLine::Status {
-                        text: live.status.key().into(),
+                        text: next_status.key().into(),
                     });
                 }
                 if let Some(hb) = live.heartbeat.as_mut() {
@@ -311,15 +311,31 @@ impl TurnObserver for UiObserver {
                 }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
-            }
-        }
-        // Turn-scoped UserDenied guard expires once this turn finishes.
+                next_status
+            })
+        };
+        // Turn-scoped UserDenied and unconsumed one-shot ToolApproval grants
+        // expire once this turn finishes.
         lock(&self.state.denied_tool_turns).remove(session);
+        lock(&self.state.approved_tool_calls).remove(session);
         // Interrupted turns can leave cached tool arguments behind.
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        if persist_index(&self.state).is_err() {
+        // Persist index.json with the target status BEFORE flipping `live.status`
+        // out of `Running`, so callers polling `session_status` never observe a
+        // terminal status while disk I/O still holds the `RunFence` ticket.
+        if persist_index_with_status(
+            &self.state,
+            next_status.as_ref().map(|status| (session, status)),
+        )
+        .is_err()
+        {
             self.state.report_storage_error();
+        }
+        if let Some(status) = next_status
+            && let Some(live) = lock(&self.state.live).get_mut(session)
+        {
+            live.status = status;
         }
         self.state.push_update(AgentUpdate::Session {
             id: session.to_owned(),
@@ -336,12 +352,11 @@ impl TurnObserver for UiObserver {
                 "awaiting user disambiguation selection".to_owned()
             }
         };
-        {
+        let has_live = {
             let mut live = lock(&self.state.live);
             if let Some(live) = live.get_mut(session) {
                 live.projection.flush();
                 live.auto_title_pending = false;
-                live.status = TurnStatus::WaitingForUser;
                 let already_waiting_line = matches!(
                     live.projection.lines.last(),
                     Some(ChatLine::Status { text })
@@ -359,12 +374,26 @@ impl TurnObserver for UiObserver {
                 hb.awaiting_evidence = true;
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
+                true
+            } else {
+                false
             }
-        }
+        };
+        lock(&self.state.approved_tool_calls).remove(session);
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        if persist_index(&self.state).is_err() {
+        let staged = TurnStatus::WaitingForUser;
+        if persist_index_with_status(
+            &self.state,
+            has_live.then_some((session, &staged)),
+        )
+        .is_err()
+        {
             self.state.report_storage_error();
+        }
+        if has_live && let Some(live) = lock(&self.state.live).get_mut(session)
+        {
+            live.status = TurnStatus::WaitingForUser;
         }
         self.state.push_update(AgentUpdate::Session {
             id: session.to_owned(),
@@ -384,18 +413,18 @@ impl TurnObserver for UiObserver {
     }
 
     fn stop_settled(&self, session: &str, _manifest: &StopHandoffManifest) {
-        {
+        let should_mark_stopped = {
             let mut live = lock(&self.state.live);
-            if let Some(live) = live.get_mut(session) {
+            live.get_mut(session).is_some_and(|live| {
                 live.projection.flush();
                 live.auto_title_pending = false;
-                if matches!(
+                let transition = matches!(
                     live.status,
                     TurnStatus::Running
                         | TurnStatus::Stopping
                         | TurnStatus::SavingFiles
-                ) {
-                    live.status = TurnStatus::Stopped;
+                );
+                if transition {
                     let already_stopped_line = matches!(
                         live.projection.lines.last(),
                         Some(ChatLine::Status { text })
@@ -414,13 +443,26 @@ impl TurnObserver for UiObserver {
                 }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
-            }
-        }
+                transition
+            })
+        };
         lock(&self.state.denied_tool_turns).remove(session);
+        lock(&self.state.approved_tool_calls).remove(session);
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        if persist_index(&self.state).is_err() {
+        let staged = TurnStatus::Stopped;
+        if persist_index_with_status(
+            &self.state,
+            should_mark_stopped.then_some((session, &staged)),
+        )
+        .is_err()
+        {
             self.state.report_storage_error();
+        }
+        if should_mark_stopped
+            && let Some(live) = lock(&self.state.live).get_mut(session)
+        {
+            live.status = TurnStatus::Stopped;
         }
         self.state.push_update(AgentUpdate::Session {
             id: session.to_owned(),
@@ -634,6 +676,10 @@ pub(super) fn backfill_conversation_artifacts(
         if writes.is_empty() {
             continue;
         }
+        let contract_revision = session
+            .work_contract
+            .as_ref()
+            .map(|contract| contract.revision.max(1));
         let gate =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"));
         let commits =
@@ -643,7 +689,13 @@ pub(super) fn backfill_conversation_artifacts(
                 &session,
                 &writes,
             );
-        persist_conversation_commits(engine, &store, state, commits, None);
+        persist_conversation_commits(
+            engine,
+            &store,
+            state,
+            commits,
+            contract_revision,
+        );
     }
 }
 
@@ -801,6 +853,13 @@ pub(super) fn clear_auto_title(state: &UiState, id: &str) {
 }
 
 pub(super) fn persist_index(state: &UiState) -> Result<(), &'static str> {
+    persist_index_with_status(state, None)
+}
+
+fn persist_index_with_status(
+    state: &UiState,
+    status_override: Option<(&str, &TurnStatus)>,
+) -> Result<(), &'static str> {
     // Serialize snapshots and replacements without holding the read model
     // mutex while the filesystem syncs, so UI reads remain memory-only.
     let _write = lock(&state.index_write);
@@ -812,7 +871,10 @@ pub(super) fn persist_index(state: &UiState) -> Result<(), &'static str> {
             title: session.title.clone(),
             updated_at: session.updated_at,
             lines: session.projection.lines.clone(),
-            status: session.status.clone(),
+            status: match status_override {
+                Some((target_id, status)) if id == target_id => status.clone(),
+                _ => session.status.clone(),
+            },
             titled: session.titled,
             workspace: session.workspace.clone(),
             origin: session.origin.clone(),
@@ -1010,6 +1072,12 @@ pub(super) fn import_engine_sessions(
     }
 }
 
+fn is_internal_resume_message(message: &Message) -> bool {
+    message.role == Role::User
+        && matches!(message.source, MessageSource::User)
+        && message.display_text.as_deref() == Some("")
+}
+
 pub(super) fn restore_existing_history(
     existing: &mut Live,
     record: SessionRecord,
@@ -1029,6 +1097,7 @@ pub(super) fn restore_existing_history(
         record.messages.iter().enumerate().filter(|(_, message)| {
             message.role == Role::User
                 && matches!(message.source, MessageSource::User)
+                && !is_internal_resume_message(message)
         })
     {
         let display = message
@@ -1058,7 +1127,10 @@ pub(super) fn restore_existing_history(
         return;
     };
     if visible.next().is_some()
-        || existing.status != TurnStatus::Stopped
+        || !matches!(
+            existing.status,
+            TurnStatus::Stopped | TurnStatus::WaitingForUser
+        )
         || record.status != TurnState::Completed
         || record.updated_at < existing.updated_at
     {
@@ -1293,7 +1365,9 @@ pub(super) fn lines_from_messages_with_index(
         match message.role {
             Role::System => {}
             Role::User => {
-                if matches!(message.source, MessageSource::User) {
+                if matches!(message.source, MessageSource::User)
+                    && !is_internal_resume_message(message)
+                {
                     lines.extend(std::mem::take(&mut pending_verifications));
                     for artifact_id in std::mem::take(&mut pending_artifacts) {
                         lines.push(ChatLine::Artifact { artifact_id });
