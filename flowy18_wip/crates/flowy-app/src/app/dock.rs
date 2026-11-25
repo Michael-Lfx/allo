@@ -82,14 +82,15 @@ impl FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let (active_work, in_chat, chief_selected, busy_ids) = {
+        let (active_work, in_chat, chief_selected, new_task_selected, busy_ids) = {
             let studio = self.studio.read(cx);
+            let in_chat = self.section == Section::Studio
+                && studio.surface == flowy_studio::StudioSurface::Chat;
             (
                 studio.background_work_count(),
-                self.section == Section::Studio
-                    && studio.surface == flowy_studio::StudioSurface::Chat,
-                self.section == Section::Studio
-                    && studio.active_project_id.is_none(),
+                in_chat,
+                in_chat && studio.active_project_id.is_none(),
+                self.section == Section::Studio && !in_chat,
                 studio.agent.busy_session_ids(),
             )
         };
@@ -98,7 +99,7 @@ impl FlowyApp {
                 &self.theme,
                 "new-task",
                 self.t("dock.new_task"),
-                self.section == Section::Studio,
+                new_task_selected,
                 Section::Studio,
                 DockIcon::NewTask,
                 cx,
@@ -247,6 +248,8 @@ impl FlowyApp {
             .px(self.theme.space(8.))
             .py(px(6.))
             .rounded_lg()
+            .border_1()
+            .border_color(self.theme.line())
             .flex()
             .items_center()
             .gap_2()

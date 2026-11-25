@@ -80,6 +80,69 @@ fn display_path(path: &str) -> String {
     format!("\u{2026}{tail}")
 }
 
+/// Compact single-line snippet of the most recent non-empty line, used as a
+/// quiet glimpse on collapsed reasoning blocks (especially while streaming).
+fn tail_line_preview(text: &str, max_chars: usize) -> Option<String> {
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    let collapsed: String =
+        line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars = collapsed.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        Some(format!("{head}\u{2026}"))
+    } else {
+        Some(head)
+    }
+}
+
+/// Compact single-line snippet of the opening line of a tool output.
+fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else {
+        return (String::new(), false);
+    };
+    let has_more_lines = lines.next().is_some();
+    let collapsed: String =
+        first.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = collapsed.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    let truncated = chars.next().is_some() || has_more_lines;
+    if truncated {
+        (format!("{head}\u{2026}"), true)
+    } else {
+        (head, false)
+    }
+}
+
+fn deliverable_kind_key(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some(
+            "pdf" | "doc" | "docx" | "odt" | "rtf" | "md" | "markdown" | "txt"
+            | "ppt" | "pptx" | "odp" | "key",
+        ) => "deliverables.kind_document",
+        Some("xls" | "xlsx" | "ods" | "csv" | "tsv" | "parquet" | "sql") => {
+            "deliverables.kind_data"
+        }
+        Some(
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif",
+        ) => "deliverables.kind_image",
+        Some(
+            "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
+            | "html" | "java" | "js" | "json" | "jsx" | "kt" | "kts" | "php"
+            | "ps1" | "py" | "rb" | "rs" | "scss" | "sh" | "swift" | "toml"
+            | "ts" | "tsx" | "xml" | "yaml" | "yml",
+        ) => "deliverables.kind_code",
+        _ => "deliverables.kind_file",
+    }
+}
+
 struct StoredFeed {
     lines: Vec<ChatLine>,
     row_ids: Vec<u64>,
@@ -522,9 +585,24 @@ impl ChatFeed {
             .flex()
             .flex_col()
             .items_start()
+            .gap(self.theme.space(4.))
             .child(button)
             .when(fold.expanded, |row| {
-                row.child(self.chat_line(index, line, cx))
+                row.child(
+                    div()
+                        .w_full()
+                        .child(self.chat_line(index, line, cx))
+                        .with_animation(
+                            ("turn-fold-reveal", self.row_ids[index]),
+                            Animation::new(crate::motion::AUTO_HEIGHT)
+                                .with_easing(crate::motion::out_quint()),
+                            |el, delta| {
+                                el.opacity(delta)
+                                    .relative()
+                                    .top(px(4. * (1.0 - delta)))
+                            },
+                        ),
+                )
             })
             .into_any_element()
     }
@@ -623,15 +701,8 @@ impl ChatFeed {
             } => self
                 .tool_call_block(index, name, target, *running, cx)
                 .into_any_element(),
-            ChatLine::Tool { text } => div()
-                .id(("chat-tool-legacy", self.row_ids[index]))
-                .ml(px(6.))
-                .pl(self.theme.space(12.))
-                .border_l_1()
-                .border_color(self.theme.line())
-                .text_xs()
-                .text_color(self.theme.muted())
-                .child(text.clone())
+            ChatLine::Tool { text } => self
+                .tool_output_block(index, text, false, "chat-tool-legacy", cx)
                 .into_any_element(),
             ChatLine::ToolResult { text, is_error } => {
                 let label = if text.starts_with("chat.publish.") {
@@ -639,26 +710,14 @@ impl ChatFeed {
                 } else {
                     text.clone()
                 };
-                div()
-                    .id(("chat-tool-result", self.row_ids[index]))
-                    .when(*is_error, |row| row.role(gpui::Role::Alert))
-                    .ml(px(6.))
-                    .pl(self.theme.space(12.))
-                    .border_l(px(3.))
-                    .border_color(if *is_error {
-                        self.theme.danger()
-                    } else {
-                        self.theme.line()
-                    })
-                    .text_xs()
-                    .text_color(if *is_error {
-                        self.theme.danger()
-                    } else {
-                        self.theme.muted()
-                    })
-                    .whitespace_normal()
-                    .child(label)
-                    .into_any_element()
+                self.tool_output_block(
+                    index,
+                    &label,
+                    *is_error,
+                    "chat-tool-result",
+                    cx,
+                )
+                .into_any_element()
             }
             ChatLine::Status { text } => {
                 let label = if text.starts_with("chat.") {
@@ -742,24 +801,22 @@ impl ChatFeed {
         index: usize,
         path: &str,
         kind: &flowy_agent::FileChangeKind,
-        added: u32,
-        removed: u32,
-        binary: bool,
+        _added: u32,
+        _removed: u32,
+        _binary: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         let icon = crate::file_kind::from_path(path).map_or_else(
-            theme::icons::code_file,
-            super::file_kind::FileKind::icon,
+            || {
+                theme::icons::document_file()
+                    .size(px(18.))
+                    .text_color(self.theme.muted())
+                    .into_any_element()
+            },
+            |file_kind| file_kind.icon().size(px(20.)).into_any_element(),
         );
-        // Line counts only mean something for text; a binary change shows a dash.
-        let delta = if binary {
-            "\u{2014}".to_owned()
-        } else if removed == 0 {
-            format!("+{added}")
-        } else {
-            format!("+{added} \u{2212}{removed}")
-        };
+        let kind_label = self.t(deliverable_kind_key(path));
         let target = path.to_owned();
         let _ = kind;
         theme::interactive(
@@ -773,19 +830,25 @@ impl ChatFeed {
         .gap(self.theme.space(8.))
         .flex()
         .items_center()
-        .rounded_lg()
+        .rounded_xl()
         .border_1()
         .border_color(self.theme.line())
         .bg(self.theme.card())
         .cursor_pointer()
-        .child(icon.size(px(20.)))
+        .hover(|style| style.bg(self.theme.soft()))
+        .child(icon)
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .child(div().text_sm().child(name.to_owned()))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(name.to_owned()),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -793,7 +856,17 @@ impl ChatFeed {
                         .child(display_path(path)),
                 ),
         )
-        .child(div().text_xs().child(delta))
+        .child(
+            div()
+                .flex_none()
+                .px(self.theme.space(6.))
+                .py(px(2.))
+                .rounded_md()
+                .bg(self.theme.soft())
+                .text_xs()
+                .text_color(self.theme.muted())
+                .child(kind_label),
+        )
         .on_click(cx.listener(move |_, _, _, cx| {
             cx.emit(RevealFile(target.clone()));
         }))
@@ -807,19 +880,8 @@ impl ChatFeed {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let count = files.len();
-        let added: u32 = files.iter().map(|file| file.added).sum();
-        let removed: u32 = files.iter().map(|file| file.removed).sum();
-        // Every file unreadable as text means the totals say nothing.
-        let all_binary = files.iter().all(|file| file.binary);
         let label =
             self.tf("chat.file_changes", &[("count", &count.to_string())]);
-        let delta = if all_binary {
-            "\u{2014}".to_owned()
-        } else if removed == 0 {
-            format!("+{added}")
-        } else {
-            format!("+{added} \u{2212}{removed}")
-        };
         let all = files.to_vec();
         theme::interactive(
             ("chat-file-changes", self.row_ids[index]),
@@ -832,14 +894,41 @@ impl ChatFeed {
         .gap(self.theme.space(8.))
         .flex()
         .items_center()
-        .rounded_lg()
+        .rounded_xl()
         .border_1()
         .border_color(self.theme.line())
         .bg(self.theme.card())
         .cursor_pointer()
-        .child(theme::icons::code_file().size(px(20.)))
-        .child(div().flex_1().min_w_0().text_sm().child(label))
-        .child(div().text_xs().child(delta))
+        .hover(|style| style.bg(self.theme.soft()))
+        .child(
+            theme::icons::file_fold()
+                .size(px(18.))
+                .text_color(self.theme.muted()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_none()
+                .px(self.theme.space(6.))
+                .py(px(2.))
+                .rounded_md()
+                .bg(self.theme.soft())
+                .text_xs()
+                .text_color(self.theme.muted())
+                .child(self.t("chat.deliverables")),
+        )
+        .child(
+            theme::icons::chevron_right()
+                .size(px(12.))
+                .text_color(self.theme.muted()),
+        )
         .on_click(cx.listener(move |_, _, _, cx| {
             cx.emit(OpenDeliverables(all.clone()));
         }))
@@ -1496,17 +1585,21 @@ impl ChatFeed {
     ) -> impl IntoElement {
         let row_id = self.row_ids[index];
         let expanded = self.expanded_rows.contains(&row_id);
+        let has_body = !text.trim().is_empty();
+        let glimpse =
+            (!expanded).then(|| tail_line_preview(text, 56)).flatten();
         let title = if live {
             self.t("chat.reasoning_live")
         } else {
             let duration = self.format_duration_secs(duration_secs);
             self.tf("chat.thought_for", &[("duration", &duration)])
         };
-        let header_content = if live {
+        let leading = if live {
             div()
+                .flex_none()
                 .flex()
                 .items_center()
-                .gap(self.theme.space(8.))
+                .gap(self.theme.space(6.))
                 .child(
                     theme::icons::loader_circle()
                         .size(px(12.))
@@ -1529,23 +1622,11 @@ impl ChatFeed {
                 .into_any_element()
         } else {
             div()
-                .flex()
-                .items_center()
-                .gap(self.theme.space(8.))
-                .child(div().text_xs().text_color(self.theme.muted()).child(
-                    if expanded {
-                        theme::icons::chevron_down().size(px(12.))
-                    } else {
-                        theme::icons::chevron_right().size(px(12.))
-                    },
-                ))
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.muted())
-                        .child(title.clone()),
-                )
+                .flex_none()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(self.theme.muted())
+                .child(title.clone())
                 .into_any_element()
         };
         let mut block = div()
@@ -1561,26 +1642,58 @@ impl ChatFeed {
                     &self.theme,
                 )
                 .aria_expanded(expanded)
+                .w_full()
+                .min_w_0()
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(4.))
+                .px(self.theme.space(6.))
                 .flex()
                 .items_center()
                 .gap(self.theme.space(8.))
                 .rounded_md()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(header_content)
+                .when(has_body, |row| {
+                    row.cursor_pointer()
+                        .hover(|style| style.bg(self.theme.soft()))
+                })
+                .when(has_body, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(if expanded {
+                                theme::icons::chevron_down().size(px(12.))
+                            } else {
+                                theme::icons::chevron_right().size(px(12.))
+                            }),
+                    )
+                })
+                .child(leading)
+                .when_some(glimpse, |row, snippet| {
+                    row.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .text_color(self.theme.muted().opacity(0.75))
+                            .child(snippet),
+                    )
+                })
                 .on_click(cx.listener(
                     move |feed, _, _, cx| {
-                        feed.toggle_detail(row_id, cx);
+                        if has_body {
+                            feed.toggle_detail(row_id, cx);
+                        }
                     },
                 )),
             );
-        if expanded && !text.trim().is_empty() {
+        if expanded && has_body {
             block = block.child(
                 div()
-                    .ml(px(6.))
+                    .ml(px(8.))
                     .pl(self.theme.space(12.))
+                    .py(self.theme.space(4.))
                     .border_l_1()
                     .border_color(self.theme.line())
                     .text_xs()
@@ -1611,7 +1724,8 @@ impl ChatFeed {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let row_id = self.row_ids[index];
-        let expanded = self.expanded_rows.contains(&row_id);
+        let has_target = !target.is_empty();
+        let expanded = has_target && self.expanded_rows.contains(&row_id);
         let heading = if running {
             self.tf("chat.tool_live", &[("name", name)])
         } else {
@@ -1664,8 +1778,10 @@ impl ChatFeed {
                 .flex()
                 .items_center()
                 .gap(self.theme.space(8.))
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
+                .when(has_target, |el| {
+                    el.cursor_pointer()
+                        .hover(|style| style.bg(self.theme.soft()))
+                })
                 .child(status_mark)
                 .child(
                     div()
@@ -1675,7 +1791,7 @@ impl ChatFeed {
                         .text_color(self.theme.ink())
                         .child(SharedString::from(heading)),
                 )
-                .when(!target.is_empty(), |el| {
+                .when(has_target, |el| {
                     el.child(
                         div()
                             .flex_1()
@@ -1687,25 +1803,29 @@ impl ChatFeed {
                             .child(SharedString::from(target.to_owned())),
                     )
                 })
-                .when(target.is_empty(), |el| el.child(div().flex_1()))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .child(if expanded {
-                            theme::icons::chevron_down().size(px(12.))
-                        } else {
-                            theme::icons::chevron_right().size(px(12.))
-                        }),
-                )
+                .when(!has_target, |el| el.child(div().flex_1()))
+                .when(has_target, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(if expanded {
+                                theme::icons::chevron_down().size(px(12.))
+                            } else {
+                                theme::icons::chevron_right().size(px(12.))
+                            }),
+                    )
+                })
                 .on_click(cx.listener(
                     move |feed, _, _, cx| {
-                        feed.toggle_detail(row_id, cx);
+                        if has_target {
+                            feed.toggle_detail(row_id, cx);
+                        }
                     },
                 )),
             );
-        if expanded && !target.is_empty() {
+        if expanded {
             row = row.child(
                 div()
                     .px(self.theme.space(10.))
@@ -1730,6 +1850,138 @@ impl ChatFeed {
             );
         }
         row
+    }
+
+    fn tool_output_block(
+        &self,
+        index: usize,
+        text: &str,
+        is_error: bool,
+        id_prefix: &'static str,
+        cx: &Context<'_, Self>,
+    ) -> gpui::AnyElement {
+        let row_id = self.row_ids[index];
+        if is_error {
+            return div()
+                .id((id_prefix, row_id))
+                .role(gpui::Role::Alert)
+                .w_full()
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.danger())
+                .bg(self.theme.card())
+                .px(self.theme.space(10.))
+                .py(self.theme.space(8.))
+                .flex()
+                .items_start()
+                .gap(self.theme.space(8.))
+                .child(
+                    theme::icons::circle_alert()
+                        .size(px(14.))
+                        .text_color(self.theme.danger()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(self.theme.danger())
+                        .whitespace_normal()
+                        .child(text.to_owned()),
+                )
+                .into_any_element();
+        }
+        let (preview, expandable) = head_line_preview(text, 72);
+        let expanded = expandable && self.expanded_rows.contains(&row_id);
+        let display_preview = if preview.is_empty() {
+            text.trim().to_owned()
+        } else {
+            preview
+        };
+        let mut block = div()
+            .id((id_prefix, row_id))
+            .w_full()
+            .rounded_lg()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.soft().opacity(0.3))
+            .flex()
+            .flex_col()
+            .child(
+                theme::interactive(
+                    ("chat-tool-out-toggle", row_id),
+                    display_preview.clone(),
+                    &self.theme,
+                )
+                .aria_expanded(expanded)
+                .w_full()
+                .min_w_0()
+                .min_h(self.theme.control_height(theme::ControlSize::Small))
+                .px(self.theme.space(10.))
+                .rounded_lg()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .when(expandable, |row| {
+                    row.cursor_pointer()
+                        .hover(|style| style.bg(self.theme.soft()))
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(display_preview),
+                )
+                .when(expandable, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(if expanded {
+                                theme::icons::chevron_down().size(px(12.))
+                            } else {
+                                theme::icons::chevron_right().size(px(12.))
+                            }),
+                    )
+                })
+                .on_click(cx.listener(
+                    move |feed, _, _, cx| {
+                        if expandable {
+                            feed.toggle_detail(row_id, cx);
+                        }
+                    },
+                )),
+            );
+        if expanded {
+            block = block.child(
+                div()
+                    .px(self.theme.space(10.))
+                    .pb(self.theme.space(8.))
+                    .pt(self.theme.space(4.))
+                    .border_t_1()
+                    .border_color(self.theme.line())
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(text.to_owned())
+                    .with_animation(
+                        ("tool-out-reveal", row_id),
+                        Animation::new(crate::motion::AUTO_HEIGHT)
+                            .with_easing(crate::motion::out_quint()),
+                        |el, delta| {
+                            el.opacity(delta)
+                                .relative()
+                                .top(px(4. * (1.0 - delta)))
+                        },
+                    ),
+            );
+        }
+        block.into_any_element()
     }
 }
 
@@ -1779,9 +2031,9 @@ impl Render for ChatFeed {
                             .justify_center()
                             .child(
                                 div()
-                                    .w_full()
-                                    .max_w(px(760.))
+                                    .flex_1()
                                     .min_w_0()
+                                    .max_w(px(760.))
                                     .px(feed.theme.space(32.))
                                     .py(feed.theme.space(4.))
                                     .child(feed.history_line(index, cx)),
@@ -1897,21 +2149,21 @@ impl Render for WorkingIndicator {
             self.visible,
             |element| {
                 element
-                    .px(self.theme.space(32.))
-                    .py(self.theme.space(4.))
                     .flex()
                     .items_center()
-                    .gap(self.theme.space(8.))
+                    .gap(self.theme.space(6.))
                     .text_xs()
                     .text_color(if self.error {
                         self.theme.danger()
                     } else {
                         self.theme.muted()
                     })
-                    .child(if self.error {
-                        theme::icons::circle_alert()
-                    } else {
-                        theme::icons::loader_circle()
+                    .when(self.error, |row| {
+                        row.child(
+                            theme::icons::circle_alert()
+                                .size(px(14.))
+                                .text_color(self.theme.danger()),
+                        )
                     })
                     .child(self.label.clone())
                     .when(retry, |row| {

@@ -347,56 +347,86 @@ impl crate::panel::StudioPanel {
             } else {
                 preview
             };
-            panel = panel.child(
-                div()
-                    .id(("pending-receipt", index))
-                    .role(gpui::Role::Status)
-                    .aria_label(label)
+            let row_content = div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.ink())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(heading),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.muted())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(meta),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .px(self.theme.space(6.))
+                        .py(px(1.))
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(self.t("chat.bg_task_queued")),
+                );
+            if let Some(hint) = receipt.session_hint.clone() {
+                panel = panel.child(
+                    theme::interactive(
+                        ("pending-receipt", index as u64),
+                        label,
+                        &self.theme,
+                    )
                     .w_full()
                     .min_w_0()
                     .px(self.theme.space(8.))
                     .py(self.theme.space(6.))
                     .rounded_lg()
                     .bg(self.theme.soft().opacity(0.45))
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.ink())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .child(heading),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.muted())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .child(meta),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .px(self.theme.space(6.))
-                            .py(px(1.))
-                            .rounded_md()
-                            .bg(self.theme.soft())
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .child(self.t("chat.bg_task_queued")),
-                    ),
-            );
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.soft()))
+                    .child(row_content)
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            panel.open_session(&hint, cx);
+                            panel.bg_tasks_open = false;
+                            cx.notify();
+                        },
+                    )),
+                );
+            } else {
+                panel = panel.child(
+                    div()
+                        .id(("pending-receipt", index))
+                        .role(gpui::Role::Status)
+                        .aria_label(label)
+                        .w_full()
+                        .min_w_0()
+                        .px(self.theme.space(8.))
+                        .py(self.theme.space(6.))
+                        .rounded_lg()
+                        .bg(self.theme.soft().opacity(0.45))
+                        .child(row_content),
+                );
+            }
         }
 
         if !has_running && self.pending_receipts.is_empty() {

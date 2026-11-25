@@ -143,7 +143,8 @@ impl ChatComposer {
             .justify_center()
             .child(
                 div()
-                    .w_full()
+                    .flex_1()
+                    .min_w_0()
                     .max_w(px(760.))
                     .rounded(px(20.))
                     .border_1()

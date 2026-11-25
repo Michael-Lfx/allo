@@ -120,54 +120,71 @@ impl crate::panel::StudioPanel {
         let count = active_work.to_string();
         let count_label =
             self.tf("chat.bg_tasks_pill", &[("count", count.as_str())]);
-        theme::interactive(
-            "home-desk-resume",
-            resume_label.clone(),
-            &self.theme,
-        )
-        .mt(self.theme.space(4.))
-        .px(self.theme.space(12.))
-        .py(self.theme.space(4.))
-        .rounded_full()
-        .bg(self.theme.pill_surface())
-        .shadow_sm()
-        .flex()
-        .items_center()
-        .gap(self.theme.space(8.))
-        .hover(|pill| pill.bg(self.theme.soft()))
-        .on_click(cx.listener(|panel, _event, _window, cx| {
-            panel.open_chief_assistant(cx);
-        }))
-        .child(
-            div()
-                .size(px(6.))
-                .flex_shrink_0()
-                .rounded_full()
-                .bg(self.theme.status_active())
-                .with_animation(
-                    "home-desk-resume-dot",
-                    Animation::new(crate::motion::PULSE)
-                        .repeat()
-                        .with_easing(crate::motion::pulsing_sine()),
-                    |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
+        theme::anchor_trigger(
+            theme::interactive(
+                "home-desk-resume",
+                resume_label.clone(),
+                &self.theme,
+            )
+            .aria_expanded(self.bg_tasks_open)
+            .mt(self.theme.space(4.))
+            .px(self.theme.space(12.))
+            .py(self.theme.space(4.))
+            .rounded_full()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.pill_surface())
+            .shadow_sm()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .cursor_pointer()
+            .hover(|pill| pill.bg(self.theme.soft()))
+            .on_click(cx.listener(|panel, _event, _window, cx| {
+                panel.toggle_bg_tasks(cx);
+            }))
+            .child(
+                div()
+                    .size(px(6.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(self.theme.status_active())
+                    .with_animation(
+                        "home-desk-resume-dot",
+                        Animation::new(crate::motion::PULSE)
+                            .repeat()
+                            .with_easing(crate::motion::pulsing_sine()),
+                        |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.ink())
+                    .child(resume_label),
+            )
+            .child(
+                div()
+                    .px(self.theme.space(8.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(self.theme.soft())
+                    .text_size(self.theme.caption_size())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.theme.status_active())
+                    .child(count_label),
+            )
+            .child(
+                div().flex_none().text_color(self.theme.muted()).child(
+                    if self.bg_tasks_open {
+                        theme::icons::chevron_up().size(px(12.))
+                    } else {
+                        theme::icons::chevron_down().size(px(12.))
+                    },
                 ),
-        )
-        .child(
-            div()
-                .text_size(self.theme.caption_size())
-                .text_color(self.theme.ink())
-                .child(resume_label),
-        )
-        .child(
-            div()
-                .px(self.theme.space(8.))
-                .py(px(1.))
-                .rounded_full()
-                .bg(self.theme.soft())
-                .text_size(self.theme.caption_size())
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(self.theme.status_active())
-                .child(count_label),
+            ),
+            "bg-tasks-trigger",
+            &self.ui,
         )
     }
 }
