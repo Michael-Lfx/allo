@@ -481,6 +481,7 @@ impl AgentHandle {
                         contract: Some(updated_brief),
                         model_prompt_override: Some(model_prompt),
                         skip_push_user_line: true,
+                        preserve_turn_denial: false,
                     }),
                 )?;
                 Ok(CardActionOutcome::CardResolved {
@@ -490,7 +491,9 @@ impl AgentHandle {
             }
             (
                 PendingCard::ToolApproval {
+                    tool_name,
                     args_hash: expected_hash,
+                    command_preview,
                     ..
                 },
                 CardSelection::ApproveTool { args_hash },
@@ -509,53 +512,113 @@ impl AgentHandle {
                         self.inner.state.report_storage_error();
                         "notice.session_storage_failed"
                     })?;
-                if let Some(session) =
-                    lock(&self.inner.state.live).get_mut(session_id)
+                lock(&self.inner.state.approved_tool_calls)
+                    .entry(session_id.to_owned())
+                    .or_default()
+                    .push((tool_name.clone(), args_hash));
                 {
-                    session.status = TurnStatus::Idle;
-                    session.updated_at = now_ms();
+                    let mut live = lock(&self.inner.state.live);
+                    if let Some(session) = live.get_mut(session_id) {
+                        session.status = TurnStatus::Idle;
+                        session.projection.lines.retain(|line| {
+                            !matches!(
+                                line,
+                                ChatLine::Status { text }
+                                    if text == TurnStatus::WaitingForUser.key()
+                            )
+                        });
+                    }
                 }
-                if persist_index(&self.inner.state).is_err() {
-                    self.inner.state.report_storage_error();
-                }
-                self.inner.state.push_update(AgentUpdate::Session {
-                    id: session_id.to_owned(),
-                });
+                let resume_prompt = format!(
+                    "[ToolApproved] 用户已批准执行 `{tool_name}`（命令预览：`{command_preview}`）。请使用与上次完全一致的参数继续完成该操作。"
+                );
+                let mut bytes = [0_u8; 16];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "notice.agent_failed")?;
+                let submission = u128::from_le_bytes(bytes);
+                self.inner.submit_message_targeted_locked(
+                    Some(session_id),
+                    &resume_prompt,
+                    Some(submission),
+                    None,
+                    None,
+                    None,
+                    Some(ResumedSubmission {
+                        contract: None,
+                        model_prompt_override: Some(resume_prompt.clone()),
+                        skip_push_user_line: true,
+                        preserve_turn_denial: false,
+                    }),
+                )?;
                 Ok(CardActionOutcome::CardResolved {
                     card_id: card_id.to_owned(),
-                    resumed: false,
+                    resumed: true,
                 })
             }
             (
-                PendingCard::ToolApproval { .. },
-                CardSelection::DenyTool { .. },
+                PendingCard::ToolApproval {
+                    tool_name,
+                    command_preview,
+                    ..
+                },
+                CardSelection::DenyTool { reason },
             ) => {
+                let deny_reason = reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("user denied tool execution")
+                    .to_owned();
                 engine
                     .take_pending_card(
                         session_id,
                         card_id,
-                        TurnState::Stopped,
+                        TurnState::Idle,
                         None,
                     )
                     .map_err(|_| {
                         self.inner.state.report_storage_error();
                         "notice.session_storage_failed"
                     })?;
-                if let Some(session) =
-                    lock(&self.inner.state.live).get_mut(session_id)
+                lock(&self.inner.state.denied_tool_turns)
+                    .insert(session_id.to_owned(), deny_reason.clone());
                 {
-                    session.status = TurnStatus::Stopped;
-                    session.updated_at = now_ms();
+                    let mut live = lock(&self.inner.state.live);
+                    if let Some(session) = live.get_mut(session_id) {
+                        session.status = TurnStatus::Idle;
+                        session.projection.lines.retain(|line| {
+                            !matches!(
+                                line,
+                                ChatLine::Status { text }
+                                    if text == TurnStatus::WaitingForUser.key()
+                            )
+                        });
+                    }
                 }
-                if persist_index(&self.inner.state).is_err() {
-                    self.inner.state.report_storage_error();
-                }
-                self.inner.state.push_update(AgentUpdate::Session {
-                    id: session_id.to_owned(),
-                });
+                let deny_prompt = format!(
+                    "[UserDenied] 用户已拒绝执行 `{tool_name}`（`{command_preview}`；原因：{deny_reason}）。严禁使用任何等价写命令或替代工具绕过此拒绝，请直接向用户确认已停止该操作。"
+                );
+                let mut bytes = [0_u8; 16];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "notice.agent_failed")?;
+                let submission = u128::from_le_bytes(bytes);
+                self.inner.submit_message_targeted_locked(
+                    Some(session_id),
+                    &deny_prompt,
+                    Some(submission),
+                    None,
+                    None,
+                    None,
+                    Some(ResumedSubmission {
+                        contract: None,
+                        model_prompt_override: Some(deny_prompt.clone()),
+                        skip_push_user_line: true,
+                        preserve_turn_denial: true,
+                    }),
+                )?;
                 Ok(CardActionOutcome::CardResolved {
                     card_id: card_id.to_owned(),
-                    resumed: false,
+                    resumed: true,
                 })
             }
             _ => Err("notice.card_selection_invalid"),
@@ -716,6 +779,15 @@ impl AgentHandle {
                         // until `RunFence` drops its `RunTicket` and
                         // `UiObserver::stop_settled` transitions to `Stopped`.
                         session.status = TurnStatus::Stopping;
+                        let hb = session
+                            .heartbeat
+                            .get_or_insert_with(Default::default);
+                        "stopping".clone_into(&mut hb.current_action);
+                        hb.next_check_hint = Some(
+                            "reaping active tools and writing stop handoff"
+                                .to_owned(),
+                        );
+                        hb.awaiting_evidence = true;
                     } else {
                         session.status = TurnStatus::Stopped;
                         session.projection.lines.push(ChatLine::Status {

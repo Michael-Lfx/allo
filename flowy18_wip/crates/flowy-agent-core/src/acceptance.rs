@@ -1101,7 +1101,7 @@ mod tests {
     fn empty_queue_reads_as_empty_not_missing() {
         let root = temp_root("empty");
         let queue = AcceptanceQueue::new(&root);
-        assert!(queue.pending().expect("pending").is_empty());
+        assert_eq!(queue.pending().expect("pending"), Vec::new());
         assert!(!AcceptanceQueue::path(&root).exists());
         fs::remove_dir_all(&root).expect("cleanup");
     }
@@ -1324,7 +1324,7 @@ mod tests {
                 .expect("give up")
         );
 
-        assert!(queue.pending_at(10_000_000).expect("pending").is_empty());
+        assert_eq!(queue.pending_at(10_000_000).expect("pending"), Vec::new());
         assert!(queue.all().expect("all")[0].dead);
         assert!(
             queue
@@ -1542,7 +1542,7 @@ mod tests {
                 .state_at(1_100),
             ReceiptState::Cancelled
         );
-        assert!(queue.pending_at(1_100).expect("pending").is_empty());
+        assert_eq!(queue.pending_at(1_100).expect("pending"), Vec::new());
         assert!(
             queue
                 .take(&queued.id, "attempt-1", 1_100, 500)

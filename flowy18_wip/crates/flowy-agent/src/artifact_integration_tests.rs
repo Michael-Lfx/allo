@@ -56,10 +56,24 @@ struct ProviderFixture {
 
 enum ProviderMode {
     Delivery,
-    ProjectWrite { path: String, content: String },
-    ProjectWriteThenFail { path: String, content: String },
+    ProjectWrite {
+        path: String,
+        content: String,
+    },
+    ProjectWriteThenFail {
+        path: String,
+        content: String,
+    },
     StageThenFail,
-    DelayedText { delay_ms: u64, reply: String },
+    DelayedText {
+        delay_ms: u64,
+        reply: String,
+    },
+    ToolApprovalScenario {
+        shell_tool: String,
+        risky_cmd: String,
+        bypass_write_path: String,
+    },
 }
 
 impl ProviderFixture {
@@ -89,6 +103,18 @@ impl ProviderFixture {
         Self::start_with(ProviderMode::DelayedText {
             delay_ms,
             reply: reply.into(),
+        })
+    }
+
+    fn start_tool_approval_scenario(
+        shell_tool: &str,
+        risky_cmd: &str,
+        bypass_write_path: &str,
+    ) -> Self {
+        Self::start_with(ProviderMode::ToolApprovalScenario {
+            shell_tool: shell_tool.into(),
+            risky_cmd: risky_cmd.into(),
+            bypass_write_path: bypass_write_path.into(),
         })
     }
 
@@ -124,6 +150,10 @@ impl ProviderFixture {
                         let has_tools = request["tools"]
                             .as_array()
                             .is_some_and(|tools| !tools.is_empty());
+                        let req_messages = request["messages"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
                         state.3.lock().unwrap().push(request);
                         let (delta, finish_reason) = if has_tools {
                             let index = state.1.fetch_add(1, Ordering::SeqCst);
@@ -240,6 +270,58 @@ impl ProviderFixture {
                                         json!({"role":"assistant","content": reply}),
                                         "stop",
                                     )
+                                }
+                                ProviderMode::ToolApprovalScenario {
+                                    shell_tool,
+                                    risky_cmd,
+                                    bypass_write_path,
+                                } => {
+                                    let last_user_idx = req_messages
+                                        .iter()
+                                        .rposition(|m| m["role"] == "user");
+                                    let last_user_text = last_user_idx
+                                        .and_then(|i| {
+                                            req_messages[i]["content"].as_str()
+                                        })
+                                        .unwrap_or("");
+                                    let has_tool_after_user = last_user_idx
+                                        .is_some_and(|i| {
+                                            req_messages[i + 1..]
+                                                .iter()
+                                                .any(|m| m["role"] == "tool")
+                                        });
+                                    if last_user_text
+                                        .contains("independent-session-b")
+                                    {
+                                        (
+                                            json!({"role":"assistant","content":"session B delivered"}),
+                                            "stop",
+                                        )
+                                    } else if has_tool_after_user {
+                                        (
+                                            json!({"role":"assistant","content":"turn settled after tool"}),
+                                            "stop",
+                                        )
+                                    } else if last_user_text
+                                        .contains("[UserDenied]")
+                                    {
+                                        // Adversarially attempt an equivalent
+                                        // write bypass inside the denied turn.
+                                        tool_delta(
+                                            &format!("bypass-write-{index}"),
+                                            "write_file",
+                                            json!({
+                                                "path": bypass_write_path,
+                                                "content": "should never be written"
+                                            }),
+                                        )
+                                    } else {
+                                        tool_delta(
+                                            &format!("risky-shell-{index}"),
+                                            shell_tool,
+                                            json!({ "command": risky_cmd }),
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -1921,4 +2003,213 @@ fn revise_active_contract_cancels_redispatches_with_new_revision_and_persists_st
         .session_stop_handoff(&session)
         .expect("StopHandoffManifest persists across restart");
     assert_eq!(persisted.input_revision, 1);
+}
+
+#[test]
+fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_and_enforces_deny_anti_bypass()
+ {
+    let scratch = Scratch::new();
+    let (shell_tool, risky_cmd) = if cfg!(windows) {
+        (
+            "powershell",
+            "Remove-Item -Recurse -Force ./deliverables -ErrorAction SilentlyContinue",
+        )
+    } else {
+        ("bash", "rm -rf ./deliverables")
+    };
+    let provider = ProviderFixture::start_tool_approval_scenario(
+        shell_tool,
+        risky_cmd,
+        "bypassed.txt",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session_a = handle.create_home_session().unwrap();
+    let ws_a = flowy_agent_core::SessionIndex::load(&scratch.0)
+        .unwrap()
+        .get(&session_a)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let deliverables_a = ws_a.join("deliverables");
+    fs::create_dir_all(&deliverables_a).unwrap();
+    fs::write(deliverables_a.join("keep.txt"), b"important").unwrap();
+
+    // 1) Session A hits medium-risk shell command -> pre_tool_hook Ask parks it
+    //    in WaitingForUser BEFORE spawning any subprocess!
+    handle
+        .submit_chat(951, "clean up old deliverables folder")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline
+        && handle.session_status(&session_a) != TurnStatus::WaitingForUser
+    {
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(
+        handle.session_status(&session_a),
+        TurnStatus::WaitingForUser
+    );
+    assert!(
+        !handle.has_busy_session(),
+        "WaitingForUser must release RunFence immediately"
+    );
+    assert!(
+        deliverables_a.exists(),
+        "deliverables folder must remain untouched before user approval"
+    );
+    let cards = handle.session_pending_cards(&session_a);
+    assert_eq!(cards.len(), 1);
+    let (card_id, args_hash) = match &cards[0] {
+        crate::PendingCard::ToolApproval {
+            card_id,
+            tool_name,
+            args_hash,
+            risk_reason,
+            ..
+        } => {
+            assert_eq!(tool_name, shell_tool);
+            assert_eq!(args_hash.len(), 64);
+            assert_ne!(risk_reason, "");
+            (card_id.clone(), args_hash.clone())
+        }
+        other @ crate::PendingCard::Disambiguation { .. } => {
+            panic!("expected ToolApproval card, got {other:?}")
+        }
+    };
+
+    // 2) Independent Session B runs to Completed while Session A stays parked!
+    let session_b = handle.create_home_session().unwrap();
+    handle
+        .submit_chat(952, "independent-session-b quick task")
+        .unwrap();
+    let b_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < b_deadline
+        && handle.session_status(&session_b) != TurnStatus::Completed
+    {
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(handle.session_status(&session_b), TurnStatus::Completed);
+    assert_eq!(
+        handle.session_status(&session_a),
+        TurnStatus::WaitingForUser
+    );
+
+    // 3) Graceful shutdown + cold restart preserves Session A's WaitingForUser + card.
+    handle.prepare_shutdown_with_timeout(Duration::from_millis(200));
+    assert_eq!(
+        handle.session_status(&session_a),
+        TurnStatus::WaitingForUser
+    );
+    drop(handle);
+
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    assert_eq!(
+        reopened.session_status(&session_a),
+        TurnStatus::WaitingForUser
+    );
+    assert_eq!(reopened.session_pending_cards(&session_a).len(), 1);
+
+    // 4) Wrong args_hash is rejected fail-closed and leaves card intact.
+    assert_eq!(
+        reopened.apply_card_action(crate::CardAction::ResolveCard {
+            session_id: session_a.clone(),
+            card_id: card_id.clone(),
+            selection: crate::CardSelection::ApproveTool {
+                args_hash: "0".repeat(64),
+            },
+        }),
+        Err("notice.approval_hash_mismatch")
+    );
+    assert_eq!(reopened.session_pending_cards(&session_a).len(), 1);
+
+    // 5) Exact args_hash approves once, resumes, executes command, and completes.
+    let approved = reopened
+        .apply_card_action(crate::CardAction::ResolveCard {
+            session_id: session_a.clone(),
+            card_id: card_id.clone(),
+            selection: crate::CardSelection::ApproveTool { args_hash },
+        })
+        .expect("exact args_hash must approve");
+    assert_eq!(
+        approved,
+        crate::CardActionOutcome::CardResolved {
+            card_id,
+            resumed: true,
+        }
+    );
+    let a_done = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < a_done
+        && reopened.session_status(&session_a) != TurnStatus::Completed
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(reopened.session_status(&session_a), TurnStatus::Completed);
+    assert_eq!(reopened.session_pending_cards(&session_a), Vec::new());
+
+    // 6) DenyTool triggers turn-scoped UserDenied anti-bypass: adversarial
+    //    model trying `write_file` in the same resumed turn is blocked by host!
+    let session_c = reopened.create_home_session().unwrap();
+    let ws_c = flowy_agent_core::SessionIndex::load(&scratch.0)
+        .unwrap()
+        .get(&session_c)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    reopened
+        .submit_chat(953, "clean deliverables on session C")
+        .unwrap();
+    let c_wait = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < c_wait
+        && reopened.session_status(&session_c) != TurnStatus::WaitingForUser
+    {
+        thread::sleep(Duration::from_millis(15));
+    }
+    let c_cards = reopened.session_pending_cards(&session_c);
+    assert_eq!(c_cards.len(), 1);
+    let c_card_id = c_cards[0].card_id().to_owned();
+    let denied = reopened
+        .apply_card_action(crate::CardAction::ResolveCard {
+            session_id: session_c.clone(),
+            card_id: c_card_id.clone(),
+            selection: crate::CardSelection::DenyTool {
+                reason: Some("keep deliverables".into()),
+            },
+        })
+        .expect("deny tool approval");
+    assert_eq!(
+        denied,
+        crate::CardActionOutcome::CardResolved {
+            card_id: c_card_id,
+            resumed: true,
+        }
+    );
+    let c_done = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < c_done
+        && reopened.session_status(&session_c) != TurnStatus::Completed
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(reopened.session_status(&session_c), TurnStatus::Completed);
+    assert!(
+        !ws_c.join("bypassed.txt").exists(),
+        "turn-scoped UserDenied must block equivalent write_file bypass in the same turn"
+    );
+    assert!(
+        reopened.session_lines(&session_c).iter().any(|line| {
+            matches!(
+                line,
+                ChatLine::ToolResult { text, is_error: true }
+                    if text.contains("USER_DENIED")
+            )
+        }),
+        "blocked bypass must surface USER_DENIED error result: {:?}",
+        reopened.session_lines(&session_c)
+    );
 }

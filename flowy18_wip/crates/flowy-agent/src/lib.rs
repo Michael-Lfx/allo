@@ -39,8 +39,9 @@ pub use flowy_agent_core::{
     SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
     TrackedObjectKind, WorkContract,
     tools::{
-        SandboxAvailability, SandboxBackend, SandboxPolicy,
-        detect_sandbox_availability, has_reserved_device_component,
+        SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
+        SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,
+        evaluate_shell_command, has_reserved_device_component,
         is_windows_reparse_point,
     },
 };
@@ -48,7 +49,7 @@ pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
     CardAction, CardActionOutcome, CardSelection, ReviseOutcome,
-    SessionSummary, TaskTarget, WorkStatus,
+    SessionSummary, TaskTarget, WorkStatus, canonical_tool_args_hash,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{

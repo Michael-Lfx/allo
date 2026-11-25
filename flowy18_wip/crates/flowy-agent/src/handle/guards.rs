@@ -3,13 +3,96 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use flowy_agent_core::tools::evaluate_shell_command;
+use flowy_agent_core::tools::{ShellPolicyDecision, evaluate_shell_command};
 use flowy_skills::{InstalledSkill, SkillId};
 
 use super::{
     AgentWorkspace, Arc, Path, PathBuf, ToolCallArgs, ToolGuard, ToolRegistry,
     lock, log_storage_io_error, pi_shell_definition, register_builtin_tools,
 };
+
+/// Compute a deterministic SHA-256 hex digest over `(tool_name, canonical(args))`
+/// so `PendingCard::ToolApproval` approvals are pinned to exact invocation args.
+#[must_use]
+pub fn canonical_tool_args_hash(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> String {
+    let canonical = flowy_agent_core::canonical_tool_args_json(tool_name, args);
+    crate::delivery::hash_bytes(canonical.as_bytes())
+}
+
+/// Build the host `PreToolHook` wired into `rpi_agent`'s `before_tool_call`
+/// enforcing turn-scoped `UserDenied` anti-bypass, 3-way `shell_policy`
+/// (`Allow | Ask | Deny`), and one-shot `args_hash` approval grants.
+pub(super) fn build_pre_tool_hook(
+    session_id: String,
+    cwd: PathBuf,
+    state: Arc<super::UiState>,
+) -> flowy_agent_core::PreToolHook {
+    Arc::new(move |tool_name: &str, args: &serde_json::Value| {
+        if matches!(
+            tool_name,
+            "bash" | "powershell" | "write_file" | "edit_file" | "create_deck"
+        ) {
+            let denied =
+                lock(&state.denied_tool_turns).get(&session_id).cloned();
+            if let Some(reason) = denied {
+                return flowy_agent_core::PreToolDecision::Deny {
+                    reason: format!(
+                        "USER_DENIED: user denied a risky action in this turn ({reason}); bypassing with {tool_name} is forbidden"
+                    ),
+                };
+            }
+        }
+        if matches!(tool_name, "bash" | "powershell")
+            && let Some(command) =
+                args.get("command").and_then(serde_json::Value::as_str)
+        {
+            match evaluate_shell_command(command, &cwd) {
+                ShellPolicyDecision::Allow => {
+                    return flowy_agent_core::PreToolDecision::Allow;
+                }
+                ShellPolicyDecision::Deny { code, reason } => {
+                    return flowy_agent_core::PreToolDecision::Deny {
+                        reason: format!("{code}: {reason}"),
+                    };
+                }
+                ShellPolicyDecision::Ask { reason, .. } => {
+                    let args_hash = canonical_tool_args_hash(tool_name, args);
+                    let consumed_grant = {
+                        let mut grants = lock(&state.approved_tool_calls);
+                        if let Some(list) = grants.get_mut(&session_id)
+                            && let Some(pos) = list.iter().position(|(t, h)| {
+                                t == tool_name && h == &args_hash
+                            })
+                        {
+                            list.remove(pos);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if consumed_grant {
+                        return flowy_agent_core::PreToolDecision::Allow;
+                    }
+                    let preview =
+                        flowy_agent_core::log_preview(command.trim(), 160);
+                    return flowy_agent_core::PreToolDecision::Ask {
+                        target_summary: format!(
+                            "{tool_name} ({})",
+                            cwd.display()
+                        ),
+                        args_hash,
+                        risk_reason: reason,
+                        command_preview: preview,
+                    };
+                }
+            }
+        }
+        flowy_agent_core::PreToolDecision::Allow
+    })
+}
 
 pub(super) fn ensure_tool_cwd(root: &Path) -> PathBuf {
     let dir = root.join("sessions").join("cwd");

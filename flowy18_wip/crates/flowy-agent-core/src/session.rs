@@ -747,8 +747,10 @@ mod tests {
     #[test]
     fn tool_arguments_and_pairing_survive_a_round_trip() {
         let scratch = Scratch::new("roundtrip");
-        let mut index = SessionIndex::default();
-        index.active = Some("session-1".into());
+        let mut index = SessionIndex {
+            active: Some("session-1".into()),
+            ..SessionIndex::default()
+        };
         index.upsert(record());
         index.save(&scratch.0).unwrap();
 
@@ -777,7 +779,7 @@ mod tests {
     fn missing_file_is_an_empty_index_not_an_error() {
         let scratch = Scratch::new("missing");
         let index = SessionIndex::load(&scratch.0).unwrap();
-        assert!(index.sessions.is_empty());
+        assert_eq!(index.sessions, Vec::new());
         assert!(index.active.is_none());
     }
 
@@ -819,7 +821,7 @@ mod tests {
                 .unwrap();
         assert_eq!(record.origin, SessionOrigin::Unknown);
         assert!(record.workspace.is_none());
-        assert!(record.delivery_commits.is_empty());
+        assert_eq!(record.delivery_commits, Vec::new());
         let result: ContentBlock = serde_json::from_str(
             r#"{"type":"tool-result","tool_call_id":"old-call","content":[],"is_error":false}"#,
         ).unwrap();

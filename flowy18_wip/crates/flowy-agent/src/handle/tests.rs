@@ -1731,4 +1731,87 @@ mod guard_tests {
         drop(reopened);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn canonical_tool_args_hash_is_order_independent_sha256() {
+        let a = serde_json::json!({
+            "b": 2,
+            "a": { "z": true, "y": "hello" },
+            "command": "rm -rf ./outputs"
+        });
+        let b = serde_json::json!({
+            "command": "rm -rf ./outputs",
+            "a": { "y": "hello", "z": true },
+            "b": 2
+        });
+        let c = serde_json::json!({
+            "command": "rm -rf ./other",
+            "a": { "y": "hello", "z": true },
+            "b": 2
+        });
+        let hash_a = super::canonical_tool_args_hash("bash", &a);
+        let hash_b = super::canonical_tool_args_hash("bash", &b);
+        let hash_c = super::canonical_tool_args_hash("bash", &c);
+        assert_eq!(hash_a.len(), 64, "must be full SHA-256 hex digest");
+        assert_eq!(hash_a, hash_b);
+        assert_ne!(hash_a, hash_c);
+        assert_ne!(hash_a, super::canonical_tool_args_hash("powershell", &a));
+    }
+
+    #[test]
+    fn branch_heartbeat_updates_strictly_on_real_events_and_never_fabricates_progress()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s3-heartbeat-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        assert_eq!(handle.session_heartbeat(&sid), None);
+
+        use flowy_agent_core::TurnObserver as _;
+        let observer = super::UiObserver {
+            state: Arc::clone(&handle.inner.state),
+        };
+        observer.tool_start(
+            &sid,
+            "c1",
+            "read_file",
+            &serde_json::json!({"path": "brief.md"}),
+        );
+        let snap1 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat after tool_start");
+        assert_eq!(snap1.last_completed, None);
+        assert!(snap1.awaiting_evidence);
+        assert!(snap1.current_action.contains("read_file"));
+        // Repeated reads with zero new events must return the exact same snapshot.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(handle.session_heartbeat(&sid), Some(snap1));
+
+        observer.tool_end(&sid, "c1", "read_file", "ok", false);
+        let snap2 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat after tool_end");
+        assert_eq!(snap2.last_completed.as_deref(), Some("read_file"));
+        assert!(snap2.last_completed_at_ms.is_some());
+        assert!(!snap2.awaiting_evidence);
+
+        observer.finished(&sid, flowy_agent_core::LoopOutcome::Completed);
+        let snap3 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat preserved after finish");
+        assert_eq!(snap3.last_completed.as_deref(), Some("read_file"));
+        assert_eq!(snap3.current_action, "");
+        assert_eq!(snap3.next_check_hint, None);
+        assert!(!snap3.awaiting_evidence);
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

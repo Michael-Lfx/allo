@@ -4,19 +4,21 @@
 //! converts between the stored [`Message`] vocabulary and pi's agent messages.
 //! Tool execution is wired by the embedding host (see `tools`).
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rpi_agent::hooks::AgentLoopConfig;
 use rpi_agent::{
-    AgentContext, AgentEmitter, AgentMessage, AgentTool, StreamFn,
-    run_agent_loop,
+    AgentContext, AgentEmitter, AgentMessage, AgentTool, BeforeToolCallResult,
+    StreamFn, run_agent_loop,
 };
 use rpi_ai::types::{
     Api, AssistantMessage, Content, StopReason, ThinkingContent, ToolCall,
     ToolCallType, ToolResultMessage, ToolResultRole, UserContent, UserMessage,
 };
 
+use crate::session::PendingCard;
 use crate::types::{CancelToken, ContentBlock, Message, MessageSource, Role};
 
 /// Hard ceiling on assistant/tool-loop turns inside a single submission so a
@@ -62,6 +64,64 @@ impl ModelRoute {
     }
 }
 
+/// Decision returned by a host-owned [`PreToolHook`] inside `before_tool_call`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreToolDecision {
+    Allow,
+    Deny {
+        reason: String,
+    },
+    Ask {
+        target_summary: String,
+        args_hash: String,
+        risk_reason: String,
+        command_preview: String,
+    },
+}
+
+/// Host pre-execution hook invoked before each tool call inside `rpi_agent`.
+pub type PreToolHook =
+    Arc<dyn Fn(&str, &serde_json::Value) -> PreToolDecision + Send + Sync>;
+
+/// Deterministic canonical JSON representation of `(tool_name, args)` with
+/// recursively sorted object keys so SHA-256 `args_hash` values are stable
+/// across JSON key permutations.
+#[must_use]
+pub fn canonical_tool_args_json(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> String {
+    fn canonicalize(val: &serde_json::Value) -> serde_json::Value {
+        match val {
+            serde_json::Value::Object(map) => {
+                let mut sorted = BTreeMap::new();
+                for (k, v) in map {
+                    sorted.insert(k.clone(), canonicalize(v));
+                }
+                let mut out = serde_json::Map::new();
+                for (k, v) in sorted {
+                    out.insert(k, v);
+                }
+                serde_json::Value::Object(out)
+            }
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items.iter().map(canonicalize).collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let payload = serde_json::json!({
+        "args": canonicalize(args),
+        "tool": tool_name,
+    });
+    serde_json::to_string(&payload).unwrap_or_default()
+}
+
+fn next_approval_card_id(now: u64) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("approval-{now}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 /// Inputs for one turn.
 pub struct TurnRequest {
     pub session_id: Option<String>,
@@ -71,6 +131,7 @@ pub struct TurnRequest {
     pub route: ModelRoute,
     pub tools: Vec<Arc<dyn AgentTool>>,
     pub signal: CancelToken,
+    pub pre_tool_hook: Option<PreToolHook>,
 }
 
 impl std::fmt::Debug for TurnRequest {
@@ -80,6 +141,7 @@ impl std::fmt::Debug for TurnRequest {
             .field("prompt_len", &self.prompt.len())
             .field("route", &self.route)
             .field("tools", &self.tools.len())
+            .field("has_pre_tool_hook", &self.pre_tool_hook.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +153,9 @@ pub struct TurnResult {
     pub outcome: LoopOutcome,
     /// Last assistant error text when [`LoopOutcome::Failed`].
     pub error: Option<String>,
+    /// Populated when [`LoopOutcome::WaitingForUser`] suspended before a
+    /// medium-risk tool call requiring explicit confirmation.
+    pub pending_approval: Option<PendingCard>,
 }
 
 /// Truncate text for diagnostic logs (UTF-8 safe by character count).
@@ -111,6 +176,7 @@ pub enum LoopOutcome {
     Completed,
     Failed,
     Aborted,
+    WaitingForUser,
 }
 
 /// Run one turn.
@@ -166,8 +232,84 @@ pub async fn run_turn(
                 async move { compact_context_messages(messages, char_budget) },
             )
         });
+    let suspended_card: Arc<Mutex<Option<PendingCard>>> =
+        Arc::new(Mutex::new(None));
+    let before_tool_call: Option<rpi_agent::hooks::BeforeToolCall> =
+        request.pre_tool_hook.map(|hook| {
+            let slot = Arc::clone(&suspended_card);
+            let cb: rpi_agent::hooks::BeforeToolCall =
+                Arc::new(move |ctx, _signal| {
+                    let already_suspended = slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some();
+                    if already_suspended {
+                        return Box::pin(async {
+                            Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(
+                                    "TOOL_APPROVAL_REQUIRED: turn suspended awaiting user confirmation"
+                                        .to_owned(),
+                                ),
+                                terminate: true,
+                                args: None,
+                            })
+                        });
+                    }
+                    let decision = hook(&ctx.tool_call.name, ctx.args);
+                    let result = match decision {
+                        PreToolDecision::Allow => None,
+                        PreToolDecision::Deny { reason } => {
+                            Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(reason),
+                                terminate: false,
+                                args: None,
+                            })
+                        }
+                        PreToolDecision::Ask {
+                            target_summary,
+                            args_hash,
+                            risk_reason,
+                            command_preview,
+                        } => {
+                            let now = u64::try_from(now_ms()).unwrap_or(0);
+                            let card = PendingCard::ToolApproval {
+                                card_id: next_approval_card_id(now),
+                                created_at_ms: now,
+                                tool_name: ctx.tool_call.name.clone(),
+                                target_summary,
+                                args_hash,
+                                risk_reason,
+                                command_preview,
+                            };
+                            *slot
+                                .lock()
+                                .unwrap_or_else(
+                                    std::sync::PoisonError::into_inner,
+                                ) = Some(card);
+                            Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(
+                                    "TOOL_APPROVAL_REQUIRED: awaiting explicit user confirmation"
+                                        .to_owned(),
+                                ),
+                                terminate: true,
+                                args: None,
+                            })
+                        }
+                    };
+                    Box::pin(async move { result })
+                });
+            cb
+        });
+    let stop_slot = Arc::clone(&suspended_card);
     let should_stop_after_turn: rpi_agent::hooks::ShouldStopAfterTurn =
-        Arc::new(|ctx| {
+        Arc::new(move |ctx| {
+            let awaiting_approval = stop_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some();
             let assistant_turns = ctx
                 .new_messages
                 .iter()
@@ -183,8 +325,9 @@ pub async fn run_turn(
                     "max tool turns reached; stopping submission loop"
                 );
             }
-            let same_error_trip =
-                should_trip_same_error_breaker(ctx.new_messages);
+            let same_error_trip = (!awaiting_approval)
+                .then(|| should_trip_same_error_breaker(ctx.new_messages))
+                .flatten();
             if let Some(trip) = &same_error_trip {
                 tracing::warn!(
                     target: "flowy.prompt",
@@ -198,7 +341,8 @@ pub async fn run_turn(
                     "same-error zero-new-evidence circuit breaker tripped; stopping submission loop"
                 );
             }
-            let stop = hit_cap || same_error_trip.is_some();
+            let stop =
+                awaiting_approval || hit_cap || same_error_trip.is_some();
             Box::pin(async move { stop })
         });
     let signal = request.signal.inner();
@@ -214,7 +358,7 @@ pub async fn run_turn(
         get_steering_messages: None,
         get_follow_up_messages: None,
         pending_message_count: None,
-        before_tool_call: None,
+        before_tool_call,
         after_tool_call: None,
         tool_execution: rpi_agent::ToolExecutionMode::Sequential,
         thinking_level: rpi_ai::types::ThinkingLevel::Off,
@@ -231,7 +375,15 @@ pub async fn run_turn(
         run_agent_loop(prompts, context, config, emit, stream_fn)
             .await
             .map_err(|error| error.to_string())?;
-    let outcome = outcome_of(&new_messages);
+    let pending_approval = suspended_card
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let outcome = if pending_approval.is_some() {
+        LoopOutcome::WaitingForUser
+    } else {
+        outcome_of(&new_messages)
+    };
     let error = failure_detail(&new_messages);
     let messages = to_host_messages(&new_messages);
     if outcome == LoopOutcome::Failed {
@@ -257,6 +409,7 @@ pub async fn run_turn(
         messages,
         outcome,
         error,
+        pending_approval,
     })
 }
 
@@ -281,6 +434,7 @@ pub async fn complete_text(
             route,
             tools: Vec::new(),
             signal,
+            pre_tool_hook: None,
         },
         stream,
         Arc::new(emitter),
@@ -1466,6 +1620,7 @@ mod tests {
                 route: route(),
                 tools: Vec::new(),
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             scripted_stream_capturing(
                 "ok",
@@ -1517,6 +1672,7 @@ mod tests {
                 route: route(),
                 tools: Vec::new(),
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             scripted_stream("hello", StopReason::Stop),
             Arc::new(emitter),
@@ -1543,6 +1699,7 @@ mod tests {
                 route: route(),
                 tools: Vec::new(),
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             scripted_stream("boom", StopReason::Error),
             Arc::new(emitter),
@@ -1704,6 +1861,7 @@ mod tests {
                 route: route(),
                 tools: vec![tool],
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             stream,
             Arc::new(emitter),
@@ -2036,6 +2194,7 @@ mod tests {
                 route: route(),
                 tools: vec![tool],
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             make_tool_stream(
                 "write_file",
@@ -2080,6 +2239,7 @@ mod tests {
                 route: route(),
                 tools: vec![tool],
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             make_tool_stream(
                 "read_file",
@@ -2135,6 +2295,7 @@ mod tests {
                 route: route(),
                 tools: vec![tool],
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             make_tool_stream(
                 "write_file",
@@ -2147,5 +2308,77 @@ mod tests {
         .unwrap();
         // Turn 0: err (streak=1) -> Turn 1: ok (streak=0) -> Turn 2: err (streak=1) -> Turn 3: err (streak=2 -> stop)
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn before_tool_call_ask_suspends_cleanly_without_executing_tool() {
+        let executed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executed_ref = Arc::clone(&executed);
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "powershell",
+            "risky shell command",
+            serde_json::json!({"type": "object"}),
+            move |_args, _ctx| {
+                executed_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    crate::types::ToolExecutionResult::success_text(
+                        "ran",
+                        serde_json::json!({"ok": true}),
+                    )
+                })
+            },
+        ));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook: super::PreToolHook = Arc::new(|name, args| {
+            let canonical = super::canonical_tool_args_json(name, args);
+            super::PreToolDecision::Ask {
+                target_summary: name.to_owned(),
+                args_hash: format!("hash:{canonical}"),
+                risk_reason: "destructive workspace delete".to_owned(),
+                command_preview: "Remove-Item -Recurse -Force ./deliverables"
+                    .to_owned(),
+            }
+        });
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: Some("s-ask".into()),
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "clean deliverables".into(),
+                route: route(),
+                tools: vec![tool],
+                signal: CancelToken::new(),
+                pre_tool_hook: Some(hook),
+            },
+            make_tool_stream(
+                "powershell",
+                serde_json::json!({"command": "Remove-Item -Recurse -Force ./deliverables"}),
+                Arc::clone(&calls),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::WaitingForUser);
+        assert_eq!(
+            executed.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "tool body must NEVER execute when pre_tool_hook returns Ask"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        match result.pending_approval {
+            Some(crate::session::PendingCard::ToolApproval {
+                tool_name,
+                risk_reason,
+                ..
+            }) => {
+                assert_eq!(tool_name, "powershell");
+                assert_eq!(risk_reason, "destructive workspace delete");
+            }
+            other => {
+                panic!("expected PendingCard::ToolApproval, got {other:?}")
+            }
+        }
     }
 }

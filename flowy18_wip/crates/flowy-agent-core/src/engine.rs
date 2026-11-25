@@ -13,7 +13,9 @@ use futures::future::BoxFuture;
 use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
-use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
+use crate::loop_runner::{
+    LoopOutcome, ModelRoute, PreToolHook, TurnRequest, run_turn,
+};
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
     DeliveryCommit, DeliveryCommitter, ObjectVerifyState, PendingCard,
@@ -65,6 +67,10 @@ pub trait TurnObserver: Send + Sync {
     /// A cancelled run finished unwinding and reaping child tools, persisted
     /// its 5-element [`StopHandoffManifest`], and transitioned to `Stopped`.
     fn stop_settled(&self, _session: &str, _manifest: &StopHandoffManifest) {}
+    /// A turn suspended cleanly before executing a medium-risk tool call,
+    /// persisted its [`PendingCard::ToolApproval`], released `RunFence`, and
+    /// transitioned to `WaitingForUser`.
+    fn waiting_for_user(&self, _session: &str, _card: &PendingCard) {}
 }
 
 /// Everything needed to run a turn in this engine.
@@ -81,6 +87,8 @@ pub struct EngineConfig {
     /// Optional work contract to persist atomically once the session run fence
     /// is acquired in [`Engine::prepare`].
     pub work_contract: Option<WorkContract>,
+    /// Optional host pre-tool gate wired into `rpi_agent`'s `before_tool_call`.
+    pub pre_tool_hook: Option<PreToolHook>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -996,6 +1004,7 @@ impl Engine {
             route: config.route,
             tools,
             signal: ticket.signal().clone(),
+            pre_tool_hook: config.pre_tool_hook,
         };
         let emitter = Arc::new(EngineEmitter {
             session: session_id.to_owned(),
@@ -1084,35 +1093,58 @@ impl Engine {
                         });
                         record.delivery_commits.push(commit.clone());
                     }
+                    let pending_approval = result.pending_approval.clone();
+                    if let Some(card) = &pending_approval {
+                        record
+                            .pending_cards
+                            .retain(|c| c.card_id() != card.card_id());
+                        record.pending_cards.push(card.clone());
+                    }
                     record.status =
                         status_for(result.outcome, error.as_deref());
                     if let Some(sub_id) = submission_id.as_ref() {
-                        let outcome_entry = match result.outcome {
+                        match result.outcome {
                             LoopOutcome::Completed => {
                                 let missing = missing_required_for_submission(
                                     record, sub_id,
                                 );
-                                if missing.is_empty() {
+                                let outcome_entry = if missing.is_empty() {
                                     SubmissionOutcome::Completed
                                 } else {
                                     SubmissionOutcome::Partial { missing }
-                                }
+                                };
+                                record
+                                    .submission_outcomes
+                                    .insert(sub_id.clone(), outcome_entry);
                             }
-                            LoopOutcome::Aborted => SubmissionOutcome::Aborted,
-                            LoopOutcome::Failed => SubmissionOutcome::Failed {
-                                message: error
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|text| !text.is_empty())
-                                    .unwrap_or("model reported an error")
-                                    .to_owned(),
-                            },
-                        };
-                        record
-                            .submission_outcomes
-                            .insert(sub_id.clone(), outcome_entry);
+                            LoopOutcome::Aborted => {
+                                record.submission_outcomes.insert(
+                                    sub_id.clone(),
+                                    SubmissionOutcome::Aborted,
+                                );
+                            }
+                            LoopOutcome::Failed => {
+                                record.submission_outcomes.insert(
+                                    sub_id.clone(),
+                                    SubmissionOutcome::Failed {
+                                        message: error
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|text| !text.is_empty())
+                                            .unwrap_or(
+                                                "model reported an error",
+                                            )
+                                            .to_owned(),
+                                    },
+                                );
+                            }
+                            LoopOutcome::WaitingForUser => {
+                                // Suspended awaiting user confirmation; do not
+                                // record a terminal Failed/Aborted outcome.
+                            }
+                        }
                     }
-                    Ok((result.outcome, commit))
+                    Ok((result.outcome, commit, pending_approval))
                 }
                 Err(message) => {
                     tracing::warn!(
@@ -1163,14 +1195,32 @@ impl Engine {
                 return Err(RunError::Storage(error));
             }
             match result {
-                Ok((outcome, Some(commit))) => {
+                Ok((outcome, Some(commit), _)) => {
                     // This lock also serializes request_cancel. The successful
                     // history save is the delivery's linearization point.
                     inner.finalizing.insert(session_id.to_owned());
                     drop(inner);
                     (outcome, commit)
                 }
-                Ok((outcome, None)) => {
+                Ok((LoopOutcome::WaitingForUser, None, Some(card))) => {
+                    if !ticket.is_current() {
+                        drop(inner);
+                        self.settle_cancelled_run(
+                            session_id,
+                            prompt,
+                            &cancel_trace,
+                            &ticket,
+                        );
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    if !ticket.finish() {
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    drop(inner);
+                    self.observer.waiting_for_user(session_id, &card);
+                    return Ok(LoopOutcome::WaitingForUser);
+                }
+                Ok((outcome, None, _)) => {
                     // History is durably saved; finish under the same lock so
                     // `request_cancel` cannot split durable history from live
                     // observer/queue state in a gap before `ticket.finish()`.
@@ -1481,6 +1531,7 @@ fn status_for(outcome: LoopOutcome, error: Option<&str>) -> TurnState {
     match outcome {
         LoopOutcome::Completed => TurnState::Completed,
         LoopOutcome::Aborted => TurnState::Stopped,
+        LoopOutcome::WaitingForUser => TurnState::WaitingForUser,
         LoopOutcome::Failed => TurnState::Error {
             message: error
                 .map(str::trim)
@@ -2027,6 +2078,7 @@ mod tests {
             todos: None,
             delivery_committer: None,
             work_contract: None,
+            pre_tool_hook: None,
         }
     }
 
@@ -2128,7 +2180,10 @@ mod tests {
             .unwrap();
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
     }
 
     #[tokio::test]
@@ -2169,7 +2224,10 @@ mod tests {
         assert_eq!(outcome, LoopOutcome::Failed);
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
     }
 
     #[tokio::test]
@@ -2319,7 +2377,10 @@ mod tests {
         released.notify_one();
         assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
         assert_eq!(engine.session("home").unwrap().status, TurnState::Stopped);
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
         assert_eq!(*observer.saving_files.lock().unwrap(), 0);
@@ -2659,7 +2720,7 @@ mod tests {
             });
             consumer
         });
-        let _hold = tx;
+        let hold = tx;
         let engine = Arc::new(engine);
         let run = {
             let engine = Arc::clone(&engine);
@@ -2674,7 +2735,7 @@ mod tests {
             other => panic!("expected Busy, got {other:?}"),
         }
         engine.cancel("s1").unwrap();
-        drop(_hold);
+        drop(hold);
         let _ = run.await;
     }
 
@@ -3083,14 +3144,14 @@ mod tests {
         assert_eq!(manifest.input_revision, 3);
         assert!(manifest.command_summary.contains("slow_reap"));
         assert_eq!(manifest.modified_files, vec!["draft.txt".to_owned()]);
-        assert!(!manifest.verified_effects.is_empty());
+        assert_ne!(manifest.verified_effects, Vec::<String>::new());
         assert!(
             manifest
                 .pending_checks
                 .iter()
                 .any(|item| item.contains("青禾项目报价汇报.pptx"))
         );
-        assert!(!manifest.rollback_hint.is_empty());
+        assert_ne!(manifest.rollback_hint, "");
         assert_eq!(observer.settled.lock().unwrap().len(), 1);
     }
 }

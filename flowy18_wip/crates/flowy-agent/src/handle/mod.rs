@@ -59,9 +59,12 @@ mod queue;
 mod tests;
 mod work;
 
-pub use self::guards::{confined_to, has_reserved_device_component};
 use self::guards::{
-    ensure_tool_cwd, session_working_directory, tool_registry, tool_target,
+    build_pre_tool_hook, ensure_tool_cwd, session_working_directory,
+    tool_registry, tool_target,
+};
+pub use self::guards::{
+    canonical_tool_args_hash, confined_to, has_reserved_device_component,
 };
 use self::observer::{
     UiObserver, apply_delivery_commit_to_live, backfill_conversation_artifacts,
@@ -221,6 +224,7 @@ pub struct ResumedSubmission {
     pub(super) contract: Option<crate::verify::BriefContract>,
     pub(super) model_prompt_override: Option<String>,
     pub(super) skip_push_user_line: bool,
+    pub(super) preserve_turn_denial: bool,
 }
 
 #[derive(Clone)]
@@ -242,6 +246,12 @@ struct UiState {
     /// File-tool arguments held between `tool_start` and `tool_end`, keyed by
     /// session and call id, so the change card never re-reads the file.
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
+    /// One-shot pre-tool approval grants pinned to exact `(tool_name, args_hash)`
+    /// per session, consumed upon execution.
+    approved_tool_calls: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// Turn-scoped `UserDenied` anti-bypass guard per session; cleared once the
+    /// resumed denial turn completes or a brand-new user turn starts.
+    denied_tool_turns: Mutex<HashMap<String, String>>,
     active: Mutex<Option<String>>,
     accepted_claim: Mutex<Option<AcceptedClaim>>,
     accepted_lease_ms: AtomicU64,
@@ -291,6 +301,8 @@ impl UiState {
             root,
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
+            approved_tool_calls: Mutex::new(HashMap::new()),
+            denied_tool_turns: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             accepted_claim: Mutex::new(None),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
@@ -1691,6 +1703,9 @@ impl Harness {
         let skip_push_user_line = resumed
             .as_ref()
             .is_some_and(|item| item.skip_push_user_line);
+        let preserve_turn_denial = resumed
+            .as_ref()
+            .is_some_and(|item| item.preserve_turn_denial);
         if let Some(override_model) = resumed
             .as_ref()
             .and_then(|item| item.model_prompt_override.clone())
@@ -1711,8 +1726,13 @@ impl Harness {
             || session_working_directory(&state.root, workspace.as_ref()),
             |workspace| workspace.root.clone(),
         );
+        if !preserve_turn_denial {
+            lock(&state.denied_tool_turns).remove(&id);
+        }
         let mut run_config = engine_config(&config, &cwd);
         run_config.registry = tool_registry(&cwd, &skills, active_skills);
+        run_config.pre_tool_hook =
+            Some(build_pre_tool_hook(id.clone(), cwd, Arc::clone(state)));
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -1752,6 +1772,22 @@ impl Harness {
                             session.status = TurnStatus::WaitingForUser;
                             session.turn_started_at = None;
                             session.updated_at = now;
+                            session.heartbeat = Some(BranchHeartbeat {
+                                last_completed: session
+                                    .heartbeat
+                                    .as_ref()
+                                    .and_then(|hb| hb.last_completed.clone()),
+                                last_completed_at_ms: session
+                                    .heartbeat
+                                    .as_ref()
+                                    .and_then(|hb| hb.last_completed_at_ms),
+                                current_action: "waiting_for_user".to_owned(),
+                                next_check_hint: Some(
+                                    "awaiting disambiguation card selection"
+                                        .to_owned(),
+                                ),
+                                awaiting_evidence: true,
+                            });
                             if !skip_push_user_line {
                                 session.projection.push_user(text);
                             }
@@ -1920,6 +1956,15 @@ impl Harness {
             session.status = TurnStatus::Running;
             session.turn_started_at = Some(now);
             session.updated_at = now;
+            session.heartbeat = Some(BranchHeartbeat {
+                last_completed: None,
+                last_completed_at_ms: None,
+                current_action: "thinking".to_owned(),
+                next_check_hint: Some(
+                    "awaiting first tool or model step".to_owned(),
+                ),
+                awaiting_evidence: true,
+            });
             if !skip_push_user_line {
                 session.projection.push_user(text);
             }
@@ -2013,7 +2058,23 @@ impl Harness {
                     completed_submission,
                 );
             }
-            if state.autonomous_drain.load(Ordering::Acquire)
+            if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
+                // Release the active queue claim slot so independent sessions
+                // can drain unimpeded while this session stays durably parked
+                // in WaitingForUser with its persisted ToolApproval card.
+                let mut slot = lock(&state.accepted_claim);
+                if slot.as_ref().is_some_and(|c| c.session_id == id)
+                    && let Some(claim) = slot.take()
+                {
+                    claim.heartbeat_cancel.cancel();
+                }
+                drop(slot);
+                if state.autonomous_drain.load(Ordering::Acquire)
+                    && let Some(harness) = weak_harness.upgrade()
+                {
+                    harness.kick_autonomous_drain();
+                }
+            } else if state.autonomous_drain.load(Ordering::Acquire)
                 && let Some(harness) = weak_harness.upgrade()
             {
                 let expected_sub = completed_submission
@@ -2288,6 +2349,7 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         todos: None,
         delivery_committer: None,
         work_contract: None,
+        pre_tool_hook: None,
     }
 }
 

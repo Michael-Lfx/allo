@@ -975,7 +975,7 @@ mod tests {
             .await;
         match result {
             ToolExecutionResult::Error { code, .. } => {
-                assert_eq!(code, "INVALID_ARGS")
+                assert_eq!(code, "INVALID_ARGS");
             }
             ToolExecutionResult::Success { .. } => {
                 panic!("missing path must not succeed")
@@ -1035,7 +1035,7 @@ mod tests {
             .await;
         match result {
             ToolExecutionResult::Error { code, .. } => {
-                assert_eq!(code, "NO_TODOS")
+                assert_eq!(code, "NO_TODOS");
             }
             ToolExecutionResult::Success { .. } => {
                 panic!("missing todo sink must not succeed")

@@ -1,14 +1,14 @@
 //! `TurnObserver` projection, history hydration, artifact capture, and verification card folding.
 
 use super::{
-    AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeSet, CancelToken,
-    ChatLine, ChatProjection, ContentBlock, DeliveryCommit, Engine,
-    FileChangeKind, HashMap, IndexRecord, Live, LlmConfig, LoopOutcome,
-    Message, MessageSource, Mutex, Path, Role, SessionDeletionState,
-    SessionIndex, SessionOrigin, SessionRecord, StopHandoffManifest,
-    SubmissionOutcome, TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus,
-    UiState, VerificationIssue, complete_text, lock, log_storage_io_error,
-    model_route, now_ms, title, tool_target,
+    AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeSet, BranchHeartbeat,
+    CancelToken, ChatLine, ChatProjection, ContentBlock, DeliveryCommit,
+    Engine, FileChangeKind, HashMap, IndexRecord, Live, LlmConfig, LoopOutcome,
+    Message, MessageSource, Mutex, Path, PendingCard, Role,
+    SessionDeletionState, SessionIndex, SessionOrigin, SessionRecord,
+    StopHandoffManifest, SubmissionOutcome, TITLE_MAX_CHARS, TurnObserver,
+    TurnState, TurnStatus, UiState, VerificationIssue, complete_text, lock,
+    log_storage_io_error, model_route, now_ms, title, tool_target,
 };
 
 /// Maximum Unicode scalar characters kept in a sidebar session preview.
@@ -89,6 +89,12 @@ impl TurnObserver for UiObserver {
     fn saving_files(&self, session_id: &str) {
         if let Some(session) = lock(&self.state.live).get_mut(session_id) {
             session.status = TurnStatus::SavingFiles;
+            let hb = session
+                .heartbeat
+                .get_or_insert_with(BranchHeartbeat::default);
+            "saving_files".clone_into(&mut hb.current_action);
+            hb.next_check_hint = Some("committing delivery markers".to_owned());
+            hb.awaiting_evidence = false;
         }
         self.state.stream_changed(session_id);
     }
@@ -133,6 +139,14 @@ impl TurnObserver for UiObserver {
     fn reasoning(&self, session: &str, delta: &str) {
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.apply_reasoning(delta);
+            let hb =
+                live.heartbeat.get_or_insert_with(BranchHeartbeat::default);
+            if hb.current_action.is_empty() || hb.current_action == "thinking" {
+                "reasoning".clone_into(&mut hb.current_action);
+                hb.next_check_hint =
+                    Some("awaiting next tool call or response".to_owned());
+                hb.awaiting_evidence = true;
+            }
         }
         self.state.stream_changed(session);
     }
@@ -168,9 +182,22 @@ impl TurnObserver for UiObserver {
             lock(&self.state.tool_args)
                 .insert(tool_arg_key(session, call_id), args.clone());
         }
+        let target = tool_target(args);
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection
-                .push_tool_call(name, tool_target(args), call_id);
+                .push_tool_call(name, target.clone(), call_id);
+            let hb =
+                live.heartbeat.get_or_insert_with(BranchHeartbeat::default);
+            hb.current_action = if target.is_empty() {
+                name.to_owned()
+            } else {
+                format!(
+                    "{name}: {}",
+                    flowy_agent_core::log_preview(&target, 80)
+                )
+            };
+            hb.next_check_hint = Some(format!("awaiting result of {name}"));
+            hb.awaiting_evidence = true;
             live.updated_at = now_ms();
         }
         self.state.stream_changed(session);
@@ -228,7 +255,19 @@ impl TurnObserver for UiObserver {
                     change.binary,
                 );
             }
-            live.updated_at = now_ms();
+            let now = now_ms();
+            let hb =
+                live.heartbeat.get_or_insert_with(BranchHeartbeat::default);
+            hb.last_completed = Some(if is_error {
+                format!("{name} (error)")
+            } else {
+                name.to_owned()
+            });
+            hb.last_completed_at_ms = Some(now);
+            "evaluating tool evidence".clone_into(&mut hb.current_action);
+            hb.next_check_hint = Some("awaiting next model step".to_owned());
+            hb.awaiting_evidence = false;
+            live.updated_at = now;
         }
         self.state.stream_changed(session);
     }
@@ -242,6 +281,7 @@ impl TurnObserver for UiObserver {
                 live.status = match outcome {
                     LoopOutcome::Completed => TurnStatus::Completed,
                     LoopOutcome::Aborted => TurnStatus::Stopped,
+                    LoopOutcome::WaitingForUser => TurnStatus::WaitingForUser,
                     // `delivery_failed` ran before this terminal callback. Keep
                     // the dedicated status so the retry action remains visible.
                     LoopOutcome::Failed
@@ -264,11 +304,63 @@ impl TurnObserver for UiObserver {
                         text: live.status.key().into(),
                     });
                 }
+                if let Some(hb) = live.heartbeat.as_mut() {
+                    hb.current_action.clear();
+                    hb.next_check_hint = None;
+                    hb.awaiting_evidence = false;
+                }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
             }
         }
+        // Turn-scoped UserDenied guard expires once this turn finishes.
+        lock(&self.state.denied_tool_turns).remove(session);
         // Interrupted turns can leave cached tool arguments behind.
+        lock(&self.state.tool_args)
+            .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
+        }
+        self.state.push_update(AgentUpdate::Session {
+            id: session.to_owned(),
+        });
+        self.state.push_update(AgentUpdate::Sessions);
+    }
+
+    fn waiting_for_user(&self, session: &str, card: &PendingCard) {
+        let hint = match card {
+            PendingCard::ToolApproval { tool_name, .. } => {
+                format!("awaiting user approval for {tool_name}")
+            }
+            PendingCard::Disambiguation { .. } => {
+                "awaiting user disambiguation selection".to_owned()
+            }
+        };
+        {
+            let mut live = lock(&self.state.live);
+            if let Some(live) = live.get_mut(session) {
+                live.projection.flush();
+                live.auto_title_pending = false;
+                live.status = TurnStatus::WaitingForUser;
+                let already_waiting_line = matches!(
+                    live.projection.lines.last(),
+                    Some(ChatLine::Status { text })
+                        if text == TurnStatus::WaitingForUser.key()
+                );
+                if !already_waiting_line {
+                    live.projection.lines.push(ChatLine::Status {
+                        text: TurnStatus::WaitingForUser.key().into(),
+                    });
+                }
+                let hb =
+                    live.heartbeat.get_or_insert_with(BranchHeartbeat::default);
+                "waiting_for_user".clone_into(&mut hb.current_action);
+                hb.next_check_hint = Some(hint);
+                hb.awaiting_evidence = true;
+                live.turn_started_at = None;
+                live.updated_at = now_ms();
+            }
+        }
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
         if persist_index(&self.state).is_err() {
@@ -315,10 +407,16 @@ impl TurnObserver for UiObserver {
                         });
                     }
                 }
+                if let Some(hb) = live.heartbeat.as_mut() {
+                    hb.current_action.clear();
+                    hb.next_check_hint = None;
+                    hb.awaiting_evidence = false;
+                }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
             }
         }
+        lock(&self.state.denied_tool_turns).remove(session);
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
         if persist_index(&self.state).is_err() {
