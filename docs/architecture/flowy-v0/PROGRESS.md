@@ -925,3 +925,49 @@ bun scripts/check-ui-contracts.mjs  : passed
   3. `delivery.rs` + `handle.rs` 补齐 `InDoubtDelivery` 启动 `WARN` 探测与 `reconcile_in_doubt` 结算接口；
   4. 真云端对抗实测当场抓出并修复 2 个隐蔽缺陷：① `conversation_artifacts.rs` 接入 `prepare_conversation_artifacts_gated`，封堵 `write_file` 临时脚本（`.ps1`）与未核验文件绕过 `DeliveryStore` 偷渡进资料库的后门；② `publish_tool.rs` 兼容剥离 `outputs/<submission_id>/` 前缀与核验工具完全拉齐。
 - 实证归档（[`证据.md` §11.29](证据.md)）：`evidence/19–21` 实机截图 + 真云端 L3 `flagged` 3 项精准抓错（`10511ms`）+ `InDoubt` 默认 `INFO` 级 `WARN` 检出；全量单测 `core 74 / agent 148 / studio 86 / app 50 / i18n 8`，`clippy --all-targets` 0 警告，`check-ui-contracts` / `accept.sh` 全绿；`git merge-tree HEAD feat/flowy-super-ui` 实测 **Rust 代码 0 冲突**（仅 3 份文档待合）。
+
+---
+
+## 任务 19 · `feat/flowy-v0-rc` 内核可靠性深度加固与 `6+4` UI 解耦收口（2026-11-25）
+
+> **分支与原则**：已由 `feat-flowy-local-receipt` 合流并切到 **`feat/flowy-v0-rc`**（合并 `feat/flowy-super-ui` 于 `506ac599d`）。因隔壁 UI worktree 正在并行改版界面，本轮全部 6 个内核提交（`f8fb6b491`..`65772f857`）严守 **0 改动 UI 文件**，所有能力通过 `flowy-agent` 强类型接口向上暴露。
+
+### 一、提交账本与设计初衷
+
+1. **`f8fb6b491` · 崩溃对账初版与硬门防绕过**：补齐同字节交付、`override_deliver_artifact` 报告绑定防换包、L3 云端披露开关 `set_semantic_verify_enabled`。
+2. **`45d0d317b` · Phase 1 派工绑定与单提交恢复**：
+   - 修复 `queue.bind` 丢弃 `io::Result<bool>` 的隐患，强制仅 `Ok(true)` 才派工；
+   - `submit_message_targeted` 接收已绑定目标会话，彻底消除「先选 A 再切 B 串会话」；
+   - `SessionRecord::submission_outcomes` 持久化单次提交终态，消灭「Error 会话重启变 Completed」反例；
+   - 新增 `AcceptanceQueue::renew_lease` 定时心跳（`lease_ms / 3`）与 `ReceiptState::Cancelled`。
+3. **`54d10087f` · Phase 2 版本化工作契约与宿主终态**：
+   - 新增持久化 `WorkContract`（跨修订继承 `required_items`/`min_slides`/`pinned_facts`），二轮「只改日期」保留首轮页数与报价；
+   - 新增 `SubmissionOutcome::Partial { missing }` 与 `work_status(work_id)`，三件缺 PPT 时准确报部分完成并列出缺项；
+   - `verify.rs` 补齐多 sheet 隔离、空锚阻断与二次 `VALUE_MISMATCH` 锁死 `clarify_or_rebuild`。
+4. **`a0e96262b` · Phase 3 两阶段交付审计与日志坏段隔离**：
+   - 拆出 `stage_with`（写 `deliver_intent`）与 `confirm_delivered`（`ArtifactStore` 落可见 marker 后才写 `deliver`），消除「暂存未提交时审计领先资料库一步」反例；
+   - 失败轮次禁止自动导入 `.md`；`override_deliver_artifact` 保持幂等；
+   - `AcceptanceQueue::replay_detailed` 对非尾部坏行启动 sealed-segment 隔离，坏行前未结案回执进 `ReceiptState::Quarantined`，绝不静默重领。
+5. **`71cdb8e92` · Phase 4 UI 解耦 6 大接口与运行护栏**：
+   - 导出 `set_autonomous_drain`、`AgentUpdate::Receipt`、`cancel_task(TaskTarget)`、`apply_card_action(CardAction)`、`work_status`、`prepare_shutdown`；
+   - `accept_drain` 互斥锁序列化排水；`loop_runner` 加 24 步硬上限与 `transform_context` 上下文压缩；`confined_to` 改为最深已存在祖先 `canonicalize` 封堵不存在子路径 + Junction 逃逸；`pi.rs`（bash/PowerShell）补默认超时兜底。
+6. **`65772f857` · 配合隔壁 UI 重构的 4+1 接口收口**：
+   - `apply_config()` 在 `can_run_turns() && autonomous_drain` 时自动唤醒队列；
+   - 新增 `visible_acceptances() -> Vec<(AcceptedMessage, ReceiptState)>` 覆盖退避期 `Retrying`、`Dead`、`Quarantined`；
+   - `CardAction::RetryDeadReceipt` 改用 `AcceptanceQueue::retry_dead` 持锁原子追加新 `Accepted` + 旧 `Superseded`（映射 `Cancelled` 退列表、防重启诈尸与双击复制）；
+   - 新增 `session_work_status(session_id) -> Option<WorkStatus>` 支持直提 `submit_chat`/`send` 会话；
+   - 对账遇到 `Quarantined` 去重推送 `AgentUpdate::Receipt::Quarantined`，并补齐启轮失败路径（`settle_failed_attempt`）的 `Retrying`/`Dead` 推送。
+
+### 二、本轮额外踩坑备忘
+
+- **Windows NTFS 并发 fsync 抖动**：166 条测试并发跑时，`long_running_accepted_turn_renews_lease_past_initial_expiry` 若租约设 `150ms`，单次 NTFS `sync_all()` 抖动即可触发偶发假红；调至 `lease_ms=300` / `delayed_text=750` / `sleep=420` 后既保持 >1 次续租校验又零抖动。
+- **隔离桌面 `flowy-gpui-e2e` 自动化坑**：Windows 隔离桌面下 `agent-desktop resize-window` 对 GPUI 无边框窗口会超时且合成按键（`paste_submit`/`press`）无法获前台焦点；已在 Skill 中改为 Win32 `SetWindowPos`（按调用线程 `GetThreadDpiAwarenessContext` 避免二次 DPI 缩放）+ `seed_receipt` 无焦点注入，4 段实机测试全绿。
+
+### 三、当前基线（`65772f857`）
+
+```text
+flowy-agent-core : 78 passed, 0 failed, 2 ignored
+flowy-agent      : 165 passed, 0 failed, 1 ignored
+clippy (core + agent, -D warnings) : 0 warning
+cargo check -p flowy-app           : 0 error (0 UI files touched)
+```

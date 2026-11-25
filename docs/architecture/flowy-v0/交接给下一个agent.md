@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-25 更新）**：**直接先读 §15（现状、不可回退口径、任务 14–18 实施计划）**，再查 §5（15 条踩坑实录）与 §9（常用命令）。
-> §1–§14 保留 2026-11-24～25 演进底稿作历史与踩坑备查；凡状态描述与 §15 不一致处，**一律以 §15 为准**。
+> **现役唯一入口（2026-11-25 修订 9.3 更新）**：**直接先读 §16（`feat/flowy-v0-rc@65772f857` 现役总账、`6+4` UI 契约与 Harness 四支柱偏差）**，再查 §5（环境与 UIA 踩坑实录）与 §15.4（仓库硬约束）。
+> §1–§15 保留 2026-11-24～25 演进底稿作历史与踩坑备查；凡状态描述与 §16 不一致处，**一律以 §16 为准**。
 
 ---
 
@@ -476,3 +476,52 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 2. `git log --oneline -8`、`git branch --list "*flowy*"` 与 `git status` 核对分支、HEAD 与未提交文件。
 3. 串行跑一遍 §15.5 第 4 步基线门禁（注意 PowerShell 下用 `"D:\Git\bin\bash.exe"` 跑 `accept.sh`，真机测试务必先备份并在 `finally` 还原 `%APPDATA%\Flowy\Flowy\data`）。
 4. 按 [`V0-执行计划.md`](V0-执行计划.md) Phase 1 → Phase 4 依序推进；遇到需拍板边界先查/写 `BLOCKED.md`，绝不猜着碰 V6 外发或根工作区。
+
+---
+
+## 16. 2026-11-25 现役总账（`feat/flowy-v0-rc@65772f857`，接管 §15）
+
+> **本节为唯一现役真相（覆盖 §1–§15 的状态描述）**：当前工作树 `.agents/worktrees/feat-flowy-local-receipt` 已在分支 **`feat/flowy-v0-rc`** 上合并 `feat/flowy-super-ui`（`506ac599d`），并完成 6 轮纯内核加固与 `6+4` UI 解耦契约收口（`f8fb6b491`..`65772f857`），**只本地 commit、未 push、0 触碰 UI 文件**。
+
+### 16.1 新增内核提交链（紧接 §15.1 之后）
+
+| 提交 | 内容 | 关键文件 |
+| --- | --- | --- |
+| `506ac599d`..`97efb3113` | 合入 `feat/flowy-super-ui`，清理 `ExecInput` 空壳并统一 `roxmltree` OOXML 核验、修 L3 折叠提示与 i18n `{count}` | `flowy-agent`、`flowy-studio`、`flowy-ui`、`flowy-i18n` |
+| `f8fb6b491` | 崩溃恢复初版对账、同字节交付、绑定覆盖与 L3 披露开关 | `acceptance.rs`、`delivery.rs`、`handle.rs` |
+| `45d0d317b` | `queue.bind` fail-closed、显式目标会话路由、逐 `submission_id` 终态（`SubmissionOutcome`）、租约心跳、`ReceiptState::Cancelled` | `acceptance.rs`、`session.rs`、`engine.rs`、`handle.rs` |
+| `54d10087f` | 持久化版本化 `WorkContract`、`SubmissionOutcome::Partial`、`work_status(work_id)`、加固 `verify.rs`（多 sheet/空锚/二次锁死） | `session.rs`、`verify.rs`、`handle.rs` |
+| `a0e96262b` | 两阶段交付审计（`stage_with` / `confirm_delivered`）、失败轮次禁自动导入、幂等 `override_deliver_artifact`、坏中间段 `Quarantined` | `acceptance.rs`、`delivery.rs`、`publish_tool.rs`、`conversation_artifacts.rs`、`handle.rs` |
+| `71cdb8e92` | `6` 项 UI 解耦控制 API、`accept_drain` 互斥、`loop_runner` 24 步与 `transform_context`、`confined_to` 最深祖先规范化、`pi.rs` 超时兜底 | `loop_runner.rs`、`tools/{builtin,pi}.rs`、`handle.rs`、`lib.rs` |
+| **`65772f857`** | `4+1` 项 UI 对齐补丁：`apply_config` 自动唤醒、`visible_acceptances()`、`RetryDeadReceipt` 原子 `Superseded`、`session_work_status(session_id)`、`Quarantined` 去重推送 | `acceptance.rs`、`handle.rs`、`artifact_integration_tests.rs` |
+
+### 16.2 内核 → UI `6+4` 强类型解耦契约（隔壁 UI worktree 对接清单）
+
+| 接口 | 用途与不变量 |
+| --- | --- |
+| `set_autonomous_drain(true)` + `apply_config(cfg)` | 宿主 Tokio runtime 自治排水；`apply_config` 切到可执行路由后自动唤醒队列，UI 无需轮询 |
+| `visible_acceptances() -> Vec<(AcceptedMessage, ReceiptState)>` | 返回全部非 `Completed`/非 `Cancelled` 回执（含退避期 `Retrying`、`Dead`、`Quarantined`），按 `created_at_ms` 升序 |
+| `AgentUpdate::Receipt { id, state }` | 状态变迁单向推送（含 `Quarantined` 去重推送及启轮失败推送） |
+| `cancel_task(TaskTarget::Session / Receipt) -> Result<CancelOutcome, _>` | 脱离 UI 当前激活会话的精确取消；保护已进入 `Finalizing` 的交付 |
+| `apply_card_action(CardAction) -> Result<CardActionOutcome, _>` | 卡片动作统归内核：`OverrideDeliver`、`RetryDelivery`、`RetryDeadReceipt`（原子追加新回执并 `Superseded` 关闭旧死信，杜绝重启诈尸与重复点击） |
+| `work_status(work_id)` / `session_work_status(session_id)` | 同一工作编号或直提会话均可查询 `WorkStatus`（修订号、终态、缺项、可见交付产物）；日志/会话/资料库三处一致 |
+| `prepare_shutdown()` | 优雅退出钩子：停自治排水、取消可取消忙轮次、刷盘索引（崩溃正确性不依赖调用它） |
+
+### 16.3 与《最终方案》的已知偏差与下一阶段优先级
+
+详见 [`最终方案.md` §12.2](最终方案.md) 完整矩阵，核心四条留给下一里程碑：
+1. **常驻 1 秒不变式 Router 独立对话 loop + 多 Worker 并发池**：当前仍为单 Worker 串行排队，无独立不排队对话 Router 与 `revise` steering 插队。
+2. **Provider 原生 Structured Outputs（`response_format: json_schema`）**：L3 语义复核当前靠 Prompt + 宿主严格 parser 兜底。
+3. **OS 级执行沙箱与进程树强杀**：文件工具已硬隔离（`confined_to`），但 `pi_shell` 仍在宿主权限下运行且未接 Windows Job Object 强杀孙进程树。
+4. **图表内嵌工作簿核验（`ppt/embeddings/*.xlsx`）、`provenance` 写进产物、§5.18 运维四件套与 V6 外发（`BLOCKED.md` §5 仍硬止损）**。
+
+### 16.4 现役验证命令与基线（`65772f857`）
+
+```powershell
+# 在 .agents/worktrees/feat-flowy-local-receipt/flowy18_wip 下串行执行：
+cargo test -p flowy-agent-core                                 # 78 passed, 0 failed, 2 ignored
+cargo test -p flowy-agent                                      # 165 passed, 0 failed, 1 ignored
+cargo clippy -p flowy-agent-core -p flowy-agent -- -D warnings # 0 warnings
+cargo check -p flowy-app                                       # 0 errors (UI 100% 兼容)
+```
+GUI 自动化实测工具：`C:\Users\38788\.gemini\config\skills\flowy-gpui-e2e\scripts\ui-shot.ps1`（支持 `-Preflight`、原子 AppData 隔离、`-KeepAuth`、`seed_receipt` + `restart` 热重启、Win32 DPI 感知 `resize`）。
