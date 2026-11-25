@@ -669,13 +669,14 @@ mod tests {
     /// y02：传输失败标记与生成面失败互斥——重试环据此立即上抛原错误。
     #[test]
     fn transport_failure_carries_the_original_error() {
-        let fail = AttemptFail::transport(AppError::Timeout(
-            "json coach call exceeded 900s".into(),
-        ));
+        // 与生产逐字相同的超时文案——由同一个常量拼出，调超时值不必改断言。
+        let timeout_message =
+            format!("json coach call exceeded {}s", crate::generation::COACH_CALL_TIMEOUT_SECS);
+        let fail = AttemptFail::transport(AppError::Timeout(timeout_message.clone()));
         assert!(fail.is_transport());
         assert!(!fail.guard);
         assert!(fail.review_history.is_none());
-        assert_eq!(fail.report, "Request timeout: json coach call exceeded 900s");
+        assert_eq!(fail.report, format!("Request timeout: {timeout_message}"));
         assert!(matches!(fail.transport, Some(AppError::Timeout(_))));
         assert!(!AttemptFail::generation("契约报告").is_transport());
     }

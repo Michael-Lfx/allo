@@ -6252,7 +6252,7 @@ async fn growth_transport_failure_stops_after_a_single_call() {
         ) -> Result<String, AppError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             self.prompts.lock().unwrap().push(user.to_owned());
-            Err(AppError::Timeout("json coach call exceeded 480s".into()))
+            Err(AppError::Timeout("coach call timed out".into()))
         }
     }
 

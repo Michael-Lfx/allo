@@ -4986,8 +4986,9 @@ mod tests {
         let good = serde_json::to_string(&serde_json::json!({ "verdict": "pass" })).unwrap();
         let completer = ScriptedResults(std::sync::Mutex::new((
             vec![
+                // 任意传输失败即可触发传输重试分支——本测试不依赖超时值。
                 Err(nomifun_common::AppError::Timeout(
-                    "json coach call exceeded 900s".into(),
+                    "coach call timed out".into(),
                 )),
                 Ok("not json".to_owned()),
                 Ok(good),
@@ -5041,8 +5042,9 @@ mod tests {
         let completer = ScriptedResults(std::sync::Mutex::new((
             vec![
                 Ok("not json".to_owned()),
+                // 任意传输失败即可——本测试不依赖超时值。
                 Err(nomifun_common::AppError::Timeout(
-                    "json coach call exceeded 900s".into(),
+                    "coach call timed out".into(),
                 )),
                 Ok(good),
             ]

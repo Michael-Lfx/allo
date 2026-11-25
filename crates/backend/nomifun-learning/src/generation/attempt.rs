@@ -117,11 +117,19 @@ impl AttemptFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 子模块的 `super::*` 不透传父模块的 `pub(crate) use` 再导出——走全路径。
+    use crate::generation::COACH_CALL_TIMEOUT_SECS;
+
+    /// 与生产逐字相同的超时文案（[`complete_json_coach`] 的错误格式）——由
+    /// 同一个常量拼出，调超时值不必改这里的断言。
+    fn coach_timeout_message() -> String {
+        format!("json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s")
+    }
 
     #[test]
     fn transport_variants_are_split_from_rejected_ones() {
         for error in [
-            AppError::Timeout("json coach call exceeded 900s".into()),
+            AppError::Timeout(coach_timeout_message()),
             AppError::BadGateway("LLM provider error: API error 502".into()),
             AppError::RateLimited,
             AppError::ProviderUnavailable("no provider".into()),
@@ -159,11 +167,11 @@ mod tests {
     #[test]
     fn transport_round_trips_the_original_error_unchanged() {
         let failure =
-            AttemptFailure::from_app_error(AppError::Timeout("json coach call exceeded 900s".into()));
-        assert_eq!(failure.reason(), "Request timeout: json coach call exceeded 900s");
+            AttemptFailure::from_app_error(AppError::Timeout(coach_timeout_message()));
+        assert_eq!(failure.reason(), format!("Request timeout: {}", coach_timeout_message()));
         assert!(matches!(
             failure.into_app_error(),
-            AppError::Timeout(message) if message.contains("900s")
+            AppError::Timeout(message) if message == coach_timeout_message()
         ));
     }
 

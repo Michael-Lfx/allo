@@ -892,7 +892,7 @@ mod tests {
     async fn transport_failure_propagates_after_a_single_call() {
         let cases: Vec<(nomifun_common::AppError, fn(&nomifun_common::AppError) -> bool)> = vec![
             (
-                nomifun_common::AppError::Timeout("json coach call exceeded 480s".into()),
+                nomifun_common::AppError::Timeout("coach call timed out".into()),
                 |error| matches!(error, nomifun_common::AppError::Timeout(_)),
             ),
             (

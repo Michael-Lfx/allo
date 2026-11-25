@@ -1252,7 +1252,7 @@ mod tests {
                 _: Option<f32>,
             ) -> Result<String, AppError> {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Err(AppError::Timeout("json coach call exceeded 480s".into()))
+                Err(AppError::Timeout("coach call timed out".into()))
             }
         }
         let completer = Failing(std::sync::atomic::AtomicUsize::new(0));

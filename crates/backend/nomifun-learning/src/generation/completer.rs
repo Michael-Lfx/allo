@@ -121,12 +121,16 @@ const COMPLETE_CALL_TIMEOUT_SECS: u64 = 180;
 /// against a 32k budget, and the bound covers one transient-error retry on
 /// top (the retry lives inside the completer, so it shares this ceiling).
 ///
-/// 480 → 900 秒（2026-11-24 用户裁决）：真机评审的正常耗时是 82–432 秒，最
-/// 慢的一次（432 秒）已逼近旧上限；同日另有三次评审在 480 秒被掐断后传输
-/// 失败、重发即成。取 900 秒给慢而能成的调用留出余量。**代价**：卡住的请
-/// 求要等满上限才失败重试——真卡死的那一轮会比以前更慢（先白等 900 秒再
-/// 重发），不会更快。不再往上取：再大就进入单轮墙钟预算的量级。
-const COACH_CALL_TIMEOUT_SECS: u64 = 900;
+/// 480 → 600 秒（2026-11-25 用户裁决）：真机评审的正常耗时是 82–432 秒，
+/// 最慢的一次离旧上限只有 48 秒——480 偏紧，偶尔会误杀慢而能成的调用。
+/// 不取更大的值：同日被掐断的 5 次评审都是**卡死**而非「需要更久」——
+/// 重发后都在 137 秒内成功。对卡死的请求，上限越大白等越久，所以只给
+/// 正常慢调用留约四成余量。（曾短暂取 900，按上述读数收回。）
+///
+/// `pub(crate)`：重试逻辑的测试用本常量拼出与生产逐字相同的超时文案
+/// （见 [`complete_json_coach`] 的错误格式）——调这个值不必再逐处改测试
+/// 里写死的秒数。
+pub(crate) const COACH_CALL_TIMEOUT_SECS: u64 = 600;
 
 
 /// JSON-mode sibling of other json-mode stages: artifact-contract generation
