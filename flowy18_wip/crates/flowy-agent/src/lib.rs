@@ -55,7 +55,7 @@ pub use projection::{
     VerificationIssue,
 };
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
-pub use verify::ui_key as verify_ui_key;
+pub use verify::{PROVENANCE_INVALID, ui_key as verify_ui_key};
 
 #[cfg(test)]
 mod perf_tests;

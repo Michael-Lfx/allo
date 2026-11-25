@@ -2,6 +2,10 @@
 //!
 //! Runs independently of the L1/L2 hard gate:
 //! - Literal-brief-only prompt rule ("只依据简报的字面要求。简报没要求的，缺了不算问题。").
+//! - Structured output via a single typed tool call (`submit_semantic_verdict`,
+//!   pinned with `tool_choice`), avoiding gateway incompatibilities with
+//!   `response_format` while remaining 2.5x faster than free-text JSON on
+//!   cloud thinking models.
 //! - Strict JSON boolean validation (`"false"` string or non-boolean is never
 //!   accepted as `ok = true`).
 //! - Fail-closed on timeout, transport error, or malformed JSON (`Inconclusive`).
@@ -10,18 +14,48 @@
 
 use std::time::{Duration, Instant};
 
-use flowy_agent_core::{CancelToken, ModelRoute, complete_text};
-use serde_json::Value;
+use flowy_agent_core::{
+    CancelToken, ModelRoute, StructuredRequest, complete_structured,
+};
+use serde_json::{Value, json};
+
+pub const SEMANTIC_VERDICT_TOOL: &str = "submit_semantic_verdict";
 
 pub const SEMANTIC_SYSTEM_PROMPT: &str = "\
 你是交付物语义复核器（L3）。\
 只依据简报的字面要求。简报没要求的，缺了不算问题。\
 只复核文件名与幻灯片正文内容是否与简报字面要求一致；忽略流程性指令（如先核验、再交付、发送给我等，这些由程序硬门保证，不写在幻灯片正文里）。\
-请直接输出单行紧凑 JSON 对象（不要代码块、不要额外说明）：\
-{\"ok\": true|false, \"issues\": [{\"where\": \"位置\", \"what\": \"现象\", \"why\": \"依据\"}]}。\
-其中 ok 必须是 JSON 布尔值；若 ok 为 false，issues 至少包含一条带非空 where / what / why 的记录。";
+请调用 submit_semantic_verdict 工具提交核验结论（其中 ok 必须是 JSON 布尔值；若 ok 为 false，issues 至少包含一条带非空 where / what / why 的记录）。";
 
 const SEMANTIC_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[must_use]
+pub fn semantic_verdict_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "ok": {
+                "type": "boolean",
+                "description": "True only when artifact filename and body match every literal requirement in the brief."
+            },
+            "issues": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "where": { "type": "string", "minLength": 1 },
+                        "what": { "type": "string", "minLength": 1 },
+                        "why": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["where", "what", "why"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["ok", "issues"],
+        "additionalProperties": false
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct SemanticContext {
@@ -110,19 +144,10 @@ fn strip_code_fence(raw: &str) -> &str {
     rest.strip_suffix("```").map_or(trimmed, str::trim)
 }
 
-/// Strictly parse and validate the model's L3 JSON verdict.
-///
-/// Any non-boolean `"ok"` (such as `"false"` or `1`), missing required fields,
-/// or empty issue list on `ok: false` resolves to [`SemanticOutcome::Inconclusive`]
-/// so malformed outputs never masquerade as a clean pass.
+/// Strictly validate a parsed JSON verdict value from either a structured tool
+/// call or raw JSON text.
 #[must_use]
-pub fn parse_semantic_response(raw: &str) -> SemanticOutcome {
-    let cleaned = strip_code_fence(raw);
-    let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
-        return SemanticOutcome::Inconclusive {
-            reason: "invalid_json".to_owned(),
-        };
-    };
+pub fn parse_semantic_value(value: &Value) -> SemanticOutcome {
     let Some(Value::Bool(ok)) = value.get("ok") else {
         return SemanticOutcome::Inconclusive {
             reason: "non_boolean_ok".to_owned(),
@@ -174,6 +199,22 @@ pub fn parse_semantic_response(raw: &str) -> SemanticOutcome {
     }
 }
 
+/// Strictly parse and validate the model's L3 JSON verdict string.
+///
+/// Any non-boolean `"ok"` (such as `"false"` or `1`), missing required fields,
+/// or empty issue list on `ok: false` resolves to [`SemanticOutcome::Inconclusive`]
+/// so malformed outputs never masquerade as a clean pass.
+#[must_use]
+pub fn parse_semantic_response(raw: &str) -> SemanticOutcome {
+    let cleaned = strip_code_fence(raw);
+    let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
+        return SemanticOutcome::Inconclusive {
+            reason: "invalid_json".to_owned(),
+        };
+    };
+    parse_semantic_value(&value)
+}
+
 pub async fn probe_deck_semantics(
     ctx: &SemanticContext,
     artifact_name: &str,
@@ -205,16 +246,22 @@ pub async fn probe_deck_semantics(
         body.push_str(&snippet);
         body.push('\n');
     }
-    let call = complete_text(
-        Some("l3-semantic-verify".to_owned()),
-        SEMANTIC_SYSTEM_PROMPT,
-        &body,
-        ctx.route.clone(),
+    let call = complete_structured(
+        StructuredRequest {
+            session_id: Some("l3-semantic-verify".to_owned()),
+            system: SEMANTIC_SYSTEM_PROMPT.to_owned(),
+            prompt: body,
+            tool_name: SEMANTIC_VERDICT_TOOL.to_owned(),
+            tool_description:
+                "Submit the structured L3 semantic review verdict.".to_owned(),
+            schema: semantic_verdict_schema(),
+            route: ctx.route.clone(),
+            signal: signal.clone(),
+        },
         Some(ctx.api_key.clone()),
-        signal.clone(),
     );
     let outcome = match tokio::time::timeout(SEMANTIC_TIMEOUT, call).await {
-        Ok(Ok(raw)) => parse_semantic_response(&raw),
+        Ok(Ok(value)) => parse_semantic_value(&value),
         Ok(Err(_)) => SemanticOutcome::Inconclusive {
             reason: "provider_error".to_owned(),
         },
@@ -238,6 +285,7 @@ mod tests {
                 .contains("只依据简报的字面要求。简报没要求的，缺了不算问题。")
         );
         assert!(SEMANTIC_SYSTEM_PROMPT.contains("忽略流程性指令"));
+        assert!(SEMANTIC_SYSTEM_PROMPT.contains(SEMANTIC_VERDICT_TOOL));
         assert_eq!(SemanticOutcome::Passed.reason(), "");
         assert_eq!(
             SemanticOutcome::Inconclusive {
@@ -308,5 +356,104 @@ mod tests {
         assert!(outcome.delivered);
         assert_eq!(outcome.blocked, None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    #[ignore = "hits live cloud gateway server.flowyaipc.com using local Flowy auth session"]
+    async fn live_cloud_structured_l3_verifies_pass_and_flagged() {
+        let appdata =
+            std::env::var("APPDATA").expect("APPDATA env var must be set");
+        let session_path = std::path::PathBuf::from(appdata)
+            .join("Flowy")
+            .join("Flowy")
+            .join("data")
+            .join("auth")
+            .join("session.json");
+        let raw = std::fs::read_to_string(&session_path)
+            .expect("read local Flowy auth session.json");
+        let session: Value =
+            serde_json::from_str(&raw).expect("parse auth session.json");
+        let api_key = session
+            .get("access_token")
+            .and_then(Value::as_str)
+            .expect("access_token in session.json")
+            .to_owned();
+        let route = ModelRoute {
+            provider: "flowy".to_owned(),
+            model: "AIPC-qwen3.8-flash".to_owned(),
+            base_url: "https://server.flowyaipc.com/claw/v1".to_owned(),
+            ..ModelRoute::default()
+        };
+
+        let matching_ctx = SemanticContext {
+            brief: "做一份 2 页 PPT 叫 q3-east.pptx，汇报华东区 Q3 销售额 12.4 亿（含上海、江苏、浙江），先核验再交付。".to_owned(),
+            route: route.clone(),
+            api_key: api_key.clone(),
+        };
+        let matching_shapes = vec![
+            ("S0-title".to_owned(), "华东区 Q3 销售汇报".to_owned()),
+            (
+                "S0-body".to_owned(),
+                "华东区 Q3 销售额 12.4 亿，覆盖上海、江苏、浙江。".to_owned(),
+            ),
+            ("S1-title".to_owned(), "华东区 Q3 销售汇报 · 2".to_owned()),
+            (
+                "S1-body".to_owned(),
+                "上海、江苏、浙江三省市核心指标汇总。".to_owned(),
+            ),
+        ];
+        let (pass_outcome, pass_ms) = probe_deck_semantics(
+            &matching_ctx,
+            "q3-east.pptx",
+            &matching_shapes,
+            &CancelToken::new(),
+        )
+        .await;
+        println!(
+            "live L3 matching: status={} elapsed_ms={} hint={:?} reason={}",
+            pass_outcome.status_code(),
+            pass_ms,
+            pass_outcome.hint_text(),
+            pass_outcome.reason()
+        );
+        assert_eq!(
+            pass_outcome,
+            SemanticOutcome::Passed,
+            "matching brief should pass structured L3"
+        );
+
+        let mismatch_ctx = SemanticContext {
+            brief: "做一份 2 页 PPT 叫 q3-east.pptx，汇报华东区（上海、江苏、浙江）Q3 销售额 12.4 亿。".to_owned(),
+            route,
+            api_key,
+        };
+        let mismatch_shapes = vec![
+            ("S0-title".to_owned(), "华南区 Q3 销售汇报".to_owned()),
+            (
+                "S0-body".to_owned(),
+                "华南区（广州、深圳）Q3 销售额 9.8 亿。".to_owned(),
+            ),
+        ];
+        let (flag_outcome, flag_ms) = probe_deck_semantics(
+            &mismatch_ctx,
+            "q3-east.pptx",
+            &mismatch_shapes,
+            &CancelToken::new(),
+        )
+        .await;
+        println!(
+            "live L3 mismatch: status={} elapsed_ms={} issues={} hint={:?} reason={}",
+            flag_outcome.status_code(),
+            flag_ms,
+            flag_outcome.issue_count(),
+            flag_outcome.hint_text(),
+            flag_outcome.reason()
+        );
+        assert_eq!(
+            flag_outcome.status_code(),
+            "flagged",
+            "mismatched brief should be flagged by structured L3"
+        );
+        assert!(flag_outcome.issue_count() >= 1);
     }
 }

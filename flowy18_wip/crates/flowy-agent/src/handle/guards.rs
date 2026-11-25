@@ -89,7 +89,8 @@ pub(super) fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
         .then(|| format!("path escapes the working directory: {raw}"))
 }
 
-pub(super) fn confined_to(root: &Path, raw: &str) -> bool {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn confined_to(root: &Path, raw: &str) -> bool {
     let path = Path::new(raw);
     let joined = if path.is_absolute() {
         path.to_path_buf()

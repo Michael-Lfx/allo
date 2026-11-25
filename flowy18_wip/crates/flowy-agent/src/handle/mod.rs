@@ -54,9 +54,10 @@ mod queue;
 mod tests;
 mod work;
 
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) use self::guards::confined_to;
 use self::guards::{
-    confined_to, ensure_tool_cwd, session_working_directory, tool_registry,
-    tool_target,
+    ensure_tool_cwd, session_working_directory, tool_registry, tool_target,
 };
 use self::observer::{
     UiObserver, apply_delivery_commit_to_live, backfill_conversation_artifacts,

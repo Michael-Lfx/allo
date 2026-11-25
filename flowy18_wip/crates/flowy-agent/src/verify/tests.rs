@@ -495,3 +495,174 @@ async fn second_value_mismatch_locks_rerender_once_to_clarify_or_rebuild() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[tokio::test]
+async fn provenance_missing_and_model_recall_warn_without_blocking() {
+    let root = std::env::temp_dir()
+        .join(format!("flowy-prov-warn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let deck = root.join("deck.pptx");
+    crate::pptx::write_deck(&deck, "T", &["body".to_owned()]).unwrap();
+    let store = DeliveryStore::new(root.join("delivery"));
+    let tool = definition(Some(store));
+
+    // Omitting provenance warns but still passes.
+    let ToolExecutionResult::Success { value: missing, .. } = (tool.execute)(
+        ToolCallArgs {
+            call_id: "c-prov-1".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "body"},
+                ],
+            }),
+        },
+        tool_context(&root),
+    )
+    .await
+    else {
+        panic!("expected report");
+    };
+    assert_eq!(missing["ok"], true);
+    assert_eq!(
+        missing["provenance_warnings"],
+        json!(["provenance_missing"])
+    );
+
+    // Explicit model_recall warns with field tag and still passes.
+    let ToolExecutionResult::Success { value: recall, .. } = (tool.execute)(
+        ToolCallArgs {
+            call_id: "c-prov-2".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "body"},
+                ],
+                "provenance": [
+                    {"field": "S0-body", "kind": "model_recall"}
+                ],
+            }),
+        },
+        tool_context(&root),
+    )
+    .await
+    else {
+        panic!("expected report");
+    };
+    assert_eq!(recall["ok"], true);
+    assert_eq!(
+        recall["provenance_warnings"],
+        json!(["model_recall:S0-body"])
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn provenance_user_file_validates_existence_confinement_and_sha256() {
+    let root = std::env::temp_dir()
+        .join(format!("flowy-prov-userfile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let ws = root.join("ws");
+    let outside = root.join("outside.txt");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(&outside, b"secret outside").unwrap();
+    let src = ws.join("source.csv");
+    std::fs::write(&src, b"region,sales\nEast,12.4\n").unwrap();
+    let src_hash = delivery::hash_bytes(b"region,sales\nEast,12.4\n");
+
+    let deck = ws.join("deck.pptx");
+    crate::pptx::write_deck(&deck, "T", &["body".to_owned()]).unwrap();
+    let store = DeliveryStore::new(root.join("delivery"));
+    let tool = definition(Some(store.clone()));
+
+    // 1) Valid user_file with matching SHA-256 passes cleanly with 0 warnings.
+    let ToolExecutionResult::Success { value: ok_res, .. } = (tool.execute)(
+        ToolCallArgs {
+            call_id: "c-ok".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "body"},
+                ],
+                "provenance": [
+                    {"field": "S0-body", "kind": "user_file", "path": "source.csv", "sha256": src_hash}
+                ],
+            }),
+        },
+        tool_context(&ws),
+    )
+    .await
+    else {
+        panic!("expected report");
+    };
+    assert_eq!(ok_res["ok"], true, "got {ok_res}");
+    assert_eq!(ok_res["provenance_warnings"], json!([]));
+
+    // 2) Missing file, tampered SHA-256, and escaping path all hard-block.
+    for (case, prov) in [
+        (
+            "missing",
+            json!([{"field": "S0-body", "kind": "user_file", "path": "no-such.csv"}]),
+        ),
+        (
+            "bad-sha",
+            json!([{"field": "S0-body", "kind": "user_file", "path": "source.csv", "sha256": "0000deadbeef"}]),
+        ),
+        (
+            "escape",
+            json!([{"field": "S0-body", "kind": "user_file", "path": "../outside.txt"}]),
+        ),
+    ] {
+        let ToolExecutionResult::Success { value: blocked, .. } = (tool
+            .execute)(
+            ToolCallArgs {
+                call_id: format!("c-{case}"),
+                name: "verify_deck".to_owned(),
+                arguments: json!({
+                    "path": "deck.pptx",
+                    "slides": 1,
+                    "anchors": [
+                        {"anchor": "S0-title", "value": "T"},
+                        {"anchor": "S0-body", "value": "body"},
+                    ],
+                    "provenance": prov,
+                }),
+            },
+            tool_context(&ws),
+        )
+        .await
+        else {
+            panic!("expected blocked report for {case}");
+        };
+        assert_eq!(blocked["ok"], false, "case {case} must fail: {blocked}");
+        assert_eq!(blocked["next_action"], "clarify_or_rebuild");
+        assert!(
+            blocked["issues"].as_array().unwrap().iter().any(|issue| {
+                issue["code"] == PROVENANCE_INVALID
+                    && issue["field"] == "S0-body"
+            }),
+            "case {case} must emit PROVENANCE_INVALID: {blocked}"
+        );
+    }
+
+    // DeliveryStore must also block delivery because the latest persisted report failed.
+    let delivery = store
+        .deliver_with(&deck, false, 100, |_| Ok(()))
+        .expect("deliver_with");
+    assert!(!delivery.outcome.delivered);
+    assert_eq!(
+        delivery.outcome.blocked,
+        Some(delivery::BlockReason::VerificationFailed)
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

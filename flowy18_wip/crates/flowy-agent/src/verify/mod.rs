@@ -101,6 +101,7 @@ pub struct DeckAnchor {
 
 mod contract;
 mod ooxml;
+mod provenance;
 #[cfg(test)]
 mod tests;
 
@@ -109,6 +110,8 @@ use self::ooxml::{
     SlideL1Stats, VerifiedArtifact, push_unique, verify_deck_file_with_shapes,
     verify_docx_file, verify_xlsx_file,
 };
+pub use self::provenance::PROVENANCE_INVALID;
+use self::provenance::{ProvenanceClaim, evaluate_provenance};
 
 fn next_action_for(report: &VerifyReport) -> &'static str {
     if report.ok {
@@ -140,15 +143,23 @@ fn now_ms() -> u64 {
 async fn finalize_report(
     path: &Path,
     raw_path: &str,
-    report: VerifyReport,
+    mut report: VerifyReport,
     verified_bytes: &[u8],
     snippets: Option<&[(String, String)]>,
+    provenance: &[ProvenanceClaim],
     contract_revision: Option<u32>,
     failures: Option<&VerifyFailureTracker>,
     context: &ToolRunContext,
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
 ) -> ToolExecutionResult {
+    let provenance_eval =
+        evaluate_provenance(provenance, context.cwd.as_deref().map(Path::new));
+    for issue in provenance_eval.issues {
+        push_unique(&mut report.issues, issue.code, &issue.field);
+    }
+    report.ok = report.issues.is_empty();
+    let provenance_warnings = provenance_eval.warnings;
     let mut report_id = String::new();
     let mut artifact_hash = delivery::hash_bytes(verified_bytes);
     if let Some(store) = store {
@@ -252,7 +263,7 @@ async fn finalize_report(
                 .join(", ")
         )
     };
-    let value = report.to_value_with_meta(
+    let mut value = report.to_value_with_meta(
         &summary,
         &report_id,
         &artifact_hash,
@@ -260,6 +271,12 @@ async fn finalize_report(
         contract_revision,
         semantic_hint.as_deref(),
     );
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "provenance_warnings".to_owned(),
+            json!(provenance_warnings),
+        );
+    }
     let content = serde_json::to_string(&value).unwrap_or(summary);
     ToolExecutionResult::success_text(content, value)
 }
@@ -278,6 +295,8 @@ async fn execute_deck(
         path: String,
         slides: usize,
         anchors: Vec<DeckAnchor>,
+        #[serde(default)]
+        provenance: Vec<ProvenanceClaim>,
     }
     let Ok(args) = serde_json::from_value::<Args>(arguments) else {
         return ToolExecutionResult::error(
@@ -304,6 +323,7 @@ async fn execute_deck(
                 verified.report,
                 &verified.bytes,
                 Some(&verified.shapes),
+                &args.provenance,
                 revision,
                 failures,
                 context,
@@ -335,6 +355,8 @@ async fn execute_artifact(
         slides: Option<usize>,
         #[serde(default)]
         anchors: Vec<DeckAnchor>,
+        #[serde(default)]
+        provenance: Vec<ProvenanceClaim>,
     }
     let Ok(args) = serde_json::from_value::<Args>(arguments) else {
         return ToolExecutionResult::error(
@@ -390,6 +412,7 @@ async fn execute_artifact(
                 verified.report,
                 &verified.bytes,
                 Some(&verified.snippets),
+                &args.provenance,
                 revision,
                 failures,
                 context,
@@ -403,6 +426,24 @@ async fn execute_artifact(
             format!("cannot verify {}: {error}", args.path),
         ),
     }
+}
+
+fn provenance_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string", "minLength": 1},
+                "kind": {"type": "string", "enum": ["user_file", "fetched", "browser", "model_recall"]},
+                "path": {"type": "string"},
+                "sha256": {"type": "string"},
+                "note": {"type": "string"}
+            },
+            "required": ["field", "kind"],
+            "additionalProperties": false
+        }
+    })
 }
 
 pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
@@ -444,7 +485,8 @@ pub(crate) fn definition_with_options(
                         "required": ["anchor", "value"],
                         "additionalProperties": false
                     }
-                }
+                },
+                "provenance": provenance_schema()
             },
             "required": ["path", "slides", "anchors"],
             "additionalProperties": false
@@ -502,7 +544,8 @@ pub(crate) fn artifact_definition_with_options(
                         "required": ["anchor", "value"],
                         "additionalProperties": false
                     }
-                }
+                },
+                "provenance": provenance_schema()
             },
             "required": ["path", "anchors"],
             "additionalProperties": false
