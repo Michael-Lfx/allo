@@ -818,7 +818,7 @@ fn round4_laoyeye_adversarial_contract_and_pptx_preflight_cases() {
         BriefContract::from_brief("打开 data.xlsx 看一下数据，写一份总结.pptx");
     assert_eq!(cn_only.expected_filenames, vec!["总结.pptx".to_owned()]);
     let uploaded = BriefContract::from_brief("我上传了 raw.csv，帮我做PPT");
-    assert!(uploaded.expected_filenames.is_empty());
+    assert_eq!(uploaded.expected_filenames, Vec::<String>::new());
 
     // 2. Non-PPT "页" and upper bounds never fabricate phantom `.pptx` or inflate `min_slides`
     let word_doc =

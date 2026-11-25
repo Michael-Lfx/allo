@@ -889,8 +889,12 @@ pub(super) fn restore_existing_history(
                 && matches!(message.source, MessageSource::User)
         })
     {
+        let display = message
+            .display_text
+            .clone()
+            .unwrap_or_else(|| message.text());
         match visible.next() {
-            Some((row, text)) if *text == message.text() => {
+            Some((row, text)) if *text == display => {
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
@@ -1153,7 +1157,10 @@ pub(super) fn lines_from_messages_with_index(
                         lines.push(ChatLine::Artifact { artifact_id });
                     }
                 }
-                let text = message.text();
+                let text = message
+                    .display_text
+                    .clone()
+                    .unwrap_or_else(|| message.text());
                 if !text.is_empty() {
                     lines.push(ChatLine::User { text });
                 }
@@ -1385,6 +1392,7 @@ pub(super) fn messages_from_lines(
                     role: Role::User,
                     content: vec![ContentBlock::text(text.clone())],
                     source: MessageSource::User,
+                    display_text: None,
                 });
             }
             ChatLine::Assistant { text } => messages.push(Message {
@@ -1395,6 +1403,7 @@ pub(super) fn messages_from_lines(
                     provider: config.provider.clone(),
                     model: config.model.clone(),
                 },
+                display_text: None,
             }),
             _ => {}
         }

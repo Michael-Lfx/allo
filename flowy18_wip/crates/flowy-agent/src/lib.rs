@@ -42,6 +42,7 @@ pub use flowy_agent_core::{
         is_windows_reparse_point,
     },
 };
+pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
     CardAction, CardActionOutcome, SessionSummary, TaskTarget, WorkStatus,
@@ -224,18 +225,32 @@ mod tests {
     }
 
     #[test]
+    fn official_skills_are_loaded_into_the_agent_catalog() {
+        let handle = mock_handle(&temp_root("official-skills"));
+        let catalog = handle.skill_catalog();
+        assert!(catalog.iter().any(|skill| {
+            skill.id.owner_handle == "flowy"
+                && skill.id.slug == "excel"
+                && skill.auto_invoke
+        }));
+        assert!(catalog.iter().any(|skill| {
+            skill.id.owner_handle == "flowy" && skill.id.slug == "pdf"
+        }));
+    }
+
+    #[test]
     fn failed_source_deletion_restores_full_core_history() {
         let root = ScratchRoot::new("delete-source-index-failure");
         let handle = mock_handle(&root.0);
         let id = handle.create_home_session().unwrap();
         handle.send("keep the full history").unwrap();
         for _ in 0..100 {
-            if !handle.turn_status().is_busy() {
+            if !handle.has_busy_session() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(!handle.turn_status().is_busy());
+        assert!(!handle.has_busy_session());
         let before = flowy_agent_core::SessionIndex::load(&root.0)
             .unwrap()
             .get(&id)
@@ -450,6 +465,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text("repeated question")],
             source: MessageSource::User,
+            display_text: None,
         };
         let assistant_message = |id: &str, content| Message {
             id: id.into(),
@@ -459,6 +475,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "test".into(),
             },
+            display_text: None,
         };
         History {
             active: None,
@@ -623,6 +640,7 @@ mod tests {
                             "hello",
                         )],
                         source: flowy_agent_core::MessageSource::User,
+                        display_text: None,
                     },
                     flowy_agent_core::Message {
                         id: "m2".into(),
@@ -634,6 +652,7 @@ mod tests {
                             provider: "flowy".into(),
                             model: "m".into(),
                         },
+                        display_text: None,
                     },
                 ],
                 todos: Vec::new(),

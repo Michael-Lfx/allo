@@ -48,6 +48,20 @@ pub(super) struct ShelfCard {
     pub(super) updated_at_ms: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum InstallPhase {
+    Verifying,
+    Downloading,
+    Installing,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct InstallUi {
+    pub(super) key: String,
+    pub(super) phase: InstallPhase,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Category {
     Coding,
@@ -971,19 +985,44 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let static_id = shelf_static_id(skill);
-        let added = static_id.is_some_and(|id| self.skill_is_added(id))
-            || self.shelf_is_added(skill);
         let saved_key = shelf_saved_key(skill);
+        let installed =
+            self.installed_skill_for(&skill.owner, &skill.slug).cloned();
+        let needs_update = installed.as_ref().is_some_and(|installed| {
+            installed
+                .latest_version
+                .as_ref()
+                .is_some_and(|latest| latest != &installed.id.version)
+        });
+        let install_label = self
+            .skills
+            .install
+            .as_ref()
+            .filter(|install| install.key == saved_key)
+            .map_or_else(
+                || {
+                    if needs_update {
+                        self.t("skills.update")
+                    } else if installed.is_some() {
+                        self.t("skills.try_out")
+                    } else {
+                        self.t("skills.install")
+                    }
+                },
+                |install| self.install_phase_label(&install.phase),
+            );
         let slug = skill.slug.clone();
+        let version = skill.version.clone();
+        let target_version = installed
+            .as_ref()
+            .and_then(|installed| installed.latest_version.clone())
+            .unwrap_or_else(|| version.clone());
         let page = shelf_page_url(skill);
-        let primary_label = if added {
-            self.t("skills.try_out")
-        } else {
-            self.t("skills.add")
-        };
-        let mut primary = theme::Button::new("skill-shelf-add", primary_label)
+        let owner = skill.owner.clone();
+        let install_key = saved_key.clone();
+        let mut primary = theme::Button::new("skill-shelf-add", install_label)
             .variant(theme::ControlVariant::Primary);
-        if !added {
+        if installed.is_none() || needs_update {
             primary = primary.icon(theme::icons::plus());
         }
         let mut actions =
@@ -992,20 +1031,47 @@ impl FlowyApp {
                     &self.theme,
                     cx.listener(move |app, _event, _window, cx| {
                         cx.stop_propagation();
-                        if let Some(id) = static_id {
-                            if app.skill_is_added(id) {
-                                app.try_skill(id, cx);
-                            } else {
-                                app.add_skill(id, cx);
-                            }
-                        } else if app.shelf_is_saved(&saved_key) {
-                            app.try_shelf_skill(&slug, cx);
+                        if needs_update {
+                            app.install_shelf_skill(
+                                &owner,
+                                &slug,
+                                &target_version,
+                                &install_key,
+                                cx,
+                            );
+                        } else if let Some(skill) =
+                            app.installed_skill_for(&owner, &slug).cloned()
+                        {
+                            app.try_installed_skill(&skill, cx);
                         } else {
-                            app.add_shelf_skill(saved_key.clone(), cx);
+                            app.install_shelf_skill(
+                                &owner,
+                                &slug,
+                                &version,
+                                &install_key,
+                                cx,
+                            );
                         }
                     }),
                 ),
             );
+        let save_label = if self.shelf_is_saved(&saved_key) {
+            self.t("skills.saved")
+        } else {
+            self.t("skills.save")
+        };
+        let save_key = saved_key;
+        actions = actions.child(
+            theme::Button::new("skill-shelf-save", save_label)
+                .icon(theme::icons::book())
+                .render(
+                    &self.theme,
+                    cx.listener(move |app, _event, _window, cx| {
+                        cx.stop_propagation();
+                        app.toggle_saved_skill(save_key.clone(), cx);
+                    }),
+                ),
+        );
         if static_id.is_some() || page.is_some() {
             actions = actions.child(
                 theme::Button::new(
@@ -1187,8 +1253,17 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = self.theme.modal_size(window.viewport_size());
-        let id = self.active_dialog.skill().unwrap_or("");
-        let content = if let Some(skill) = skill_by_id(id) {
+        let id = if matches!(
+            self.active_dialog,
+            super::state::ActiveDialog::SkillScriptConfirm
+        ) {
+            "mine"
+        } else {
+            self.active_dialog.skill().unwrap_or("")
+        };
+        let content = if id == "mine" {
+            self.mine_skills_dialog(frame, cx).into_any_element()
+        } else if let Some(skill) = skill_by_id(id) {
             self.skill_dialog(skill, frame, cx).into_any_element()
         } else {
             self.skill_stub_dialog(id, cx).into_any_element()
@@ -1220,6 +1295,412 @@ impl FlowyApp {
         .flex_col()
         .child(self.skill_dialog_header(skill, cx))
         .child(self.skill_dialog_body(skill, cx))
+    }
+
+    fn mine_skills_dialog(
+        &self,
+        frame: Size<Pixels>,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let mut body = div().flex().flex_col().gap_2().px_5().pb_5();
+        if self.skills.installed.is_empty() {
+            body = body.child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
+                    .child(self.t("skills.no_installed")),
+            );
+        }
+        for skill in self.skills.installed.iter().cloned() {
+            let title = if skill.description.is_empty() {
+                skill.name.clone()
+            } else {
+                format!("{} · {}", skill.name, skill.description)
+            };
+            let auto_label = if skill.auto_invoke {
+                self.t("skills.auto_on")
+            } else {
+                self.t("skills.auto_off")
+            };
+            let scripts_label = if skill.scripts_enabled {
+                self.t("skills.scripts_on")
+            } else {
+                self.t("skills.scripts_off")
+            };
+            let origin_label =
+                if skill.origin == flowy_skills::InstallOrigin::Official {
+                    self.t("skills.built_in")
+                } else {
+                    self.t("skills.community")
+                };
+            let update = skill
+                .latest_version
+                .as_ref()
+                .is_some_and(|latest| latest != &skill.id.version);
+            let owner = skill.id.owner_handle.clone();
+            let slug = skill.id.slug.clone();
+            let latest = skill.latest_version.clone().unwrap_or_default();
+            let key = format!("{owner}/{slug}");
+            let auto_id = skill.id.clone();
+            let auto_invoke = skill.auto_invoke;
+            let scripts_id = skill.id.clone();
+            let scripts_enabled = skill.scripts_enabled;
+            let uninstall_id = skill.id.clone();
+            let row = div()
+                .w_full()
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.line())
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_size(self.theme.body_size())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(self.skill_text_tag(format!(
+                            "{origin_label} · {}",
+                            skill.id.version
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(
+                            theme::Button::new("skill-auto-toggle", auto_label)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |app, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        app.set_auto_invoke(
+                                            auto_id.clone(),
+                                            !auto_invoke,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                        )
+                        .child(
+                            theme::Button::new("skill-scripts-toggle", scripts_label)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |app, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        if scripts_enabled {
+                                            app.set_scripts_enabled(
+                                                scripts_id.clone(),
+                                                false,
+                                                cx,
+                                            );
+                                        } else {
+                                            app.skills.script_confirm =
+                                                Some(scripts_id.clone());
+                                            app.activate_dialog(
+                                                super::state::ActiveDialog::SkillScriptConfirm,
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                                ),
+                        )
+                        .when(update, |row| {
+                            row.child(
+                                theme::Button::new("skill-update", self.t("skills.update"))
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |app, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            app.install_shelf_skill(
+                                                &owner,
+                                                &slug,
+                                                &latest,
+                                                &key,
+                                                cx,
+                                            );
+                                        }),
+                                    ),
+                            )
+                        })
+                        .when(
+                            skill.origin == flowy_skills::InstallOrigin::Community,
+                            |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "skill-uninstall",
+                                        self.t("skills.uninstall"),
+                                    )
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |app, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            app.uninstall_skill(uninstall_id.clone(), cx);
+                                        }),
+                                    ),
+                                )
+                            },
+                        ),
+                );
+            body = body.child(row);
+        }
+        if !self.prefs.skills.is_empty() {
+            body = body.child(
+                div()
+                    .pt_3()
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
+                    .child(self.t("skills.saved")),
+            );
+            for saved in self.prefs.skills.iter().cloned() {
+                let remove = saved.clone();
+                let install = saved.clone();
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.ink())
+                        .child(saved)
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .child(
+                                    theme::Button::new(
+                                        "skill-install-saved",
+                                        self.t("skills.install"),
+                                    )
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(
+                                            move |app, _event, _window, cx| {
+                                                cx.stop_propagation();
+                                                if let Some((owner, slug)) =
+                                                    install.split_once('/')
+                                                {
+                                                    app.install_shelf_skill(
+                                                    owner,
+                                                    slug,
+                                                    flowy_skills::UNVERSIONED,
+                                                    &install,
+                                                    cx,
+                                                );
+                                                }
+                                            },
+                                        ),
+                                    ),
+                                )
+                                .child(
+                                    theme::Button::new(
+                                        "skill-remove-saved",
+                                        self.t("skills.remove_saved"),
+                                    )
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(
+                                            move |app, _event, _window, cx| {
+                                                cx.stop_propagation();
+                                                app.toggle_saved_skill(
+                                                    remove.clone(),
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    ),
+                                ),
+                        ),
+                );
+            }
+        }
+        theme::dialog(
+            "skill-mine-dialog",
+            self.t("skills.mine"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(640.))
+        .max_w(frame.width)
+        .max_h(frame.height)
+        .rounded(self.theme.modal_radius())
+        .bg(self.theme.card())
+        .shadow_md()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .px_5()
+                .pt_4()
+                .pb_3()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(self.theme.heading_size())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(self.t("skills.mine")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            theme::Button::new(
+                                "skills-check-updates",
+                                self.t("skills.check_updates"),
+                            )
+                            .render(
+                                &self.theme,
+                                cx.listener(|app, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    app.check_skill_updates(cx);
+                                }),
+                            ),
+                        )
+                        .child(self.skill_icon_hit(
+                            "skill-stub-close",
+                            self.t("ui.close"),
+                            theme::icons::x(),
+                            cx,
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .id("skill-mine-body")
+                .min_h_0()
+                .overflow_y_scroll()
+                .border_t_1()
+                .border_color(self.theme.line())
+                .pt_4()
+                .child(body),
+        )
+    }
+
+    pub(super) fn skill_script_confirm_layer(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        if self.active_dialog != super::state::ActiveDialog::SkillScriptConfirm
+        {
+            return div().into_any_element();
+        }
+        let Some(id) = self.skills.script_confirm.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(skill) = self
+            .skills
+            .installed
+            .iter()
+            .find(|skill| &skill.id == id)
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let confirm_id = id.clone();
+        let frame = self.theme.modal_size(window.viewport_size());
+        theme::modal_layer(
+            "skill-script-confirm-layer",
+            &self.theme,
+            &self.ui,
+            theme::dialog(
+                "skill-script-confirm",
+                self.t("skills.scripts_confirm_title"),
+                &self.theme,
+                &self.ui,
+                cx,
+            )
+            .w(px(420.))
+            .max_w(frame.width)
+            .bg(self.theme.card())
+            .shadow_md()
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .on_click(cx.listener(|_app, _event, _window, cx| {
+                cx.stop_propagation();
+            }))
+            .child(
+                div()
+                    .text_size(self.theme.heading_size())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(self.t("skills.scripts_confirm_title")),
+            )
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.tf(
+                        "skills.scripts_confirm_body",
+                        &[("name", &skill.name)],
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        theme::Button::new(
+                            "skill-script-cancel",
+                            self.t("more.cancel"),
+                        )
+                        .variant(theme::ControlVariant::Secondary)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.skills.script_confirm = None;
+                                app.active_dialog =
+                                    super::state::ActiveDialog::Skill("mine");
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        theme::Button::new(
+                            "skill-script-confirm",
+                            self.t("skills.enable"),
+                        )
+                        .variant(theme::ControlVariant::Primary)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(move |app, _event, _window, cx| {
+                                app.set_scripts_enabled(
+                                    confirm_id.clone(),
+                                    true,
+                                    cx,
+                                );
+                                app.skills.script_confirm = None;
+                                app.active_dialog =
+                                    super::state::ActiveDialog::Skill("mine");
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            ),
+        )
+        .into_any_element()
     }
 
     fn skill_stub_dialog(
@@ -1440,31 +1921,69 @@ impl FlowyApp {
     }
 
     fn skill_is_added(&self, id: &str) -> bool {
-        self.prefs.skills.iter().any(|skill| skill == id)
-    }
-
-    fn shelf_is_added(&self, skill: &ShelfCard) -> bool {
-        self.shelf_is_saved(&shelf_saved_key(skill))
+        self.skills
+            .installed
+            .iter()
+            .any(|skill| skill.id.slug == id || skill.name == id)
     }
 
     fn shelf_is_saved(&self, key: &str) -> bool {
         self.prefs.skills.iter().any(|skill| skill == key)
     }
 
-    fn add_shelf_skill(&mut self, key: String, cx: &mut Context<'_, Self>) {
-        if key.is_empty() || self.shelf_is_saved(&key) {
+    fn installed_skill_for(
+        &self,
+        owner: &str,
+        slug: &str,
+    ) -> Option<&flowy_agent::InstalledSkill> {
+        self.skills.installed.iter().find(|skill| {
+            skill.id.owner_handle == owner && skill.id.slug == slug
+        })
+    }
+
+    fn toggle_saved_skill(&mut self, key: String, cx: &mut Context<'_, Self>) {
+        if key.is_empty() {
             return;
         }
-        self.prefs.skills.push(key);
+        if let Some(index) =
+            self.prefs.skills.iter().position(|skill| skill == &key)
+        {
+            self.prefs.skills.remove(index);
+        } else {
+            self.prefs.skills.push(key);
+        }
         let _ = self.prefs.save_checked(self.store.root());
         cx.notify();
     }
 
-    fn try_shelf_skill(&mut self, slug: &str, cx: &mut Context<'_, Self>) {
+    fn install_phase_label(&self, phase: &InstallPhase) -> String {
+        match phase {
+            InstallPhase::Verifying => self.t("skills.verifying"),
+            InstallPhase::Downloading => self.t("skills.downloading"),
+            InstallPhase::Installing => self.t("skills.installing"),
+            InstallPhase::Failed(_) => self.t("skills.install_failed"),
+        }
+    }
+
+    fn try_installed_skill(
+        &mut self,
+        skill: &flowy_agent::InstalledSkill,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.active_dialog = super::state::ActiveDialog::None;
         self.studio.update(cx, flowy_studio::StudioPanel::new_task);
-        let draft = self.tf("skills.try_draft", &[("command", slug)]);
-        self.fill_prompt(&draft, cx);
+        let duplicates = self
+            .skills
+            .installed
+            .iter()
+            .filter(|item| item.name == skill.name)
+            .count();
+        let command = if duplicates > 1 {
+            format!("{}/{}", skill.id.owner_handle, skill.id.slug)
+        } else {
+            skill.name.clone()
+        };
+        self.fill_prompt(&format!("/skill:{command} "), cx);
         self.push_section(super::Section::Studio, cx);
     }
 
@@ -1472,9 +1991,6 @@ impl FlowyApp {
         let Some(skill) = skill_by_id(id) else {
             return;
         };
-        if self.skill_is_added(id) {
-            return;
-        }
         if skill.required_plan.level() > self.prefs.plan.level() {
             self.activate_dialog(
                 super::state::ActiveDialog::SkillUnlock(id),
@@ -1482,20 +1998,27 @@ impl FlowyApp {
             );
             return;
         }
-        self.prefs.skills.push(id.to_owned());
-        let _ = self.prefs.save_checked(self.store.root());
-        cx.notify();
+        if let Some(installed) = self
+            .skills
+            .installed
+            .iter()
+            .find(|item| item.id.owner_handle == "flowy" && item.id.slug == id)
+            .cloned()
+        {
+            self.try_installed_skill(&installed, cx);
+        }
     }
 
     fn try_skill(&mut self, id: &'static str, cx: &mut Context<'_, Self>) {
-        let Some(skill) = skill_by_id(id) else {
-            return;
-        };
-        self.active_dialog = super::state::ActiveDialog::None;
-        self.studio.update(cx, flowy_studio::StudioPanel::new_task);
-        let draft = self.tf("skills.try_draft", &[("command", skill.command)]);
-        self.fill_prompt(&draft, cx);
-        self.push_section(super::Section::Studio, cx);
+        if let Some(installed) = self
+            .skills
+            .installed
+            .iter()
+            .find(|item| item.id.owner_handle == "flowy" && item.id.slug == id)
+            .cloned()
+        {
+            self.try_installed_skill(&installed, cx);
+        }
     }
 
     fn open_skill_details(
@@ -2053,7 +2576,7 @@ fn present_shelf(
     }
 }
 
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

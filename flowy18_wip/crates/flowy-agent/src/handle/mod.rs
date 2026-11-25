@@ -12,15 +12,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, ReceiptState, RequiredDeliverable, RunError,
-    SessionOrigin, SessionRecord, SessionWorkspace, SubmissionOutcome,
-    TurnObserver, TurnState, complete_text, echo_stream_fn, log_preview,
+    LoopOutcome, ModelRoute, PromptTurn, ReceiptState, RequiredDeliverable,
+    RunError, SessionOrigin, SessionRecord, SessionWorkspace,
+    SubmissionOutcome, TurnObserver, TurnState, complete_text, echo_stream_fn,
+    log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
     types::{
         CancelToken, ContentBlock, Message, MessageSource, Role, ToolCallArgs,
     },
+};
+use flowy_skills::{
+    InstalledSkill, SkillId, cleanup_staging, format_available_skills,
+    format_skill_invocation, load_installed, seed_official,
 };
 
 use crate::artifact_store::{
@@ -86,6 +91,7 @@ pub struct SessionSummary {
 pub enum AgentUpdate {
     Initialized,
     Sessions,
+    Skills,
     Artifacts,
     Session {
         id: String,
@@ -329,6 +335,7 @@ struct Harness {
     state: Arc<UiState>,
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
     config: Mutex<LlmConfig>,
+    skills: Mutex<Vec<InstalledSkill>>,
 }
 
 struct SubmissionSelection<'a> {
@@ -422,12 +429,14 @@ impl AgentHandle {
                 state,
                 engine,
                 config: Mutex::new(config),
+                skills: Mutex::new(Vec::new()),
             }),
             _runtime: owner,
         }
     }
 
     fn initialize(&self) {
+        self.reload_skills();
         let artifact_root = self.inner.state.root.join("artifacts");
         match ArtifactStore::open(artifact_root.clone()) {
             Ok(store) => {
@@ -470,6 +479,7 @@ impl AgentHandle {
         }
         self.inner.state.push_update(AgentUpdate::Initialized);
         self.inner.state.push_update(AgentUpdate::Sessions);
+        self.inner.state.push_update(AgentUpdate::Skills);
         self.inner.state.push_update(AgentUpdate::Artifacts);
         push_reconciled_receipt_updates(&self.inner.state, boot_receipts);
         if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
@@ -480,6 +490,48 @@ impl AgentHandle {
             stage = "AgentHandle::with_config",
             "done"
         );
+    }
+
+    fn reload_skills(&self) {
+        let root = &self.inner.state.root;
+        cleanup_staging(root);
+        if let Err(error) = seed_official(root) {
+            tracing::warn!(
+                target: "flowy.skills",
+                error = %error,
+                "official skill seed failed"
+            );
+        }
+        match load_installed(root) {
+            Ok(catalog) => {
+                for failure in &catalog.failures {
+                    tracing::warn!(
+                        target: "flowy.skills",
+                        error = %failure,
+                        "installed skill could not be loaded"
+                    );
+                }
+                *lock(&self.inner.skills) = catalog.skills;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "flowy.skills",
+                    error = %error,
+                    "installed skill catalog load failed"
+                );
+                lock(&self.inner.skills).clear();
+            }
+        }
+    }
+
+    pub fn replace_skill_catalog(&self, skills: Vec<InstalledSkill>) {
+        *lock(&self.inner.skills) = skills;
+        self.inner.state.push_update(AgentUpdate::Skills);
+    }
+
+    #[must_use]
+    pub fn skill_catalog(&self) -> Vec<InstalledSkill> {
+        self.inner.skill_catalog()
     }
 
     fn boot(&self, config: LlmConfig) -> Vec<(String, ReceiptState)> {
@@ -1292,6 +1344,10 @@ impl Harness {
         *lock(&self.state.initializing)
     }
 
+    pub(super) fn skill_catalog(&self) -> Vec<InstalledSkill> {
+        lock(&self.skills).clone()
+    }
+
     pub(super) fn can_run_turns(&self) -> bool {
         lock(&self.config).can_run_turns()
     }
@@ -1473,11 +1529,13 @@ impl Harness {
             state.report_storage_error();
         }
         let config = lock(&self.config).clone();
-        let prompt = text.to_owned();
+        let skills = self.skill_catalog();
+        let (prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let title_prompt = text.to_owned();
         let stream = config
             .api_key
             .is_none()
-            .then(|| echo_stream_fn(prompt.clone()));
+            .then(|| echo_stream_fn(text.to_owned()));
         let workspace = lock(&state.live)
             .get(&id)
             .and_then(|session| session.workspace.clone());
@@ -1487,6 +1545,7 @@ impl Harness {
             |workspace| workspace.root.clone(),
         );
         let mut run_config = engine_config(&config, &cwd);
+        run_config.registry = tool_registry(&cwd, &skills, active_skills);
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -1508,13 +1567,13 @@ impl Harness {
             );
             let contract = crate::verify::BriefContract::evolve(
                 core_session.work_contract.as_ref(),
-                &prompt,
+                text,
             );
             if core_session.work_contract.is_some() || !contract.is_empty() {
                 run_config.work_contract = Some(contract.to_work_contract());
             }
             let semantic_brief =
-                compose_semantic_brief(&core_session.messages, &prompt);
+                compose_semantic_brief(&core_session.messages, text);
             let semantic = state
                 .semantic_verify_enabled
                 .load(Ordering::Acquire)
@@ -1558,6 +1617,7 @@ impl Harness {
                 output_root.display()
             );
         }
+        run_config.system = append_skill_listing(&run_config.system, &skills);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -1663,7 +1723,7 @@ impl Harness {
                         session = %id,
                         ok = false,
                         ?loop_outcome,
-                        prompt_preview = %log_preview(&prompt, 200),
+                        prompt_preview = %log_preview(&prompt.model, 200),
                         "turn finished"
                     );
                 }
@@ -1674,7 +1734,7 @@ impl Harness {
                         session = %id,
                         ok = false,
                         error = %error,
-                        prompt_preview = %log_preview(&prompt, 200),
+                        prompt_preview = %log_preview(&prompt.model, 200),
                         "turn finished"
                     );
                 }
@@ -1733,7 +1793,12 @@ impl Harness {
                     "sidecar LLM"
                 );
                 observer::generate_title(
-                    engine, state, config, signal, id, prompt,
+                    engine,
+                    state,
+                    config,
+                    signal,
+                    id,
+                    title_prompt,
                 )
                 .await;
             }
@@ -1901,12 +1966,57 @@ fn model_route(config: &LlmConfig) -> ModelRoute {
     }
 }
 
+fn prepare_skill_prompt(
+    text: &str,
+    skills: &[InstalledSkill],
+) -> Result<(PromptTurn, Vec<SkillId>), &'static str> {
+    let Some(command) = text.strip_prefix("/skill:") else {
+        return Ok((PromptTurn::plain(text), Vec::new()));
+    };
+    let (name, args) = command
+        .split_once(' ')
+        .map_or((command, ""), |(name, args)| (name, args.trim()));
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("notice.skill_not_found");
+    }
+    let mut matches: Vec<&InstalledSkill> = skills
+        .iter()
+        .filter(|skill| {
+            skill.name == name
+                || format!("{}/{}", skill.id.owner_handle, skill.id.slug)
+                    == name
+        })
+        .collect();
+    let skill = match matches.len() {
+        0 => return Err("notice.skill_not_found"),
+        1 => matches.remove(0),
+        _ => return Err("notice.skill_ambiguous"),
+    };
+    let model =
+        format_skill_invocation(skill, (!args.is_empty()).then_some(args));
+    Ok((
+        PromptTurn::with_display(model, text),
+        vec![skill.id.clone()],
+    ))
+}
+
+fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
+    let listing = format_available_skills(skills);
+    match (base.trim().is_empty(), listing.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => base.to_owned(),
+        (true, false) => listing,
+        (false, false) => format!("{base}\n\n{listing}"),
+    }
+}
+
 fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
     EngineConfig {
         route: model_route(config),
         api_key: config.api_key.clone(),
         system: String::new(),
-        registry: tool_registry(cwd),
+        registry: tool_registry(cwd, &[], Vec::new()),
         cwd: Some(cwd.display().to_string()),
         todos: None,
         delivery_committer: None,

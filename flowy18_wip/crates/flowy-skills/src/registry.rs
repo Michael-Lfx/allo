@@ -1,4 +1,6 @@
-use crate::{InstallRecord, SkillId};
+use crate::{
+    InstallOrigin, InstallRecord, SkillId, Store, StoreError, install_dir,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -9,7 +11,18 @@ pub struct InstalledSkill {
     pub name: String,
     pub description: String,
     pub root: PathBuf,
+    pub skill_path: PathBuf,
+    pub content: String,
     pub auto_invoke: bool,
+    pub scripts_enabled: bool,
+    pub origin: InstallOrigin,
+    pub latest_version: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct InstalledCatalog {
+    pub skills: Vec<InstalledSkill>,
+    pub failures: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -26,7 +39,8 @@ pub fn project_installed(
     root: &Path,
     record: &InstallRecord,
 ) -> Result<InstalledSkill, RegistryError> {
-    let source = fs::read_to_string(root.join("SKILL.md"))?;
+    let skill_path = root.join("SKILL.md");
+    let source = fs::read_to_string(&skill_path)?;
     let frontmatter = frontmatter(&source)?;
     Ok(InstalledSkill {
         id: record.id.clone(),
@@ -35,8 +49,28 @@ pub fn project_installed(
             .1
             .ok_or(RegistryError::MissingField("description"))?,
         root: root.to_path_buf(),
+        skill_path,
+        content: source,
         auto_invoke: record.auto_invoke,
+        scripts_enabled: record.scripts_enabled,
+        origin: record.origin,
+        latest_version: record.latest_version.clone(),
     })
+}
+
+pub fn load_installed(root: &Path) -> Result<InstalledCatalog, StoreError> {
+    let store = Store::open(&root.join("skills").join("market.sqlite3"))?;
+    let mut catalog = InstalledCatalog::default();
+    for record in store.installed()? {
+        let skill_root = install_dir(root, &record.id);
+        match project_installed(&skill_root, &record) {
+            Ok(skill) => catalog.skills.push(skill),
+            Err(error) => catalog
+                .failures
+                .push(format!("{}: {error}", record.id.slug)),
+        }
+    }
+    Ok(catalog)
 }
 
 #[must_use]
@@ -46,6 +80,73 @@ pub fn prompt_lines(skills: &[InstalledSkill]) -> Vec<String> {
         .filter(|skill| skill.auto_invoke)
         .map(|skill| format!("{}: {}", skill.name, skill.description))
         .collect()
+}
+
+/// PI-compatible model-visible skill listing. The listing escapes every field
+/// because descriptions and paths come from installed packages.
+#[must_use]
+pub fn format_available_skills(skills: &[InstalledSkill]) -> String {
+    let visible: Vec<&InstalledSkill> =
+        skills.iter().filter(|skill| skill.auto_invoke).collect();
+    if visible.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![
+        "The following skills provide specialized instructions for specific tasks.".to_string(),
+        "Read the full skill file when the task matches its description.".to_string(),
+        "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
+        String::new(),
+        "<available_skills>".to_string(),
+    ];
+    for skill in visible {
+        lines.push("  <skill>".to_string());
+        lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
+        lines.push(format!(
+            "    <description>{}</description>",
+            escape_xml(&skill.description)
+        ));
+        lines.push(format!(
+            "    <location>{}</location>",
+            escape_xml(&skill.skill_path.display().to_string())
+        ));
+        lines.push("  </skill>".to_string());
+    }
+    lines.push("</available_skills>".to_string());
+    lines.join("\n")
+}
+
+#[must_use]
+pub fn format_skill_invocation(
+    skill: &InstalledSkill,
+    additional_instructions: Option<&str>,
+) -> String {
+    let dirname = skill.root.display();
+    let block = format!(
+        "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {dirname}.\n\n{}\n</skill>",
+        skill.name,
+        skill.skill_path.display(),
+        skill.content,
+    );
+    match additional_instructions.filter(|text| !text.is_empty()) {
+        Some(extra) => format!("{block}\n\n{extra}"),
+        None => block,
+    }
+}
+
+#[must_use]
+pub fn escape_xml(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn frontmatter(
@@ -133,6 +234,12 @@ mod tests {
             auto_invoke,
             scripts_enabled: false,
             content_hash: "abc".into(),
+            origin: InstallOrigin::Community,
+            display_name: "PDF".into(),
+            summary: "Fill PDF forms.".into(),
+            installed_at: 1000,
+            latest_version: Some("1.2.3".into()),
+            checked_at: Some(1000),
         }
     }
 
@@ -149,6 +256,7 @@ mod tests {
         assert_eq!(skill.description, "Fill PDF forms.");
         assert_eq!(skill.id.slug, "pdf");
         assert!(skill.auto_invoke);
+        assert!(skill.content.contains("正文不进入摘要"));
     }
 
     #[test]
@@ -158,7 +266,12 @@ mod tests {
             name: name.into(),
             description: format!("{name} description"),
             root: PathBuf::from(name),
+            skill_path: PathBuf::from(name).join("SKILL.md"),
+            content: "body".into(),
             auto_invoke,
+            scripts_enabled: false,
+            origin: InstallOrigin::Official,
+            latest_version: Some("1.0.0".into()),
         };
         let lines =
             prompt_lines(&[skill("excel", true), skill("community", false)]);

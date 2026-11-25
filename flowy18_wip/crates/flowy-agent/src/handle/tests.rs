@@ -153,7 +153,8 @@ mod background_init_tests {
 
     #[test]
     fn the_tool_registry_advertises_the_deck_capability() {
-        let registry = tool_registry(std::path::Path::new("."));
+        let registry =
+            tool_registry(std::path::Path::new("."), &[], Vec::new());
         assert!(
             registry.list().iter().any(|name| name == "create_deck"),
             "the deck tool is part of the capability registry"
@@ -701,17 +702,20 @@ mod guard_tests {
     use super::{
         AcceptanceQueue, AgentHandle, AgentWorkspace, CancelToken,
         ContentBlock, LlmConfig, Message, MessageSource, ReceiptState, Role,
-        SessionOrigin, SessionRecord, TurnState, confined_to, lock,
-        model_route, next_stamp, path_guard, promote_latest_turn_verifications,
-        session_working_directory, take_file_change, tool_arg_key,
-        tool_registry, tool_result_display_text, upsert_verification_line,
+        SessionOrigin, SessionRecord, TurnState, append_skill_listing,
+        confined_to, lock, model_route, next_stamp, path_guard,
+        prepare_skill_prompt, promote_latest_turn_verifications,
+        session_working_directory, shell_guard, skill_scope, take_file_change,
+        tool_arg_key, tool_registry, tool_result_display_text,
+        upsert_verification_line,
     };
     use crate::projection::{ChatLine, FileChangeKind, VerificationIssue};
     use flowy_agent_core::types::ToolCallArgs;
+    use flowy_skills::{InstallOrigin, InstalledSkill, parse_skill_id};
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     fn args(name: &str, arguments: serde_json::Value) -> ToolCallArgs {
         ToolCallArgs {
@@ -737,23 +741,131 @@ mod guard_tests {
     #[test]
     fn shell_is_not_treated_as_a_file_path() {
         let root = Path::new("/work");
+        let active = Arc::new(Mutex::new(HashSet::new()));
         for name in ["bash", "powershell"] {
             let shell = args(name, json!({ "command": "cd .. && pwd" }));
-            assert_eq!(path_guard(root, &shell), None);
+            assert_eq!(path_guard(root, &[], &active, &shell), None);
         }
         let read = args("read_file", json!({ "path": "../outside" }));
-        assert!(path_guard(root, &read).is_some());
+        assert!(path_guard(root, &[], &active, &read).is_some());
     }
 
     #[test]
     fn production_registry_exposes_file_and_shell_tools_without_todos() {
-        let registry = tool_registry(Path::new("/work"));
+        let registry = tool_registry(Path::new("/work"), &[], Vec::new());
         let names = registry.list();
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == shell_name()));
         let other = if cfg!(windows) { "bash" } else { "powershell" };
         assert!(!names.iter().any(|name| name == other));
         assert!(!names.iter().any(|name| name == "todo_write"));
+    }
+
+    fn installed_skill(scripts_enabled: bool) -> InstalledSkill {
+        InstalledSkill {
+            id: parse_skill_id("owner", "demo", "1.0.0").unwrap(),
+            name: "demo".into(),
+            description: "Demo <skill> & helpers".into(),
+            root: Path::new("/work/skills/demo").to_path_buf(),
+            skill_path: Path::new("/work/skills/demo/SKILL.md").to_path_buf(),
+            content: "---\nname: demo\n---\nUse the demo.".into(),
+            auto_invoke: true,
+            scripts_enabled,
+            origin: InstallOrigin::Community,
+            latest_version: Some("1.0.0".into()),
+        }
+    }
+
+    #[test]
+    fn slash_skill_injects_full_body_and_keeps_display_text() {
+        let skill = installed_skill(false);
+        let (prompt, active) =
+            prepare_skill_prompt("/skill:demo summarize this", &[skill])
+                .unwrap();
+        assert!(prompt.model.contains("<skill name=\"demo\""));
+        assert!(prompt.model.contains("Use the demo."));
+        assert_eq!(
+            prompt.display.as_deref(),
+            Some("/skill:demo summarize this")
+        );
+        assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn available_skill_listing_is_xml_escaped() {
+        let listing = append_skill_listing("base", &[installed_skill(false)]);
+        assert!(listing.starts_with("base\n\n"));
+        assert!(listing.contains("<available_skills>"));
+        assert!(listing.contains("Demo &lt;skill&gt; &amp; helpers"));
+        assert!(listing.contains("/work/skills/demo/SKILL.md"));
+    }
+
+    #[test]
+    fn shell_is_blocked_until_active_skill_scripts_are_enabled() {
+        let skill = installed_skill(false);
+        let active = Arc::new(Mutex::new(HashSet::from([skill.id.clone()])));
+        let shell = args(shell_name(), json!({ "command": "echo hi" }));
+        assert!(
+            shell_guard(std::slice::from_ref(&skill), &active, &shell)
+                .is_some()
+        );
+        let mut enabled = skill;
+        enabled.scripts_enabled = true;
+        assert!(shell_guard(&[enabled], &active, &shell).is_none());
+    }
+
+    #[test]
+    fn auto_listed_skills_are_in_shell_scope() {
+        let skill = installed_skill(false);
+        let active = Arc::new(Mutex::new(skill_scope(
+            std::slice::from_ref(&skill),
+            Vec::new(),
+        )));
+        let shell = args(shell_name(), json!({ "command": "echo hi" }));
+        assert!(active.lock().unwrap().contains(&skill.id));
+        assert!(shell_guard(&[skill], &active, &shell).is_some());
+    }
+
+    #[test]
+    fn reading_or_grepping_a_skill_marks_it_active_and_allows_its_root() {
+        let base = std::env::temp_dir().join(format!(
+            "flowy-agent-skill-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let cwd = base.join("cwd");
+        let skill_root = base.join("skill");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&skill_root).unwrap();
+        std::fs::write(skill_root.join("SKILL.md"), "body").unwrap();
+        let mut skill = installed_skill(false);
+        skill.root = skill_root.clone();
+        skill.skill_path = skill_root.join("SKILL.md");
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let read = args(
+            "read_file",
+            json!({ "path": skill.skill_path.display().to_string() }),
+        );
+        assert_eq!(path_guard(&cwd, &[skill.clone()], &active, &read), None);
+        assert!(active.lock().unwrap().contains(&skill.id));
+
+        let grep_active = Arc::new(Mutex::new(HashSet::new()));
+        let grep = args(
+            "grep",
+            json!({
+                "path": skill_root.display().to_string(),
+                "pattern": "body"
+            }),
+        );
+        assert_eq!(
+            path_guard(&cwd, &[skill.clone()], &grep_active, &grep),
+            None
+        );
+        assert!(grep_active.lock().unwrap().contains(&skill.id));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -847,14 +959,15 @@ mod guard_tests {
     #[test]
     fn deck_tools_cannot_escape_the_working_directory() {
         let root = Path::new("/work");
+        let active = Arc::new(Mutex::new(HashSet::new()));
         for tool in ["create_deck", "verify_deck", "verify_artifact"] {
             let escaped = args(tool, json!({ "path": "../outside.pptx" }));
             assert!(
-                path_guard(root, &escaped).is_some(),
+                path_guard(root, &[], &active, &escaped).is_some(),
                 "{tool} must reject parent traversal"
             );
             let inside = args(tool, json!({ "path": "outputs/sub/deck.pptx" }));
-            assert_eq!(path_guard(root, &inside), None);
+            assert_eq!(path_guard(root, &[], &active, &inside), None);
         }
     }
 
@@ -979,6 +1092,7 @@ mod guard_tests {
                 role: Role::User,
                 content: vec![ContentBlock::text("crashed after prepare")],
                 source: MessageSource::User,
+                display_text: None,
             }],
             origin: SessionOrigin::Home,
             ..SessionRecord::default()
@@ -1297,9 +1411,7 @@ mod guard_tests {
         );
         let session = handle.create_home_session().expect("session");
         {
-            let mut live = lock(&handle.inner.state.live);
-            let entry = live.get_mut(&session).expect("live session");
-            entry.projection.lines = vec![
+            let lines = vec![
                 ChatLine::User {
                     text: "Turn 1".into(),
                 },
@@ -1317,26 +1429,37 @@ mod guard_tests {
                     provenance_warnings: Vec::new(),
                 },
             ];
+            lock(&handle.inner.state.live)
+                .get_mut(&session)
+                .expect("live session")
+                .projection
+                .lines = lines;
         }
         assert!(handle.session_needs_attention(&session));
 
         // Turn 2 succeeds cleanly -> latest turn has no failed card.
         {
-            let mut live = lock(&handle.inner.state.live);
-            let entry = live.get_mut(&session).expect("live session");
-            entry.projection.lines.push(ChatLine::User {
-                text: "Turn 2 fix".into(),
-            });
-            entry.projection.lines.push(ChatLine::Verification {
-                report_id: "r2".into(),
-                artifact_path: "outputs/sub-2/deck.pptx".into(),
-                artifact_hash: "bbbb".into(),
-                ok: true,
-                issues: Vec::new(),
-                semantic_hint: None,
-                override_used: false,
-                provenance_warnings: Vec::new(),
-            });
+            let turn2 = [
+                ChatLine::User {
+                    text: "Turn 2 fix".into(),
+                },
+                ChatLine::Verification {
+                    report_id: "r2".into(),
+                    artifact_path: "outputs/sub-2/deck.pptx".into(),
+                    artifact_hash: "bbbb".into(),
+                    ok: true,
+                    issues: Vec::new(),
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                },
+            ];
+            lock(&handle.inner.state.live)
+                .get_mut(&session)
+                .expect("live session")
+                .projection
+                .lines
+                .extend(turn2);
         }
         assert!(
             !handle.session_needs_attention(&session),

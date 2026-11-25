@@ -32,6 +32,6 @@ pub use transport::{
 
 pub use types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageId,
-    MessageSource, Role, TodoItem, TodoSink, TodoStatus, ToolCallArgs,
-    ToolExecutionResult, ToolRunContext, ToolSchema,
+    MessageSource, PromptTurn, Role, TodoItem, TodoSink, TodoStatus,
+    ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema,
 };

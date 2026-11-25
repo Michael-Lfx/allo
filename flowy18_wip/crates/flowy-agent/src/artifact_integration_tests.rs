@@ -704,6 +704,7 @@ fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
                 role: Role::User,
                 content: vec![ContentBlock::text("Deliver the signed report")],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "response-error".into(),
@@ -715,6 +716,7 @@ fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
                     provider: "fixture".into(),
                     model: "fixture".into(),
                 },
+                display_text: None,
             },
         ],
         origin: SessionOrigin::Home,
@@ -742,6 +744,7 @@ fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
                     "Earlier failed work in same session",
                 )],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "resp-failed-first".into(),
@@ -751,12 +754,14 @@ fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
                     provider: "fixture".into(),
                     model: "fixture".into(),
                 },
+                display_text: None,
             },
             Message {
                 id: "submission-second-ok".into(),
                 role: Role::User,
                 content: vec![ContentBlock::text("follow up")],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "resp-second-ok".into(),
@@ -766,6 +771,7 @@ fn kernel_review_failed_turn_on_restart_stays_retryable_not_completed() {
                     provider: "fixture".into(),
                     model: "fixture".into(),
                 },
+                display_text: None,
             },
         ],
         submission_outcomes: outcomes,
@@ -1215,6 +1221,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
                 role: Role::User,
                 content: vec![ContentBlock::text("deliver sales.csv")],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "assistant-bp3".into(),
@@ -1224,6 +1231,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
                     provider: "openai".into(),
                     model: "fixture".into(),
                 },
+                display_text: None,
             },
         ],
         delivery_commits: vec![DeliveryCommit {

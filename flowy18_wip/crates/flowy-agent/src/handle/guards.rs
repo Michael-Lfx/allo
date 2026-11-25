@@ -1,10 +1,14 @@
-//! Workspace tool registry, path confinement, and shell guard hooks.
+//! Workspace tool registry, path confinement, skill scoping, and shell guard hooks.
+
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 use flowy_agent_core::tools::evaluate_shell_command;
+use flowy_skills::{InstalledSkill, SkillId};
 
 use super::{
     AgentWorkspace, Arc, Path, PathBuf, ToolCallArgs, ToolGuard, ToolRegistry,
-    log_storage_io_error, pi_shell_definition, register_builtin_tools,
+    lock, log_storage_io_error, pi_shell_definition, register_builtin_tools,
 };
 
 pub(super) fn ensure_tool_cwd(root: &Path) -> PathBuf {
@@ -22,7 +26,11 @@ pub(super) fn session_working_directory(
     workspace.map_or_else(|| ensure_tool_cwd(root), |item| item.root.clone())
 }
 
-pub(super) fn tool_registry(cwd: &Path) -> ToolRegistry {
+pub(super) fn tool_registry(
+    cwd: &Path,
+    skills: &[InstalledSkill],
+    active_skills: Vec<SkillId>,
+) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
@@ -31,14 +39,23 @@ pub(super) fn tool_registry(cwd: &Path) -> ToolRegistry {
     // host can satisfy instead of advertising one that always fails.
     registry.unregister("todo_write");
     let root = cwd.to_path_buf();
-    let file_guard: ToolGuard =
-        Arc::new(move |args: &ToolCallArgs| path_guard(&root, args));
+    let active = Arc::new(Mutex::new(skill_scope(skills, active_skills)));
+    let skills_for_paths = skills.to_vec();
+    let path_active = Arc::clone(&active);
+    let file_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        path_guard(&root, &skills_for_paths, &path_active, args)
+    });
     registry.add_guard(file_guard);
+    let skills_for_shell = skills.to_vec();
+    let skill_shell_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        shell_guard(&skills_for_shell, &active, args)
+    });
+    registry.add_guard(skill_shell_guard);
     let shell_root = cwd.to_path_buf();
-    let shell_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+    let policy_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
         shell_policy_guard(&shell_root, args)
     });
-    registry.add_guard(shell_guard);
+    registry.add_guard(policy_guard);
     registry
 }
 
@@ -71,9 +88,14 @@ pub(super) fn shell_policy_guard(
     None
 }
 
-/// Host policy for file tools. The platform shell is intentionally exempt: it
-/// executes commands, not host file paths, and the host has no OS sandbox for it.
-pub(super) fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
+/// Host policy for file tools. The platform shell is handled by dedicated
+/// guards because it executes commands rather than host file paths.
+pub(super) fn path_guard(
+    root: &Path,
+    skills: &[InstalledSkill],
+    active: &Arc<Mutex<HashSet<SkillId>>>,
+    args: &ToolCallArgs,
+) -> Option<String> {
     let key = match args.name.as_str() {
         "read_file" | "write_file" | "edit_file" | "glob" | "grep"
         | "create_deck" | "verify_deck" | "verify_artifact" => "path",
@@ -83,8 +105,65 @@ pub(super) fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
     if raw.trim().is_empty() {
         return None;
     }
-    (!confined_to(root, raw))
-        .then(|| format!("path escapes the working directory: {raw}"))
+    if confined_to(root, raw) {
+        return None;
+    }
+    let writable = matches!(
+        args.name.as_str(),
+        "write_file" | "edit_file" | "create_deck"
+    );
+    if writable {
+        return Some(format!("path escapes the working directory: {raw}"));
+    }
+    let path = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        root.join(raw)
+    };
+    let Some(skill) = skills
+        .iter()
+        .find(|skill| confined_to(&skill.root, &path.to_string_lossy()))
+    else {
+        return Some(format!("path escapes the working directory: {raw}"));
+    };
+    if matches!(args.name.as_str(), "read_file" | "grep") {
+        lock(active).insert(skill.id.clone());
+    }
+    None
+}
+
+pub(super) fn skill_scope(
+    skills: &[InstalledSkill],
+    explicit: Vec<SkillId>,
+) -> HashSet<SkillId> {
+    let mut active = explicit.into_iter().collect::<HashSet<_>>();
+    active.extend(
+        skills
+            .iter()
+            .filter(|skill| skill.auto_invoke)
+            .map(|skill| skill.id.clone()),
+    );
+    active
+}
+
+pub(super) fn shell_guard(
+    skills: &[InstalledSkill],
+    active: &Arc<Mutex<HashSet<SkillId>>>,
+    args: &ToolCallArgs,
+) -> Option<String> {
+    if !matches!(args.name.as_str(), "bash" | "powershell") {
+        return None;
+    }
+    let active = lock(active);
+    let blocked = skills
+        .iter()
+        .find(|skill| active.contains(&skill.id) && !skill.scripts_enabled);
+    blocked.map(|skill| {
+        format!(
+            "skill \"{}\" does not have script permission; enable it in My Skills before using a shell",
+            skill.name
+        )
+    })
 }
 
 pub use flowy_agent_core::tools::{
