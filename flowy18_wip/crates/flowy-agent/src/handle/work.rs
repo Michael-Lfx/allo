@@ -285,8 +285,9 @@ impl AgentHandle {
     }
 
     /// Optional graceful-close hint: pauses autonomous draining, cancels
-    /// cancellable busy turns (preserving finalizing deliveries), and flushes
-    /// the UI index. Crash correctness never depends on calling this.
+    /// cancellable busy turns (preserving finalizing deliveries), waits briefly
+    /// for cancelled turns/tools to finish reaping, and flushes the UI index.
+    /// Crash correctness never depends on calling this.
     pub fn prepare_shutdown(&self) {
         self.inner
             .state
@@ -294,8 +295,28 @@ impl AgentHandle {
             .store(false, Ordering::Release);
         self.inner.state.drain_cancel.cancel();
         let busy = self.busy_session_ids();
+        let mut cancelled = Vec::new();
         for session_id in busy {
-            let _ = self.cancel_task(TaskTarget::Session(session_id));
+            if matches!(
+                self.cancel_task(TaskTarget::Session(session_id.clone())),
+                Ok(CancelOutcome::Cancelled)
+            ) {
+                cancelled.push(session_id);
+            }
+        }
+        if !cancelled.is_empty()
+            && let Some(engine) = lock(&self.inner.engine).clone()
+        {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(2);
+            for session_id in cancelled {
+                let remaining = deadline
+                    .saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let _ = engine.wait_until_idle(&session_id, remaining);
+            }
         }
         let _ = persist_index(&self.inner.state);
     }

@@ -7,13 +7,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
 use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
-use crate::run_fence::{RunFence, RunTicket};
+use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
     DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
     SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
@@ -122,7 +123,7 @@ struct Inner {
 }
 
 struct PreparedTurn {
-    ticket: Arc<RunTicket>,
+    ticket: RunTicket,
     history: Vec<Message>,
     config: EngineConfig,
     submission_id: Option<String>,
@@ -413,6 +414,22 @@ impl Engine {
         self.request_cancel(id).map(|_| ())
     }
 
+    /// True while a cancelled run for `id` is still unwinding and reaping its
+    /// child tools.
+    #[must_use]
+    pub fn is_cancelling(&self, id: &str) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_some_and(|fence| fence.is_cancelling())
+    }
+
+    /// Wait up to `timeout` for session `id`'s active/cancelling run to finish
+    /// reaping and release its fence. Returns `true` if idle.
+    #[must_use]
+    pub fn wait_until_idle(&self, id: &str, timeout: Duration) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_none_or(|fence| fence.wait_until_idle(timeout))
+    }
+
     /// Request cancellation before a successful delivery history commit.
     /// `false` means the delivery crossed its durable linearization point and
     /// is completing its independent store marker; callers must keep the
@@ -591,7 +608,7 @@ impl Engine {
                 return Err(RunError::Storage(error));
             }
             let prepared = PreparedTurn {
-                ticket: Arc::new(ticket),
+                ticket,
                 history,
                 config,
                 submission_id,
@@ -664,7 +681,7 @@ impl Engine {
         let emitter = Arc::new(EngineEmitter {
             session: session_id.to_owned(),
             observer: Arc::clone(&self.observer),
-            ticket: Arc::clone(&ticket),
+            publisher: ticket.publisher(),
         });
         let result = run_turn(request, stream, emitter).await;
         let stored = {
@@ -1051,16 +1068,16 @@ fn now_ms() -> u64 {
 struct EngineEmitter {
     session: String,
     observer: Arc<dyn TurnObserver>,
-    ticket: Arc<RunTicket>,
+    publisher: PublishToken,
 }
 
 impl AgentEmitter for EngineEmitter {
     fn emit(&self, event: AgentEvent) -> BoxFuture<'static, ()> {
         let session = self.session.clone();
         let observer = Arc::clone(&self.observer);
-        let ticket = Arc::clone(&self.ticket);
+        let publisher = self.publisher.clone();
         Box::pin(async move {
-            ticket.publish(|| match event {
+            publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
                     assistant_message_event:
                         AssistantMessageEvent::TextDelta { delta, .. },
@@ -2094,7 +2111,7 @@ mod tests {
         let emitter = EngineEmitter {
             session: "s1".into(),
             observer: recorder.clone(),
-            ticket: Arc::clone(&old.ticket),
+            publisher: old.ticket.publisher(),
         };
         let message = Arc::new(AssistantMessage::empty(
             Api::OpenaiCompletions,
@@ -2112,6 +2129,19 @@ mod tests {
             },
         });
         engine.cancel("s1").unwrap();
+        assert!(engine.is_cancelling("s1"));
+        assert!(matches!(
+            engine.prepare("s1", "new", None, false, None),
+            Err(RunError::Busy)
+        ));
+        assert_eq!(
+            engine
+                .run_prepared("s1", "old", old, Some(text_stream("old")))
+                .await
+                .unwrap(),
+            LoopOutcome::Aborted
+        );
+        assert!(!engine.is_cancelling("s1"));
         let replacement =
             engine.prepare("s1", "new", None, false, None).unwrap();
         late.await;
@@ -2120,12 +2150,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*recorder.text.lock().unwrap(), "fresh");
+    }
+
+    #[tokio::test]
+    async fn cancel_blocks_overlapping_run_until_cancelled_turn_reaps() {
+        let scratch = Scratch::new("reap-wait");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let allow_reap = Arc::new(tokio::sync::Notify::new());
+        let entered_clone = Arc::clone(&entered);
+        let allow_reap_clone = Arc::clone(&allow_reap);
+        let slow_stream = rpi_agent::stream_fn(move |model, _, _| {
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            let entered = Arc::clone(&entered_clone);
+            let allow_reap = Arc::clone(&allow_reap_clone);
+            let mut message = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            message.stop_reason = StopReason::Aborted;
+            tokio::spawn(async move {
+                entered.notify_one();
+                allow_reap.notified().await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        let run = engine
+            .start_with_config(
+                "s1".into(),
+                "slow".into(),
+                config(),
+                Some(slow_stream),
+                None,
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        entered.notified().await;
+        engine.cancel("s1").unwrap();
+        assert!(engine.is_cancelling("s1"));
+        assert!(matches!(
+            engine
+                .run_with_stream("s1", "overlap", text_stream("nope"))
+                .await,
+            Err(RunError::Busy)
+        ));
+        allow_reap.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
+        assert!(
+            engine.wait_until_idle("s1", std::time::Duration::from_secs(1))
+        );
         assert_eq!(
             engine
-                .run_prepared("s1", "old", old, Some(text_stream("old")))
+                .run_with_stream("s1", "after-reap", text_stream("ok"))
                 .await
                 .unwrap(),
-            LoopOutcome::Aborted
+            LoopOutcome::Completed
         );
     }
 
