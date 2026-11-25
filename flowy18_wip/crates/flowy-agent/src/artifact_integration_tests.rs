@@ -1410,3 +1410,193 @@ fn duplicate_override_deliver_artifact_is_idempotent_without_duplicate_audit() {
     assert_eq!(events.matches("\"deliver_override\"").count(), 1);
     assert_eq!(events.matches("\"deliver\"").count(), 1);
 }
+
+#[test]
+fn cancel_task_stops_background_session_a_while_ui_focus_stays_on_b() {
+    use crate::{CancelOutcome, TaskTarget};
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_delayed_text(3_000, "slow reply");
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session_a = handle.create_home_session().unwrap();
+    let session_b = handle.create_home_session().unwrap();
+    handle.select_session(&session_a).unwrap();
+    handle.submit_chat(0xC001, "long task in A").unwrap();
+    // User switches UI focus to Session B while A is still running.
+    handle.select_session(&session_b).unwrap();
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str())
+    );
+
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Session(session_a.clone()))
+            .unwrap(),
+        CancelOutcome::Cancelled
+    );
+    // Focus remains on B, and A is stopped (not busy).
+    assert_eq!(
+        handle.active_session_id().as_deref(),
+        Some(session_b.as_str())
+    );
+    assert!(!handle.busy_session_ids().contains(&session_a));
+    // Re-cancelling an already-settled session reports AlreadySettled.
+    assert_eq!(
+        handle.cancel_task(TaskTarget::Session(session_a)).unwrap(),
+        CancelOutcome::AlreadySettled
+    );
+}
+
+#[test]
+fn cancel_task_receipt_and_card_actions_drive_kernel_without_ui_coupling() {
+    use crate::{
+        AgentUpdate, CancelOutcome, CardAction, CardActionOutcome, TaskTarget,
+    };
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let workspace_root = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let output = workspace_root.join("outputs").join("submission-card");
+    fs::create_dir_all(&output).unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    let deck = output.join("sample.pptx");
+    fs::copy(fixtures.join("sample.pptx"), &deck).unwrap();
+
+    // 1) Cancel a queued receipt permanently via TaskTarget::Receipt.
+    let queued = handle.accept_deferred("never run me").unwrap();
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Receipt(queued.id.clone()))
+            .unwrap(),
+        CancelOutcome::Cancelled
+    );
+    assert_eq!(
+        handle.receipt_state(&queued.id),
+        Some(ReceiptState::Cancelled)
+    );
+    assert_eq!(
+        handle
+            .cancel_task(TaskTarget::Receipt(queued.id.clone()))
+            .unwrap(),
+        CancelOutcome::AlreadySettled
+    );
+    let updates = handle.drain_updates();
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Cancelled
+        } if id == &queued.id
+    )));
+
+    // 2) CardAction::OverrideDeliver delivers a failed verified file.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let report = gate
+        .record_report(
+            &deck,
+            vec![crate::delivery::Issue {
+                code: "STRUCTURE".into(),
+                field: "slides".into(),
+            }],
+            10,
+        )
+        .unwrap();
+    let outcome = handle
+        .apply_card_action(CardAction::OverrideDeliver {
+            session_id: session.clone(),
+            report_id: report.id,
+            artifact_path: deck.display().to_string(),
+        })
+        .expect("card override deliver");
+    let CardActionOutcome::ArtifactDelivered { artifact_id } = outcome else {
+        panic!("expected ArtifactDelivered, got {outcome:?}");
+    };
+    assert_ne!(artifact_id, "");
+
+    // 3) CardAction::RetryDeadReceipt requeues a buried receipt as a fresh ID.
+    let queue = AcceptanceQueue::new(&scratch.0);
+    let dead = queue.accept(Some(&session), "retry dead", 1_000).unwrap();
+    queue
+        .take(&dead.id, "attempt-1", 1_010, 1_000)
+        .unwrap()
+        .unwrap();
+    assert!(queue.give_up(&dead.id, "attempt-1", 1_020).unwrap());
+    let requeued = handle
+        .apply_card_action(CardAction::RetryDeadReceipt {
+            receipt_id: dead.id.clone(),
+        })
+        .expect("requeue dead receipt");
+    let CardActionOutcome::ReceiptRequeued { receipt_id } = requeued else {
+        panic!("expected ReceiptRequeued, got {requeued:?}");
+    };
+    assert_ne!(receipt_id, dead.id);
+    assert_eq!(handle.receipt_state(&dead.id), Some(ReceiptState::Dead));
+    assert_eq!(
+        handle.receipt_state(&receipt_id),
+        Some(ReceiptState::Queued)
+    );
+}
+
+#[test]
+fn autonomous_drain_processes_multiple_receipts_without_ui_polling() {
+    use crate::AgentUpdate;
+    use flowy_agent_core::ReceiptState;
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let _ = handle.drain_updates();
+    handle.set_autonomous_drain(true);
+    assert!(handle.autonomous_drain());
+
+    let r1 = handle.accept_deferred("first autonomous job").unwrap();
+    let r2 = handle.accept_deferred("second autonomous job").unwrap();
+    let r3 = handle.accept_deferred("third autonomous job").unwrap();
+
+    // Never call run_accepted_once() or finish_accepted() — the kernel drains
+    // all three receipts on its own Tokio runtime and pushes Receipt updates.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen_updates = Vec::new();
+    while Instant::now() < deadline {
+        seen_updates.extend(handle.drain_updates());
+        if !handle.has_active_claim()
+            && handle.receipt_state(&r1.id) == Some(ReceiptState::Completed)
+            && handle.receipt_state(&r2.id) == Some(ReceiptState::Completed)
+            && handle.receipt_state(&r3.id) == Some(ReceiptState::Completed)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    seen_updates.extend(handle.drain_updates());
+    for receipt in [&r1, &r2, &r3] {
+        assert_eq!(
+            handle.receipt_state(&receipt.id),
+            Some(ReceiptState::Completed),
+            "receipt {} must auto-complete",
+            receipt.id
+        );
+        assert!(seen_updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::Receipt {
+                id,
+                state: ReceiptState::Completed
+            } if id == &receipt.id
+        )));
+    }
+    handle.prepare_shutdown();
+    assert!(!handle.autonomous_drain());
+}

@@ -18,6 +18,21 @@ use rpi_ai::types::{
 
 use crate::types::{CancelToken, ContentBlock, Message, MessageSource, Role};
 
+/// Hard ceiling on assistant/tool-loop turns inside a single submission so a
+/// stuck model cannot spin indefinitely.
+pub const MAX_TOOL_TURNS_PER_SUBMISSION: usize = 24;
+
+/// Maximum Unicode scalar chars retained per tool result before host context
+/// compaction trims the tail.
+const MAX_TOOL_RESULT_CHARS: usize = 32_000;
+
+/// Conservative fallback character budget when the provider catalog does not
+/// declare `context_window`.
+const DEFAULT_CONTEXT_CHAR_BUDGET: usize = 240_000;
+
+const CONTEXT_TRUNCATION_SUFFIX: &str =
+    "\n...[truncated by host context guard]";
+
 /// Provider route for one run. Credentials live in the stream function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelRoute {
@@ -136,14 +151,47 @@ pub async fn run_turn(
         tools: request.tools,
     };
     let pi_model = request.route.rpi_model();
+    let char_budget = if request.route.context_window > 0 {
+        usize::try_from(request.route.context_window)
+            .unwrap_or(usize::MAX / 4)
+            .saturating_mul(3)
+            .max(16_000)
+    } else {
+        DEFAULT_CONTEXT_CHAR_BUDGET
+    };
+    let transform_context: rpi_agent::hooks::TransformContext =
+        Arc::new(move |messages, _signal| {
+            Box::pin(
+                async move { compact_context_messages(messages, char_budget) },
+            )
+        });
+    let should_stop_after_turn: rpi_agent::hooks::ShouldStopAfterTurn =
+        Arc::new(|ctx| {
+            let assistant_turns = ctx
+                .new_messages
+                .iter()
+                .filter(|msg| matches!(msg, AgentMessage::Assistant(_)))
+                .count();
+            let hit_cap = assistant_turns >= MAX_TOOL_TURNS_PER_SUBMISSION;
+            if hit_cap {
+                tracing::warn!(
+                    target: "flowy.prompt",
+                    stage = "run_turn",
+                    assistant_turns,
+                    max_turns = MAX_TOOL_TURNS_PER_SUBMISSION,
+                    "max tool turns reached; stopping submission loop"
+                );
+            }
+            Box::pin(async move { hit_cap })
+        });
     let signal = request.signal.inner();
     let config = AgentLoopConfig {
         model: pi_model,
         convert_to_llm: rpi_agent::hooks::default_convert_to_llm_fn(),
         convert_to_llm_incremental: None,
-        transform_context: None,
+        transform_context: Some(transform_context),
         get_api_key: None,
-        should_stop_after_turn: None,
+        should_stop_after_turn: Some(should_stop_after_turn),
         prepare_next_turn: None,
         after_tool_results: None,
         get_steering_messages: None,
@@ -227,6 +275,111 @@ pub async fn complete_text(
         .rev()
         .find(|message| message.role == Role::Assistant)
         .map_or_default(Message::text))
+}
+
+fn message_char_len(message: &AgentMessage) -> usize {
+    match message {
+        AgentMessage::User(user) => match &user.content {
+            UserContent::Text(text) => text.chars().count(),
+            UserContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    Content::Text(t) => t.text.chars().count(),
+                    _ => 0,
+                })
+                .sum(),
+        },
+        AgentMessage::Assistant(assistant) => assistant
+            .content
+            .iter()
+            .map(|c| match c {
+                Content::Text(t) => t.text.chars().count(),
+                Content::Thinking(t) => t.thinking.chars().count(),
+                Content::ToolCall(call) => {
+                    call.name.len() + call.arguments.to_string().chars().count()
+                }
+                Content::Image(_) => 256,
+            })
+            .sum(),
+        AgentMessage::ToolResult(result) => result
+            .content
+            .iter()
+            .map(|c| match c {
+                Content::Text(t) => t.text.chars().count(),
+                Content::Thinking(t) => t.thinking.chars().count(),
+                Content::ToolCall(_) => 64,
+                Content::Image(_) => 256,
+            })
+            .sum(),
+        AgentMessage::Custom(_) => 0,
+    }
+}
+
+fn truncate_text_chars(text: &str, max_chars: usize) -> Option<String> {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    chars
+        .next()
+        .map(|_| format!("{head}{CONTEXT_TRUNCATION_SUFFIX}"))
+}
+
+/// Bound per-tool-result length and trim oldest history turns while preserving
+/// strict `Assistant(ToolCall)` -> `ToolResult` pairing for OpenAI-compatible
+/// gateways.
+fn compact_context_messages(
+    mut messages: Vec<AgentMessage>,
+    char_budget: usize,
+) -> Vec<AgentMessage> {
+    for message in &mut messages {
+        if let AgentMessage::ToolResult(result) = message {
+            for block in &mut result.content {
+                if let Content::Text(text) = block
+                    && let Some(trimmed) =
+                        truncate_text_chars(&text.text, MAX_TOOL_RESULT_CHARS)
+                {
+                    text.text = trimmed;
+                }
+            }
+        }
+    }
+    let mut total_chars: usize = messages.iter().map(message_char_len).sum();
+    if total_chars <= char_budget || messages.len() <= 2 {
+        return messages;
+    }
+    let mut start = 0_usize;
+    while total_chars > char_budget && messages.len().saturating_sub(start) > 2
+    {
+        // Drop one atomic unit: either a single non-tool message, or an
+        // assistant message together with all immediately following tool results.
+        let mut next_start = start + 1;
+        if matches!(messages.get(start), Some(AgentMessage::Assistant(_))) {
+            while next_start < messages.len()
+                && matches!(
+                    messages.get(next_start),
+                    Some(AgentMessage::ToolResult(_))
+                )
+            {
+                next_start += 1;
+            }
+        }
+        if messages.len().saturating_sub(next_start) < 1 {
+            break;
+        }
+        for dropped in &messages[start..next_start] {
+            total_chars = total_chars.saturating_sub(message_char_len(dropped));
+        }
+        start = next_start;
+    }
+    // Never start the retained window on an orphaned ToolResult.
+    while start < messages.len().saturating_sub(1)
+        && matches!(messages.get(start), Some(AgentMessage::ToolResult(_)))
+    {
+        start += 1;
+    }
+    if start > 0 {
+        messages.drain(..start);
+    }
+    messages
 }
 
 fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
@@ -992,5 +1145,149 @@ mod tests {
         assert_eq!(log_preview("hi", 10), "hi");
         assert_eq!(log_preview("abcdefghij", 5), "abcde…");
         assert_eq!(log_preview("你好世界", 2), "你好…");
+    }
+
+    #[test]
+    fn compact_context_truncates_oversized_tool_result_and_preserves_tool_pairing()
+     {
+        let huge = "x".repeat(super::MAX_TOOL_RESULT_CHARS + 500);
+        let messages = vec![
+            AgentMessage::User(rpi_ai::types::UserMessage::new(
+                rpi_ai::types::UserContent::Text("old question".into()),
+                1,
+            )),
+            AgentMessage::Assistant(Box::new({
+                let mut msg = AssistantMessage::empty(
+                    Api::Other("test".into()),
+                    "flowy",
+                    "m",
+                    2,
+                );
+                msg.content =
+                    vec![Content::ToolCall(rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: "call-old".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    })];
+                msg
+            })),
+            AgentMessage::ToolResult(Box::new(
+                rpi_ai::types::ToolResultMessage {
+                    role: rpi_ai::types::ToolResultRole,
+                    tool_call_id: "call-old".into(),
+                    tool_name: "read_file".into(),
+                    content: vec![Content::text(huge)],
+                    details: None,
+                    usage: None,
+                    added_tool_names: Vec::new(),
+                    is_error: false,
+                    timestamp: 3,
+                },
+            )),
+            AgentMessage::User(rpi_ai::types::UserMessage::new(
+                rpi_ai::types::UserContent::Text("latest question".into()),
+                4,
+            )),
+            AgentMessage::Assistant(Box::new({
+                let mut msg = AssistantMessage::empty(
+                    Api::Other("test".into()),
+                    "flowy",
+                    "m",
+                    5,
+                );
+                msg.content = vec![Content::text("latest answer")];
+                msg
+            })),
+        ];
+
+        // Large budget keeps all messages but still truncates the giant tool output.
+        let truncated_only = super::compact_context_messages(
+            messages.clone(),
+            super::DEFAULT_CONTEXT_CHAR_BUDGET,
+        );
+        assert_eq!(truncated_only.len(), 5);
+        let AgentMessage::ToolResult(tr) = &truncated_only[2] else {
+            panic!("expected tool result at index 2");
+        };
+        let Content::Text(text) = &tr.content[0] else {
+            panic!("expected text block");
+        };
+        assert!(text.text.contains("truncated by host context guard"));
+        assert!(text.text.chars().count() < super::MAX_TOOL_RESULT_CHARS + 100);
+
+        // Tight budget drops oldest turns cleanly without leaving an orphaned ToolResult.
+        let tightened = super::compact_context_messages(messages, 100);
+        assert!(tightened.len() <= 3);
+        assert!(!matches!(
+            tightened.first(),
+            Some(AgentMessage::ToolResult(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_turn_stops_at_max_tool_turns_cap() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_ref = Arc::clone(&calls);
+        let stream = rpi_agent::stream_fn(move |model, _context, _| {
+            let idx =
+                calls_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut msg = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = vec![Content::ToolCall(rpi_ai::types::ToolCall {
+                kind: rpi_ai::types::ToolCallType,
+                id: format!("loop-call-{idx}"),
+                name: "noop_tool".into(),
+                arguments: serde_json::json!({}),
+                thought_signature: None,
+                namespace: None,
+                recorded: None,
+            })];
+            msg.stop_reason = StopReason::ToolUse;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Start {
+                        partial: Arc::new(msg.clone()),
+                    })
+                    .await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::ToolUse,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: None,
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "loop forever".into(),
+                route: route(),
+                tools: Vec::new(),
+                signal: CancelToken::new(),
+            },
+            stream,
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            super::MAX_TOOL_TURNS_PER_SUBMISSION
+        );
     }
 }

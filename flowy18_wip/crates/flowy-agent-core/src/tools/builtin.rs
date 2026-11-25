@@ -11,12 +11,32 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 
 use crate::tools::matcher::glob_match;
 use crate::tools::registry::{ToolDefinition, ToolRegistry};
 use crate::types::{
     TodoItem, TodoStatus, ToolCallArgs, ToolExecutionResult, ToolRunContext,
 };
+
+/// Maximum file bytes returned by `read_file` or scanned by `grep`.
+const MAX_READ_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_WALK_DEPTH: usize = 16;
+const MAX_WALK_ENTRIES: usize = 5_000;
+const READ_TRUNCATION_SUFFIX: &str =
+    "\n...[truncated: file exceeds 2 MiB host read limit]";
+
+#[cfg(windows)]
+fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+const fn is_windows_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
 
 /// Register every built-in tool on the registry.
 pub fn register_builtin_tools(registry: &ToolRegistry) {
@@ -153,15 +173,57 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                         }
                     };
                 let path = resolve_path(&run_ctx, &parsed.path);
-                match tokio::fs::read_to_string(&path).await {
-                    Ok(content) => {
-                        let value = json!({ "path": path.display().to_string(), "content": content });
-                        ToolExecutionResult::success_text(content, value)
+                let mut file = match tokio::fs::File::open(&path).await {
+                    Ok(file) => file,
+                    Err(err) => {
+                        return ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("cannot read {}: {err}", path.display()),
+                        );
                     }
-                    Err(err) => ToolExecutionResult::error(
+                };
+                let mut buf = Vec::new();
+                if let Err(err) = (&mut file)
+                    .take(MAX_READ_FILE_BYTES.saturating_add(1))
+                    .read_to_end(&mut buf)
+                    .await
+                {
+                    return ToolExecutionResult::error(
                         "READ_FAILED",
                         format!("cannot read {}: {err}", path.display()),
-                    ),
+                    );
+                }
+                let truncated = (buf.len() as u64) > MAX_READ_FILE_BYTES;
+                if truncated {
+                    buf.truncate(
+                        usize::try_from(MAX_READ_FILE_BYTES)
+                            .unwrap_or(usize::MAX),
+                    );
+                    let mut content =
+                        String::from_utf8_lossy(&buf).into_owned();
+                    content.push_str(READ_TRUNCATION_SUFFIX);
+                    let value = json!({
+                        "path": path.display().to_string(),
+                        "content": content,
+                        "truncated": true,
+                        "max_bytes": MAX_READ_FILE_BYTES,
+                    });
+                    ToolExecutionResult::success_text(content, value)
+                } else {
+                    match String::from_utf8(buf) {
+                        Ok(content) => {
+                            let value = json!({
+                                "path": path.display().to_string(),
+                                "content": content,
+                                "truncated": false,
+                            });
+                            ToolExecutionResult::success_text(content, value)
+                        }
+                        Err(err) => ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("cannot read {}: {err}", path.display()),
+                        ),
+                    }
                 }
             })
         },
@@ -406,8 +468,12 @@ fn glob_tool() -> Arc<ToolDefinition> {
 
 async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let mut stack = vec![base.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut visited = 0_usize;
+    let mut stack = vec![(base.to_path_buf(), 0_usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > MAX_WALK_DEPTH || visited >= MAX_WALK_ENTRIES {
+            continue;
+        }
         let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
             continue;
         };
@@ -418,12 +484,20 @@ async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
         // Sort for determinism.
         collected.sort_by_key(tokio::fs::DirEntry::file_name);
         for entry in collected {
+            if visited >= MAX_WALK_ENTRIES {
+                break;
+            }
+            visited = visited.saturating_add(1);
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else {
+            let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
                 continue;
             };
-            if meta.is_dir() {
-                stack.push(path.clone());
+            if meta.file_type().is_symlink() || is_windows_reparse_point(&meta)
+            {
+                continue;
+            }
+            if meta.is_dir() && depth < MAX_WALK_DEPTH {
+                stack.push((path.clone(), depth + 1));
             }
             if let Ok(relative) = path.strip_prefix(base) {
                 let rel = relative.to_string_lossy().replace('\\', "/");
@@ -508,6 +582,13 @@ fn grep_tool() -> Arc<ToolDefinition> {
                             continue;
                         }
                     }
+                    if let Ok(meta) = tokio::fs::symlink_metadata(&file).await
+                        && (meta.len() > MAX_READ_FILE_BYTES
+                            || meta.file_type().is_symlink()
+                            || is_windows_reparse_point(&meta))
+                    {
+                        continue;
+                    }
                     let Ok(content) = tokio::fs::read_to_string(&file).await
                     else {
                         continue;
@@ -546,12 +627,21 @@ fn grep_tool() -> Arc<ToolDefinition> {
 }
 
 async fn collect_files(base: &Path) -> Vec<PathBuf> {
-    if base.is_file() {
-        return vec![base.to_path_buf()];
+    if let Ok(meta) = tokio::fs::symlink_metadata(base).await {
+        if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
+            return Vec::new();
+        }
+        if meta.is_file() {
+            return vec![base.to_path_buf()];
+        }
     }
     let mut out = Vec::new();
-    let mut stack = vec![base.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut visited = 0_usize;
+    let mut stack = vec![(base.to_path_buf(), 0_usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > MAX_WALK_DEPTH || visited >= MAX_WALK_ENTRIES {
+            continue;
+        }
         let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
             continue;
         };
@@ -561,13 +651,23 @@ async fn collect_files(base: &Path) -> Vec<PathBuf> {
         }
         collected.sort_by_key(tokio::fs::DirEntry::file_name);
         for entry in collected {
+            if visited >= MAX_WALK_ENTRIES {
+                break;
+            }
+            visited = visited.saturating_add(1);
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else {
+            let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
                 continue;
             };
+            if meta.file_type().is_symlink() || is_windows_reparse_point(&meta)
+            {
+                continue;
+            }
             if meta.is_dir() {
-                stack.push(path.clone());
-            } else {
+                if depth < MAX_WALK_DEPTH {
+                    stack.push((path, depth + 1));
+                }
+            } else if meta.is_file() {
                 out.push(path);
             }
         }
@@ -718,5 +818,34 @@ mod tests {
                 panic!("missing todo sink must not succeed")
             }
         }
+    }
+
+    #[tokio::test]
+    async fn read_file_truncates_files_above_two_mib_cap() {
+        let dir = std::env::temp_dir()
+            .join(format!("flowy-builtin-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("huge.log");
+        let payload = "a".repeat((super::MAX_READ_FILE_BYTES as usize) + 4096);
+        std::fs::write(&big, &payload).unwrap();
+
+        let result = registry()
+            .execute(
+                "c-big".into(),
+                "read_file".into(),
+                json!({ "path": big.display().to_string() }),
+                ctx(dir.clone()),
+            )
+            .await;
+        assert!(!result.is_error(), "oversized read must truncate cleanly");
+        let text = result
+            .content()
+            .iter()
+            .filter_map(|b| b.as_text())
+            .collect::<String>();
+        assert!(text.contains("exceeds 2 MiB host read limit"));
+        assert!(text.len() < payload.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

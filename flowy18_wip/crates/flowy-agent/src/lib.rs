@@ -38,8 +38,8 @@ pub use flowy_agent_core::{
     WorkContract,
 };
 pub use handle::{
-    AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary,
-    WorkStatus,
+    AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
+    CardAction, CardActionOutcome, SessionSummary, TaskTarget, WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{

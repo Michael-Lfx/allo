@@ -87,8 +87,53 @@ pub enum AgentUpdate {
     Session {
         id: String,
     },
+    /// Lifecycle transition for one durable acceptance receipt.
+    Receipt {
+        id: String,
+        state: ReceiptState,
+    },
     /// The session index could not be loaded or saved.
     StorageError,
+}
+
+/// Explicit target for host-level task cancellation, decoupled from UI focus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskTarget {
+    Session(String),
+    Receipt(String),
+}
+
+/// Outcome of requesting cancellation on a [`TaskTarget`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    Cancelled,
+    AlreadySettled,
+    FinalizingNotCancellable,
+}
+
+/// Structured card-level user actions executed exclusively by the host kernel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardAction {
+    OverrideDeliver {
+        session_id: String,
+        report_id: String,
+        artifact_path: String,
+    },
+    RetryDelivery {
+        session_id: String,
+        submission_id: Option<String>,
+    },
+    RetryDeadReceipt {
+        receipt_id: String,
+    },
+}
+
+/// Result of applying one [`CardAction`] inside the host kernel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardActionOutcome {
+    ArtifactDelivered { artifact_id: String },
+    DeliveryRetried,
+    ReceiptRequeued { receipt_id: String },
 }
 
 /// One accepted receipt claimed by `run_accepted_once`.
@@ -136,6 +181,7 @@ struct AcceptedClaim {
     receipt_id: String,
     attempt_id: String,
     session_id: String,
+    submission_id: String,
     attempts: u32,
     heartbeat_cancel: CancelToken,
 }
@@ -152,6 +198,9 @@ struct UiState {
     active: Mutex<Option<String>>,
     accepted_claim: Mutex<Option<AcceptedClaim>>,
     accepted_lease_ms: AtomicU64,
+    autonomous_drain: AtomicBool,
+    drain_wakeup_scheduled: AtomicBool,
+    drain_cancel: CancelToken,
     #[cfg(test)]
     before_accepted_bind_hook: Mutex<Option<AcceptedSubmitHook>>,
     #[cfg(test)]
@@ -165,6 +214,7 @@ struct UiState {
     updates: Mutex<VecDeque<AgentUpdate>>,
     load_failed: Mutex<bool>,
     history_unavailable: Mutex<bool>,
+    accept_drain: Mutex<()>,
     dispatch: Mutex<()>,
     index_write: Mutex<()>,
 }
@@ -194,6 +244,9 @@ impl UiState {
             active: Mutex::new(None),
             accepted_claim: Mutex::new(None),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
+            autonomous_drain: AtomicBool::new(false),
+            drain_wakeup_scheduled: AtomicBool::new(false),
+            drain_cancel: CancelToken::new(),
             #[cfg(test)]
             before_accepted_bind_hook: Mutex::new(None),
             #[cfg(test)]
@@ -209,6 +262,7 @@ impl UiState {
             updates: Mutex::new(VecDeque::new()),
             load_failed: Mutex::new(false),
             history_unavailable: Mutex::new(false),
+            accept_drain: Mutex::new(()),
             dispatch: Mutex::new(()),
             index_write: Mutex::new(()),
         }
@@ -241,6 +295,13 @@ struct Harness {
     state: Arc<UiState>,
     engine: Mutex<Option<Arc<Engine>>>,
     config: Mutex<LlmConfig>,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.state.autonomous_drain.store(false, Ordering::Release);
+        self.state.drain_cancel.cancel();
+    }
 }
 
 struct SubmissionSelection<'a> {
@@ -367,6 +428,9 @@ impl AgentHandle {
         self.inner.state.push_update(AgentUpdate::Initialized);
         self.inner.state.push_update(AgentUpdate::Sessions);
         self.inner.state.push_update(AgentUpdate::Artifacts);
+        if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
+            self.kick_autonomous_drain();
+        }
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
@@ -611,11 +675,16 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
-        reconcile_committed_acceptances(
+        for reconciled_id in reconcile_committed_acceptances(
             &state.root,
             &engine,
             state.artifact_store.get(),
-        );
+        ) {
+            state.push_update(AgentUpdate::Receipt {
+                id: reconciled_id,
+                state: ReceiptState::Completed,
+            });
+        }
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -1735,6 +1804,13 @@ impl AgentHandle {
             root_session_id = root_session_id.as_deref().unwrap_or(""),
             "accepted prompt into durable queue"
         );
+        self.inner.state.push_update(AgentUpdate::Receipt {
+            id: receipt.id.clone(),
+            state: ReceiptState::Queued,
+        });
+        if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
+            self.kick_autonomous_drain();
+        }
         Ok(receipt)
     }
 
@@ -1928,18 +2004,24 @@ impl AgentHandle {
     pub fn run_accepted_once(
         &self,
     ) -> Result<Option<AcceptedRun>, &'static str> {
-        if let Some(engine) = lock(&self.inner.engine).as_ref() {
-            reconcile_committed_acceptances(
-                &self.inner.state.root,
-                engine,
-                self.inner.state.artifact_store.get(),
-            );
-        }
+        let _drain = lock(&self.inner.state.accept_drain);
         if !self.can_run_turns()
             || self.has_active_claim()
             || self.has_busy_session()
         {
             return Ok(None);
+        }
+        if let Some(engine) = lock(&self.inner.engine).as_ref() {
+            for reconciled_id in reconcile_committed_acceptances(
+                &self.inner.state.root,
+                engine,
+                self.inner.state.artifact_store.get(),
+            ) {
+                self.inner.state.push_update(AgentUpdate::Receipt {
+                    id: reconciled_id,
+                    state: ReceiptState::Completed,
+                });
+            }
         }
         let state = &self.inner.state;
         let previous_active = lock(&state.active).clone();
@@ -2060,6 +2142,18 @@ impl AgentHandle {
             }
         }
         let heartbeat_cancel = CancelToken::new();
+        *lock(&state.accepted_claim) = Some(AcceptedClaim {
+            receipt_id: claimed.id.clone(),
+            attempt_id: attempt_id.clone(),
+            session_id: session.clone(),
+            submission_id: submission_id.clone(),
+            attempts: claimed.attempts,
+            heartbeat_cancel: heartbeat_cancel.clone(),
+        });
+        state.push_update(AgentUpdate::Receipt {
+            id: claimed.id.clone(),
+            state: ReceiptState::Running,
+        });
         if let Err(error) = self.submit_message_targeted(
             Some(&session),
             &claimed.text,
@@ -2068,6 +2162,7 @@ impl AgentHandle {
             Some(heartbeat_cancel.clone()),
         ) {
             heartbeat_cancel.cancel();
+            *lock(&state.accepted_claim) = None;
             settle_failed_attempt(
                 &queue,
                 &claimed.id,
@@ -2077,13 +2172,6 @@ impl AgentHandle {
             );
             return Err(error);
         }
-        *lock(&state.accepted_claim) = Some(AcceptedClaim {
-            receipt_id: claimed.id.clone(),
-            attempt_id: attempt_id.clone(),
-            session_id: session.clone(),
-            attempts: claimed.attempts,
-            heartbeat_cancel: heartbeat_cancel.clone(),
-        });
         let hb_queue = AcceptanceQueue::new(state.root.clone());
         let hb_receipt = claimed.id.clone();
         let hb_attempt = attempt_id.clone();
@@ -2212,9 +2300,232 @@ impl AgentHandle {
                 root_session_id = %root_session_id,
                 "settled accepted receipt"
             );
+            let next_state = if completed {
+                ReceiptState::Completed
+            } else if gave_up {
+                ReceiptState::Dead
+            } else {
+                ReceiptState::Retrying
+            };
+            self.inner.state.push_update(AgentUpdate::Receipt {
+                id: claim.receipt_id,
+                state: next_state,
+            });
             *lock(&self.inner.state.accepted_claim) = None;
         }
         result.map(|_| gave_up).map_err(|_| "notice.storage_error")
+    }
+
+    /// Enable or disable kernel-owned autonomous queue draining on the host
+    /// Tokio runtime (no UI polling required). Defaults to `false` so legacy
+    /// caller-driven loops remain deterministic.
+    pub fn set_autonomous_drain(&self, enabled: bool) {
+        self.inner
+            .state
+            .autonomous_drain
+            .store(enabled, Ordering::Release);
+        if enabled {
+            self.kick_autonomous_drain();
+        }
+    }
+
+    #[must_use]
+    pub fn autonomous_drain(&self) -> bool {
+        self.inner.state.autonomous_drain.load(Ordering::Acquire)
+    }
+
+    fn kick_autonomous_drain(&self) {
+        if !self.inner.state.autonomous_drain.load(Ordering::Acquire)
+            || self.is_initializing()
+        {
+            return;
+        }
+        if self
+            .inner
+            .state
+            .drain_wakeup_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        self.inner.runtime.spawn(async move {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let handle = Self { inner };
+            handle
+                .inner
+                .state
+                .drain_wakeup_scheduled
+                .store(false, Ordering::Release);
+            if !handle.inner.state.autonomous_drain.load(Ordering::Acquire) {
+                return;
+            }
+            match handle.run_accepted_once() {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if handle.has_active_claim() || handle.has_busy_session() {
+                        return;
+                    }
+                    let now = now_ms();
+                    let next_wake_ms =
+                        AcceptanceQueue::new(handle.inner.state.root.clone())
+                            .all()
+                            .ok()
+                            .and_then(|receipts| {
+                                receipts
+                                    .into_iter()
+                                    .filter(|r| {
+                                        !r.dead
+                                            && !r.cancelled
+                                            && !r.quarantined
+                                            && r.completed_at_ms.is_none()
+                                    })
+                                    .filter_map(|r| {
+                                        let avail =
+                                            r.available_at_ms.unwrap_or(0);
+                                        let lease_exp = r
+                                            .lease
+                                            .as_ref()
+                                            .map_or(0, |l| l.expires_at_ms);
+                                        let ready_at = avail.max(lease_exp);
+                                        (ready_at > now).then_some(ready_at)
+                                    })
+                                    .min()
+                            });
+                    if let Some(ready_at) = next_wake_ms {
+                        let delay_ms =
+                            ready_at.saturating_sub(now).clamp(20, 30_000);
+                        let cancel = handle.inner.state.drain_cancel.clone();
+                        // Drop strong Harness reference before sleeping so
+                        // AgentHandle::drop never blocks or leaks.
+                        drop(handle);
+                        tokio::select! {
+                            () = cancel.cancelled() => return,
+                            () = tokio::time::sleep(
+                                std::time::Duration::from_millis(delay_ms),
+                            ) => {}
+                        }
+                        if let Some(inner) = weak.upgrade() {
+                            Self { inner }.kick_autonomous_drain();
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "flowy.acceptance",
+                        error,
+                        "autonomous drain could not start next receipt"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Strongly-typed task cancellation decoupled from whichever session the
+    /// UI is currently viewing. Never reads `active`.
+    pub fn cancel_task(
+        &self,
+        target: TaskTarget,
+    ) -> Result<CancelOutcome, &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        match target {
+            TaskTarget::Session(session_id) => {
+                self.cancel_session_locked(&session_id)
+            }
+            TaskTarget::Receipt(receipt_id) => {
+                self.cancel_receipt_locked(&receipt_id)
+            }
+        }
+    }
+
+    /// Apply a structured card-level action inside the host kernel without
+    /// coupling presentation widgets to storage or queue internals.
+    pub fn apply_card_action(
+        &self,
+        action: CardAction,
+    ) -> Result<CardActionOutcome, &'static str> {
+        match action {
+            CardAction::OverrideDeliver {
+                session_id,
+                report_id,
+                artifact_path,
+            } => {
+                let artifact_id = self.override_deliver_artifact(
+                    &session_id,
+                    &report_id,
+                    &artifact_path,
+                )?;
+                Ok(CardActionOutcome::ArtifactDelivered { artifact_id })
+            }
+            CardAction::RetryDelivery {
+                session_id,
+                submission_id,
+            } => {
+                if let Some(sub) = submission_id.as_deref() {
+                    let has_commit = lock(&self.inner.engine)
+                        .as_ref()
+                        .and_then(|engine| engine.session(&session_id))
+                        .is_some_and(|rec| {
+                            rec.delivery_commits
+                                .iter()
+                                .any(|commit| commit.submission_id == sub)
+                        });
+                    if !has_commit {
+                        return Err("chat.status_delivery_failed");
+                    }
+                }
+                self.retry_delivery(Some(&session_id))?;
+                Ok(CardActionOutcome::DeliveryRetried)
+            }
+            CardAction::RetryDeadReceipt { receipt_id } => {
+                let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+                let Some(dead_receipt) = queue
+                    .get(&receipt_id)
+                    .map_err(|_| "notice.storage_error")?
+                else {
+                    return Err("notice.agent_failed");
+                };
+                if !dead_receipt.dead {
+                    return Err("notice.agent_failed");
+                }
+                let requeued = queue
+                    .accept(
+                        dead_receipt.session_hint.as_deref(),
+                        &dead_receipt.text,
+                        now_ms(),
+                    )
+                    .map_err(|_| "notice.storage_error")?;
+                self.inner.state.push_update(AgentUpdate::Receipt {
+                    id: requeued.id.clone(),
+                    state: ReceiptState::Queued,
+                });
+                if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
+                    self.kick_autonomous_drain();
+                }
+                Ok(CardActionOutcome::ReceiptRequeued {
+                    receipt_id: requeued.id,
+                })
+            }
+        }
+    }
+
+    /// Optional graceful-close hint: pauses autonomous draining, cancels
+    /// cancellable busy turns (preserving finalizing deliveries), and flushes
+    /// the UI index. Crash correctness never depends on calling this.
+    pub fn prepare_shutdown(&self) {
+        self.inner
+            .state
+            .autonomous_drain
+            .store(false, Ordering::Release);
+        self.inner.state.drain_cancel.cancel();
+        let busy = self.busy_session_ids();
+        for session_id in busy {
+            let _ = self.cancel_task(TaskTarget::Session(session_id));
+        }
+        let _ = persist_index(&self.inner.state);
     }
 
     #[must_use]
@@ -2505,6 +2816,7 @@ impl AgentHandle {
         state.push_update(AgentUpdate::Session { id: id.clone() });
         state.push_update(AgentUpdate::Sessions);
         let state = Arc::clone(state);
+        let weak_harness = Arc::downgrade(&self.inner);
         let receipt = id.clone();
         let completed_submission = submission;
         self.inner.runtime.spawn(async move {
@@ -2553,6 +2865,40 @@ impl AgentHandle {
                     completed_submission,
                 );
             }
+            if state.autonomous_drain.load(Ordering::Acquire)
+                && let Some(inner) = weak_harness.upgrade()
+            {
+                let handle = Self { inner };
+                let expected_sub = completed_submission
+                    .map(|s| format!("submission-{s:032x}"));
+                let owns_claim =
+                    lock(&state.accepted_claim).as_ref().is_some_and(|claim| {
+                        claim.session_id == id
+                            && expected_sub.as_deref()
+                                == Some(claim.submission_id.as_str())
+                    });
+                if owns_claim {
+                    let completed =
+                        matches!(outcome, Ok(LoopOutcome::Completed))
+                            && expected_sub.as_deref().is_none_or(|sub| {
+                                !matches!(
+                                    engine.session(&id).and_then(|rec| {
+                                        rec.submission_outcomes
+                                            .get(sub)
+                                            .cloned()
+                                    }),
+                                    Some(
+                                        SubmissionOutcome::Partial { .. }
+                                            | SubmissionOutcome::Failed { .. }
+                                            | SubmissionOutcome::Aborted
+                                    )
+                                )
+                            });
+                    let _ = handle.finish_accepted(completed);
+                }
+                handle.kick_autonomous_drain();
+                drop(handle);
+            }
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {
@@ -2584,10 +2930,29 @@ impl AgentHandle {
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
+        let _ = self.cancel_session_locked(&id);
+    }
+
+    fn cancel_session_locked(
+        &self,
+        id: &str,
+    ) -> Result<CancelOutcome, &'static str> {
         let engine = lock(&self.inner.engine).clone();
+        let live_busy = lock(&self.inner.state.live)
+            .get(id)
+            .is_some_and(|session| session.status.is_busy());
+        let engine_busy = engine
+            .as_ref()
+            .and_then(|eng| eng.session(id))
+            .is_some_and(|rec| rec.status.is_busy());
+        if !live_busy && !engine_busy {
+            return Ok(CancelOutcome::AlreadySettled);
+        }
         if let Some(engine) = engine {
-            match engine.request_cancel(&id) {
-                Ok(false) => return,
+            match engine.request_cancel(id) {
+                Ok(false) => {
+                    return Ok(CancelOutcome::FinalizingNotCancellable);
+                }
                 Ok(true) => {}
                 Err(error) => {
                     log_storage_io_error(
@@ -2598,13 +2963,13 @@ impl AgentHandle {
                         &error,
                     );
                     self.inner.state.report_storage_error();
-                    return;
+                    return Err("notice.storage_error");
                 }
             }
         }
         {
             let mut live = lock(&self.inner.state.live);
-            if let Some(session) = live.get_mut(&id) {
+            if let Some(session) = live.get_mut(id) {
                 session.title_signal.cancel();
                 session.projection.flush();
                 if session.status.is_busy() {
@@ -2617,10 +2982,59 @@ impl AgentHandle {
                 session.updated_at = now_ms();
             }
         }
+        let matching_claim = {
+            let mut slot = lock(&self.inner.state.accepted_claim);
+            if slot.as_ref().is_some_and(|claim| claim.session_id == id) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(claim) = matching_claim {
+            claim.heartbeat_cancel.cancel();
+            let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+            if queue.cancel(&claim.receipt_id, now_ms()).unwrap_or(false) {
+                self.inner.state.push_update(AgentUpdate::Receipt {
+                    id: claim.receipt_id,
+                    state: ReceiptState::Cancelled,
+                });
+            }
+        }
         if persist_index(&self.inner.state).is_err() {
             self.inner.state.report_storage_error();
         }
-        self.inner.state.push_update(AgentUpdate::Session { id });
+        self.inner
+            .state
+            .push_update(AgentUpdate::Session { id: id.to_owned() });
+        Ok(CancelOutcome::Cancelled)
+    }
+
+    fn cancel_receipt_locked(
+        &self,
+        receipt_id: &str,
+    ) -> Result<CancelOutcome, &'static str> {
+        let active_session = lock(&self.inner.state.accepted_claim)
+            .as_ref()
+            .filter(|claim| claim.receipt_id == receipt_id)
+            .map(|claim| claim.session_id.clone());
+        if let Some(session_id) = active_session {
+            return self.cancel_session_locked(&session_id);
+        }
+        let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+        match queue.cancel(receipt_id, now_ms()) {
+            Ok(true) => {
+                self.inner.state.push_update(AgentUpdate::Receipt {
+                    id: receipt_id.to_owned(),
+                    state: ReceiptState::Cancelled,
+                });
+                Ok(CancelOutcome::Cancelled)
+            }
+            Ok(false) => Ok(CancelOutcome::AlreadySettled),
+            Err(_) => {
+                self.inner.state.report_storage_error();
+                Err("notice.storage_error")
+            }
+        }
     }
 
     fn ensure_active_session(&self) -> Result<String, &'static str> {
@@ -4055,18 +4469,38 @@ fn confined_to(root: &Path, raw: &str) -> bool {
             other => normalized.push(other.as_os_str()),
         }
     }
-    let root =
-        std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    if let Ok(candidate) = std::fs::canonicalize(&normalized) {
-        return within(&root, &candidate);
+    let root = resolve_deepest_ancestor(root);
+    let candidate = resolve_deepest_ancestor(&normalized);
+    within(&root, &candidate)
+}
+
+fn resolve_deepest_ancestor(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
     }
-    if let (Some(parent), Some(name)) =
-        (normalized.parent(), normalized.file_name())
-        && let Ok(parent) = std::fs::canonicalize(parent)
-    {
-        return within(&root, &parent.join(name));
+    // Walk up to the deepest existing ancestor and canonicalize it before
+    // re-appending remaining lexical components, closing symlink/junction
+    // escapes through multi-level non-existent subdirectories while staying
+    // consistent when `root` itself is a synthetic (not-yet-created) path.
+    let mut ancestor = path;
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor) {
+            let mut resolved = canonical_ancestor;
+            for part in suffix.into_iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        let Some(name) = ancestor.file_name() else {
+            return path.to_path_buf();
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return path.to_path_buf();
+        };
+        ancestor = parent;
     }
-    within(&root, &normalized)
 }
 
 fn within(root: &Path, candidate: &Path) -> bool {
@@ -4265,10 +4699,11 @@ fn reconcile_committed_acceptances(
     root: &Path,
     engine: &Engine,
     store: Option<&ArtifactStore>,
-) {
+) -> Vec<String> {
+    let mut reconciled = Vec::new();
     let queue = AcceptanceQueue::new(root.to_path_buf());
     let Ok(receipts) = queue.replay() else {
-        return;
+        return reconciled;
     };
     let committed_artifacts = store
         .and_then(|store| store.committed_ids().ok())
@@ -4281,6 +4716,7 @@ fn reconcile_committed_acceptances(
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
+            || receipt.quarantined
             || receipt.lease.is_none()
         {
             continue;
@@ -4303,6 +4739,7 @@ fn reconcile_committed_acceptances(
             .complete_reconciled(&receipt.id, attempt_id, now)
             .unwrap_or(false)
         {
+            reconciled.push(receipt.id.clone());
             tracing::info!(
                 target: "flowy.acceptance",
                 event = "reconciled_completed",
@@ -4314,6 +4751,7 @@ fn reconcile_committed_acceptances(
             );
         }
     }
+    reconciled
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -5589,5 +6027,44 @@ mod guard_tests {
         drop(rt);
         drop(handle);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn confined_to_blocks_nonexistent_child_under_escaping_link() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-confined-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let link = workspace.join("escape_link");
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &link.display().to_string(),
+                &outside.display().to_string(),
+            ])
+            .status()
+            .is_ok_and(|status| status.success());
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, &link).is_ok();
+
+        assert!(linked, "test fixture must create directory link");
+        // Multi-level non-existent path inside the link must be rejected!
+        assert!(
+            !confined_to(&workspace, "escape_link/new_sub/evil.txt"),
+            "escaping link with non-existent descendant must not pass confined_to"
+        );
+        // Normal non-existent multi-level path inside workspace must still pass.
+        assert!(confined_to(&workspace, "outputs/new_sub/good.txt"));
+
+        #[cfg(windows)]
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
