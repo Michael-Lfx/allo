@@ -21,9 +21,7 @@ mod projection;
 mod publish_tool;
 pub mod semantic_verify;
 mod title;
-pub mod verifier_registry;
 mod verify;
-pub mod verify_contract;
 
 pub use artifact_store::{
     ArtifactManifest, ArtifactPreference, ArtifactRecord, ArtifactStore,
@@ -35,7 +33,7 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, ExecInput, SessionOrigin,
+    AcceptanceQueue, AcceptedMessage, DeliveryCommit, SessionOrigin,
     SessionWorkspace,
 };
 pub use handle::{
@@ -730,15 +728,6 @@ mod tests {
             handle.accept_deferred("run the receipt").expect("accept");
         let run = handle.run_accepted_once().expect("run").expect("claimed");
         assert_eq!(run.receipt_id, receipt.id);
-        assert_eq!(run.input.receipt_id.as_deref(), Some(receipt.id.as_str()));
-        assert_eq!(run.input.session_hint, receipt.session_hint);
-        assert_eq!(
-            run.input.context.inputs,
-            vec!["run the receipt".to_owned()]
-        );
-        assert!(run.input.token.starts_with("exec-"));
-        assert_ne!(run.input.capabilities, Vec::<String>::new());
-        assert_eq!(run.input.context.decided.len(), 0);
         assert!(handle.has_active_claim());
         wait_for_turn(&handle);
         assert_eq!(handle.turn_status(), TurnStatus::Completed);
@@ -788,8 +777,6 @@ mod tests {
         assert_eq!(receipt.session_hint.as_deref(), Some(session.as_str()));
         let run = handle.run_accepted_once().expect("run").expect("claimed");
         assert_eq!(run.session_id, session);
-        assert_eq!(run.input.work_id, session);
-        assert_eq!(run.input.session_hint.as_deref(), Some(session.as_str()));
         wait_for_turn(&handle);
         handle.finish_accepted(true).expect("complete");
         assert_eq!(handle.pending_acceptances().len(), 0);

@@ -53,17 +53,6 @@ impl BlockReason {
     }
 }
 
-/// Crash-recovery state reconstructed from `delivery/events.jsonl`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeliveryRecoveryState {
-    None,
-    Blocked,
-    /// `deliver_intent` was persisted before the crash/error, without a final
-    /// `deliver` event; callers must surface rather than blindly re-sending.
-    InDoubt,
-    Delivered,
-}
-
 /// One unresolved `deliver_intent` record found in `delivery/events.jsonl`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InDoubtDelivery {
@@ -133,14 +122,6 @@ enum AuditEvent {
         delivery_id: String,
         artifact_path: String,
         artifact_hash: String,
-        at_ms: u64,
-    },
-    DeliverReconciled {
-        delivery_id: String,
-        artifact_path: String,
-        artifact_hash: String,
-        confirmed_delivered: bool,
-        note: String,
         at_ms: u64,
     },
 }
@@ -252,56 +233,6 @@ impl DeliveryStore {
         Ok(latest)
     }
 
-    /// All latest reports keyed by normalized artifact path (preserving order of
-    /// last write), used to project verification cards into Studio.
-    pub fn all_latest_reports(&self) -> io::Result<Vec<Report>> {
-        let bytes = match std::fs::read(self.reports_path()) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Vec::new());
-            }
-            Err(error) => return Err(error),
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let mut by_key: std::collections::BTreeMap<String, Report> =
-            std::collections::BTreeMap::new();
-        for line in text.lines() {
-            let Ok(report) = serde_json::from_str::<Report>(line) else {
-                continue;
-            };
-            by_key
-                .insert(artifact_key(Path::new(&report.artifact_path)), report);
-        }
-        let mut reports: Vec<Report> = by_key.into_values().collect();
-        reports.sort_by_key(|report| report.at_ms);
-        Ok(reports)
-    }
-
-    /// Latest report matching a content `artifact_hash`.
-    pub fn latest_report_by_hash(
-        &self,
-        artifact_hash: &str,
-    ) -> io::Result<Option<Report>> {
-        let bytes = match std::fs::read(self.reports_path()) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let mut latest = None;
-        for line in text.lines() {
-            let Ok(report) = serde_json::from_str::<Report>(line) else {
-                continue;
-            };
-            if report.artifact_hash == artifact_hash {
-                latest = Some(report);
-            }
-        }
-        Ok(latest)
-    }
-
     fn read_events(&self) -> io::Result<Vec<AuditEvent>> {
         let bytes = match std::fs::read(self.events_path()) {
             Ok(bytes) => bytes,
@@ -317,49 +248,8 @@ impl DeliveryStore {
             .collect())
     }
 
-    /// Reconstruct the terminal or crash-window state of `delivery_id`.
-    pub fn recovery_state(
-        &self,
-        delivery_id: &str,
-    ) -> io::Result<DeliveryRecoveryState> {
-        let mut state = DeliveryRecoveryState::None;
-        for event in self.read_events()? {
-            match event {
-                AuditEvent::DeliverBlocked {
-                    delivery_id: id, ..
-                } if id == delivery_id => {
-                    state = DeliveryRecoveryState::Blocked;
-                }
-                AuditEvent::DeliverIntent {
-                    delivery_id: id, ..
-                } if id == delivery_id => {
-                    state = DeliveryRecoveryState::InDoubt;
-                }
-                AuditEvent::Deliver {
-                    delivery_id: id, ..
-                } if id == delivery_id => {
-                    state = DeliveryRecoveryState::Delivered;
-                }
-                AuditEvent::DeliverReconciled {
-                    delivery_id: id,
-                    confirmed_delivered,
-                    ..
-                } if id == delivery_id => {
-                    state = if confirmed_delivered {
-                        DeliveryRecoveryState::Delivered
-                    } else {
-                        DeliveryRecoveryState::Blocked
-                    };
-                }
-                _ => {}
-            }
-        }
-        Ok(state)
-    }
-
-    /// Return all deliveries currently stuck in [`DeliveryRecoveryState::InDoubt`]
-    /// (`deliver_intent` persisted with no subsequent `deliver` or
-    /// `deliver_reconciled`), ordered chronologically.
+    /// Return all deliveries currently stuck in doubt (`deliver_intent`
+    /// persisted with no subsequent `deliver`), ordered chronologically.
     pub fn in_doubt_deliveries(&self) -> io::Result<Vec<InDoubtDelivery>> {
         let mut pending: std::collections::BTreeMap<String, InDoubtDelivery> =
             std::collections::BTreeMap::new();
@@ -381,8 +271,7 @@ impl DeliveryStore {
                         },
                     );
                 }
-                AuditEvent::Deliver { delivery_id, .. }
-                | AuditEvent::DeliverReconciled { delivery_id, .. } => {
+                AuditEvent::Deliver { delivery_id, .. } => {
                     pending.remove(&delivery_id);
                 }
                 _ => {}
@@ -393,45 +282,34 @@ impl DeliveryStore {
         Ok(list)
     }
 
-    /// Explicitly settle an [`InDoubtDelivery`] once an operator or host check
-    /// verifies whether the target actually received the artifact.
-    pub fn reconcile_in_doubt(
+    /// All content hashes delivered through an explicit user override
+    /// (`deliver_override` + `deliver`), read in a single pass over the audit log.
+    pub fn overridden_artifact_hashes(
         &self,
-        delivery_id: &str,
-        confirmed_delivered: bool,
-        note: &str,
-        now_ms: u64,
-    ) -> io::Result<DeliveryRecoveryState> {
-        let Some(entry) = self
-            .in_doubt_deliveries()?
-            .into_iter()
-            .find(|item| item.delivery_id == delivery_id)
-        else {
-            return self.recovery_state(delivery_id);
-        };
-        Self::append_json(
-            &self.events_path(),
-            &AuditEvent::DeliverReconciled {
-                delivery_id: entry.delivery_id.clone(),
-                artifact_path: entry.artifact_path,
-                artifact_hash: entry.artifact_hash.clone(),
-                confirmed_delivered,
-                note: note.to_owned(),
-                at_ms: now_ms,
-            },
-        )?;
-        tracing::info!(
-            target: "flowy.delivery",
-            delivery_id = %entry.delivery_id,
-            artifact_hash = %entry.artifact_hash,
-            confirmed_delivered,
-            "reconciled in-doubt delivery"
-        );
-        Ok(if confirmed_delivered {
-            DeliveryRecoveryState::Delivered
-        } else {
-            DeliveryRecoveryState::Blocked
-        })
+    ) -> io::Result<std::collections::BTreeSet<String>> {
+        let events = self.read_events()?;
+        let mut overridden_ids = std::collections::BTreeSet::new();
+        for event in &events {
+            if let AuditEvent::DeliverOverride { delivery_id, .. } = event {
+                overridden_ids.insert(delivery_id.as_str());
+            }
+        }
+        if overridden_ids.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+        Ok(events
+            .iter()
+            .filter_map(|event| match event {
+                AuditEvent::Deliver {
+                    delivery_id,
+                    artifact_hash,
+                    ..
+                } if overridden_ids.contains(delivery_id.as_str()) => {
+                    Some(artifact_hash.clone())
+                }
+                _ => None,
+            })
+            .collect())
     }
 
     /// Whether any completed delivery for `artifact_hash` bypassed verification
@@ -440,33 +318,7 @@ impl DeliveryStore {
         &self,
         artifact_hash: &str,
     ) -> io::Result<bool> {
-        let events = self.read_events()?;
-        let mut overridden_ids = std::collections::BTreeSet::new();
-        for event in &events {
-            if let AuditEvent::DeliverOverride {
-                delivery_id,
-                artifact_hash: hash,
-                ..
-            } = event
-                && hash == artifact_hash
-            {
-                overridden_ids.insert(delivery_id.as_str());
-            }
-        }
-        if overridden_ids.is_empty() {
-            return Ok(false);
-        }
-        Ok(events.iter().any(|event| {
-            matches!(
-                event,
-                AuditEvent::Deliver {
-                    delivery_id,
-                    artifact_hash: hash,
-                    ..
-                } if hash == artifact_hash
-                    && overridden_ids.contains(delivery_id.as_str())
-            )
-        }))
+        Ok(self.overridden_artifact_hashes()?.contains(artifact_hash))
     }
 
     /// Check a report without sending anything. `None` means the artifact is
@@ -616,21 +468,6 @@ impl DeliveryStore {
             value: Some(value),
         })
     }
-
-    /// Deliver `artifact` through `send`, after checking the report and hash.
-    pub fn deliver<F>(
-        &self,
-        artifact: &Path,
-        allow_override: bool,
-        now_ms: u64,
-        send: F,
-    ) -> io::Result<DeliveryOutcome>
-    where
-        F: FnOnce(&[u8]) -> io::Result<()>,
-    {
-        self.deliver_with(artifact, allow_override, now_ms, send)
-            .map(|result| result.outcome)
-    }
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -708,13 +545,29 @@ mod tests {
         (calls, send)
     }
 
+    fn deliver_outcome<F>(
+        store: &DeliveryStore,
+        path: &Path,
+        allow_override: bool,
+        now_ms: u64,
+        send: F,
+    ) -> DeliveryOutcome
+    where
+        F: FnOnce(&[u8]) -> io::Result<()>,
+    {
+        store
+            .deliver_with(path, allow_override, now_ms, send)
+            .unwrap()
+            .outcome
+    }
+
     #[test]
     fn a_missing_report_blocks_without_calling_the_sender() {
         let root = scratch("missing");
         let store = DeliveryStore::new(root.join("delivery"));
         let path = artifact(&root, b"PK deck");
         let (calls, send) = counting_sender();
-        let outcome = store.deliver(&path, false, 1_000, send).unwrap();
+        let outcome = deliver_outcome(&store, &path, false, 1_000, send);
         assert!(!outcome.delivered);
         assert_eq!(outcome.blocked, Some(BlockReason::MissingReport));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -732,7 +585,7 @@ mod tests {
         }];
         store.record_report(&path, issues, 1_000).unwrap();
         let (calls, send) = counting_sender();
-        let outcome = store.deliver(&path, false, 2_000, send).unwrap();
+        let outcome = deliver_outcome(&store, &path, false, 2_000, send);
         assert_eq!(outcome.blocked, Some(BlockReason::VerificationFailed));
         assert!(!outcome.delivered);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -751,7 +604,7 @@ mod tests {
         store.record_report(&path, Vec::new(), 1_000).unwrap();
         std::fs::write(&path, b"PK tampered").unwrap();
         let (calls, send) = counting_sender();
-        let outcome = store.deliver(&path, false, 2_000, send).unwrap();
+        let outcome = deliver_outcome(&store, &path, false, 2_000, send);
         assert_eq!(outcome.blocked, Some(BlockReason::HashMismatch));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let _ = std::fs::remove_dir_all(&root);
@@ -765,12 +618,11 @@ mod tests {
         store.record_report(&path, Vec::new(), 1_000).unwrap();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = sent.clone();
-        let outcome = store
-            .deliver(&path, false, 2_000, move |bytes| {
+        let outcome =
+            deliver_outcome(&store, &path, false, 2_000, move |bytes| {
                 sink.lock().unwrap().extend_from_slice(bytes);
                 Ok(())
-            })
-            .unwrap();
+            });
         assert!(outcome.delivered);
         assert!(outcome.blocked.is_none());
         assert_eq!(sent.lock().unwrap().as_slice(), b"PK verified");
@@ -784,10 +636,18 @@ mod tests {
         let store = DeliveryStore::new(root.join("delivery"));
         let path = artifact(&root, b"PK deck");
         let (calls, send) = counting_sender();
-        let outcome = store.deliver(&path, true, 1_000, send).unwrap();
+        let outcome = deliver_outcome(&store, &path, true, 1_000, send);
         assert!(outcome.delivered);
         assert!(outcome.override_used);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let expected_hash = hash_bytes(b"PK deck");
+        assert!(
+            store
+                .overridden_artifact_hashes()
+                .unwrap()
+                .contains(&expected_hash)
+        );
+        assert!(store.artifact_was_overridden(&expected_hash).unwrap());
         let events = std::fs::read_to_string(store.events_path()).unwrap();
         assert!(events.contains("deliver_blocked"));
         assert!(events.contains("deliver_override"));
@@ -801,7 +661,7 @@ mod tests {
         let store = DeliveryStore::new(root.join("delivery"));
         let path = artifact(&root, b"PK deck");
         let (calls, send) = counting_sender();
-        let _ = store.deliver(&path, false, 1_000, send).unwrap();
+        let _ = deliver_outcome(&store, &path, false, 1_000, send);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let events = std::fs::read_to_string(store.events_path()).unwrap();
         assert!(events.contains("deliver_blocked"));
@@ -833,7 +693,7 @@ mod tests {
         let csv = root.join("sales.csv");
         std::fs::write(&csv, b"a,b\n1,2\n").unwrap();
         let (csv_calls, csv_send) = counting_sender();
-        let csv_outcome = store.deliver(&csv, false, 1_000, csv_send).unwrap();
+        let csv_outcome = deliver_outcome(&store, &csv, false, 1_000, csv_send);
         assert!(csv_outcome.delivered);
         assert_eq!(csv_outcome.exemption_code, Some(EXEMPT_NO_VERIFIER_V0));
         assert_eq!(csv_calls.load(Ordering::SeqCst), 1);
@@ -842,7 +702,7 @@ mod tests {
         std::fs::write(&unknown, b"\x00\x01\x02").unwrap();
         let (bin_calls, bin_send) = counting_sender();
         let bin_outcome =
-            store.deliver(&unknown, false, 2_000, bin_send).unwrap();
+            deliver_outcome(&store, &unknown, false, 2_000, bin_send);
         assert!(!bin_outcome.delivered);
         assert_eq!(bin_outcome.blocked, Some(BlockReason::MissingReport));
         assert_eq!(bin_calls.load(Ordering::SeqCst), 0);
@@ -851,14 +711,7 @@ mod tests {
         assert!(events.contains("deliver_exempt"));
         assert!(events.contains(EXEMPT_NO_VERIFIER_V0));
         assert!(events.contains("deliver_blocked"));
-        assert_eq!(
-            store.recovery_state(&csv_outcome.delivery_id).unwrap(),
-            DeliveryRecoveryState::Delivered
-        );
-        assert_eq!(
-            store.recovery_state(&bin_outcome.delivery_id).unwrap(),
-            DeliveryRecoveryState::Blocked
-        );
+        assert_eq!(store.in_doubt_deliveries().unwrap().as_slice(), []);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -868,8 +721,8 @@ mod tests {
         let store = DeliveryStore::new(root.join("delivery"));
         let path = artifact(&root, b"PK verified");
         store.record_report(&path, Vec::new(), 1_000).unwrap();
-        let result = store.deliver(&path, false, 2_000, |_bytes| {
-            Err(io::Error::other("simulated crash mid-send"))
+        let result = store.deliver_with(&path, false, 2_000, |_bytes| {
+            Err::<(), _>(io::Error::other("simulated crash mid-send"))
         });
         assert!(result.is_err());
         let events = store.read_events().unwrap();
@@ -883,25 +736,9 @@ mod tests {
                 }
             })
             .expect("deliver_intent must be persisted before send");
-        assert_eq!(
-            store.recovery_state(&intent_id).unwrap(),
-            DeliveryRecoveryState::InDoubt
-        );
         let unresolved = store.in_doubt_deliveries().unwrap();
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].delivery_id, intent_id);
-        assert_eq!(
-            store
-                .reconcile_in_doubt(
-                    &intent_id,
-                    false,
-                    "verified not committed",
-                    3_000
-                )
-                .unwrap(),
-            DeliveryRecoveryState::Blocked
-        );
-        assert_eq!(store.in_doubt_deliveries().unwrap().as_slice(), []);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

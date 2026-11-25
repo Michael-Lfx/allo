@@ -42,12 +42,11 @@ impl FlowyApp {
                 })
                 .cloned()
                 .collect::<HashSet<_>>();
+            let overridden_hashes = agent.overridden_artifact_hashes();
             let overridden_ids = records
                 .iter()
                 .filter(|record| {
-                    agent.artifact_was_overridden(
-                        &record.manifest.receipt.sha256,
-                    )
+                    overridden_hashes.contains(&record.manifest.receipt.sha256)
                 })
                 .map(|record| record.manifest.receipt.artifact_id.clone())
                 .collect::<HashSet<_>>();

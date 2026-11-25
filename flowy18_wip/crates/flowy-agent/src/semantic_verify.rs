@@ -301,7 +301,10 @@ mod tests {
             r#"{"ok": false, "issues": [{"where": "S1", "what": "缺少时间节点", "why": "简报要求下两个季度"}]}"#,
         );
         assert!(flagged.hint_text().is_some());
-        let outcome = store.deliver(&deck, false, 20, |_| Ok(())).unwrap();
+        let outcome = store
+            .deliver_with(&deck, false, 20, |_| Ok(()))
+            .unwrap()
+            .outcome;
         assert!(outcome.delivered);
         assert_eq!(outcome.blocked, None);
         let _ = std::fs::remove_dir_all(&root);

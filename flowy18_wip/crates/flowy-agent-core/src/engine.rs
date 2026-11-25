@@ -1623,64 +1623,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_same_exec_input_replays_the_same_event_sequence() {
-        use crate::acceptance::AcceptedMessage;
-        use crate::exec_input::{ExecAssignment, ExecInput};
-
+    async fn the_same_prompt_replays_the_same_event_sequence() {
         let scratch = Scratch::new("exec-replay");
         let observer = Arc::new(SequenceRecorder::default());
         let engine =
             Engine::open(scratch.0.clone(), config(), observer.clone())
                 .unwrap();
-        let receipt = AcceptedMessage {
-            id: "accepted-replay".into(),
-            session_hint: None,
-            text: "write the memo".into(),
-            created_at_ms: 1,
-            taken_at_ms: None,
-            lease: None,
-            completed_at_ms: None,
-            available_at_ms: None,
-            attempts: 0,
-            dead: false,
-        };
-        let input = ExecInput::from_receipt(
-            &receipt,
-            ExecAssignment {
-                work_id: "w1",
-                revision: 2,
-                attempt_id: "attempt-1",
-                token: "tok",
-                mode: "ask",
-                capabilities: &[],
-                ask_first: &[],
-            },
-            Vec::new(),
-        );
-        let prompt = input.prompt().expect("the receipt's text").to_owned();
+        let prompt = "write the memo";
 
         engine.create_session("s1".into(), 1).unwrap();
         engine
-            .run_with_stream("s1", &prompt, text_stream("same reply"))
+            .run_with_stream("s1", prompt, text_stream("same reply"))
             .await
             .unwrap();
         let first = observer.events.lock().unwrap().clone();
 
         engine.create_session("s2".into(), 2).unwrap();
         engine
-            .run_with_stream("s2", &prompt, text_stream("same reply"))
+            .run_with_stream("s2", prompt, text_stream("same reply"))
             .await
             .unwrap();
         let second = observer.events.lock().unwrap()[first.len()..].to_vec();
 
-        assert!(!first.is_empty());
+        assert_ne!(first, Vec::<String>::new());
         assert!(
             first.iter().any(|event| event.starts_with("finished:")),
             "the sequence must contain the terminal event"
         );
         assert_eq!(
             first, second,
-            "the same ExecInput must replay the same event sequence"
+            "the same prompt must replay the same event sequence"
         );
         // Message ids embed the wall clock; compare the durable shape
         // (role + content), not the id.

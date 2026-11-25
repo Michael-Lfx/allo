@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    ExecAssignment, ExecInput, LoopOutcome, ModelRoute, RunError,
-    SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver, TurnState,
-    complete_text, echo_stream_fn, log_preview,
+    LoopOutcome, ModelRoute, RunError, SessionOrigin, SessionRecord,
+    SessionWorkspace, TurnObserver, TurnState, complete_text, echo_stream_fn,
+    log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -73,7 +73,6 @@ pub struct AcceptedRun {
     pub attempt_id: String,
     pub session_id: String,
     pub submission: u128,
-    pub input: ExecInput,
 }
 
 struct Live {
@@ -984,18 +983,22 @@ impl AgentHandle {
             .read_payload(artifact_id)
     }
 
+    /// All artifact SHA-256 hashes delivered through an explicit user
+    /// verification override (`deliver_override` + `deliver`), read in one pass.
+    #[must_use]
+    pub fn overridden_artifact_hashes(&self) -> BTreeSet<String> {
+        crate::delivery::DeliveryStore::new(
+            self.inner.state.root.join("delivery"),
+        )
+        .overridden_artifact_hashes()
+        .unwrap_or_default()
+    }
+
     /// Whether `sha256` was delivered through an explicit user verification
     /// override (`deliver_override` + `deliver` in `delivery/events.jsonl`).
     #[must_use]
     pub fn artifact_was_overridden(&self, sha256: &str) -> bool {
-        if sha256.is_empty() {
-            return false;
-        }
-        crate::delivery::DeliveryStore::new(
-            self.inner.state.root.join("delivery"),
-        )
-        .artifact_was_overridden(sha256)
-        .unwrap_or(false)
+        !sha256.is_empty() && self.overridden_artifact_hashes().contains(sha256)
     }
 
     /// Explicitly deliver an artifact whose verification failed (`ok=false`),
@@ -1466,32 +1469,6 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
-    /// Deliveries that recorded `deliver_intent` before an interrupted write
-    /// and have not yet recorded a terminal `deliver` or `deliver_reconciled`.
-    #[must_use]
-    pub fn in_doubt_deliveries(&self) -> Vec<crate::delivery::InDoubtDelivery> {
-        crate::delivery::DeliveryStore::new(
-            self.inner.state.root.join("delivery"),
-        )
-        .in_doubt_deliveries()
-        .unwrap_or_default()
-    }
-
-    /// Settle one [`crate::delivery::InDoubtDelivery`] once an operator or host
-    /// check verifies whether the artifact was actually delivered.
-    pub fn reconcile_in_doubt_delivery(
-        &self,
-        delivery_id: &str,
-        confirmed_delivered: bool,
-        note: &str,
-    ) -> Result<crate::delivery::DeliveryRecoveryState, &'static str> {
-        crate::delivery::DeliveryStore::new(
-            self.inner.state.root.join("delivery"),
-        )
-        .reconcile_in_doubt(delivery_id, confirmed_delivered, note, now_ms())
-        .map_err(|_| "notice.storage_error")
-    }
-
     /// Whether the configured provider requires the cloud catalog before running.
     #[must_use]
     pub fn requires_cloud_ready(&self) -> bool {
@@ -1587,26 +1564,7 @@ impl AgentHandle {
                 }
             },
         };
-        let capabilities = self.capabilities_for(&session);
-        let token = format!("exec-{submission:032x}");
-        let ask_first: Vec<String> = Vec::new();
-        let input = ExecInput::from_receipt(
-            &claimed,
-            ExecAssignment {
-                work_id: &session,
-                revision: 0,
-                attempt_id: &attempt_id,
-                token: &token,
-                mode: "ask",
-                capabilities: &capabilities,
-                ask_first: &ask_first,
-            },
-            Vec::new(),
-        );
-        let prompt = input
-            .prompt()
-            .map_or_else(|| claimed.text.clone(), str::to_owned);
-        if let Err(error) = self.submit_chat(submission, &prompt) {
+        if let Err(error) = self.submit_chat(submission, &claimed.text) {
             if let Some(prev) = &previous_active
                 && prev != &session
             {
@@ -1644,7 +1602,6 @@ impl AgentHandle {
             attempt_id,
             session_id: session,
             submission,
-            input,
         }))
     }
 
@@ -1748,21 +1705,6 @@ impl AgentHandle {
             .any(|session| session.status.is_busy())
     }
 
-    fn capabilities_for(&self, session: &str) -> Vec<String> {
-        let workspace = lock(&self.inner.state.live)
-            .get(session)
-            .and_then(|session| session.workspace.clone());
-        let cwd = session_working_directory(
-            &self.inner.state.root,
-            workspace.as_ref(),
-        );
-        tool_registry(&cwd)
-            .schemas()
-            .into_iter()
-            .map(|schema| schema.name)
-            .collect()
-    }
-
     fn submit_message(
         &self,
         text: &str,
@@ -1856,8 +1798,7 @@ impl AgentHandle {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
-            let contract =
-                crate::verify_contract::BriefContract::from_brief(&prompt);
+            let contract = crate::verify::BriefContract::from_brief(&prompt);
             let semantic = config.api_key.as_ref().map(|api_key| {
                 crate::semantic_verify::SemanticContext {
                     brief: prompt.clone(),
@@ -1874,7 +1815,7 @@ impl AgentHandle {
             );
             run_config
                 .registry
-                .register(crate::verifier_registry::definition(
+                .register(crate::verify::artifact_definition(
                     Some(delivery.clone()),
                     Some(contract),
                 ));
@@ -3415,7 +3356,7 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
     registry.register(crate::verify::definition(None));
-    registry.register(crate::verifier_registry::definition(None, None));
+    registry.register(crate::verify::artifact_definition(None, None));
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.
@@ -3756,7 +3697,7 @@ mod background_init_tests {
     }
 
     #[test]
-    fn run_accepted_once_submits_the_exec_input_prompt() {
+    fn run_accepted_once_submits_the_receipt_prompt() {
         let root = std::env::temp_dir()
             .join(format!("flowy-exec-prompt-{}", next_stamp()));
         let handle = AgentHandle::with_config(
@@ -3771,14 +3712,14 @@ mod background_init_tests {
         handle.accept_deferred("from the input").expect("accepted");
 
         let run = handle.run_accepted_once().expect("pump").expect("claimed");
-        assert_eq!(run.input.prompt(), Some("from the input"));
+        assert_ne!(run.receipt_id, "");
         assert!(
             handle.chat_history().rows.iter().any(|row| matches!(
                 row,
                 crate::projection::ChatLine::User { text }
                     if text == "from the input"
             )),
-            "the submitted prompt is the ExecInput prompt"
+            "the submitted prompt must match the accepted receipt"
         );
 
         drop(handle);

@@ -6,7 +6,6 @@
 
 pub mod acceptance;
 pub mod engine;
-pub mod exec_input;
 pub mod loop_runner;
 pub mod run_fence;
 pub mod session;
@@ -16,7 +15,6 @@ pub mod types;
 
 pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease};
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
-pub use exec_input::{Decision, ExecAssignment, ExecContext, ExecInput};
 pub use loop_runner::{
     LoopOutcome, ModelRoute, TurnRequest, TurnResult, complete_text,
     log_preview, run_turn,
