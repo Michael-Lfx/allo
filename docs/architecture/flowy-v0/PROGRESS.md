@@ -849,4 +849,18 @@ no session was live, so there is nothing to hint at
 - 新增 5 个 i18n 键（四码 + 结构）在 23 个 locale 同步。
 - 先红后绿：集成测试第一次报 `ANCHOR_INVALID: Title 1 / Subtitle 2`（模板自带空占位符），改成「空文本形状不算锚」后绿。
 - 未做（留给交付切片）：§6.4 的硬门（报告不存在/`ok=false`/哈希不符时拒绝交付）与卡片渲染；本轮只到核验器和文案。
+- **交付硬门已由任务 13 补上。**
 - 基线：core 73 / agent 115 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净。
+
+---
+
+## 任务 13 · 交付硬门与 trace（2026-11-25）
+
+- 提交 `4e35a1580`。新增 `flowy18_wip/crates/flowy-agent/src/delivery.rs`：报告与事件各一份 append-only JSONL，位于 `<store_root>/delivery/reports.jsonl` 与 `events.jsonl`。
+- 门自己按产物路径读最新报告、自己重算 sha256；三类拒绝分开：`DELIVERY_NOT_VERIFIED`（无报告）/ `DELIVERY_VERIFICATION_FAILED`（`ok=false`）/ `DELIVERY_ARTIFACT_CHANGED`（哈希不符）。
+- 被拒时**发送器调用次数为 0**，审计里只有 `deliver_blocked`；override 必须显式传入，事件序 `deliver_blocked → deliver_override → deliver`。
+- `verify_deck` 成功后落报告；`publish_file` 对 `.pptx` 先过门，拒绝文案新增 `chat.publish.not_verified` 并在 23 个 locale 同步。
+- trace：`tracing` 的 `flowy.delivery` target，字段 `delivery_id / artifact_hash / outcome`；事后可按事件重放过程和结果。
+- 先红后绿：去掉门时 `a_pptx_without_a_report...` 红（拿到别的错误码），装回门后绿。
+- 当前边界：只覆盖 `.pptx`；override UI 未接；崩溃窗口仍是「先发后记」。均记在 `交接给下一个agent.md` §14。
+- 基线：core 73 / agent 124 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净；未推送。

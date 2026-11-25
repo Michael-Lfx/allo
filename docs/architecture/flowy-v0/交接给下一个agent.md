@@ -7,9 +7,11 @@
 
 ## 1. 一句话现状
 
-**工作分支** `feat-flowy-local-receipt`，已 rebase 到 `origin/main`（`0d78e116b feat(flowy18): migrate to gpui-pre 0.3.14 + gpui-kit 0.11.0`）。
-15 个提交，**只本地、未推送**。`flowy18_wip` 的「本地受理回执」纵线（V1）已打通并做过真实 UI 实测。
-**下一步是 V0（`ExecInput` 类型层），但它卡在「第六条不变量从没写过」这个前置上。**
+**工作分支** `feat-flowy-local-receipt`，已 rebase 到 `origin/main`。
+最近提交 `4e35a1580 feat(flowy-agent): gate deck delivery on verification reports`；**只本地、未推送**。
+S3b（会话级队列）、V3（ExecInput 执行＋重放）、V4（按环境生成三页 pptx）、V5（四锚核验）与交付硬门均已落。
+基线：core 73 / agent 124 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净。
+**下一步不是 V0**，见 §14（全类型硬门、override UI、V6 外发待拍板）。
 
 ---
 
@@ -238,6 +240,8 @@ agent-desktop press ctrl+v --window-id $W
 
 ## 7. 未完成清单
 
+> 本表写于 2026-11-24；V0 等条目已完成，以 §1 与 `PROGRESS.md` 为准。
+
 来自老爷爷（独立审查者）的判定 `needs-fix`，以及我自己的核对：
 
 | # | 事项 | 说明 |
@@ -274,10 +278,10 @@ cd .agents/worktrees/feat-flowy-local-receipt
 cd flowy18_wip
 cargo check -p flowy-agent-core -p flowy-agent -p flowy-studio -p flowy-i18n
 
-# 测试（245 个）
-cargo test -p flowy-agent-core   # 56 passed
-cargo test -p flowy-agent        # 103 passed
-cargo test -p flowy-studio       # 78 passed
+# 测试（287 个）
+cargo test -p flowy-agent-core   # 73 passed
+cargo test -p flowy-agent        # 124 passed
+cargo test -p flowy-studio       # 82 passed
 cargo test -p flowy-i18n         # 8 passed
 
 # 一条命令验完纵线
@@ -298,22 +302,7 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 ## 10. 当前未提交的改动
 
-**代码（rebase 后为适配 gpui-pre，已编译、已测试 245 全绿、已实测）：**
-
-```
-flowy18_wip/crates/flowy-studio/src/panel.rs   emplace → set_prompt_text；测试用 open_panel
-flowy18_wip/crates/flowy-studio/src/studio.rs  去掉 aria_live（gpui-pre 已删除该 API）
-```
-
-**文档（知识收尾时校正）：**
-
-```
-BLOCKED.md                  技术栈 gpui-ce → gpui-pre 0.3.14 + gpui-kit 0.11.0
-PROGRESS.md                 两处历史描述就地标注「旧实现」
-交接给下一个agent.md        第 7 项标记为已修
-```
-
-**建议先把这 5 个文件提交，再开新活。**
+无。工作区干净，最新提交 `4e35a1580`（交付硬门）；本文档正在同步更新。
 
 ---
 
@@ -327,6 +316,8 @@ PROGRESS.md                 两处历史描述就地标注「旧实现」
 ---
 
 ## 12. 给执行者的下一份任务书（可直接粘贴 `/goal`）
+
+> 这份任务书写于 2026-11-24，已过时；当前剩余事项见 §14。
 
 ```
 在 worktree feat-flowy-local-receipt 上，先提交现有两处 gpui-pre 适配，再补 V0。
@@ -382,3 +373,18 @@ PROGRESS.md                 两处历史描述就地标注「旧实现」
 | `docs/architecture/flowy-v0/accept.sh` | 一条命令验完纵线 |
 | `flowy18_wip/docs/gpui-pre-and-kit.md` | **写任何 GPUI 代码前必读** |
 | `flowy18_wip/AGENTS.md` | 项目规则 |
+
+---
+
+## 14. 交付硬门与 trace（2026-11-25）
+
+| 项 | 现状 |
+| --- | --- |
+| 代码 | `flowy18_wip/crates/flowy-agent/src/delivery.rs`；报告/事件落 `<store_root>/delivery/reports.jsonl`、`events.jsonl`（append-only） |
+| 门 | `verify_deck` 写报告 → `publish_file` 对 `.pptx` 查报告与 sha256；无报告 / `ok=false` / 哈希不符分别拒绝 |
+| 拒绝语义 | 被拒不调 sender，事件只有 `deliver_blocked`；override 显式传入，事件序 `deliver_blocked → deliver_override → deliver` |
+| trace | `tracing` target `flowy.delivery`，字段 `delivery_id / artifact_hash / outcome`；过程与结果按 `delivery_id` 重放 `events.jsonl` |
+| 已验证 | core 73 / agent 124 / studio 82 / i18n 8；accept.sh 3/3；clippy/fmt 干净；证据 `证据.md` §11.25 |
+| 未做 | 全类型硬门（目前只 `.pptx`）、override UI、崩溃窗口（先发后记）、V6 外发（单向门，需拍板） |
+
+**排查一次交付时**：先在 `events.jsonl` 里按 `artifact_hash` 或 `delivery_id` 找到 `deliver_blocked` 的 `code`，再看同路径最新 `reports.jsonl` 的 `ok` 和 `issues`；两处都对不上，才是文件/路径问题。
