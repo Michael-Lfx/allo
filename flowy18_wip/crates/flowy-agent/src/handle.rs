@@ -647,9 +647,11 @@ impl AgentHandle {
     /// message in `session_id`, if any.
     #[must_use]
     pub fn session_preview(&self, session_id: &str) -> Option<String> {
-        let live = lock(&self.inner.state.live);
-        let session = live.get(session_id)?;
-        extract_session_preview(&session.projection.lines)
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .and_then(|session| {
+                extract_session_preview(&session.projection.lines)
+            })
     }
 
     /// Memory-only selection revision, including empty Home/Project contexts.

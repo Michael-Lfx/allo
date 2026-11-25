@@ -137,7 +137,7 @@ pub struct StudioPanel {
     _artifact_sub: gpui::Subscription,
     _working_sub: gpui::Subscription,
     submission: Option<u128>,
-    submission_pending: bool,
+    pub(crate) submission_pending: bool,
     submission_generation: u64,
     submission_stop: Option<Arc<AtomicBool>>,
     /// Session whose durable delivery marker is currently being retried.

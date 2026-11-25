@@ -43,59 +43,51 @@ pub const fn travel_scale(policy: MotionPolicy) -> f32 {
 }
 
 /// Carbon standard easing, `cubic-bezier(0.2, 0, 0.38, 0.9)`.
-#[must_use]
 pub fn standard() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.2, 0.0, 0.38, 0.9)
 }
 
 /// Carbon entrance easing, `cubic-bezier(0, 0, 0.38, 0.9)`.
-#[must_use]
 pub fn entrance() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.0, 0.0, 0.38, 0.9)
 }
 
 /// Carbon exit easing, `cubic-bezier(0.2, 0, 1, 0.9)`.
-#[must_use]
 pub fn exit() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.2, 0.0, 1.0, 0.9)
 }
 
 /// Quintic ease-out (`1 - (1 - t)^5`): crisp launch with a feather-soft settle,
 /// used for smooth collapsible height and drawer entrances.
-#[must_use]
 pub fn out_quint() -> impl Fn(f32) -> f32 + 'static {
     move |t| {
         let u = 1.0 - t.clamp(0.0, 1.0);
         let u2 = u * u;
-        1.0 - u2 * u2 * u
+        (u2 * u2).mul_add(-u, 1.0)
     }
 }
 
 /// Linger-style sidebar FLIP glide curve, `cubic-bezier(0.22, 1.0, 0.36, 1.0)`.
-#[must_use]
 pub fn flip_glide() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.22, 1.0, 0.36, 1.0)
 }
 
 /// Subtle damped arrival curve for pills and status counters,
 /// `cubic-bezier(0.18, 0.89, 0.32, 1.08)`.
-#[must_use]
 pub fn damped_pop() -> impl Fn(f32) -> f32 + 'static {
     cubic_bezier(0.18, 0.89, 0.32, 1.08)
 }
 
 /// Smooth breathing wave `0 -> 1 -> 0` for conditional working/hover liveness.
-#[must_use]
 pub fn pulsing_sine() -> impl Fn(f32) -> f32 + 'static {
     move |t| {
         let t = t.clamp(0.0, 1.0);
-        0.5 - 0.5 * (t * TAU).cos()
+        0.5f32.mul_add(-(t * TAU).cos(), 0.5)
     }
 }
 
 /// Samples a CSS-style cubic-bezier curve: solves x for the requested `t`,
 /// then evaluates y at that parameter.
-#[must_use]
 pub fn cubic_bezier(
     x1: f32,
     y1: f32,
@@ -127,7 +119,6 @@ fn axis(t: f32, p1: f32, p2: f32) -> f32 {
 
 /// Holds the curve at 0 for the first `share` of the run, then plays it. This
 /// is how siblings stagger: GPUI's [`gpui::Animation`] has no delay field.
-#[must_use]
 pub fn delayed(
     share: f32,
     ease: impl Fn(f32) -> f32 + 'static,
@@ -201,11 +192,11 @@ impl FlipState {
             compute_flip_deltas(&self.last_order, next_order, row_pitch);
         self.last_order.clear();
         self.last_order.extend(next_order.iter().cloned());
-        if !deltas.is_empty() {
+        if deltas.is_empty() {
+            self.deltas.clear();
+        } else {
             self.epoch = self.epoch.wrapping_add(1);
             self.deltas = deltas;
-        } else {
-            self.deltas.clear();
         }
     }
 
@@ -268,24 +259,23 @@ mod tests {
         assert_endpoints(damped_pop());
     }
 
+    fn assert_monotonic(curve: impl Fn(f32) -> f32) {
+        let mut previous = curve(0.0);
+        for step in 1..=20 {
+            let value = curve(step as f32 / 20.0);
+            assert!(
+                value + 0.001 >= previous,
+                "curve must not go backwards at {step}"
+            );
+            previous = value;
+        }
+    }
+
     #[test]
     fn curves_are_monotonic() {
-        for curve in [
-            Box::new(cubic_bezier(0.2, 0.0, 0.38, 0.9))
-                as Box<dyn Fn(f32) -> f32>,
-            Box::new(out_quint()),
-            Box::new(flip_glide()),
-        ] {
-            let mut previous = curve(0.0);
-            for step in 1..=20 {
-                let value = curve(step as f32 / 20.0);
-                assert!(
-                    value + 0.001 >= previous,
-                    "curve must not go backwards at {step}"
-                );
-                previous = value;
-            }
-        }
+        assert_monotonic(cubic_bezier(0.2, 0.0, 0.38, 0.9));
+        assert_monotonic(out_quint());
+        assert_monotonic(flip_glide());
     }
 
     #[test]
