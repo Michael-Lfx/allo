@@ -908,3 +908,11 @@ bun scripts/check-ui-contracts.mjs  : passed
 ```
 
 - **当前状态**：Phase 1–4 全部收口并本地提交（未推送）；按 `BLOCKED.md` §5 硬止损停在 **V6 外发通道**前等待需求方拍板。
+
+### 四、真实云端模型端到端联调与问题闭环（提交 `5dd61886e`）
+
+- 直连生产云端 `https://server.flowyaipc.com/claw/v1`（`AIPC-qwen3.8-flash`）+ `flowy-app.exe` + `/agent-desktop` 跑通真实端到端链路，抓出并当场修复 3 个离线单测无法覆盖的真问题（详见证据 [`证据.md` §11.28](证据.md)）：
+  1. `create_deck` 返回形状锚点名列表 `anchors`（不含期望值，守住 §6.6）并补齐 `create_deck` / `verify_deck` 命名约定说明，真实模型由连错 2 轮 + 3 次 PowerShell 改包（50s / 18 条消息）降为**首轮一次过检（8 条消息、1 份报告、0 次绕路）**；
+  2. `semantic_verify.rs` 传入 `artifact_name`、提示词排除流程性指令（保留字面简报核心规则）、超时由 8s 调至 30s 并在 `flowy.verify` 打出 `l3_reason`，真云端实测达到 **`l3_status="passed"`（`16755ms`、`l3_issue_count=0`）**；
+  3. `handle.rs` 新增 `upsert_verification_line` 与 `promote_latest_turn_verifications` / `pending_verifications`，消除旧失败卡残留并将最新核验卡紧贴交付产物卡上方，首屏无需滚动即并排可见（`evidence/15–18`）。
+- 最终门禁：`flowy-agent` **138** passed（1 ignored）/ `flowy-studio` **86** / `flowy-app` **50** / `--all-targets` clippy **0 警告**；`%APPDATA%\Flowy\Flowy\data` 2488 文件无损还原（0 哈希差异）。

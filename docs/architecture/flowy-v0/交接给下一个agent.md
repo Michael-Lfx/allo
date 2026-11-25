@@ -414,8 +414,9 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 | 巡检与计划对齐 | `d1632af92` | `V0-执行计划.md`、`证据.md` §11.26、`BLOCKED.md` | 真机巡检定位三大 P0 断层，对齐四阶段执行计划与方案 A 拍板结论 |
 | **Phase 1 + Phase 2 收口** | **`5e96fb681`** | `handle.rs`、`panel.rs`、`pptx.rs`、`verify.rs`、`delivery.rs`、`publish_tool.rs` | 消除启动误排 `mock`、跨会话结案隔离、三工具 `output_root`+`path_guard` 统一、全类型硬门+方案 A 豁免表、`deliver_intent` 崩溃检测、`INFO` 业务 Trace |
 | **Phase 3 + Phase 4 收口** | **`599b82c35`** | `semantic_verify.rs`、`projection.rs`、`feed.rs`、`library/*`、`flowy-app`、23 `locales/*.json` | §8.3 核验结论卡、未勾选禁点 Override、聊天与资料库永久徽标、L3 字面简报提示层与默认 `INFO` 落盘脱敏终验 |
+| **真云端联调问题闭环** | **`5dd61886e`** | `pptx.rs`、`verify.rs`、`semantic_verify.rs`、`handle.rs` | 暴露 `create_deck` 锚点名、调优云端 L3 语义复核（实测 `passed` 16.8s）、核验卡去重并紧贴交付卡上方 |
 
-**亲手复跑终验基线（2026-11-25，详见 [`证据.md` §11.27](证据.md)）**：`flowy-agent-core` **74** passed（2 ignored）/ `flowy-agent` **137** passed（1 ignored）/ `flowy-studio` **86** passed / `flowy-app` **50** passed / `flowy-i18n` **8** passed；`WITH_APP=1 accept.sh` **4/4**；`bun flowy18_wip/scripts/check-ui-contracts.mjs` 通过；`cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets -- -D warnings` **0 警告**。
+**亲手复跑终验基线（2026-11-25，详见 [`证据.md` §11.27–§11.28](证据.md)）**：`flowy-agent-core` **74** passed（2 ignored）/ `flowy-agent` **138** passed（1 ignored）/ `flowy-studio` **86** passed / `flowy-app` **50** passed / `flowy-i18n` **8** passed；`WITH_APP=1 accept.sh` **4/4**；`bun flowy18_wip/scripts/check-ui-contracts.mjs` 通过；`cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets -- -D warnings` **0 警告**；真实云端 `AIPC-qwen3.8-flash` + `/agent-desktop` 端到端通过（`evidence/15–18`）。
 
 ### 15.2 六条不可回退的口径
 
