@@ -66,7 +66,7 @@ impl crate::panel::StudioPanel {
         } else if is_board {
             self.board_canvas(cx)
         } else if self.surface == crate::panel::StudioSurface::Automation {
-            self.automation_canvas(cx).into_any_element()
+            self.automation_canvas(window, cx).into_any_element()
         } else {
             self.section_page().into_any_element()
         };

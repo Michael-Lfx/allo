@@ -324,6 +324,30 @@ mod tests {
     }
 
     #[test]
+    fn automation_onboarding_is_localized() {
+        let mut i18n = I18n::embedded("Flowy");
+        for (locale, lead, schedule, trigger) in [
+            (
+                Locale::ZhCn,
+                "安排周期性工作，或在特定事件发生时启动任务。",
+                "定时任务",
+                "触发器",
+            ),
+            (
+                Locale::En,
+                "Schedule recurring work or trigger it when a specific event happens.",
+                "Scheduled task",
+                "Trigger",
+            ),
+        ] {
+            i18n.set_locale(locale);
+            assert_eq!(i18n.t("auto.lead"), lead);
+            assert_eq!(i18n.t("auto.schedule_title"), schedule);
+            assert_eq!(i18n.t("auto.trigger_title"), trigger);
+        }
+    }
+
+    #[test]
     fn library_preview_controls_have_chinese_and_english_copy() {
         let mut i18n = I18n::embedded("Flowy");
         i18n.set_locale(Locale::ZhCn);
@@ -342,6 +366,37 @@ mod tests {
             i18n.t("library.error.large"),
             "File exceeds the preview limits. Open it with the default app."
         );
+    }
+
+    #[test]
+    fn my_skills_library_copy_is_localized() {
+        let mut i18n = I18n::embedded("Flowy");
+        let keys = [
+            "skills.library_installed",
+            "skills.library_explore",
+            "skills.library_no_saved",
+            "skills.library_search",
+        ];
+        for (locale, expected) in [
+            (
+                Locale::ZhCn,
+                ["已安装", "探索技能", "还没有收藏技能。", "搜索我的技能"],
+            ),
+            (
+                Locale::En,
+                [
+                    "Installed",
+                    "Explore skills",
+                    "No saved skills yet.",
+                    "Search your skills",
+                ],
+            ),
+        ] {
+            i18n.set_locale(locale);
+            for (key, value) in keys.into_iter().zip(expected) {
+                assert_eq!(i18n.t(key), value);
+            }
+        }
     }
 
     #[test]

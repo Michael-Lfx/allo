@@ -296,6 +296,7 @@ pub struct StudioPanel {
     pub store_root: PathBuf,
     pub product: &'static str,
     pub surface: StudioSurface,
+    pub(crate) automation: crate::automation::AutomationDraft,
     pub notice: Option<&'static str>,
     /// Set once the user opens a conversation in this run. Startup initialization
     /// must not pull the app back into the last thread, but a session restored
@@ -574,6 +575,8 @@ impl StudioPanel {
         // so it must be visible again before anything is submitted this run.
         let pending_receipts = agent.pending_acceptances();
         let visible_receipts = agent.visible_acceptances();
+        let automation =
+            crate::automation::AutomationDraft::new(&i18n, window, cx);
         let mut panel = Self {
             ui,
             theme,
@@ -645,6 +648,7 @@ impl StudioPanel {
             store_root,
             product,
             surface,
+            automation,
             notice: initial_notice,
             session_opened_by_user: false,
             deliverables: None,
@@ -2254,6 +2258,15 @@ impl Render for StudioPanel {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.apply_prompt_pending(window, cx);
+        if self.surface == StudioSurface::Automation {
+            let placeholder = self.t("auto.prompt_placeholder");
+            self.automation.sync_editor(
+                placeholder.into(),
+                self.theme,
+                window,
+                cx,
+            );
+        }
         let model_label = self.model_label();
         let can_submit = self.can_submit_prompt();
         let workspace_label = self

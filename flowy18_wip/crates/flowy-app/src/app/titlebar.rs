@@ -234,7 +234,11 @@ impl FlowyApp {
         self.apply_section(section, cx);
     }
 
-    fn apply_section(&mut self, section: Section, cx: &mut Context<'_, Self>) {
+    pub(super) fn apply_section(
+        &mut self,
+        section: Section,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.section = section;
         self.user_menu = false;
         self.task_menu = None;
@@ -244,9 +248,7 @@ impl FlowyApp {
         }
         self.sync_studio_surface(cx);
         cx.notify();
-        if section == Section::More
-            && self.persona.page == super::more::Page::Skills
-        {
+        if section == Section::Skills {
             self.refresh_skills(cx);
         }
     }
