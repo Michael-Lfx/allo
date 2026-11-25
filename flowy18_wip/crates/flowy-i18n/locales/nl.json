@@ -55,6 +55,7 @@
   "verify.anchor_invalid": "Anchor invalid",
   "verify.value_mismatch": "Value mismatch",
   "verify.structure": "Structure mismatch",
+  "verify.provenance_invalid": "Invalid data source",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standaard",

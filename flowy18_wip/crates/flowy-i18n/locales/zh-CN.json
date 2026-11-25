@@ -55,6 +55,7 @@
   "verify.anchor_invalid": "锚无效",
   "verify.value_mismatch": "值不匹配",
   "verify.structure": "结构不符",
+  "verify.provenance_invalid": "数据来源无效",
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
