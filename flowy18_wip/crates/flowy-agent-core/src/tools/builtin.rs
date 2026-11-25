@@ -29,9 +29,16 @@ const MAX_WALK_ENTRIES: usize = 5_000;
 const READ_TRUNCATION_SUFFIX: &str =
     "\n...[truncated: file exceeds 2 MiB host read limit]";
 
-fn is_windows_reserved_device_name(name: &str) -> bool {
+#[must_use]
+pub fn is_windows_reserved_device_name(name: &str) -> bool {
     let trimmed = name.trim_end_matches([' ', '.']);
-    let stem = trimmed.split('.').next().unwrap_or(trimmed).trim_end();
+    // Split on both `.` and `:` so `CON:a` / `NUL:stream` cannot bypass
+    // Win32 DOS device resolution (`RtlIsDosDeviceName_U`).
+    let stem = trimmed
+        .split(['.', ':'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim_end();
     let upper = stem.to_ascii_uppercase();
     matches!(
         upper.as_str(),
@@ -68,24 +75,28 @@ fn is_windows_reserved_device_name(name: &str) -> bool {
     )
 }
 
-fn has_reserved_device_component(path: &Path) -> bool {
+#[must_use]
+pub fn has_reserved_device_component(path: &Path) -> bool {
     path.components().any(|component| match component {
-        std::path::Component::Normal(part) => {
-            part.to_str().is_some_and(is_windows_reserved_device_name)
-        }
+        std::path::Component::Normal(part) => part.to_str().is_some_and(|s| {
+            is_windows_reserved_device_name(s)
+                || (cfg!(windows) && s.contains(':'))
+        }),
         _ => false,
     })
 }
 
 #[cfg(windows)]
-fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
+#[must_use]
+pub fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-const fn is_windows_reparse_point(_meta: &std::fs::Metadata) -> bool {
+#[must_use]
+pub const fn is_windows_reparse_point(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
@@ -233,8 +244,12 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                         ),
                     );
                 }
-                match tokio::fs::metadata(&path).await {
-                    Ok(meta) if !meta.is_file() => {
+                match tokio::fs::symlink_metadata(&path).await {
+                    Ok(meta)
+                        if !meta.is_file()
+                            || meta.file_type().is_symlink()
+                            || is_windows_reparse_point(&meta) =>
+                    {
                         return ToolExecutionResult::error(
                             "READ_FAILED",
                             format!("not a regular file: {}", path.display()),
@@ -449,8 +464,12 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                         ),
                     );
                 }
-                match tokio::fs::metadata(&path).await {
-                    Ok(meta) if !meta.is_file() => {
+                match tokio::fs::symlink_metadata(&path).await {
+                    Ok(meta)
+                        if !meta.is_file()
+                            || meta.file_type().is_symlink()
+                            || is_windows_reparse_point(&meta) =>
+                    {
                         return ToolExecutionResult::error(
                             "READ_FAILED",
                             format!("not a regular file: {}", path.display()),
@@ -517,11 +536,26 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                     content.replace(&parsed.old_string, &parsed.new_string)
                 } else {
                     match content.find(&parsed.old_string) {
-                        Some(_) => content.replacen(
-                            &parsed.old_string,
-                            &parsed.new_string,
-                            1,
-                        ),
+                        Some(_) => {
+                            let grown = (content.len() as u64)
+                                .saturating_sub(parsed.old_string.len() as u64)
+                                .saturating_add(parsed.new_string.len() as u64);
+                            if grown > MAX_EDIT_FILE_BYTES {
+                                return ToolExecutionResult::error(
+                                    "FILE_TOO_LARGE",
+                                    format!(
+                                        "cannot edit {}: replacement output exceeds {} MiB host edit limit",
+                                        path.display(),
+                                        MAX_EDIT_FILE_BYTES / (1024 * 1024)
+                                    ),
+                                );
+                            }
+                            content.replacen(
+                                &parsed.old_string,
+                                &parsed.new_string,
+                                1,
+                            )
+                        }
                         None => {
                             return ToolExecutionResult::error(
                                 "NOT_FOUND",
@@ -634,6 +668,11 @@ fn glob_tool() -> Arc<ToolDefinition> {
 
 async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    if let Ok(meta) = tokio::fs::symlink_metadata(base).await
+        && (meta.file_type().is_symlink() || is_windows_reparse_point(&meta))
+    {
+        return out;
+    }
     let mut visited = 0_usize;
     let mut stack = vec![(base.to_path_buf(), 0_usize)];
     while let Some((dir, depth)) = stack.pop() {

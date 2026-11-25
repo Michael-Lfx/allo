@@ -55,18 +55,37 @@ pub struct ProvenanceEvaluation {
     pub warnings: Vec<String>,
 }
 
+/// Maximum provenance claims evaluated per verification call.
+const MAX_PROVENANCE_CLAIMS: usize = 64;
+
 /// Evaluate provenance claims against the workspace filesystem.
+#[cfg(test)]
 #[must_use]
 pub fn evaluate_provenance(
     claims: &[ProvenanceClaim],
     cwd: Option<&Path>,
+) -> ProvenanceEvaluation {
+    evaluate_provenance_with_signal(claims, cwd, None)
+}
+
+pub(super) fn evaluate_provenance_with_signal(
+    claims: &[ProvenanceClaim],
+    cwd: Option<&Path>,
+    signal: Option<&flowy_agent_core::CancelToken>,
 ) -> ProvenanceEvaluation {
     let mut eval = ProvenanceEvaluation::default();
     if claims.is_empty() {
         eval.warnings.push("provenance_missing".to_owned());
         return eval;
     }
-    for claim in claims {
+    let mut hash_cache: std::collections::HashMap<
+        std::path::PathBuf,
+        Option<String>,
+    > = std::collections::HashMap::new();
+    for claim in claims.iter().take(MAX_PROVENANCE_CLAIMS) {
+        if signal.is_some_and(flowy_agent_core::CancelToken::is_cancelled) {
+            break;
+        }
         let field = claim.field.trim();
         let field_label = if field.is_empty() {
             "provenance"
@@ -147,9 +166,20 @@ pub fn evaluate_provenance(
                     .map(str::trim)
                     .filter(|hash| !hash.is_empty())
                 {
-                    let Ok(actual_hash) =
-                        delivery::hash_regular_file_streaming(&candidate)
-                    else {
+                    let cache_key = std::fs::canonicalize(&candidate)
+                        .unwrap_or_else(|_| candidate.clone());
+                    let actual = hash_cache
+                        .entry(cache_key)
+                        .or_insert_with(|| {
+                            delivery::hash_regular_file_streaming(
+                                &candidate,
+                                crate::MAX_ARTIFACT_BYTES,
+                                signal,
+                            )
+                            .ok()
+                        })
+                        .as_deref();
+                    let Some(actual_hash) = actual else {
                         push_unique(
                             &mut eval.issues,
                             PROVENANCE_INVALID,

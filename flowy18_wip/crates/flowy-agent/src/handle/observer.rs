@@ -727,6 +727,7 @@ pub(super) fn import_engine_sessions(
         .unwrap_or_default();
     let delivery_gate =
         crate::delivery::DeliveryStore::new(state.root.join("delivery"));
+    let override_index = delivery_gate.override_index().ok();
     let mut live = lock(&state.live);
     for record in records {
         if deleted_sessions.contains(&record.id) {
@@ -772,10 +773,10 @@ pub(super) fn import_engine_sessions(
                 })
                 .collect::<BTreeSet<_>>();
             if existing_ids != allowed {
-                let mut projected = lines_from_messages_with_gate(
+                let mut projected = lines_from_messages_with_index(
                     &record.messages,
                     &allowed,
-                    Some(&delivery_gate),
+                    override_index.as_ref(),
                 );
                 append_missing_artifacts(&mut projected, &override_artifacts);
                 projected.extend(
@@ -796,12 +797,14 @@ pub(super) fn import_engine_sessions(
                 existing,
                 record,
                 &allowed,
-                Some(&delivery_gate),
+                override_index.as_ref(),
             );
-            sync_verification_overrides(
-                &mut existing.projection.lines,
-                &delivery_gate,
-            );
+            if let Some(index) = &override_index {
+                sync_verification_overrides_with_index(
+                    &mut existing.projection.lines,
+                    index,
+                );
+            }
             append_missing_artifacts(
                 &mut existing.projection.lines,
                 &override_artifacts,
@@ -811,10 +814,10 @@ pub(super) fn import_engine_sessions(
             }
             continue;
         }
-        let mut lines = lines_from_messages_with_gate(
+        let mut lines = lines_from_messages_with_index(
             &record.messages,
             &allowed,
-            Some(&delivery_gate),
+            override_index.as_ref(),
         );
         append_missing_artifacts(&mut lines, &override_artifacts);
         let title = if record.title.is_empty() {
@@ -869,7 +872,7 @@ pub(super) fn restore_existing_history(
     existing: &mut Live,
     record: SessionRecord,
     allowed: &BTreeSet<String>,
-    gate: Option<&crate::delivery::DeliveryStore>,
+    overrides: Option<&crate::delivery::OverrideIndex>,
 ) {
     let lines = &mut existing.projection.lines;
     let mut visible = lines.iter().enumerate().filter_map(|(index, line)| {
@@ -891,10 +894,10 @@ pub(super) fn restore_existing_history(
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
-                lines.extend(lines_from_messages_with_gate(
+                lines.extend(lines_from_messages_with_index(
                     &record.messages[index..],
                     allowed,
-                    gate,
+                    overrides,
                 ));
                 existing.status = live_status(record.status);
                 existing.updated_at = record.updated_at;
@@ -928,10 +931,10 @@ pub(super) fn restore_existing_history(
             _ => None,
         })
         .peekable();
-    let mut recovered = lines_from_messages_with_gate(
+    let mut recovered = lines_from_messages_with_index(
         &record.messages[index + 1..],
         allowed,
-        gate,
+        overrides,
     );
     for line in &mut recovered {
         if let ChatLine::Reasoning {
@@ -971,9 +974,9 @@ pub(super) fn append_missing_artifacts(
     }
 }
 
-pub(super) fn sync_verification_overrides(
+pub(super) fn sync_verification_overrides_with_index(
     lines: &mut [ChatLine],
-    gate: &crate::delivery::DeliveryStore,
+    overrides: &crate::delivery::OverrideIndex,
 ) {
     for line in lines {
         if let ChatLine::Verification {
@@ -985,9 +988,11 @@ pub(super) fn sync_verification_overrides(
         } = line
             && !*override_used
             && (!report_id.is_empty() || !artifact_hash.is_empty())
-            && gate
-                .report_was_overridden(report_id, artifact_path, artifact_hash)
-                .unwrap_or(false)
+            && overrides.report_was_overridden(
+                report_id,
+                artifact_path,
+                artifact_hash,
+            )
         {
             *override_used = true;
         }
@@ -1049,6 +1054,14 @@ pub(super) fn parse_verification_line(
     text: &str,
     gate: Option<&crate::delivery::DeliveryStore>,
 ) -> Option<ChatLine> {
+    let overrides = gate.and_then(|store| store.override_index().ok());
+    parse_verification_line_with_index(text, overrides.as_ref())
+}
+
+fn parse_verification_line_with_index(
+    text: &str,
+    overrides: Option<&crate::delivery::OverrideIndex>,
+) -> Option<ChatLine> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let ok = value.get("ok")?.as_bool()?;
     let artifact_path = value
@@ -1103,17 +1116,13 @@ pub(super) fn parse_verification_line(
                 .collect::<Vec<_>>()
         });
     let override_used = (!report_id.is_empty() || !artifact_hash.is_empty())
-        && gate
-            .and_then(|store| {
-                store
-                    .report_was_overridden(
-                        &report_id,
-                        &artifact_path,
-                        &artifact_hash,
-                    )
-                    .ok()
-            })
-            .unwrap_or(false);
+        && overrides.is_some_and(|index| {
+            index.report_was_overridden(
+                &report_id,
+                &artifact_path,
+                &artifact_hash,
+            )
+        });
     Some(ChatLine::Verification {
         report_id,
         artifact_path,
@@ -1126,10 +1135,10 @@ pub(super) fn parse_verification_line(
     })
 }
 
-pub(super) fn lines_from_messages_with_gate(
+pub(super) fn lines_from_messages_with_index(
     messages: &[Message],
     allowed: &BTreeSet<String>,
-    gate: Option<&crate::delivery::DeliveryStore>,
+    overrides: Option<&crate::delivery::OverrideIndex>,
 ) -> Vec<ChatLine> {
     let mut lines = Vec::new();
     let mut pending_verifications = Vec::new();
@@ -1178,7 +1187,9 @@ pub(super) fn lines_from_messages_with_gate(
                             Some("verify_deck" | "verify_artifact")
                         ) && !errored
                             && let Some(card) =
-                                parse_verification_line(&text, gate)
+                                parse_verification_line_with_index(
+                                    &text, overrides,
+                                )
                         {
                             upsert_verification_line(
                                 &mut pending_verifications,
@@ -1249,7 +1260,9 @@ pub(super) fn lines_from_messages_with_gate(
                                 "verify_deck" | "verify_artifact"
                             ) && !errored
                                 && let Some(card) =
-                                    parse_verification_line(&text, gate)
+                                    parse_verification_line_with_index(
+                                        &text, overrides,
+                                    )
                             {
                                 upsert_verification_line(
                                     &mut pending_verifications,

@@ -38,7 +38,8 @@ pub use flowy_agent_core::{
     WorkContract,
     tools::{
         SandboxAvailability, SandboxBackend, SandboxPolicy,
-        detect_sandbox_availability,
+        detect_sandbox_availability, has_reserved_device_component,
+        is_windows_reparse_point,
     },
 };
 pub use handle::{

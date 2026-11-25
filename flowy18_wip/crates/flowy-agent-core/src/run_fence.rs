@@ -52,7 +52,11 @@ impl PublishToken {
         if !self.is_current() {
             return;
         }
-        let active = self.fence.active.lock().unwrap();
+        let active = self
+            .fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.as_ref().is_some_and(|slot| {
             slot.generation == self.generation && !slot.cancelling
         }) {
@@ -90,6 +94,7 @@ impl RunTicket {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn publish(&self, update: impl FnOnce()) {
         self.publisher().publish(update);
     }
@@ -114,7 +119,11 @@ impl RunTicket {
     /// only when this ticket completed without being cancelled or superseded,
     /// so the caller may publish terminal results.
     pub fn finish(&self) -> bool {
-        let mut active = self.fence.active.lock().unwrap();
+        let mut active = self
+            .fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(slot) = active.as_ref() else {
             return false;
         };
@@ -129,7 +138,11 @@ impl RunTicket {
     }
 
     fn release_if_owned(&self) {
-        let mut active = self.fence.active.lock().unwrap();
+        let mut active = self
+            .fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let owned = active
             .as_ref()
             .is_some_and(|slot| slot.generation == self.generation);
@@ -158,7 +171,10 @@ pub struct RunFence {
 
 impl std::fmt::Debug for RunFence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let active = self.active.lock().unwrap();
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("RunFence")
             .field("current", &self.current.load(Ordering::SeqCst))
             .field("active", &active.is_some())
@@ -179,7 +195,10 @@ impl RunFence {
     /// Begin a run. `None` means another run is still active or reaping after
     /// cancellation for this session.
     pub fn try_begin(self: &Arc<Self>) -> Option<RunTicket> {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.is_some() {
             return None;
         }
@@ -206,7 +225,10 @@ impl RunFence {
     /// so no late deltas or results can publish, while keeping the execution
     /// gate closed until the cancelled [`RunTicket`] finishes reaping and drops.
     pub fn cancel_active(&self) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(slot) = active.as_mut() {
             slot.signal.cancel();
             slot.cancelling = true;
@@ -217,14 +239,17 @@ impl RunFence {
 
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.lock().unwrap().is_some()
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     #[must_use]
     pub fn is_cancelling(&self) -> bool {
         self.active
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .is_some_and(|slot| slot.cancelling)
     }
@@ -234,7 +259,10 @@ impl RunFence {
     #[must_use]
     pub fn wait_until_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        let mut active = self.active.lock().unwrap();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while active.is_some() {
             let Some(remaining) =
                 deadline.checked_duration_since(Instant::now())
@@ -244,8 +272,10 @@ impl RunFence {
             if remaining.is_zero() {
                 return false;
             }
-            let (guard, result) =
-                self.idle_notify.wait_timeout(active, remaining).unwrap();
+            let (guard, result) = self
+                .idle_notify
+                .wait_timeout(active, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             active = guard;
             if result.timed_out() && active.is_some() {
                 return false;
@@ -331,6 +361,23 @@ mod tests {
         assert!(fence.wait_until_idle(Duration::from_secs(2)));
         releaser.join().unwrap();
         let next = fence.try_begin().expect("fence idle after drop");
+        assert!(next.finish());
+    }
+
+    #[test]
+    fn publish_panic_never_double_panics_on_ticket_drop() {
+        let fence = Arc::new(RunFence::new());
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let ticket = fence.try_begin().unwrap();
+                ticket.publish(|| panic!("simulated observer panic"));
+            }));
+        assert!(outcome.is_err());
+        assert!(
+            !fence.is_active(),
+            "RunTicket::drop must release poisoned gate"
+        );
+        let next = fence.try_begin().expect("fence reusable after poison");
         assert!(next.finish());
     }
 }

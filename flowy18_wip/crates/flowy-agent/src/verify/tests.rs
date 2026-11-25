@@ -1,6 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 use super::contract::*;
 use super::ooxml::*;
+use super::provenance::evaluate_provenance;
 use super::*;
 use std::io::Write;
 use zip::write::SimpleFileOptions;
@@ -803,4 +804,99 @@ fn round2_contract_edge_cases_quotes_dates_renames_and_slide_reduction() {
     // 5. Slide-count reduction picks the target count
     let reduced = BriefContract::from_brief("把 5 页改成 3 页");
     assert_eq!(reduced.min_slides, Some(3));
+}
+
+#[test]
+fn round4_laoyeye_adversarial_contract_and_pptx_preflight_cases() {
+    // 1. Mixed Chinese + ASCII filename & pure Chinese filename
+    let mixed = BriefContract::from_brief("帮我做一份季度汇报_2026.pptx");
+    assert_eq!(
+        mixed.expected_filenames,
+        vec!["季度汇报_2026.pptx".to_owned()]
+    );
+    let cn_only =
+        BriefContract::from_brief("打开 data.xlsx 看一下数据，写一份总结.pptx");
+    assert_eq!(cn_only.expected_filenames, vec!["总结.pptx".to_owned()]);
+    let uploaded = BriefContract::from_brief("我上传了 raw.csv，帮我做PPT");
+    assert!(uploaded.expected_filenames.is_empty());
+
+    // 2. Non-PPT "页" and upper bounds never fabricate phantom `.pptx` or inflate `min_slides`
+    let word_doc =
+        BriefContract::from_brief("帮我写一份5页的Word报告 report.docx");
+    assert_eq!(word_doc.min_slides, None);
+    assert_eq!(word_doc.expected_filenames, vec!["report.docx".to_owned()]);
+    assert!(
+        word_doc
+            .required_items
+            .iter()
+            .all(|i| i.extension != "pptx")
+    );
+    let distilled =
+        BriefContract::from_brief("把附件里的15页财报提炼成一份5页PPT");
+    assert_eq!(distilled.min_slides, Some(5));
+    let upper_bound =
+        BriefContract::from_brief("做一个3页以内的PPT，不要超过5页");
+    assert_eq!(upper_bound.min_slides, None);
+
+    // 3. Multi-keyword quote contrast, `元` equivalence, English non-currency filter, and `of`/currency prefixes
+    assert_eq!(
+        extract_quote_fact("去年预算20万，今年预算改为50万").as_deref(),
+        Some("50万")
+    );
+    assert_eq!(extract_quote_fact("Quote: 3 options"), None);
+    assert_eq!(
+        extract_quote_fact("Create a quote of $350,000").as_deref(),
+        Some("350000")
+    );
+    assert_eq!(
+        extract_quote_fact("报价 RMB 350,000").as_deref(),
+        Some("350000")
+    );
+    assert!(quote_matches(&compact_text("报价：¥350,000"), "350000元"));
+    assert!(quote_matches(&compact_text("总价 35万"), "350000元"));
+
+    // 4. Date ranges are not pinned; dotted & English month formats match
+    assert_eq!(
+        extract_date_fact("复盘2025-01-01上线以来到2026-06-30的增长"),
+        None
+    );
+    assert!(date_matches(
+        &compact_text("September 15, 2026"),
+        "2026-09-15"
+    ));
+    assert!(date_matches(&compact_text("2026.09.15"), "2026-09-15"));
+
+    // 5. Explicit revocation in `BriefContract::evolve`
+    let base = BriefContract::from_brief(
+        "做 4 页 PPT 和一份报价表，报价 35 万，日期 2026-11-25",
+    );
+    let revoked = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "去掉具体日期，不用做报价表了，只做PPT",
+    );
+    assert!(!revoked.pinned_facts.contains_key("date"));
+    assert_eq!(
+        revoked.pinned_facts.get("quote").map(String::as_str),
+        Some("35万")
+    );
+    assert!(revoked.required_items.iter().all(|i| i.extension != "xlsx"));
+
+    // 6. PPTX ZIP-bomb preflight rejects oversized XML entries before rpptx parse
+    let dir = std::env::temp_dir()
+        .join(format!("flowy-pptx-bomb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bomb = dir.join("bomb.pptx");
+    let huge_xml = format!("<root>{}</root>", " ".repeat(17 * 1024 * 1024));
+    write_zip(&bomb, &[("ppt/slides/slide1.xml", &huge_xml)]);
+    let err = verify_deck_file_with_shapes(&bomb, 1, &[], None)
+        .err()
+        .expect(
+            "oversized XML inside pptx must be rejected before rpptx parse",
+        );
+    assert!(
+        err.contains("budget") || err.contains("limit"),
+        "unexpected err: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

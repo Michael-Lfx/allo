@@ -32,6 +32,11 @@ fn generator_available() -> bool {
     !matches!(std::env::var("FLOWY_PPTX").ok().as_deref(), Some("missing"))
 }
 
+/// Maximum slide count enforced at runtime (matches tool JSON schema).
+const MAX_DECK_SLIDES: usize = 12;
+/// Maximum combined UTF-8 byte length across title + all slide bodies (512 KiB).
+const MAX_DECK_TEXT_BYTES: usize = 512 * 1024;
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn resolve_turn_path(
     cwd: Option<&str>,
@@ -57,6 +62,36 @@ pub(crate) fn resolve_turn_path(
     }
 }
 
+/// Resolve a tool path relative to `output_root` (or `cwd`) AND re-verify
+/// workspace confinement against the actual resolved path so a symlink/junction
+/// inside `output_root` cannot bypass `path_guard`'s `cwd`-relative check.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn resolve_confined_turn_path(
+    cwd: Option<&str>,
+    output_root: Option<&Path>,
+    raw: &str,
+) -> Result<PathBuf, String> {
+    if raw.trim().is_empty() || raw.contains('\0') {
+        return Err("path must not be empty".to_owned());
+    }
+    let confinement_root = cwd
+        .map(Path::new)
+        .or(output_root)
+        .ok_or_else(|| "working directory unavailable".to_owned())?;
+    let resolved = resolve_turn_path(cwd, output_root, raw);
+    let resolved_str = resolved.to_string_lossy();
+    if !crate::handle::confined_to(confinement_root, &resolved_str) {
+        return Err(format!("path escapes the working directory: {raw}"));
+    }
+    if let Some(out_root) = output_root
+        && !Path::new(raw).is_absolute()
+        && !crate::handle::confined_to(out_root, &resolved_str)
+    {
+        return Err(format!("path escapes the turn output directory: {raw}"));
+    }
+    Ok(resolved)
+}
+
 fn missing_result() -> ToolExecutionResult {
     ToolExecutionResult::success_text(
         "missing: no pptx generator is available in this environment",
@@ -74,6 +109,35 @@ pub(crate) fn write_deck(
     title: &str,
     slides: &[String],
 ) -> Result<usize, String> {
+    if slides.is_empty() {
+        return Err("a deck needs at least one slide".to_owned());
+    }
+    if slides.len() > MAX_DECK_SLIDES {
+        return Err(format!(
+            "a deck may have at most {MAX_DECK_SLIDES} slides (got {})",
+            slides.len()
+        ));
+    }
+    let total_text: usize = title
+        .len()
+        .saturating_add(slides.iter().map(String::len).sum::<usize>());
+    if total_text > MAX_DECK_TEXT_BYTES {
+        return Err(format!(
+            "deck text exceeds {MAX_DECK_TEXT_BYTES}-byte limit"
+        ));
+    }
+    if crate::handle::has_reserved_device_component(path) {
+        return Err("reserved device path refused".to_owned());
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && (!meta.is_file()
+            || meta.file_type().is_symlink()
+            || flowy_agent_core::tools::is_windows_reparse_point(&meta))
+    {
+        return Err(
+            "refusing to overwrite non-regular or linked file".to_owned()
+        );
+    }
     let mut presentation =
         Presentation::new().map_err(|error| error.to_string())?;
     for (index, body) in slides.iter().enumerate() {
@@ -144,7 +208,12 @@ fn execute(
             "expected path, title and a non-empty slides array",
         );
     };
-    let path = resolve_turn_path(cwd, output_root, &args.path);
+    let path = match resolve_confined_turn_path(cwd, output_root, &args.path) {
+        Ok(path) => path,
+        Err(error) => {
+            return ToolExecutionResult::error("INVALID_PATH", error);
+        }
+    };
     match write_deck(&path, &args.title, &args.slides) {
         Ok(count) => {
             let mut anchors = Vec::with_capacity(count * 2);
@@ -197,12 +266,25 @@ pub fn definition() -> Arc<ToolDefinition> {
         }),
         |args: ToolCallArgs, context: flowy_agent_core::ToolRunContext| {
             Box::pin(async move {
-                execute(
-                    generator_available(),
-                    args.arguments,
-                    context.cwd.as_deref(),
-                    context.output_root.as_deref(),
-                )
+                let available = generator_available();
+                let arguments = args.arguments;
+                let cwd = context.cwd;
+                let output_root = context.output_root;
+                tokio::task::spawn_blocking(move || {
+                    execute(
+                        available,
+                        arguments,
+                        cwd.as_deref(),
+                        output_root.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    ToolExecutionResult::error(
+                        "PPTX_FAILED",
+                        format!("deck generator task failed: {error}"),
+                    )
+                })
             })
         },
     ))
@@ -284,6 +366,30 @@ mod tests {
             ),
             root.join("outputs/submission-1/deck.pptx")
         );
+        // Reject Windows ADS / device names and >12 slide decks at runtime.
+        assert!(
+            resolve_confined_turn_path(Some(cwd), Some(&output), "CON:a")
+                .is_err()
+        );
+        assert!(
+            resolve_confined_turn_path(
+                Some(cwd),
+                Some(&output),
+                "../escape.pptx"
+            )
+            .is_err()
+        );
+        let too_many = execute(
+            true,
+            json!({
+                "path": "big.pptx",
+                "title": "Big",
+                "slides": vec!["body"; 13],
+            }),
+            Some(cwd),
+            Some(&output),
+        );
+        assert!(matches!(too_many, ToolExecutionResult::Error { .. }));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

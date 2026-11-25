@@ -461,12 +461,30 @@ impl Engine {
     pub fn active_session_ids(&self) -> Vec<String> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fences
             .iter()
             .filter(|(_, fence)| fence.is_active())
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// Defensively cancel every active run fence (for process shutdown / handle
+    /// teardown) so child tool processes are signaled to exit immediately.
+    pub fn cancel_all_active(&self) {
+        let fences: Vec<Arc<RunFence>> = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fences
+            .values()
+            .cloned()
+            .collect();
+        for fence in fences {
+            if fence.is_active() {
+                fence.cancel_active();
+            }
+        }
     }
 
     /// Wait up to `timeout` for session `id`'s active/cancelling run to finish
@@ -814,6 +832,7 @@ impl Engine {
                         record,
                         result.outcome,
                     );
+                    clamp_persisted_tool_outputs(&mut new_messages);
                     record.messages.extend(new_messages);
                     if let Some(commit) = &commit {
                         record.delivery_commits.retain(|previous| {
@@ -928,9 +947,12 @@ impl Engine {
         };
         let outcome = match committed {
             Ok(()) => {
-                ticket.publish(|| {
+                // `inner.finalizing` already blocks `request_cancel`; avoid
+                // holding `RunFence::active` across `delivery_committed` disk
+                // audit/index fsyncs.
+                if ticket.is_current() {
                     self.observer.delivery_committed(&commit);
-                });
+                }
                 Ok(pending_outcome)
             }
             Err(error) => {
@@ -946,21 +968,55 @@ impl Engine {
             }
         };
         // Keep the per-session flight active while the store writes its marker.
-        // The terminal notification is visible before a replacement run starts.
-        let mut inner = self.inner.lock().unwrap();
-        finalizing_guard.armed = false;
-        if !ticket.finish() {
-            inner.finalizing.remove(session_id);
-            drop(inner);
-            return Ok(LoopOutcome::Aborted);
+        // Notify observer while the RunFence still blocks replacement runs and
+        // `inner.finalizing` still blocks cancellation, without holding
+        // `self.inner` across the observer callback.
+        if ticket.is_current() {
+            self.observer.finished(
+                session_id,
+                outcome.as_ref().copied().unwrap_or(LoopOutcome::Failed),
+            );
         }
-        self.observer.finished(
-            session_id,
-            outcome.as_ref().copied().unwrap_or(LoopOutcome::Failed),
-        );
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        finalizing_guard.armed = false;
+        let clean = ticket.finish();
         inner.finalizing.remove(session_id);
         drop(inner);
+        if !clean {
+            return Ok(LoopOutcome::Aborted);
+        }
         outcome
+    }
+}
+
+/// Cap huge tool output strings (e.g., 2 MiB `read_file` dumps) before
+/// persisting them into `history.json`, preserving all normal JSON tool results.
+fn clamp_persisted_tool_outputs(messages: &mut [Message]) {
+    const MAX_PERSISTED_TOOL_CHARS: usize = 64 * 1024;
+    const SUFFIX: &str = "\n...[truncated in persisted history]";
+    for message in messages {
+        if !matches!(message.source, MessageSource::Tool { .. }) {
+            continue;
+        }
+        for block in &mut message.content {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                for inner in content {
+                    if let ContentBlock::Text { text } = inner
+                        && text.chars().count() > MAX_PERSISTED_TOOL_CHARS
+                    {
+                        let mut clipped: String = text
+                            .chars()
+                            .take(MAX_PERSISTED_TOOL_CHARS)
+                            .collect();
+                        clipped.push_str(SUFFIX);
+                        *text = clipped;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -973,7 +1029,11 @@ struct FinalizingGuard<'a> {
 impl Drop for FinalizingGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let mut inner = self.engine.inner.lock().unwrap();
+            let mut inner = self
+                .engine
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.finalizing.remove(&self.session_id);
         }
     }

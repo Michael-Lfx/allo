@@ -503,16 +503,8 @@ fn now_ms() -> u64 {
     crate::handle::now_ms()
 }
 
-#[cfg(windows)]
 fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
+    flowy_agent_core::tools::is_windows_reparse_point(metadata)
 }
 
 #[cfg(test)]

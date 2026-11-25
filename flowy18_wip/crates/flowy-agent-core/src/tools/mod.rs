@@ -9,7 +9,10 @@ pub mod sandbox;
 pub mod shell_policy;
 
 pub use adapter::RegistryTool;
-pub use builtin::register_builtin_tools;
+pub use builtin::{
+    has_reserved_device_component, is_windows_reparse_point,
+    is_windows_reserved_device_name, register_builtin_tools,
+};
 pub use pi::pi_shell_definition;
 pub use registry::{
     BoxFuture, ToolDefinition, ToolGuard, ToolPolicy, ToolPolicyDecision,

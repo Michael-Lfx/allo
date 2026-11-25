@@ -437,11 +437,20 @@ impl AgentHandle {
             .and_then(|name| name.to_str())
             .ok_or("chat.publish.failed")?
             .to_owned();
-        let source_relative_path =
-            full_path.strip_prefix(&session_workspace.root).map_or_else(
-                |_| file_name.clone(),
-                |rel| rel.to_string_lossy().replace('\\', "/"),
+        let source_relative_path = {
+            let resolved_root = super::guards::resolve_deepest_ancestor(
+                &session_workspace.root,
             );
+            let resolved_full =
+                super::guards::resolve_deepest_ancestor(&full_path);
+            resolved_full
+                .strip_prefix(&resolved_root)
+                .or_else(|_| full_path.strip_prefix(&session_workspace.root))
+                .map_or_else(
+                    |_| file_name.clone(),
+                    |rel| rel.to_string_lossy().replace('\\', "/"),
+                )
+        };
         let delivery_key = format!("override-{report_id}");
         let gate =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"));
@@ -618,9 +627,21 @@ impl AgentHandle {
                 rev,
             );
         }
-        store
-            .commit_prepared(&commit)
-            .map_err(|_| "chat.publish.failed")?;
+        if store.commit_prepared(&commit).is_err() {
+            // `DeliveryCommit` is already durable in `history.json`: mirror the
+            // engine's post-linearization contract by moving the session into
+            // `DeliveryFailed` so the user gets an explicit Retry Delivery
+            // surface rather than a silent ghost commit on next boot.
+            super::mark_delivery_failed(state, session_id);
+            if persist_index(state).is_err() {
+                state.report_storage_error();
+            }
+            state.push_update(AgentUpdate::Session {
+                id: session_id.to_owned(),
+            });
+            state.push_update(AgentUpdate::Sessions);
+            return Err("chat.status_delivery_failed");
+        }
         let _ = gate.confirm_delivered(
             &result.outcome.delivery_id,
             &full_path.display().to_string(),

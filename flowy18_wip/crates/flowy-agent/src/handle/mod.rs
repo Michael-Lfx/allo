@@ -305,6 +305,7 @@ impl UiState {
 /// a Tokio worker thread when external [`AgentHandle`]s are dropped.
 struct RuntimeOwner {
     state: Arc<UiState>,
+    engine: Arc<Mutex<Option<Arc<Engine>>>>,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -312,6 +313,10 @@ impl Drop for RuntimeOwner {
     fn drop(&mut self) {
         self.state.autonomous_drain.store(false, Ordering::Release);
         self.state.drain_cancel.cancel();
+        let engine = lock(&self.engine).clone();
+        if let Some(engine) = engine {
+            engine.cancel_all_active();
+        }
     }
 }
 
@@ -322,7 +327,7 @@ impl Drop for RuntimeOwner {
 struct Harness {
     runtime: tokio::runtime::Handle,
     state: Arc<UiState>,
-    engine: Mutex<Option<Arc<Engine>>>,
+    engine: Arc<Mutex<Option<Arc<Engine>>>>,
     config: Mutex<LlmConfig>,
 }
 
@@ -405,15 +410,17 @@ impl AgentHandle {
             .expect("tokio runtime for agent harness");
         let rt_handle = runtime.handle().clone();
         let state = Arc::new(UiState::new(store_root, None));
+        let engine = Arc::new(Mutex::new(None));
         let owner = Arc::new(RuntimeOwner {
             state: Arc::clone(&state),
+            engine: Arc::clone(&engine),
             _runtime: runtime,
         });
         Self {
             inner: Arc::new(Harness {
                 runtime: rt_handle,
                 state,
-                engine: Mutex::new(None),
+                engine,
                 config: Mutex::new(config),
             }),
             _runtime: owner,
@@ -435,6 +442,13 @@ impl AgentHandle {
             }
         }
         let config = lock(&self.inner.config).clone();
+        let sandbox = flowy_agent_core::tools::detect_sandbox_availability();
+        tracing::info!(
+            target: "flowy.sandbox",
+            status = sandbox.telemetry_label(),
+            enforced = sandbox.is_enforced(),
+            "host sandbox posture probed at boot"
+        );
         let boot_receipts = self.boot(config);
         // History is fully loaded and recovered before this point. Keep the
         // library in its existing loading state until the backfill finishes so

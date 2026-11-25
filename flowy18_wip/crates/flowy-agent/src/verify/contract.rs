@@ -48,6 +48,32 @@ impl BriefContract {
         let mut required_items = prev.required_items.clone();
         let is_rename = is_rename_prompt(prompt);
         let prompt_lower = prompt.to_ascii_lowercase();
+        let mut inherited_min_slides = prev.min_slides;
+        let revoke_xlsx = [
+            "不用做报价表",
+            "不需要报价表",
+            "不要报价表",
+            "去掉报价表",
+            "删除报价表",
+            "不用做excel",
+            "不需要excel",
+            "不需要xlsx",
+            "去掉excel",
+            "去掉表格",
+            "只做ppt",
+            "只要ppt",
+            "only ppt",
+        ]
+        .iter()
+        .any(|cue| prompt_lower.contains(cue));
+        let revoke_pptx =
+            ["不用做ppt", "不需要ppt", "去掉ppt", "no ppt", "no slides"]
+                .iter()
+                .any(|cue| prompt_lower.contains(cue));
+        let revoke_docx =
+            ["不用做word", "不需要word", "不需要docx", "去掉word"]
+                .iter()
+                .any(|cue| prompt_lower.contains(cue));
         for item in delta.required_items {
             if is_rename && let Some(new_name) = item.filename.as_deref() {
                 // Prefer replacing the specifically mentioned previous filename
@@ -102,17 +128,64 @@ impl BriefContract {
                 }
             }
         }
+        // Apply explicit user revocations AFTER merging `delta` so mentioning
+        // "不用做报价表了" never re-adds `*.xlsx` from the negated noun.
+        if revoke_xlsx {
+            required_items.retain(|existing| {
+                !existing.extension.eq_ignore_ascii_case("xlsx")
+                    && !existing.extension.eq_ignore_ascii_case("csv")
+            });
+        }
+        if revoke_pptx {
+            required_items.retain(|existing| {
+                !existing.extension.eq_ignore_ascii_case("pptx")
+            });
+            inherited_min_slides = None;
+        }
+        if revoke_docx {
+            required_items.retain(|existing| {
+                !existing.extension.eq_ignore_ascii_case("docx")
+            });
+        }
         let expected_filenames: Vec<String> = required_items
             .iter()
             .filter_map(|item| item.filename.clone())
             .collect();
         let mut pinned_facts = prev.pinned_facts.clone();
+        if [
+            "去掉日期",
+            "去掉具体日期",
+            "删除日期",
+            "不需要日期",
+            "不用日期",
+            "不要日期",
+            "remove date",
+            "no date",
+        ]
+        .iter()
+        .any(|cue| prompt_lower.contains(cue))
+        {
+            pinned_facts.remove("date");
+        }
+        if [
+            "去掉报价",
+            "删除报价",
+            "不需要报价",
+            "不要报价",
+            "remove quote",
+            "no price",
+        ]
+        .iter()
+        .any(|cue| prompt_lower.contains(cue))
+        {
+            pinned_facts.remove("quote");
+        }
         for (key, value) in delta.pinned_facts {
             pinned_facts.insert(key, value);
         }
         Self {
             revision: prev.revision.saturating_add(1).max(1),
-            min_slides: delta.min_slides.or(prev.min_slides),
+            min_slides: delta.min_slides.or(inherited_min_slides),
             expected_filenames,
             required_items,
             pinned_facts,
@@ -248,6 +321,15 @@ impl BriefContract {
 }
 
 pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
+    let brief_lower = brief.to_ascii_lowercase();
+    let mentions_deck_context = brief_lower.contains("ppt")
+        || brief_lower.contains("slide")
+        || brief_lower.contains("deck")
+        || brief.contains("幻灯片")
+        || brief.contains("汇报");
+    let mentions_non_deck_doc = brief_lower.contains("word")
+        || brief_lower.contains(".docx")
+        || brief_lower.contains(".pdf");
     let chars: Vec<(usize, char)> = brief.char_indices().collect();
     let mut matches: Vec<usize> = Vec::new();
     for idx in 0..chars.len() {
@@ -259,12 +341,31 @@ pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
                 continue;
             }
         }
-        let prefix_start = idx.saturating_sub(6);
+        let prefix_start = idx.saturating_sub(8);
         let prefix_slice: String =
             chars[prefix_start..idx].iter().map(|(_, c)| *c).collect();
-        if ["参考", "旧", "原", "对比", "已有", "那份", "这份"]
-            .iter()
-            .any(|marker| prefix_slice.contains(marker))
+        let prefix_lower = prefix_slice.to_ascii_lowercase();
+        if [
+            "参考",
+            "旧",
+            "原",
+            "对比",
+            "已有",
+            "那份",
+            "这份",
+            "附件",
+            "不超过",
+            "不要超过",
+            "最多",
+            "至多",
+            "少于",
+            "at most",
+            "no more than",
+            "under ",
+            "max ",
+        ]
+        .iter()
+        .any(|marker| prefix_lower.contains(marker))
         {
             continue;
         }
@@ -292,14 +393,45 @@ pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
         };
         let next_byte = chars.get(end_idx).map_or(brief.len(), |(pos, _)| *pos);
         let rest = brief[next_byte..].trim_start_matches([' ', '\t', '-']);
-        let is_cn_unit = rest.starts_with('页')
-            || rest.starts_with("张PPT")
-            || rest.starts_with("张ppt")
-            || rest.starts_with("张幻灯片");
+        let rest_lower = rest.to_ascii_lowercase();
+        // Skip upper-bound constraints ("3页以内") and non-PPT document page
+        // counts ("15页财报", "5页的Word报告").
+        let is_non_deck_or_upper_bound = [
+            "页以内",
+            "页以下",
+            "页之内",
+            "页左右",
+            "页word",
+            "页的word",
+            "页文档",
+            "页的文档",
+            "页报告",
+            "页的报告",
+            "页财报",
+            "页的财报",
+            "页合同",
+            "页论文",
+            "页pdf",
+            "页的pdf",
+            "页材料",
+            "页手册",
+            "页附件",
+        ]
+        .iter()
+        .any(|suffix| rest_lower.starts_with(suffix));
+        if is_non_deck_or_upper_bound {
+            continue;
+        }
+        let is_explicit_cn_slide_unit = rest_lower.starts_with("张ppt")
+            || rest.starts_with("张幻灯片")
+            || rest_lower.starts_with("页ppt")
+            || rest.starts_with("页幻灯片")
+            || rest_lower.starts_with("页的ppt");
+        let is_bare_cn_page = rest.starts_with('页')
+            && (!mentions_non_deck_doc || mentions_deck_context);
         let is_en_unit = allow_en && {
-            let lower = rest.to_ascii_lowercase();
             ["slides", "slide"].iter().any(|unit| {
-                lower.strip_prefix(unit).is_some_and(|after| {
+                rest_lower.strip_prefix(unit).is_some_and(|after| {
                     after
                         .chars()
                         .next()
@@ -307,17 +439,29 @@ pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
                 })
             })
         };
-        if is_cn_unit || is_en_unit {
+        if is_explicit_cn_slide_unit || is_bare_cn_page || is_en_unit {
             matches.push(num);
         }
     }
     if matches.len() >= 2 {
-        let lower = brief.to_ascii_lowercase();
         let has_change_cue = [
-            "改", "调", "精简", "缩减", "变", "至", "到", "->", "→", " to ",
+            "改",
+            "调",
+            "精简",
+            "缩减",
+            "提炼成",
+            "浓缩成",
+            "压缩到",
+            "压缩成",
+            "变",
+            "至",
+            "到",
+            "->",
+            "→",
+            " to ",
         ]
         .iter()
-        .any(|cue| lower.contains(cue));
+        .any(|cue| brief_lower.contains(cue));
         if has_change_cue {
             return matches.last().copied();
         }
@@ -422,8 +566,28 @@ fn rfind_marker(haystack: &str, marker: &str) -> Option<usize> {
 fn is_input_source_context(prefix: &str) -> bool {
     let lower = prefix.to_ascii_lowercase();
     let input_markers = [
-        "根据", "基于", "参考", "读取", "按照", "按", "依据", "从", "由",
-        "原有", "原", "based on", "using", "from", "read",
+        "根据",
+        "基于",
+        "参考",
+        "读取",
+        "打开",
+        "上传了",
+        "上传",
+        "附件",
+        "已有",
+        "按照",
+        "按",
+        "依据",
+        "从",
+        "由",
+        "原有",
+        "原",
+        "based on",
+        "using",
+        "from",
+        "read",
+        "open",
+        "uploaded",
     ];
     let output_markers = [
         "生成",
@@ -467,25 +631,142 @@ fn is_input_source_context(prefix: &str) -> bool {
     last_output.is_none_or(|out_pos| in_pos > out_pos)
 }
 
+const fn is_filename_boundary_char(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            '，' | '。'
+                | '；'
+                | '：'
+                | '！'
+                | '？'
+                | '（'
+                | '）'
+                | '【'
+                | '】'
+                | '《'
+                | '》'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+                | '、'
+                | ','
+                | ';'
+                | ':'
+                | '!'
+                | '?'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '"'
+                | '\''
+                | '`'
+                | '/'
+                | '\\'
+                | '|'
+        )
+}
+
+fn strip_chinese_filename_prefix(stem: &str) -> &str {
+    // Strip leading Chinese phrasing verbs/classifiers attached without spaces
+    // before a Chinese/mixed filename (e.g. "帮我做一份季度汇报_2026" ->
+    // "季度汇报_2026", "写一份总结" -> "总结").
+    const PHRASING_PREFIXES: &[&str] = &[
+        "帮我做一份",
+        "帮我写一份",
+        "帮我生成一份",
+        "请帮我做一份",
+        "请做一份",
+        "做一份",
+        "写一份",
+        "生成一份",
+        "制作一份",
+        "输出一份",
+        "保存为",
+        "导出为",
+        "命名为",
+        "改名为",
+        "重命名为",
+        "更名为",
+        "改为",
+        "改成",
+        "生成",
+        "制作",
+        "输出",
+        "交付",
+        "打开",
+        "读取",
+        "上传了",
+        "上传",
+        "一份",
+        "一个",
+        "叫",
+        "把",
+        "将",
+        "做",
+        "写",
+    ];
+    let mut cur = stem;
+    loop {
+        let mut stripped = false;
+        for prefix in PHRASING_PREFIXES {
+            if let Some(rest) = cur.strip_prefix(prefix)
+                && !rest.is_empty()
+            {
+                cur = rest;
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    cur.trim_start_matches(['的', '为', '叫', '是'])
+}
+
 pub(super) fn extract_explicit_filenames(brief: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut cursor = 0_usize;
-    for raw_token in brief.split(|ch: char| {
-        !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    }) {
-        let token_pos = brief[cursor..]
-            .find(raw_token)
-            .map_or(cursor, |rel| cursor + rel);
-        cursor = token_pos + raw_token.len();
-        let candidate = raw_token.trim_matches('.');
-        let lower = candidate.to_ascii_lowercase();
-        let is_target = [".pptx", ".docx", ".xlsx", ".pdf", ".csv"]
-            .iter()
-            .any(|ext| lower.ends_with(ext) && lower.len() > ext.len());
-        if !is_target {
+    let lower = brief.to_ascii_lowercase();
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    for ext in [".pptx", ".docx", ".xlsx", ".pdf", ".csv"] {
+        for (ext_pos, _) in lower.match_indices(ext) {
+            let ext_end = ext_pos + ext.len();
+            let after_ok = brief[ext_end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            if after_ok {
+                hits.push((ext_pos, ext_end));
+            }
+        }
+    }
+    hits.sort_by_key(|(pos, _)| *pos);
+    for (ext_pos, ext_end) in hits {
+        let before = &brief[..ext_pos];
+        let mut stem_start = ext_pos;
+        for (idx, ch) in before.char_indices().rev() {
+            if is_filename_boundary_char(ch) {
+                break;
+            }
+            stem_start = idx;
+        }
+        let raw_stem = &brief[stem_start..ext_pos];
+        let clean_stem =
+            strip_chinese_filename_prefix(raw_stem).trim_matches('.');
+        if clean_stem.is_empty() {
             continue;
         }
-        // Look back up to 24 chars before this filename (stopping at sentence
+        let offset = raw_stem.len().saturating_sub(clean_stem.len());
+        let token_pos = stem_start + offset;
+        let candidate = &brief[token_pos..ext_end];
+        // Look back up to 40 chars before this filename (stopping at sentence
         // boundaries) to ignore input source files like "根据 source.csv 做 q3.pptx".
         let prefix_full = &brief[..token_pos];
         let clause_prefix = prefix_full
@@ -495,7 +776,7 @@ pub(super) fn extract_explicit_filenames(brief: &str) -> Vec<String> {
         let tail_chars: String = clause_prefix
             .chars()
             .rev()
-            .take(24)
+            .take(40)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
@@ -542,8 +823,18 @@ pub(super) fn extract_required_items(
     ]
     .iter()
     .any(|verb| lower.contains(verb));
+    let negated_quote_sheet = [
+        "不用做报价表",
+        "不需要报价表",
+        "不要报价表",
+        "去掉报价表",
+        "删除报价表",
+    ]
+    .iter()
+    .any(|cue| brief.contains(cue));
     if !has_ext("xlsx", &items)
         && !has_ext("csv", &items)
+        && !negated_quote_sheet
         && (brief.contains("报价表")
             || (has_production_intent
                 && (lower.contains("excel") || lower.contains(".xlsx"))))
@@ -610,6 +901,7 @@ fn split_quote_clause(after: &str) -> &str {
 
 pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
     let lower = brief.to_ascii_lowercase();
+    let mut all_matches: Vec<(usize, String)> = Vec::new();
     for keyword in ["报价", "总价", "预算", "quote", "price"] {
         for (pos, _) in lower.match_indices(keyword) {
             let after = &brief[pos + keyword.len()..];
@@ -666,7 +958,13 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
                     || tail.starts_with('个')
                     || tail.starts_with("小时")
                     || tail.starts_with('天')
-                    || tail_lower.starts_with("slide")
+                    || [
+                        "slide", "option", "item", "page", "file", "day",
+                        "month", "year", "version", "part", "sheet", "row",
+                        "col",
+                    ]
+                    .iter()
+                    .any(|word| tail_lower.starts_with(word))
                     || (tail.starts_with('-')
                         && tail[1..]
                             .chars()
@@ -692,7 +990,21 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
             let Some((first_start, _, _)) = found.first() else {
                 continue;
             };
-            let prefix_ok = chars[..*first_start].iter().all(|(_, c)| {
+            let prefix_raw: String =
+                chars[..*first_start].iter().map(|(_, c)| *c).collect();
+            let prefix_cleaned = prefix_raw
+                .to_ascii_lowercase()
+                .replace("rmb", "")
+                .replace("cny", "")
+                .replace("usd", "")
+                .replace(" of ", " ")
+                .replace(" is ", " ")
+                .replace(" at ", " ")
+                .replace(" to ", " ")
+                .replace("控制在", "")
+                .replace("大约", "")
+                .replace("约为", "");
+            let prefix_ok = prefix_cleaned.chars().all(|c| {
                 c.is_whitespace()
                     || matches!(
                         c,
@@ -720,17 +1032,11 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
                             | '（'
                             | 't'
                             | 'o'
-                            | 'T'
-                            | 'O'
                     )
             });
             if !prefix_ok {
                 continue;
             }
-            // Start with `found[0]` and only advance to a subsequent price when
-            // the intervening text contains an explicit replacement cue (so
-            // "报价 35 万（有效期至 2026-12-01）" or "报价 35 万分 3 期" never
-            // overwrites the quote with an unrelated trailing number).
             let mut chosen = 0_usize;
             for next_i in 1..found.len() {
                 let prev_end = found[chosen].1;
@@ -750,10 +1056,21 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
                     chosen = next_i;
                 }
             }
-            return Some(found[chosen].2.clone());
+            all_matches.push((pos, found[chosen].2.clone()));
         }
     }
-    None
+    all_matches.sort_by_key(|(pos, _)| *pos);
+    if all_matches.len() >= 2 {
+        let has_update_or_contrast = [
+            "改", "调", "变", "更新", "今年", "最新", "现在", "->", "→", " to ",
+        ]
+        .iter()
+        .any(|cue| lower.contains(cue));
+        if has_update_or_contrast {
+            return all_matches.last().map(|(_, q)| q.clone());
+        }
+    }
+    all_matches.first().map(|(_, q)| q.clone())
 }
 
 pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
@@ -817,6 +1134,14 @@ pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
                 .any(|marker| lower.contains(marker));
         if has_change_verb {
             return matches.last().map(|(_, date)| date.clone());
+        }
+        // A date range ("复盘 2025-01-01 上线以来到 2026-06-30") is not a single
+        // pinned document date; avoid false hard-blocks on summaries.
+        let is_range = ["以来", "至今", "到", "至", "~"]
+            .iter()
+            .any(|marker| brief.contains(marker));
+        if is_range {
+            return None;
         }
     }
     matches.first().map(|(_, date)| date.clone())
@@ -884,10 +1209,39 @@ pub(super) fn quote_matches(
     if contains_with_numeric_boundary(normalized_doc, &target) {
         return true;
     }
+    if let Some(bare) = target.strip_suffix('元') {
+        if contains_with_numeric_boundary(normalized_doc, bare) {
+            return true;
+        }
+        if let Ok(val) = bare.parse::<f64>()
+            && val >= 10_000.0
+        {
+            let wan = val / 10_000.0;
+            let wan_str = if (wan - wan.round()).abs() < 1e-6 {
+                format!("{}万", wan.round() as u64)
+            } else {
+                format!("{wan:.2}万")
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_owned()
+            };
+            if contains_with_numeric_boundary(normalized_doc, &wan_str) {
+                return true;
+            }
+        }
+    }
     if let Some(wan) = target.strip_suffix('万')
         && let Ok(val) = wan.parse::<f64>()
     {
         let expanded = format!("{}", (val * 10_000.0).round() as u64);
+        if contains_with_numeric_boundary(normalized_doc, &expanded) {
+            return true;
+        }
+    }
+    if let Some(yi) = target.strip_suffix('亿')
+        && let Ok(val) = yi.parse::<f64>()
+    {
+        let expanded = format!("{}", (val * 100_000_000.0).round() as u64);
         if contains_with_numeric_boundary(normalized_doc, &expanded) {
             return true;
         }
@@ -904,14 +1258,41 @@ pub(super) fn date_matches(normalized_doc: &str, expected_date: &str) -> bool {
     if let [y, m, d] = parts.as_slice()
         && let (Ok(m_num), Ok(d_num)) = (m.parse::<u32>(), d.parse::<u32>())
     {
-        let slash = format!("{y}/{m}/{d}");
-        let slash_short = format!("{y}/{m_num}/{d_num}");
-        let dash_short = format!("{y}-{m_num}-{d_num}");
-        let cn = format!("{y}年{m_num}月{d_num}日");
-        let cn_pad = format!("{y}年{m}月{d}日");
-        return [slash, slash_short, dash_short, cn, cn_pad].iter().any(
-            |variant| contains_with_numeric_boundary(normalized_doc, variant),
-        );
+        const EN_MONTHS: [(&str, &str); 12] = [
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may", "may"),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sep"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ];
+        let mut variants = vec![
+            format!("{y}/{m}/{d}"),
+            format!("{y}/{m_num}/{d_num}"),
+            format!("{y}-{m_num}-{d_num}"),
+            format!("{y}.{m}.{d}"),
+            format!("{y}.{m_num}.{d_num}"),
+            format!("{y}年{m_num}月{d_num}日"),
+            format!("{y}年{m}月{d}日"),
+        ];
+        if let Some((full, short)) =
+            m_num.checked_sub(1).and_then(|i| EN_MONTHS.get(i as usize))
+        {
+            variants.push(format!("{full}{d_num}{y}"));
+            variants.push(format!("{short}{d_num}{y}"));
+            variants.push(format!("{short}.{d_num}{y}"));
+            variants.push(format!("{d_num}{full}{y}"));
+            variants.push(format!("{d_num}{short}{y}"));
+        }
+        return variants.iter().any(|variant| {
+            contains_with_numeric_boundary(normalized_doc, variant)
+        });
     }
     false
 }

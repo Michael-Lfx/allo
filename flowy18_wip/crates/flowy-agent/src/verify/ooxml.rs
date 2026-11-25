@@ -88,10 +88,71 @@ pub(super) struct VerifiedDeck {
     pub(super) shapes: Vec<(String, String)>,
 }
 
+/// Maximum ZIP entries accepted in a `.pptx` archive before full parse.
+const MAX_PPTX_ENTRIES: usize = 4_096;
+/// Maximum cumulative declared uncompressed size for `.pptx` preflight (64 MiB).
+const MAX_PPTX_TOTAL_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 /// Cumulative decompressed XML budget per OOXML archive (32 MiB).
 const MAX_ARCHIVE_XML_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum total populated cells processed across all sheets of one `.xlsx`.
 const MAX_XLSX_CELLS: usize = 200_000;
+
+/// Bounded ZIP-bomb preflight run BEFORE `rpptx::Presentation::from_bytes`.
+///
+/// Enforces entry count, declared uncompressed total, AND actually streams
+/// `.xml`/`.rels` entries against `MAX_ARCHIVE_XML_BYTES` so forged ZIP headers
+/// cannot OOM the desktop process.
+pub(super) fn preflight_pptx_archive(bytes: &[u8]) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| format!("invalid pptx archive: {error}"))?;
+    if archive.len() > MAX_PPTX_ENTRIES {
+        return Err(format!(
+            "pptx archive exceeds maximum entry count ({MAX_PPTX_ENTRIES})"
+        ));
+    }
+    let mut total_declared = 0_u64;
+    let mut xml_budget = MAX_ARCHIVE_XML_BYTES;
+    let mut discard = Vec::new();
+    for idx in 0..archive.len() {
+        let entry = archive
+            .by_index(idx)
+            .map_err(|error| format!("unreadable pptx entry: {error}"))?;
+        let declared = entry.size();
+        total_declared = total_declared.saturating_add(declared);
+        if total_declared > MAX_PPTX_TOTAL_UNCOMPRESSED_BYTES {
+            return Err(format!(
+                "pptx archive exceeds {MAX_PPTX_TOTAL_UNCOMPRESSED_BYTES}-byte uncompressed limit"
+            ));
+        }
+        let is_xml = Path::new(entry.name()).extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("xml") || ext.eq_ignore_ascii_case("rels")
+        });
+        let entry_limit = if is_xml {
+            MAX_XML_ENTRY_BYTES.min(xml_budget)
+        } else {
+            MAX_PPTX_TOTAL_UNCOMPRESSED_BYTES
+        };
+        if is_xml {
+            if entry_limit == 0 {
+                return Err(format!(
+                    "pptx XML exceeds {MAX_ARCHIVE_XML_BYTES}-byte archive budget"
+                ));
+            }
+            discard.clear();
+            entry
+                .take(entry_limit.saturating_add(1))
+                .read_to_end(&mut discard)
+                .map_err(|error| format!("unreadable pptx XML: {error}"))?;
+            xml_budget = xml_budget.saturating_sub(discard.len() as u64);
+            if discard.len() as u64 > entry_limit {
+                return Err(format!(
+                    "pptx XML entry exceeds {MAX_XML_ENTRY_BYTES}-byte / {MAX_ARCHIVE_XML_BYTES}-byte budget"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn verify_deck_file_with_shapes(
     path: &Path,
@@ -104,6 +165,7 @@ pub(super) fn verify_deck_file_with_shapes(
         crate::MAX_ARTIFACT_BYTES,
     )
     .map_err(|error| error.to_string())?;
+    preflight_pptx_archive(&bytes)?;
     let presentation = rpptx::Presentation::from_bytes(&bytes)
         .map_err(|error| error.to_string())?;
     let slides: Vec<rpptx::SlideRef<'_>> = presentation.slides().collect();

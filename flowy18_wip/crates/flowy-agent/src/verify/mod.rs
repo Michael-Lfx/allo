@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use flowy_agent_core::tools::ToolDefinition;
@@ -20,7 +20,6 @@ use serde_json::{Value, json};
 
 use crate::delivery::{self, DeliveryStore};
 use crate::handle::now_ms;
-use crate::pptx::resolve_turn_path;
 use crate::semantic_verify::{
     SemanticContext, SemanticOutcome, probe_deck_semantics,
 };
@@ -111,7 +110,7 @@ use self::ooxml::{
     verify_docx_file, verify_xlsx_file,
 };
 pub use self::provenance::PROVENANCE_INVALID;
-use self::provenance::{ProvenanceClaim, evaluate_provenance};
+use self::provenance::ProvenanceClaim;
 
 fn next_action_for(report: &VerifyReport) -> &'static str {
     if report.ok {
@@ -135,7 +134,7 @@ fn next_action_for(report: &VerifyReport) -> &'static str {
 async fn finalize_report(
     path: &Path,
     raw_path: &str,
-    mut report: VerifyReport,
+    report: VerifyReport,
     verified_bytes: &[u8],
     snippets: Option<&[(String, String)]>,
     provenance: &[ProvenanceClaim],
@@ -145,45 +144,85 @@ async fn finalize_report(
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
 ) -> ToolExecutionResult {
-    let provenance_eval =
-        evaluate_provenance(provenance, context.cwd.as_deref().map(Path::new));
-    for issue in provenance_eval.issues {
-        push_unique(&mut report.issues, issue.code, &issue.field);
-    }
-    report.ok = report.issues.is_empty();
-    let provenance_warnings = provenance_eval.warnings;
-    let mut report_id = String::new();
-    let mut artifact_hash = delivery::hash_bytes(verified_bytes);
-    if let Some(store) = store {
-        let issues = report
-            .issues
-            .iter()
-            .map(|issue| delivery::Issue {
-                code: issue.code.to_owned(),
-                field: issue.field.clone(),
-            })
-            .collect();
-        match store.record_report_bytes_with_revision(
-            path,
-            verified_bytes,
-            issues,
-            contract_revision,
-            now_ms(),
-        ) {
-            Ok(persisted) => {
-                report_id = persisted.id;
-                artifact_hash = persisted.artifact_hash;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "flowy.delivery",
-                    %error,
-                    path = %path.display(),
-                    "could not persist the verification report"
+    let provenance_vec = provenance.to_vec();
+    let cwd_owned = context.cwd.clone().map(PathBuf::from);
+    let signal_clone = context.signal.clone();
+    let store_owned = store.cloned();
+    let path_owned = path.to_path_buf();
+    let verified_vec = verified_bytes.to_vec();
+    let mut report_for_blocking = report;
+    let (report, provenance_warnings, report_id, artifact_hash) =
+        tokio::task::spawn_blocking(move || {
+            let provenance_eval = provenance::evaluate_provenance_with_signal(
+                &provenance_vec,
+                cwd_owned.as_deref(),
+                Some(&signal_clone),
+            );
+            for issue in provenance_eval.issues {
+                push_unique(
+                    &mut report_for_blocking.issues,
+                    issue.code,
+                    &issue.field,
                 );
             }
-        }
-    }
+            report_for_blocking.ok = report_for_blocking.issues.is_empty();
+            let provenance_warnings = provenance_eval.warnings;
+            let mut report_id = String::new();
+            let mut artifact_hash = delivery::hash_bytes(&verified_vec);
+            if let Some(store) = &store_owned {
+                let issues = report_for_blocking
+                    .issues
+                    .iter()
+                    .map(|issue| delivery::Issue {
+                        code: issue.code.to_owned(),
+                        field: issue.field.clone(),
+                    })
+                    .collect();
+                match store.record_report_bytes_with_revision(
+                    &path_owned,
+                    &verified_vec,
+                    issues,
+                    contract_revision,
+                    now_ms(),
+                ) {
+                    Ok(persisted) => {
+                        report_id = persisted.id;
+                        artifact_hash = persisted.artifact_hash;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "flowy.delivery",
+                            %error,
+                            path = %path_owned.display(),
+                            "could not persist the verification report"
+                        );
+                    }
+                }
+            }
+            (
+                report_for_blocking,
+                provenance_warnings,
+                report_id,
+                artifact_hash,
+            )
+        })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                VerifyReport {
+                    artifact: path.display().to_string(),
+                    anchor: "shape_name",
+                    ok: false,
+                    issues: vec![VerifyIssue {
+                        code: STRUCTURE,
+                        field: "verify_task_failed".to_owned(),
+                    }],
+                },
+                Vec::new(),
+                String::new(),
+                String::new(),
+            )
+        });
     // Hard cap on rerender_once: the second failed verification of the same
     // artifact within one turn locks next_action to clarify_or_rebuild.
     let mut next_action = next_action_for(&report);
@@ -297,18 +336,32 @@ async fn execute_deck(
             "expected path, slides and anchors",
         );
     };
-    let path = resolve_turn_path(
+    let path = match crate::pptx::resolve_confined_turn_path(
         context.cwd.as_deref(),
         context.output_root.as_deref(),
         &args.path,
-    );
-    let revision = contract.map(|c| c.revision.max(1));
-    match verify_deck_file_with_shapes(
-        &path,
-        args.slides,
-        &args.anchors,
-        contract,
     ) {
+        Ok(path) => path,
+        Err(error) => {
+            return ToolExecutionResult::error("INVALID_PATH", error);
+        }
+    };
+    let revision = contract.map(|c| c.revision.max(1));
+    let verify_path = path.clone();
+    let anchors_owned = args.anchors.clone();
+    let contract_owned = contract.cloned();
+    let slides = args.slides;
+    let verified_result = tokio::task::spawn_blocking(move || {
+        verify_deck_file_with_shapes(
+            &verify_path,
+            slides,
+            &anchors_owned,
+            contract_owned.as_ref(),
+        )
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("verify task failed: {error}")));
+    match verified_result {
         Ok(verified) => {
             finalize_report(
                 &path,
@@ -357,23 +410,43 @@ async fn execute_artifact(
             "expected path and optional slides/anchors",
         );
     };
-    let path = resolve_turn_path(
+    let path = match crate::pptx::resolve_confined_turn_path(
         context.cwd.as_deref(),
         context.output_root.as_deref(),
         &args.path,
-    );
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            return ToolExecutionResult::error("INVALID_PATH", error);
+        }
+    };
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
     let revision = contract.map(|c| c.revision.max(1));
-    let result = match ext.as_deref() {
-        Some("pptx") => match args.slides {
+    if !matches!(ext.as_deref(), Some("pptx" | "docx" | "xlsx")) {
+        return ToolExecutionResult::error(
+            "UNSUPPORTED_FORMAT",
+            format!(
+                "no deterministic verifier for {}; supported: .pptx, .docx, .xlsx",
+                args.path
+            ),
+        );
+    }
+    let verify_path = path.clone();
+    let anchors_owned = args.anchors.clone();
+    let contract_owned = contract.cloned();
+    let slides = args.slides;
+    let ext_owned = ext.clone();
+    let result = tokio::task::spawn_blocking(move || match ext_owned.as_deref()
+    {
+        Some("pptx") => match slides {
             Some(slides) => verify_deck_file_with_shapes(
-                &path,
+                &verify_path,
                 slides,
-                &args.anchors,
-                contract,
+                &anchors_owned,
+                contract_owned.as_ref(),
             )
             .map(|verified| VerifiedArtifact {
                 report: verified.report,
@@ -385,18 +458,16 @@ async fn execute_artifact(
                     .to_owned(),
             ),
         },
-        Some("docx") => verify_docx_file(&path, &args.anchors, contract),
-        Some("xlsx") => verify_xlsx_file(&path, &args.anchors, contract),
-        _ => {
-            return ToolExecutionResult::error(
-                "UNSUPPORTED_FORMAT",
-                format!(
-                    "no deterministic verifier for {}; supported: .pptx, .docx, .xlsx",
-                    args.path
-                ),
-            );
+        Some("docx") => {
+            verify_docx_file(&verify_path, &anchors_owned, contract_owned.as_ref())
         }
-    };
+        Some("xlsx") => {
+            verify_xlsx_file(&verify_path, &anchors_owned, contract_owned.as_ref())
+        }
+        _ => Err("unsupported format".to_owned()),
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("verify task failed: {error}")));
     match result {
         Ok(verified) => {
             finalize_report(
@@ -439,6 +510,7 @@ fn provenance_schema() -> Value {
     })
 }
 
+#[cfg(test)]
 pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
     definition_with_options(store, None, None, None)
 }
@@ -503,6 +575,7 @@ pub fn definition_with_options(
     ))
 }
 
+#[cfg(test)]
 pub fn artifact_definition(
     store: Option<DeliveryStore>,
     contract: Option<BriefContract>,

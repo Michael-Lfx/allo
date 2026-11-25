@@ -26,8 +26,6 @@ pub(super) fn tool_registry(cwd: &Path) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
-    registry.register(crate::verify::definition(None));
-    registry.register(crate::verify::artifact_definition(None, None));
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.
@@ -89,65 +87,9 @@ pub(super) fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
         .then(|| format!("path escapes the working directory: {raw}"))
 }
 
-pub fn is_windows_reserved_device_name(name: &str) -> bool {
-    let trimmed = name.trim_end_matches([' ', '.']);
-    let stem = trimmed.split('.').next().unwrap_or(trimmed).trim_end();
-    let upper = stem.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "CON"
-            | "CONIN$"
-            | "CONOUT$"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "COM¹"
-            | "COM²"
-            | "COM³"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-            | "LPT¹"
-            | "LPT²"
-            | "LPT³"
-    )
-}
-
-#[cfg(windows)]
-fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_windows_reparse_point(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-pub fn has_reserved_device_component(path: &Path) -> bool {
-    path.components().any(|component| match component {
-        std::path::Component::Normal(part) => {
-            part.to_str().is_some_and(is_windows_reserved_device_name)
-        }
-        _ => false,
-    })
-}
+pub use flowy_agent_core::tools::{
+    has_reserved_device_component, is_windows_reparse_point,
+};
 
 pub fn confined_to(root: &Path, raw: &str) -> bool {
     if raw.trim().is_empty() || raw.contains('\0') {

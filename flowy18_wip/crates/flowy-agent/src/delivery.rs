@@ -158,8 +158,11 @@ pub(crate) fn read_regular_file_bounded(
             "reserved device path refused",
         ));
     }
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file()
+        || meta.file_type().is_symlink()
+        || flowy_agent_core::tools::is_windows_reparse_point(&meta)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path is not a regular file",
@@ -195,8 +198,11 @@ pub(crate) fn verify_regular_file_exists(path: &Path) -> io::Result<()> {
             "reserved device path refused",
         ));
     }
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file()
+        || meta.file_type().is_symlink()
+        || flowy_agent_core::tools::is_windows_reparse_point(&meta)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path is not a regular file",
@@ -205,11 +211,21 @@ pub(crate) fn verify_regular_file_exists(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Stream-hash a regular file in fixed 64 KiB chunks without loading the whole
-/// file into memory, rejecting Windows reserved device names and non-regular
-/// files (directories, FIFOs, device nodes).
-pub(crate) fn hash_regular_file_streaming(path: &Path) -> io::Result<String> {
+/// Stream-hash a regular file in fixed 64 KiB chunks with strict size and
+/// cancellation bounds, rejecting symlinks, reparse points, and device names.
+pub(crate) fn hash_regular_file_streaming(
+    path: &Path,
+    max_bytes: u64,
+    signal: Option<&flowy_agent_core::CancelToken>,
+) -> io::Result<String> {
     verify_regular_file_exists(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds maximum size limit ({max_bytes} bytes)"),
+        ));
+    }
     let mut file = std::fs::File::open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
@@ -219,10 +235,24 @@ pub(crate) fn hash_regular_file_streaming(path: &Path) -> io::Result<String> {
     }
     let mut hasher = Sha256::new();
     let mut buf = vec![0_u8; 64 * 1024];
+    let mut total = 0_u64;
     loop {
+        if signal.is_some_and(flowy_agent_core::CancelToken::is_cancelled) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "hashing cancelled",
+            ));
+        }
         let read = file.read(&mut buf)?;
         if read == 0 {
             break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("file exceeds maximum size limit ({max_bytes} bytes)"),
+            ));
         }
         hasher.update(&buf[..read]);
     }
@@ -242,6 +272,42 @@ pub fn exemption_code_for_path(artifact: &Path) -> Option<&'static str> {
             Some(EXEMPT_NO_VERIFIER_V0)
         }
         _ => None,
+    }
+}
+
+/// Pre-indexed snapshot of completed override deliveries loaded in one pass
+/// over `events.jsonl`.
+#[derive(Clone, Debug, Default)]
+pub struct OverrideIndex {
+    by_report_id: BTreeSet<String>,
+    legacy_by_key_hash: BTreeSet<(String, String)>,
+    legacy_hashes: BTreeSet<String>,
+}
+
+impl OverrideIndex {
+    #[must_use]
+    pub fn report_was_overridden(
+        &self,
+        report_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+    ) -> bool {
+        if !report_id.is_empty() && self.by_report_id.contains(report_id) {
+            return true;
+        }
+        if !artifact_path.is_empty() && !artifact_hash.is_empty() {
+            let key = artifact_key(Path::new(artifact_path));
+            if self
+                .legacy_by_key_hash
+                .contains(&(key, artifact_hash.to_owned()))
+            {
+                return true;
+            }
+        }
+        report_id.is_empty()
+            && artifact_path.is_empty()
+            && !artifact_hash.is_empty()
+            && self.legacy_hashes.contains(artifact_hash)
     }
 }
 
@@ -483,16 +549,9 @@ impl DeliveryStore {
             .collect())
     }
 
-    /// Whether a specific verification report (or, for legacy events lacking
-    /// `report_id`, the same `(artifact_key, artifact_hash)`) was delivered via
-    /// an explicit user override — preventing cross-session hash collisions
-    /// from prematurely marking another session's failed card as overridden.
-    pub fn report_was_overridden(
-        &self,
-        report_id: &str,
-        artifact_path: &str,
-        artifact_hash: &str,
-    ) -> io::Result<bool> {
+    /// Pre-indexed snapshot of completed override deliveries loaded in a single
+    /// pass over `events.jsonl`, avoiding N+1 audit log reads across cards.
+    pub fn override_index(&self) -> io::Result<OverrideIndex> {
         let events = self.read_events()?;
         let delivered_ids: BTreeSet<&str> = events
             .iter()
@@ -504,32 +563,58 @@ impl DeliveryStore {
             })
             .collect();
         if delivered_ids.is_empty() {
-            return Ok(false);
+            return Ok(OverrideIndex::default());
         }
-        let target_key = if artifact_path.is_empty() {
-            String::new()
-        } else {
-            artifact_key(Path::new(artifact_path))
-        };
-        Ok(events.iter().any(|event| match event {
-            AuditEvent::DeliverOverride {
+        let mut by_report_id = BTreeSet::new();
+        let mut legacy_by_key_hash = BTreeSet::new();
+        let mut legacy_hashes = BTreeSet::new();
+        for event in &events {
+            if let AuditEvent::DeliverOverride {
                 delivery_id,
-                report_id: event_report_id,
-                artifact_path: event_path,
-                artifact_hash: event_hash,
+                report_id,
+                artifact_path,
+                artifact_hash,
                 ..
-            } if delivered_ids.contains(delivery_id.as_str()) => {
-                if !report_id.is_empty() && !event_report_id.is_empty() {
-                    event_report_id == report_id
-                } else if !target_key.is_empty() && !event_path.is_empty() {
-                    artifact_key(Path::new(event_path)) == target_key
-                        && event_hash == artifact_hash
+            } = event
+                && delivered_ids.contains(delivery_id.as_str())
+            {
+                if report_id.is_empty() {
+                    if !artifact_path.is_empty() && !artifact_hash.is_empty() {
+                        legacy_by_key_hash.insert((
+                            artifact_key(Path::new(artifact_path)),
+                            artifact_hash.clone(),
+                        ));
+                    }
+                    if !artifact_hash.is_empty() {
+                        legacy_hashes.insert(artifact_hash.clone());
+                    }
                 } else {
-                    !artifact_hash.is_empty() && event_hash == artifact_hash
+                    by_report_id.insert(report_id.clone());
                 }
             }
-            _ => false,
-        }))
+        }
+        Ok(OverrideIndex {
+            by_report_id,
+            legacy_by_key_hash,
+            legacy_hashes,
+        })
+    }
+
+    /// Whether a specific verification report (or, for legacy events lacking
+    /// `report_id`, the same `(artifact_key, artifact_hash)`) was delivered via
+    /// an explicit user override — preventing cross-session hash collisions
+    /// from prematurely marking another session's failed card as overridden.
+    pub fn report_was_overridden(
+        &self,
+        report_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+    ) -> io::Result<bool> {
+        Ok(self.override_index()?.report_was_overridden(
+            report_id,
+            artifact_path,
+            artifact_hash,
+        ))
     }
 
     /// Whether any completed delivery for `artifact_hash` bypassed verification

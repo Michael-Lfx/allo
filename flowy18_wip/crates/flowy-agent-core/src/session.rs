@@ -309,6 +309,9 @@ impl SessionIndex {
 
     fn save_to(&self, path: &Path) -> io::Result<()> {
         static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        // Serialize atomic rename on Windows so concurrent saves never race on
+        // the destination path.
+        static REPLACE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::other("missing sessions directory"))?;
@@ -339,6 +342,9 @@ impl SessionIndex {
             file.write_all(&bytes)?;
             file.sync_all()?;
             drop(file);
+            let _replace = REPLACE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             fs::rename(&tmp, path)
         })();
         if result.is_err() {

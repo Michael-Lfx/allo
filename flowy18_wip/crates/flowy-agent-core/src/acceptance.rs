@@ -271,6 +271,7 @@ impl AcceptanceQueue {
             .filter(|line| !line.is_empty())
             .collect();
         let mut receipts: Vec<AcceptedMessage> = Vec::new();
+        let mut index_by_id: HashMap<String, usize> = HashMap::new();
         let mut last_taken_line: HashMap<String, usize> = HashMap::new();
         let mut corrupt_interior = 0_usize;
         let mut last_interior_corrupt_line: Option<usize> = None;
@@ -288,32 +289,35 @@ impl AcceptanceQueue {
                     session_hint,
                     text,
                     at_ms,
-                } => receipts.push(AcceptedMessage {
-                    id,
-                    session_hint,
-                    text,
-                    created_at_ms: at_ms,
-                    taken_at_ms: None,
-                    lease: None,
-                    completed_at_ms: None,
-                    available_at_ms: None,
-                    attempts: 0,
-                    dead: false,
-                    cancelled: false,
-                    quarantined: false,
-                    last_attempt_id: None,
-                    target_session_id: None,
-                    submission_id: None,
-                }),
+                } => {
+                    let pos = receipts.len();
+                    index_by_id.entry(id.clone()).or_insert(pos);
+                    receipts.push(AcceptedMessage {
+                        id,
+                        session_hint,
+                        text,
+                        created_at_ms: at_ms,
+                        taken_at_ms: None,
+                        lease: None,
+                        completed_at_ms: None,
+                        available_at_ms: None,
+                        attempts: 0,
+                        dead: false,
+                        cancelled: false,
+                        quarantined: false,
+                        last_attempt_id: None,
+                        target_session_id: None,
+                        submission_id: None,
+                    });
+                }
                 JournalEntry::Taken {
                     id,
                     attempt_id,
                     lease_until_ms,
                     at_ms,
                 } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                    {
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
                         last_taken_line.insert(id, idx);
                         receipt.taken_at_ms.get_or_insert(at_ms);
                         receipt.available_at_ms = None;
@@ -332,13 +336,14 @@ impl AcceptanceQueue {
                     submission_id,
                     ..
                 } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                        && receipt.last_attempt_id.as_deref()
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
+                        if receipt.last_attempt_id.as_deref()
                             == Some(attempt_id.as_str())
-                    {
-                        receipt.target_session_id = Some(session_id);
-                        receipt.submission_id = Some(submission_id);
+                        {
+                            receipt.target_session_id = Some(session_id);
+                            receipt.submission_id = Some(submission_id);
+                        }
                     }
                 }
                 JournalEntry::Renewed {
@@ -347,32 +352,31 @@ impl AcceptanceQueue {
                     lease_until_ms,
                     ..
                 } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                        && receipt.completed_at_ms.is_none()
-                        && !receipt.dead
-                        && !receipt.cancelled
-                        && let Some(lease) = &mut receipt.lease
-                        && lease.attempt_id == attempt_id
-                    {
-                        lease.expires_at_ms =
-                            lease.expires_at_ms.max(lease_until_ms);
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
+                        if receipt.completed_at_ms.is_none()
+                            && !receipt.dead
+                            && !receipt.cancelled
+                            && let Some(lease) = &mut receipt.lease
+                            && lease.attempt_id == attempt_id
+                        {
+                            lease.expires_at_ms =
+                                lease.expires_at_ms.max(lease_until_ms);
+                        }
                     }
                 }
                 JournalEntry::Cancelled { id, .. } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                        && receipt.completed_at_ms.is_none()
-                        && !receipt.dead
-                    {
-                        receipt.cancelled = true;
-                        receipt.lease = None;
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
+                        if receipt.completed_at_ms.is_none() && !receipt.dead {
+                            receipt.cancelled = true;
+                            receipt.lease = None;
+                        }
                     }
                 }
                 JournalEntry::Completed { id, at_ms, .. } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                    {
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
                         receipt.completed_at_ms = Some(at_ms);
                         receipt.lease = None;
                     }
@@ -383,18 +387,16 @@ impl AcceptanceQueue {
                     at_ms,
                     ..
                 } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                    {
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
                         receipt.lease = None;
                         receipt.available_at_ms =
                             Some(at_ms.saturating_add(retry_after_ms));
                     }
                 }
                 JournalEntry::Dead { id, attempt_id, .. } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                    {
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
                         // Only the attempt holding the current lease may kill
                         // the receipt; a stale dead line from a crashed attempt
                         // must not bury the retry that replaced it.
@@ -409,14 +411,15 @@ impl AcceptanceQueue {
                     }
                 }
                 JournalEntry::Superseded { id, .. } => {
-                    if let Some(receipt) =
-                        receipts.iter_mut().find(|receipt| receipt.id == id)
-                        && receipt.completed_at_ms.is_none()
-                        && receipt.dead
-                        && !receipt.cancelled
-                    {
-                        receipt.cancelled = true;
-                        receipt.lease = None;
+                    if let Some(&pos) = index_by_id.get(&id) {
+                        let receipt = &mut receipts[pos];
+                        if receipt.completed_at_ms.is_none()
+                            && receipt.dead
+                            && !receipt.cancelled
+                        {
+                            receipt.cancelled = true;
+                            receipt.lease = None;
+                        }
                     }
                 }
             }
@@ -952,11 +955,27 @@ fn now_ms() -> u64 {
 ///   the torn bytes are never promoted into an interior corrupt line that would
 ///   quarantine earlier healthy receipts.
 fn repair_torn_tail_locked(path: &Path) -> io::Result<()> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
+    let len = file.seek(SeekFrom::End(0))?;
+    if len == 0 {
+        return Ok(());
+    }
+    // Fast path: check only the final byte so normal appends never read the
+    // whole journal into memory.
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0_u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    drop(file);
+    // Rare crash-recovery path: the final line lacks a trailing newline.
+    let bytes = fs::read(path)?;
     if bytes.is_empty() || bytes.ends_with(b"\n") {
         return Ok(());
     }

@@ -180,135 +180,168 @@ pub fn definition(
                         display_name: parsed.display_name,
                         origin: context.session_origin,
                     };
-                    let (receipt, staged_intent) = if let Some(gate) = &gate {
-                        let artifact = output_root.join(&normalized_path);
-                        match gate.stage_with(
-                            &artifact,
-                            false,
-                            now_ms(),
-                            |checked_bytes| {
-                                let expected_hash =
-                                    crate::delivery::hash_bytes(checked_bytes);
-                                let receipt = store.prepare(prepare_args)?;
-                                if receipt.sha256 != expected_hash {
-                                    return Err(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        "DELIVERY_ARTIFACT_CHANGED",
-                                    ));
+                    let gate_clone = gate.clone();
+                    let store_clone = store.clone();
+                    let output_root_clone = output_root.clone();
+                    let normalized_clone = normalized_path.clone();
+                    let session_id_clone = session_id.clone();
+                    let submission_id_clone = submission_id.clone();
+                    let signal_clone = context.signal.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let (receipt, staged_intent) =
+                            if let Some(gate) = &gate_clone {
+                                let artifact =
+                                    output_root_clone.join(&normalized_clone);
+                                match gate.stage_with(
+                                    &artifact,
+                                    false,
+                                    now_ms(),
+                                    |checked_bytes| {
+                                        let expected_hash =
+                                            crate::delivery::hash_bytes(
+                                                checked_bytes,
+                                            );
+                                        let receipt =
+                                            store_clone.prepare(prepare_args)?;
+                                        if receipt.sha256 != expected_hash {
+                                            return Err(std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "DELIVERY_ARTIFACT_CHANGED",
+                                            ));
+                                        }
+                                        Ok(receipt)
+                                    },
+                                ) {
+                                    Ok(result) => {
+                                        if let Some(reason) =
+                                            result.outcome.blocked
+                                        {
+                                            tracing::info!(
+                                                target: "flowy.delivery",
+                                                session_id = %session_id_clone,
+                                                root_session_id = %session_id_clone,
+                                                submission_id = %submission_id_clone,
+                                                delivery_id = %result.outcome.delivery_id,
+                                                code = reason.code(),
+                                                path = %artifact.display(),
+                                                "publish_file blocked by the delivery gate"
+                                            );
+                                            return publish_error(
+                                                reason.code(),
+                                                "chat.publish.not_verified",
+                                                "This file has not passed verification.",
+                                            );
+                                        }
+                                        let Some(receipt) = result.value else {
+                                            return publish_error(
+                                                "PUBLISH_FAILED",
+                                                "chat.publish.failed",
+                                                "Couldn't publish the file.",
+                                            );
+                                        };
+                                        tracing::info!(
+                                            target: "flowy.delivery",
+                                            session_id = %session_id_clone,
+                                            root_session_id = %session_id_clone,
+                                            submission_id = %submission_id_clone,
+                                            delivery_id = %result.outcome.delivery_id,
+                                            artifact_id = %receipt.artifact_id,
+                                            sha256 = %receipt.sha256,
+                                            exemption_code = result.outcome.exemption_code.unwrap_or(""),
+                                            "publish_file staged through delivery gate"
+                                        );
+                                        let intent = Some((
+                                            gate.clone(),
+                                            result.outcome.delivery_id,
+                                            artifact.display().to_string(),
+                                        ));
+                                        (receipt, intent)
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "publish_file failed in delivery gate or staging");
+                                        if error.kind()
+                                            == std::io::ErrorKind::InvalidData
+                                            && error.to_string()
+                                                == "DELIVERY_ARTIFACT_CHANGED"
+                                        {
+                                            return publish_error(
+                                                "DELIVERY_ARTIFACT_CHANGED",
+                                                "chat.publish.not_verified",
+                                                "This file changed after verification.",
+                                            );
+                                        }
+                                        return publish_error(
+                                            "PUBLISH_FAILED",
+                                            "chat.publish.failed",
+                                            "Couldn't publish the file.",
+                                        );
+                                    }
                                 }
-                                Ok(receipt)
-                            },
-                        ) {
-                            Ok(result) => {
-                                if let Some(reason) = result.outcome.blocked {
-                                    tracing::info!(
-                                        target: "flowy.delivery",
-                                        session_id = %session_id,
-                                        root_session_id = %session_id,
-                                        submission_id = %submission_id,
-                                        delivery_id = %result.outcome.delivery_id,
-                                        code = reason.code(),
-                                        path = %artifact.display(),
-                                        "publish_file blocked by the delivery gate"
-                                    );
-                                    return publish_error(
-                                        reason.code(),
-                                        "chat.publish.not_verified",
-                                        "This file has not passed verification.",
-                                    );
+                            } else {
+                                match store_clone.prepare(prepare_args) {
+                                    Ok(receipt) => (receipt, None),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "publish_file could not stage the file");
+                                        return publish_error(
+                                            "PUBLISH_FAILED",
+                                            "chat.publish.failed",
+                                            "Couldn't publish the file.",
+                                        );
+                                    }
                                 }
-                                let Some(receipt) = result.value else {
-                                    return publish_error(
-                                        "PUBLISH_FAILED",
-                                        "chat.publish.failed",
-                                        "Couldn't publish the file.",
-                                    );
-                                };
-                                tracing::info!(
-                                    target: "flowy.delivery",
-                                    session_id = %session_id,
-                                    root_session_id = %session_id,
-                                    submission_id = %submission_id,
-                                    delivery_id = %result.outcome.delivery_id,
-                                    artifact_id = %receipt.artifact_id,
-                                    sha256 = %receipt.sha256,
-                                    exemption_code = result.outcome.exemption_code.unwrap_or(""),
-                                    "publish_file staged through delivery gate"
-                                );
-                                let intent = Some((
-                                    gate.clone(),
-                                    result.outcome.delivery_id,
-                                    artifact.display().to_string(),
-                                ));
-                                (receipt, intent)
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "publish_file failed in delivery gate or staging");
-                                if error.kind()
-                                    == std::io::ErrorKind::InvalidData
-                                    && error.to_string()
-                                        == "DELIVERY_ARTIFACT_CHANGED"
-                                {
-                                    return publish_error(
-                                        "DELIVERY_ARTIFACT_CHANGED",
-                                        "chat.publish.not_verified",
-                                        "This file changed after verification.",
-                                    );
-                                }
-                                return publish_error(
-                                    "PUBLISH_FAILED",
-                                    "chat.publish.failed",
-                                    "Couldn't publish the file.",
+                            };
+                        if signal_clone.is_cancelled() {
+                            // Close the staged intent before returning CANCELLED
+                            // so a cancelled tool call never leaves a ghost
+                            // in_doubt entry in the audit log.
+                            if let Some((gate, delivery_id, artifact_path)) =
+                                staged_intent
+                            {
+                                let _ = gate.abort_intent(
+                                    &delivery_id,
+                                    &artifact_path,
+                                    &receipt.sha256,
+                                    "publish_cancelled",
+                                    now_ms(),
                                 );
                             }
-                        }
-                    } else {
-                        match store.prepare(prepare_args) {
-                            Ok(receipt) => (receipt, None),
-                            Err(error) => {
-                                tracing::warn!(%error, "publish_file could not stage the file");
-                                return publish_error(
-                                    "PUBLISH_FAILED",
-                                    "chat.publish.failed",
-                                    "Couldn't publish the file.",
-                                );
-                            }
-                        }
-                    };
-                    if context.signal.is_cancelled() {
-                        // Close the staged intent before returning CANCELLED so
-                        // a cancelled tool call never leaves a ghost in_doubt
-                        // entry in the audit log.
-                        if let Some((gate, delivery_id, artifact_path)) =
-                            staged_intent
-                        {
-                            let _ = gate.abort_intent(
-                                &delivery_id,
-                                &artifact_path,
-                                &receipt.sha256,
-                                "publish_cancelled",
-                                now_ms(),
+                            return publish_error(
+                                "CANCELLED",
+                                "chat.publish.cancelled",
+                                "File publication was cancelled.",
                             );
                         }
-                        return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
-                    }
-                    let summary = json!({
-                        "status": "staged",
-                        "message": "File staged. It will be delivered when the turn completes.",
-                        "ui_key": "chat.publish.staged",
-                        "artifact_id": receipt.artifact_id,
-                        "file_name": receipt.display_name,
-                        "bytes": receipt.size_bytes,
-                        "sha256": receipt.sha256,
-                    });
-                    let content = serde_json::to_string_pretty(&summary)
-                        .unwrap_or_else(|_| summary.to_string());
-                    let mut result =
-                        ToolExecutionResult::success_text(content, summary);
-                    if let ToolExecutionResult::Success { delivery, .. } = &mut result {
-                        *delivery = Some(Box::new(receipt));
-                    }
-                    result
+                        let summary = json!({
+                            "status": "staged",
+                            "message": "File staged. It will be delivered when the turn completes.",
+                            "ui_key": "chat.publish.staged",
+                            "artifact_id": receipt.artifact_id,
+                            "file_name": receipt.display_name,
+                            "bytes": receipt.size_bytes,
+                            "sha256": receipt.sha256,
+                        });
+                        let content = serde_json::to_string_pretty(&summary)
+                            .unwrap_or_else(|_| summary.to_string());
+                        let mut result = ToolExecutionResult::success_text(
+                            content, summary,
+                        );
+                        if let ToolExecutionResult::Success {
+                            delivery, ..
+                        } = &mut result
+                        {
+                            *delivery = Some(Box::new(receipt));
+                        }
+                        result
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "publish_file blocking task failed");
+                        publish_error(
+                            "PUBLISH_FAILED",
+                            "chat.publish.failed",
+                            "Couldn't publish the file.",
+                        )
+                    })
                 })
             },
         )
