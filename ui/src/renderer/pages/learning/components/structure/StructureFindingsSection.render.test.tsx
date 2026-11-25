@@ -140,11 +140,48 @@ describe('StructureFindingsList render (m1)', () => {
     expect(html).not.toContain('learning.learningGraphFindings');
   });
 
+  // 评审把 finding 挂在节点意图上（findings[].field 是自由文本，真数据出现过
+  // intent）；未处置片段 / 评审问题转留痕 / 术语出处 / 新概念 / 新别名是降级
+  // 与归一通道的留痕类别——都该走词典，不把机器名甩给用户。
+  test('意图字段与降级 / 归一通道的字段机器名走词典', async () => {
+    const machineNames = [
+      'intent',
+      'fragments',
+      'review_problems',
+      'term_provenance',
+      'new_concepts',
+      'new_aliases',
+    ];
+    const html = await renderList(
+      'zh-CN',
+      machineNames.map((field, index) => finding({ seq: index, field, issue: `探针 ${index}` })),
+    );
+    for (const label of ['意图', '片段', '评审问题', '术语出处', '新概念', '新别名']) {
+      expect(html).toContain(label);
+    }
+    for (const machineName of machineNames) {
+      expect(html).not.toContain(machineName);
+    }
+  });
+
   test('空字段不出字段标记；空 advice 不出建议行', async () => {
     const html = await renderList('zh-CN', [
       finding({ source: 'growth-budget', issue: '生长预算到期：停在第 3 批' }),
     ]);
-    for (const label of ['教学', '前置', '铸名', '标题', '范围', '难度', '评审']) {
+    for (const label of [
+      '教学',
+      '前置',
+      '铸名',
+      '标题',
+      '范围',
+      '难度',
+      '评审',
+      '意图',
+      '片段',
+      '术语出处',
+      '新概念',
+      '新别名',
+    ]) {
       expect(html).not.toContain(label);
     }
     expect(html).not.toContain('建议');

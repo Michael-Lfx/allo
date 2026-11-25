@@ -27,7 +27,7 @@ const FINDINGS_KEYS = [
   // 来源机器名（写侧单源：评审 warn 通道 / 预算留痕）
   'learningGraphFindingsSourceConceptReview',
   'learningGraphFindingsSourceGrowthBudget',
-  // 字段机器名（评审 enum + 降级 / 归一通道）
+  // 字段机器名（评审 enum + 降级 / 归一通道；intent = 评审挂在节点意图上的留痕）
   'learningGraphFindingsFieldTeaches',
   'learningGraphFindingsFieldAssumes',
   'learningGraphFindingsFieldMints',
@@ -35,6 +35,12 @@ const FINDINGS_KEYS = [
   'learningGraphFindingsFieldScope',
   'learningGraphFindingsFieldDifficulty',
   'learningGraphFindingsFieldReview',
+  'learningGraphFindingsFieldIntent',
+  'learningGraphFindingsFieldFragments',
+  'learningGraphFindingsFieldReviewProblems',
+  'learningGraphFindingsFieldTermProvenance',
+  'learningGraphFindingsFieldNewConcepts',
+  'learningGraphFindingsFieldNewAliases',
 ] as const;
 
 /** Interpolations each string must keep in BOTH locales. */

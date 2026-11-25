@@ -18,7 +18,9 @@ const SOURCE_LABEL_KEYS: Record<string, string> = {
 };
 
 /** 被点名字段的机器名 → 词典 key（评审 enum + 降级 / 归一通道）；未知值同上
- * 原样透出。 */
+ * 原样透出。`findings[].field` 是自由文本（无枚举校验）：评审会把留痕挂在
+ * 节点意图上（`intent`，真数据出现过）；未处置片段 / 评审问题转留痕 / 术语
+ * 出处 / 新概念 / 新别名是降级与归一通道的留痕类别。 */
 const FIELD_LABEL_KEYS: Record<string, string> = {
   teaches: 'learning.learningGraphFindingsFieldTeaches',
   assumes: 'learning.learningGraphFindingsFieldAssumes',
@@ -27,6 +29,12 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
   scope: 'learning.learningGraphFindingsFieldScope',
   difficulty: 'learning.learningGraphFindingsFieldDifficulty',
   review: 'learning.learningGraphFindingsFieldReview',
+  intent: 'learning.learningGraphFindingsFieldIntent',
+  fragments: 'learning.learningGraphFindingsFieldFragments',
+  review_problems: 'learning.learningGraphFindingsFieldReviewProblems',
+  term_provenance: 'learning.learningGraphFindingsFieldTermProvenance',
+  new_concepts: 'learning.learningGraphFindingsFieldNewConcepts',
+  new_aliases: 'learning.learningGraphFindingsFieldNewAliases',
 };
 
 /** 机器名 → 展示文案：已知值走词典，未知值原样透出。 */
