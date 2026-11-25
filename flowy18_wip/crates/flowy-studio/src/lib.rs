@@ -11,6 +11,7 @@ mod history;
 mod home;
 pub mod library;
 mod markdown;
+mod menus;
 mod motion;
 mod overview;
 mod panel;
@@ -18,6 +19,7 @@ pub mod ports;
 mod projects;
 mod starter;
 mod studio;
+mod work_actions;
 
 pub use composer::SubmitComposer;
 pub use panel::{

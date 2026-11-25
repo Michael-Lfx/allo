@@ -204,15 +204,8 @@ impl FlowyApp {
         self.task_menu = None;
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
-            panel.bg_tasks_open = false;
-            panel.workspace_menu_open = false;
-            panel.skill_menu_open = false;
-            panel.env_popover_open = false;
+            panel.close_all_popovers();
             panel.close_flow_modal(cx);
-            panel.credits_hover = false;
-            panel.credits_close = None;
-            cx.notify();
         });
         self.active_dialog = dialog;
         cx.notify();

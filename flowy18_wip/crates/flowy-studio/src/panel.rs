@@ -6,9 +6,8 @@ use crate::feed::{
 };
 use crate::starter::catalog::Category;
 use flowy_agent::{
-    AgentHandle, AgentWorkspace, CancelOutcome, CardAction, CardActionOutcome,
-    FileEntry, LlmConfig, Model, Plan, ProviderCatalog, ReceiptState,
-    SessionOrigin, TaskTarget,
+    AgentHandle, AgentWorkspace, CardAction, FileEntry, LlmConfig, Model, Plan,
+    ProviderCatalog, ReceiptState, SessionOrigin, TaskTarget,
 };
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
@@ -186,9 +185,8 @@ pub struct StudioPanel {
     pub(crate) right_drawer_open: bool,
     pub(crate) selected_skill: Option<crate::ports::SkillChip>,
     pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
-    board_generation: u64,
-    board_dirty: bool,
-    last_board_refresh: Option<std::time::Instant>,
+    pub(crate) board_generation: u64,
+    pub(crate) last_board_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
@@ -437,38 +435,30 @@ impl StudioPanel {
                     }
                     ComposerEvent::Stop => panel.stop_turn(cx),
                     ComposerEvent::ModelMenu(anchor) => {
-                        panel.model_menu_open = !panel.model_menu_open
+                        let opening = !panel.model_menu_open
                             || panel.model_menu_anchor != *anchor;
+                        panel.close_all_popovers();
                         panel.model_menu_anchor = anchor;
-                        if panel.model_menu_open {
-                            panel.workspace_menu_open = false;
-                            panel.skill_menu_open = false;
-                            panel.env_popover_open = false;
-                        }
+                        panel.model_menu_open = opening;
                         cx.notify();
                     }
                     ComposerEvent::WorkspaceMenu => {
-                        panel.workspace_menu_open = !panel.workspace_menu_open;
-                        if panel.workspace_menu_open {
-                            panel.model_menu_open = false;
-                            panel.skill_menu_open = false;
-                            panel.env_popover_open = false;
-                        }
+                        let opening = !panel.workspace_menu_open;
+                        panel.close_all_popovers();
+                        panel.workspace_menu_open = opening;
                         cx.notify();
                     }
                     ComposerEvent::VerifyToggle => {
                         panel.toggle_semantic_verify(cx);
                     }
                     ComposerEvent::SkillMenu => {
-                        panel.skill_menu_open = !panel.skill_menu_open;
-                        if panel.skill_menu_open {
-                            panel.model_menu_open = false;
-                            panel.workspace_menu_open = false;
-                            panel.env_popover_open = false;
-                        }
+                        let opening = !panel.skill_menu_open;
+                        panel.close_all_popovers();
+                        panel.skill_menu_open = opening;
                         cx.notify();
                     }
                     ComposerEvent::CloudNotReady => {
+                        panel.close_all_popovers();
                         panel.model_menu_open = true;
                         panel.model_menu_anchor = "composer-model-trigger";
                         panel.emit_notice(
@@ -555,7 +545,6 @@ impl StudioPanel {
             selected_skill: None,
             installed_skills: Vec::new(),
             board_generation: 0,
-            board_dirty: false,
             last_board_refresh: None,
             tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
@@ -631,7 +620,7 @@ impl StudioPanel {
         }));
     }
 
-    fn process_agent_updates(
+    pub(crate) fn process_agent_updates(
         &mut self,
         updates: Vec<flowy_agent::AgentUpdate>,
         cx: &mut Context<'_, Self>,
@@ -731,17 +720,14 @@ impl StudioPanel {
         let status_changed = self.status != prev_status;
         if structural_update || status_changed {
             self.refresh_board_snapshot();
-        } else {
-            self.board_dirty = true;
+        } else if self.surface == StudioSurface::Board
+            && self.last_board_refresh.is_none_or(|last| {
+                last.elapsed() >= Duration::from_millis(1200)
+            })
+        {
             // While streaming deltas, only refresh the board when it is open
             // and at most once per 1.2s to avoid per-token disk reads.
-            if self.surface == StudioSurface::Board
-                && self.last_board_refresh.is_none_or(|last| {
-                    last.elapsed() >= Duration::from_millis(1200)
-                })
-            {
-                self.refresh_board_snapshot();
-            }
+            self.refresh_board_snapshot();
         }
         if !self.agent.autonomous_drain() {
             let background_claim_settled = self.agent.has_active_claim()
@@ -787,7 +773,7 @@ impl StudioPanel {
         }
     }
 
-    fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.agent.active_session_id();
         let history = self.agent.chat_history();
         let status = history.status.clone();
@@ -931,7 +917,11 @@ impl StudioPanel {
 
     /// Open the folder holding `path`. This is the only step that can fail, so
     /// a failure goes through the existing notice channel instead of silence.
-    fn reveal_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+    pub(crate) fn reveal_file(
+        &mut self,
+        path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
         let folder = std::path::Path::new(path)
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty());
@@ -965,7 +955,7 @@ impl StudioPanel {
         });
     }
 
-    fn clear_right_sheet(&mut self) {
+    pub(crate) fn clear_right_sheet(&mut self) {
         self.right_drawer_open = false;
         self.deliverables = None;
         self.inspected_work = None;
@@ -975,12 +965,7 @@ impl StudioPanel {
 
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
-        self.model_info_open = false;
-        self.model_menu_open = false;
-        self.bg_tasks_open = false;
-        self.env_popover_open = false;
-        self.workspace_menu_open = false;
-        self.skill_menu_open = false;
+        self.close_all_popovers();
         self.flow_modal_session = None;
         self.flow_modal_branch = None;
         self.flow_modal_override_ack = false;
@@ -994,8 +979,6 @@ impl StudioPanel {
         self.refresh_chat(cx);
         self.refresh_board_snapshot();
         self.emit_notice(None, cx);
-        self.credits_hover = false;
-        self.credits_close = None;
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
     }
@@ -1004,9 +987,7 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
-                self.env_popover_open = false;
-                self.workspace_menu_open = false;
-                self.skill_menu_open = false;
+                self.close_all_popovers();
                 self.flow_modal_session = None;
                 self.flow_modal_branch = None;
                 self.flow_modal_override_ack = false;
@@ -1030,12 +1011,7 @@ impl StudioPanel {
     /// session and prepared its origin on a background worker.
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
-        self.model_info_open = false;
-        self.model_menu_open = false;
-        self.bg_tasks_open = false;
-        self.env_popover_open = false;
-        self.workspace_menu_open = false;
-        self.skill_menu_open = false;
+        self.close_all_popovers();
         self.flow_modal_session = None;
         self.flow_modal_branch = None;
         self.flow_modal_override_ack = false;
@@ -1054,12 +1030,9 @@ impl StudioPanel {
 
     /// Toggles the floating background-tasks popover anchored above the composer.
     pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = !self.bg_tasks_open;
-        if self.bg_tasks_open {
-            self.model_menu_open = false;
-            self.model_info_open = false;
-            self.credits_hover = false;
-        }
+        let opening = !self.bg_tasks_open;
+        self.close_all_popovers();
+        self.bg_tasks_open = opening;
         cx.notify();
     }
 
@@ -1116,8 +1089,7 @@ impl StudioPanel {
     /// Non-destructively folds the active table back to the calm Home stage
     /// while leaving any running turns or queued background tasks untouched.
     pub fn fold_desk(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = false;
-        self.model_menu_open = false;
+        self.close_all_popovers();
         self.surface = StudioSurface::Home;
         cx.notify();
     }
@@ -1749,40 +1721,6 @@ impl StudioPanel {
         .detach();
     }
 
-    fn cancel_task_target(&self, target: TaskTarget, cx: &Context<'_, Self>) {
-        let agent = self.agent.clone();
-        let job = cx.background_executor().spawn(async move {
-            let outcome = agent.cancel_task(target);
-            let updates = agent.drain_updates();
-            (outcome, updates)
-        });
-        cx.spawn(async move |weak, cx| {
-            let (outcome, updates) = job.await;
-            let _ = weak.update(cx, |panel, cx| {
-                panel.process_agent_updates(updates, cx);
-                match outcome {
-                    Ok(
-                        CancelOutcome::Cancelled
-                        | CancelOutcome::AlreadySettled,
-                    ) => {
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
-                        panel.refresh_chat(cx);
-                        panel.refresh_board_snapshot();
-                    }
-                    Ok(CancelOutcome::FinalizingNotCancellable) => {
-                        panel.emit_notice(Some("notice.cancel_finalizing"), cx);
-                    }
-                    Err(error) => {
-                        panel.emit_notice(Some(error), cx);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {
         if self.submission_pending {
             if let Some(stop) = &self.submission_stop {
@@ -1960,79 +1898,6 @@ impl StudioPanel {
             .map_or(0, |files| files.len())
     }
 
-    /// Requests a graceful stop for one specific background or active session
-    /// without coupling cancellation to whichever session is currently focused.
-    pub(crate) fn stop_session_turn(
-        &self,
-        session_id: &str,
-        cx: &Context<'_, Self>,
-    ) {
-        self.cancel_task_target(TaskTarget::Session(session_id.to_owned()), cx);
-    }
-
-    /// Cancels a queued or active deferred acceptance receipt directly.
-    pub(crate) fn cancel_receipt(
-        &self,
-        receipt_id: &str,
-        cx: &Context<'_, Self>,
-    ) {
-        self.cancel_task_target(TaskTarget::Receipt(receipt_id.to_owned()), cx);
-    }
-
-    /// Requeues a `Dead` receipt through the kernel's unified card-action
-    /// gateway and clears the old dead entry on success so it cannot linger.
-    pub(crate) fn retry_dead_receipt(
-        &mut self,
-        receipt_id: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.retrying_receipt.as_deref() == Some(receipt_id) {
-            return;
-        }
-        self.retrying_receipt = Some(receipt_id.to_owned());
-        cx.notify();
-        let agent = self.agent.clone();
-        let target_id = receipt_id.to_owned();
-        let job_id = target_id.clone();
-        let job = cx.background_executor().spawn(async move {
-            let result =
-                agent.apply_card_action(CardAction::RetryDeadReceipt {
-                    receipt_id: job_id,
-                });
-            let updates = agent.drain_updates();
-            (result, updates)
-        });
-        cx.spawn(async move |weak, cx| {
-            let (result, updates) = job.await;
-            let _ = weak.update(cx, |panel, cx| {
-                if panel.retrying_receipt.as_deref() == Some(target_id.as_str())
-                {
-                    panel.retrying_receipt = None;
-                }
-                panel.process_agent_updates(updates, cx);
-                match result {
-                    Ok(CardActionOutcome::ReceiptRequeued { .. }) => {
-                        panel
-                            .failed_receipts
-                            .retain(|(rid, _)| rid != &target_id);
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
-                        panel.refresh_board_snapshot();
-                        panel.emit_notice(None, cx);
-                    }
-                    Ok(_) => {
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
-                        panel.refresh_board_snapshot();
-                    }
-                    Err(error) => panel.emit_notice(Some(error), cx),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// Picks a file to preview; `None` returns the drawer to the list.
     pub(crate) fn set_preview_file(
         &mut self,
@@ -2205,197 +2070,6 @@ impl StudioPanel {
 
     pub fn new_conversation(&mut self, cx: &mut Context<'_, Self>) {
         self.new_task(cx);
-    }
-
-    /// Rebuilds the cached Visual Board snapshot from `AgentHandle`.
-    /// Called strictly on structural `AgentUpdate`, project changes, or opening
-    /// the Board — never per-token or inside `Render::render`.
-    pub(crate) fn refresh_board_snapshot(&mut self) {
-        use crate::ports::BoardDataSource as _;
-        self.board_generation = self.board_generation.wrapping_add(1);
-        let default_label = self.t("studio.space_default_sub");
-        self.board_snapshot = self.agent.build_board_snapshot(
-            &self.projects,
-            &self.pending_receipts,
-            &self.failed_receipts,
-            &default_label,
-            self.board_generation,
-        );
-        self.board_dirty = false;
-        self.last_board_refresh = Some(std::time::Instant::now());
-    }
-
-    /// Rebuilds the cached local environment health snapshot (never called per
-    /// render frame).
-    pub(crate) fn refresh_local_env(&mut self) {
-        self.local_env = crate::ports::probe_local_env(
-            &self.projects,
-            &self.installed_skills,
-            self.cloud_ready,
-            self.agent.semantic_verify_enabled(),
-        );
-    }
-
-    /// Public entry point for `flowy-app` after mutating `cloud_ready`.
-    pub fn refresh_env_status(&mut self, cx: &mut Context<'_, Self>) {
-        self.refresh_local_env();
-        cx.notify();
-    }
-
-    /// Opens the Global Visual Board (`StudioSurface::Board`).
-    pub fn open_board(&mut self, cx: &mut Context<'_, Self>) {
-        self.board_project_filter = None;
-        self.flow_modal_session = None;
-        self.clear_right_sheet();
-        self.bg_tasks_open = false;
-        self.model_menu_open = false;
-        self.workspace_menu_open = false;
-        self.skill_menu_open = false;
-        self.env_popover_open = false;
-        self.surface = StudioSurface::Board;
-        self.refresh_board_snapshot();
-        cx.notify();
-    }
-
-    /// Opens the Global Visual Board pre-filtered to one local project.
-    pub fn open_board_for_project(
-        &mut self,
-        project_id: Option<String>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.open_board(cx);
-        self.board_project_filter = project_id;
-        cx.notify();
-    }
-
-    /// Opens the centered Flowchart Modal for `session_id`.
-    pub(crate) fn open_flow_modal(
-        &mut self,
-        session_id: String,
-        branch_id: Option<String>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.flow_modal_session = Some(session_id);
-        self.flow_modal_branch = branch_id;
-        self.flow_modal_tab = crate::overview::FlowModalTab::Action;
-        self.flow_modal_override_ack = false;
-        cx.notify();
-    }
-
-    /// Closes the centered Flowchart Modal cleanly.
-    pub fn close_flow_modal(&mut self, cx: &mut Context<'_, Self>) {
-        self.flow_modal_session = None;
-        self.flow_modal_branch = None;
-        self.flow_modal_override_ack = false;
-        cx.notify();
-    }
-
-    /// Whether the centered Flowchart Modal is currently visible.
-    #[must_use]
-    pub const fn has_flow_modal(&self) -> bool {
-        self.flow_modal_session.is_some()
-    }
-
-    /// Jumps straight into the Flowchart Modal for the first session waiting on
-    /// user approval.
-    pub(crate) fn open_first_blocker_modal(
-        &mut self,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let found = self.board_snapshot.sessions.iter().find_map(|group| {
-            group
-                .branches
-                .iter()
-                .find(|branch| {
-                    matches!(
-                        branch.phase,
-                        crate::ports::BranchPhase::NeedsApproval { .. }
-                            | crate::ports::BranchPhase::Queued {
-                                state: ReceiptState::Dead
-                                    | ReceiptState::Quarantined,
-                                ..
-                            }
-                    )
-                })
-                .map(|branch| (group.session_id.clone(), branch.id.clone()))
-        });
-        if let Some((sid, bid)) = found {
-            self.open_flow_modal(sid, Some(bid), cx);
-        } else {
-            self.emit_notice(Some("board.no_blockers"), cx);
-        }
-    }
-
-    /// Pushes installed skills from `flowy-app` (`flowy-skills`) into Studio.
-    pub fn set_installed_skills(
-        &mut self,
-        skills: Vec<crate::ports::SkillChip>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.installed_skills != skills {
-            self.installed_skills = skills;
-            self.refresh_local_env();
-            cx.notify();
-        }
-    }
-
-    /// Cached count of branches waiting for explicit user approval.
-    #[must_use]
-    pub const fn board_blocker_count(&self) -> usize {
-        self.board_snapshot.kpi.approval_count
-    }
-
-    /// Cached count of active (waiting approval + running) branches for dock badge.
-    #[must_use]
-    pub const fn board_active_count(&self) -> usize {
-        self.board_snapshot.kpi.approval_count
-            + self.board_snapshot.kpi.running_count
-    }
-
-    /// Toggles the kernel L3 semantic verification disclosure switch.
-    pub(crate) fn toggle_semantic_verify(
-        &mut self,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let next = !self.agent.semantic_verify_enabled();
-        self.agent.set_semantic_verify_enabled(next);
-        self.refresh_local_env();
-        cx.notify();
-    }
-
-    /// Opens the parent directory holding `path` in the OS file manager.
-    pub(crate) fn reveal_file_in_os(
-        &mut self,
-        path: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.reveal_file(path, cx);
-    }
-
-    /// Registers the parent directory of a delivered file as a persistent local
-    /// project in the sidebar (without modifying kernel workspace paths).
-    pub(crate) fn register_deliverable_folder_as_project(
-        &mut self,
-        file_path: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(parent) = std::path::Path::new(file_path).parent() else {
-            self.emit_notice(Some("project.invalid_folder"), cx);
-            return;
-        };
-        let name = parent
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("Flowy")
-            .to_owned();
-        match self.create_project(&name, parent, cx) {
-            Ok(_) => {
-                self.refresh_board_snapshot();
-                self.emit_notice(Some("deliverables.promoted_project"), cx);
-            }
-            Err(key) => self.emit_notice(Some(key), cx),
-        }
     }
 
     pub(crate) fn placeholder_title(&self) -> String {

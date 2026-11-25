@@ -13,6 +13,7 @@ use gpui::{
     ImageFormat, IntoElement, SharedString, div, img, prelude::*, px,
 };
 
+use crate::overview::status_pill;
 use crate::panel::StudioPanel;
 
 /// Active tab inside the unified right-hand sheet drawer.
@@ -38,32 +39,6 @@ fn short_parent_path(path: &str) -> String {
     }
     let tail: String = parent.chars().skip(count - (MAX - 1)).collect();
     format!("\u{2026}{tail}")
-}
-
-fn status_pill(
-    bg: gpui::Rgba,
-    fg: gpui::Rgba,
-    label: String,
-    leading: Option<AnyElement>,
-) -> AnyElement {
-    div()
-        .flex_none()
-        .px(px(8.))
-        .py(px(2.))
-        .rounded_full()
-        .bg(bg)
-        .flex()
-        .items_center()
-        .gap(px(5.))
-        .children(leading)
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(fg)
-                .child(label),
-        )
-        .into_any_element()
 }
 
 /// Reading more than this on the UI path would stall the frame.
@@ -409,410 +384,333 @@ impl StudioPanel {
     ) -> AnyElement {
         match work {
             InspectedWork::Session { id, title } => {
-                let is_running = self.agent.busy_session_ids().contains(id);
-                let needs_attention = self.agent.session_needs_attention(id);
-                let steps = self.session_steps(id);
-                let open_id = id.clone();
-                let stop_id = id.clone();
+                self.inspect_session_view(id, title, cx)
+            }
+            InspectedWork::Receipt(receipt) => {
+                self.inspect_receipt_view(receipt, cx)
+            }
+        }
+    }
 
-                let status_badge = if is_running {
-                    status_pill(
-                        self.theme.status_active_bg(),
-                        self.theme.status_active(),
-                        self.t("chat.bg_task_running"),
-                        Some(crate::motion::live_dot(
-                            "inspector-running-dot",
-                            self.theme.status_active(),
-                            self.theme.motion_policy(),
-                        )),
-                    )
-                } else if needs_attention {
-                    status_pill(
-                        self.theme.status_attention_bg(),
-                        self.theme.status_attention(),
-                        self.t("dock.attention_badge"),
-                        None,
-                    )
-                } else {
-                    status_pill(
-                        self.theme.status_verified_bg(),
-                        self.theme.status_verified(),
-                        self.t("verify.card.passed"),
-                        None,
-                    )
-                };
+    fn inspect_session_view(
+        &self,
+        id: &str,
+        title: &str,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let is_running = self.agent.busy_session_ids().iter().any(|s| s == id);
+        let needs_attention = self.agent.session_needs_attention(id);
+        let steps = self.session_steps(id);
+        let open_id = id.to_owned();
+        let stop_id = id.to_owned();
 
-                let mut steps_col =
-                    div().w_full().flex().flex_col().gap(self.theme.space(6.));
-                if steps.is_empty() {
-                    steps_col = steps_col.child(
+        let status_badge = if is_running {
+            status_pill(
+                self.theme.status_active_bg(),
+                self.theme.status_active(),
+                self.t("chat.bg_task_running"),
+                Some(crate::motion::live_dot(
+                    "inspector-running-dot",
+                    self.theme.status_active(),
+                    self.theme.motion_policy(),
+                )),
+            )
+        } else if needs_attention {
+            status_pill(
+                self.theme.status_attention_bg(),
+                self.theme.status_attention(),
+                self.t("dock.attention_badge"),
+                None,
+            )
+        } else {
+            status_pill(
+                self.theme.status_verified_bg(),
+                self.theme.status_verified(),
+                self.t("verify.card.passed"),
+                None,
+            )
+        };
+
+        let mut steps_col =
+            div().w_full().flex().flex_col().gap(self.theme.space(6.));
+        if steps.is_empty() {
+            steps_col = steps_col.child(
+                div()
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(12.))
+                    .rounded_lg()
+                    .bg(self.theme.soft().opacity(0.45))
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("drawer.work_no_steps")),
+            );
+        } else {
+            for (step_ix, step_text) in steps.into_iter().enumerate() {
+                steps_col = steps_col.child(
+                    div()
+                        .id(("work-step", step_ix as u64))
+                        .w_full()
+                        .px(self.theme.space(10.))
+                        .py(self.theme.space(8.))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.canvas())
+                        .flex()
+                        .items_start()
+                        .gap(self.theme.space(8.))
+                        .child(
+                            div()
+                                .size(px(18.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(self.theme.soft())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.muted())
+                                .child((step_ix + 1).to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(self.theme.ink())
+                                .whitespace_normal()
+                                .child(step_text),
+                        ),
+                );
+            }
+        }
+
+        div()
+            .w_full()
+            .p(self.theme.space(12.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(12.))
+            .child(
+                div()
+                    .w_full()
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
                         div()
                             .w_full()
-                            .px(self.theme.space(10.))
-                            .py(self.theme.space(12.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.theme.ink())
+                                    .whitespace_normal()
+                                    .child(title.to_owned()),
+                            )
+                            .child(status_badge),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                theme::Button::new(
+                                    "work-inspector-open",
+                                    self.t("drawer.work_open_session"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.open_session(&open_id, cx);
+                                        panel.close_right_sheet(cx);
+                                    }),
+                                ),
+                            )
+                            .when(is_running, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "work-inspector-stop",
+                                        self.t("drawer.work_stop"),
+                                    )
+                                    .variant(theme::ControlVariant::Ghost)
+                                    .size(theme::ControlSize::Small)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel.stop_session_turn(
+                                                &stop_id, cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            }),
+                    ),
+            )
+            .child(steps_col)
+            .into_any_element()
+    }
+
+    fn inspect_receipt_view(
+        &self,
+        receipt: &flowy_agent::AcceptedMessage,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let owner = self.receipt_owner(receipt);
+        let hint = receipt
+            .target_session_id
+            .clone()
+            .or_else(|| receipt.session_hint.clone());
+        let state = self
+            .agent
+            .receipt_state(&receipt.id)
+            .unwrap_or(ReceiptState::Queued);
+        let (state_fg, state_label, _) = self.receipt_state_visual(state);
+        let work_progress = self
+            .agent
+            .work_status(&receipt.id)
+            .and_then(|s| crate::ports::WorkContractProgress::from_status(&s));
+        let cancel_id = receipt.id.clone();
+        let retry_id = receipt.id.clone();
+        let can_cancel = matches!(
+            state,
+            ReceiptState::Queued
+                | ReceiptState::Running
+                | ReceiptState::Retrying
+        );
+        let is_dead = state == ReceiptState::Dead;
+        let retrying =
+            self.retrying_receipt.as_deref() == Some(receipt.id.as_str());
+        div()
+            .w_full()
+            .p(self.theme.space(12.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(12.))
+            .child(
+                div()
+                    .w_full()
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(self.theme.muted())
+                                    .child(owner),
+                            )
+                            .child(status_pill(
+                                self.theme.soft(),
+                                state_fg,
+                                state_label,
+                                None,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .p(self.theme.space(10.))
                             .rounded_lg()
                             .bg(self.theme.soft().opacity(0.45))
                             .text_xs()
-                            .text_color(self.theme.muted())
+                            .text_color(self.theme.ink())
                             .whitespace_normal()
-                            .child(self.t("drawer.work_no_steps")),
-                    );
-                } else {
-                    for (step_ix, step_text) in steps.into_iter().enumerate() {
-                        steps_col = steps_col.child(
-                            div()
-                                .id(("work-step", step_ix as u64))
-                                .w_full()
-                                .px(self.theme.space(10.))
-                                .py(self.theme.space(8.))
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(self.theme.line())
-                                .bg(self.theme.canvas())
-                                .flex()
-                                .items_start()
-                                .gap(self.theme.space(8.))
-                                .child(
-                                    div()
-                                        .size(px(18.))
-                                        .flex_none()
-                                        .rounded_full()
-                                        .bg(self.theme.soft())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.muted())
-                                        .child((step_ix + 1).to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .text_color(self.theme.ink())
-                                        .whitespace_normal()
-                                        .child(step_text),
-                                ),
-                        );
-                    }
-                }
-
-                div()
-                    .w_full()
-                    .p(self.theme.space(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(12.))
-                    .child(
-                        div()
-                            .w_full()
-                            .p(self.theme.space(12.))
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(self.theme.line())
-                            .bg(self.theme.canvas())
-                            .flex()
-                            .flex_col()
-                            .gap(self.theme.space(8.))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(self.theme.ink())
-                                            .whitespace_normal()
-                                            .child(title.clone()),
-                                    )
-                                    .child(status_badge),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        theme::Button::new(
-                                            "work-inspector-open",
-                                            self.t("drawer.work_open_session"),
-                                        )
-                                        .variant(
-                                            theme::ControlVariant::Secondary,
-                                        )
-                                        .size(theme::ControlSize::Small)
-                                        .render(
-                                            &self.theme,
-                                            cx.listener(
-                                                move |panel, _, _, cx| {
-                                                    panel.open_session(
-                                                        &open_id, cx,
-                                                    );
-                                                    panel.close_right_sheet(cx);
-                                                },
-                                            ),
-                                        ),
-                                    )
-                                    .when(is_running, |row| {
-                                        row.child(
-                                            theme::Button::new(
-                                                "work-inspector-stop",
-                                                self.t("drawer.work_stop"),
-                                            )
-                                            .variant(
-                                                theme::ControlVariant::Ghost,
-                                            )
-                                            .size(theme::ControlSize::Small)
-                                            .render(
-                                                &self.theme,
-                                                cx.listener(
-                                                    move |panel, _, _, cx| {
-                                                        panel
-                                                            .stop_session_turn(
-                                                                &stop_id, cx,
-                                                            );
-                                                    },
-                                                ),
-                                            ),
-                                        )
-                                    }),
-                            ),
+                            .child(receipt.text.clone()),
                     )
-                    .child(steps_col)
-                    .into_any_element()
-            }
-            InspectedWork::Receipt(receipt) => {
-                let owner = self.receipt_owner(receipt);
-                let hint = receipt
-                    .target_session_id
-                    .clone()
-                    .or_else(|| receipt.session_hint.clone());
-                let state = self
-                    .agent
-                    .receipt_state(&receipt.id)
-                    .unwrap_or(ReceiptState::Queued);
-                let (state_fg, state_label, _) =
-                    self.receipt_state_visual(state);
-                let work_progress =
-                    self.agent.work_status(&receipt.id).and_then(|s| {
-                        crate::ports::WorkContractProgress::from_status(&s)
-                    });
-                let cancel_id = receipt.id.clone();
-                let retry_id = receipt.id.clone();
-                let can_cancel = matches!(
-                    state,
-                    ReceiptState::Queued
-                        | ReceiptState::Running
-                        | ReceiptState::Retrying
-                );
-                let is_dead = state == ReceiptState::Dead;
-                let retrying = self.retrying_receipt.as_deref()
-                    == Some(receipt.id.as_str());
-                div()
-                    .w_full()
-                    .p(self.theme.space(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(12.))
+                    .when_some(work_progress, |card, progress| {
+                        card.child(self.contract_progress_block(&progress))
+                    })
                     .child(
                         div()
-                            .w_full()
-                            .p(self.theme.space(12.))
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(self.theme.line())
-                            .bg(self.theme.canvas())
                             .flex()
-                            .flex_col()
+                            .flex_wrap()
+                            .items_center()
                             .gap(self.theme.space(8.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(self.theme.muted())
-                                            .child(owner),
+                            .when_some(hint, |row, session_id| {
+                                row.child(
+                                    theme::Button::new(
+                                        "receipt-inspector-open",
+                                        self.t("drawer.work_open_session"),
                                     )
-                                    .child(status_pill(
-                                        self.theme.soft(),
-                                        state_fg,
-                                        state_label,
-                                        None,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .p(self.theme.space(10.))
-                                    .rounded_lg()
-                                    .bg(self.theme.soft().opacity(0.45))
-                                    .text_xs()
-                                    .text_color(self.theme.ink())
-                                    .whitespace_normal()
-                                    .child(receipt.text.clone()),
-                            )
-                            .when_some(work_progress, |card, progress| {
-                                let total = progress.required_labels.len().max(
-                                    progress.delivered_count
-                                        + progress.missing_items.len(),
-                                );
-                                let summary = self.tf(
-                                    "board.contract_progress",
-                                    &[
-                                        (
-                                            "done",
-                                            &progress
-                                                .delivered_count
-                                                .to_string(),
-                                        ),
-                                        ("total", &total.to_string()),
-                                    ],
-                                );
-                                card.child(
-                                    div()
-                                        .w_full()
-                                        .px(self.theme.space(8.))
-                                        .py(px(6.))
-                                        .rounded_lg()
-                                        .bg(self.theme.soft().opacity(0.6))
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(2.))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(
-                                                    FontWeight::SEMIBOLD,
-                                                )
-                                                .text_color(self.theme.ink())
-                                                .child(summary),
-                                        )
-                                        .when(
-                                            !progress.missing_items.is_empty(),
-                                            |col| {
-                                                col.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(
-                                                            self.theme
-                                                                .status_attention(
-                                                                ),
-                                                        )
-                                                        .whitespace_normal()
-                                                        .child(self.tf(
-                                                            "board.contract_missing",
-                                                            &[(
-                                                                "items",
-                                                                &progress
-                                                                    .missing_items
-                                                                    .join(", "),
-                                                            )],
-                                                        )),
-                                                )
-                                            },
-                                        ),
+                                    .variant(theme::ControlVariant::Secondary)
+                                    .size(theme::ControlSize::Small)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel.open_session(&session_id, cx);
+                                            panel.close_right_sheet(cx);
+                                        }),
+                                    ),
                                 )
                             })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap(self.theme.space(8.))
-                                    .when_some(hint, |row, session_id| {
-                                        row.child(
-                                            theme::Button::new(
-                                                "receipt-inspector-open",
-                                                self.t(
-                                                    "drawer.work_open_session",
-                                                ),
-                                            )
-                                            .variant(
-                                                theme::ControlVariant::Secondary,
-                                            )
-                                            .size(theme::ControlSize::Small)
-                                            .render(
-                                                &self.theme,
-                                                cx.listener(
-                                                    move |panel, _, _, cx| {
-                                                        panel.open_session(
-                                                            &session_id, cx,
-                                                        );
-                                                        panel
-                                                            .close_right_sheet(
-                                                                cx,
-                                                            );
-                                                    },
-                                                ),
-                                            ),
-                                        )
-                                    })
-                                    .when(is_dead, |row| {
-                                        row.child(
-                                            theme::Button::new(
-                                                "receipt-inspector-retry",
-                                                self.t(
-                                                    "board.retry_dead_receipt",
-                                                ),
-                                            )
-                                            .variant(
-                                                theme::ControlVariant::Primary,
-                                            )
-                                            .size(theme::ControlSize::Small)
-                                            .disabled(retrying)
-                                            .render(
-                                                &self.theme,
-                                                cx.listener(
-                                                    move |panel, _, _, cx| {
-                                                        panel
-                                                            .retry_dead_receipt(
-                                                                &retry_id, cx,
-                                                            );
-                                                    },
-                                                ),
-                                            ),
-                                        )
-                                    })
-                                    .when(can_cancel, |row| {
-                                        row.child(
-                                            theme::Button::new(
-                                                "receipt-inspector-cancel",
-                                                self.t("board.cancel_receipt"),
-                                            )
-                                            .variant(
-                                                theme::ControlVariant::Ghost,
-                                            )
-                                            .size(theme::ControlSize::Small)
-                                            .render(
-                                                &self.theme,
-                                                cx.listener(
-                                                    move |panel, _, _, cx| {
-                                                        panel.cancel_receipt(
-                                                            &cancel_id, cx,
-                                                        );
-                                                    },
-                                                ),
-                                            ),
-                                        )
-                                    }),
-                            ),
-                    )
-                    .into_any_element()
-            }
-        }
+                            .when(is_dead, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "receipt-inspector-retry",
+                                        self.t("board.retry_dead_receipt"),
+                                    )
+                                    .variant(theme::ControlVariant::Primary)
+                                    .size(theme::ControlSize::Small)
+                                    .disabled(retrying)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel.retry_dead_receipt(
+                                                &retry_id, cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            })
+                            .when(can_cancel, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "receipt-inspector-cancel",
+                                        self.t("board.cancel_receipt"),
+                                    )
+                                    .variant(theme::ControlVariant::Ghost)
+                                    .size(theme::ControlSize::Small)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel
+                                                .cancel_receipt(&cancel_id, cx);
+                                        }),
+                                    ),
+                                )
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn deliverables_list(

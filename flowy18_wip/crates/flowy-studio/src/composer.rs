@@ -243,39 +243,72 @@ impl ChatComposer {
         }
     }
 
+    fn cockpit_chip(
+        &self,
+        id: &'static str,
+        label: String,
+        colors: (gpui::Rgba, gpui::Rgba),
+        icon: theme::icons::Icon,
+        layout: (Option<f32>, Option<bool>),
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> impl gpui::StatefulInteractiveElement + gpui::Element {
+        let (bg, fg) = colors;
+        let (max_w, expanded) = layout;
+        let label_el = if max_w.is_some() {
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .truncate()
+                .child(label.clone())
+                .into_any_element()
+        } else {
+            label.clone().into_any_element()
+        };
+        theme::interactive(id, label, &self.theme)
+            .focus_visible(|style| style.border_color(self.theme.focus_ring()))
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .when_some(max_w, |chip, width| chip.max_w(px(width)))
+            .px(self.theme.space(8.))
+            .rounded_full()
+            .bg(bg)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_xs()
+            .text_color(fg)
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.dock_hover()))
+            .when_some(
+                expanded,
+                gpui::StatefulInteractiveElement::aria_expanded,
+            )
+            .on_click(on_click)
+            .child(icon)
+            .child(label_el)
+    }
+
     fn model_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let label = self.composer_model_label();
-        let warn = !self.cloud_ready;
+        let (bg, fg) = if self.cloud_ready {
+            (self.theme.soft(), self.theme.ink())
+        } else {
+            (
+                self.theme.status_attention_bg(),
+                self.theme.status_attention(),
+            )
+        };
         theme::anchor_trigger(
-            theme::interactive("composer-model", label.clone(), &self.theme)
-                .focus_visible(|style| {
-                    style.border_color(self.theme.focus_ring())
-                })
-                .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(8.))
-                .rounded_full()
-                .bg(if warn {
-                    self.theme.status_attention_bg()
-                } else {
-                    self.theme.soft()
-                })
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_xs()
-                .text_color(if warn {
-                    self.theme.status_attention()
-                } else {
-                    self.theme.ink()
-                })
-                .child(theme::icons::sparkles().size(px(12.)))
-                .child(label)
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.dock_hover()))
-                .aria_expanded(self.model_menu_open)
-                .on_click(cx.listener(|_, _, _, cx| {
+            self.cockpit_chip(
+                "composer-model",
+                label,
+                (bg, fg),
+                theme::icons::sparkles().size(px(12.)),
+                (None, Some(self.model_menu_open)),
+                cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
-                })),
+                }),
+            ),
             "composer-model-trigger",
             &self.ui,
         )
@@ -287,81 +320,51 @@ impl ChatComposer {
         } else {
             self.workspace_label.to_string()
         };
+        let (bg, fg) = if self.workspace_bound {
+            (self.theme.status_active_bg(), self.theme.status_active())
+        } else {
+            (self.theme.soft(), self.theme.ink())
+        };
         theme::anchor_trigger(
-            theme::interactive(
+            self.cockpit_chip(
                 "composer-workspace",
-                label.clone(),
-                &self.theme,
-            )
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .max_w(px(148.))
-            .px(self.theme.space(8.))
-            .rounded_full()
-            .bg(if self.workspace_bound {
-                self.theme.status_active_bg()
-            } else {
-                self.theme.soft()
-            })
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .text_xs()
-            .text_color(if self.workspace_bound {
-                self.theme.status_active()
-            } else {
-                self.theme.ink()
-            })
-            .child(theme::icons::folder().size(px(12.)))
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .child(label),
-            )
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.dock_hover()))
-            .aria_expanded(self.workspace_menu_open)
-            .on_click(cx.listener(|_, _, _, cx| {
-                cx.emit(ComposerEvent::WorkspaceMenu);
-            })),
+                label,
+                (bg, fg),
+                theme::icons::folder().size(px(12.)),
+                (Some(148.0), Some(self.workspace_menu_open)),
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::WorkspaceMenu);
+                }),
+            ),
             "composer-workspace-trigger",
             &self.ui,
         )
     }
 
     fn verify_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let label = if self.semantic_verify_enabled {
-            self.t("composer.verify_l3_on")
+        let (label, bg, fg) = if self.semantic_verify_enabled {
+            (
+                self.t("composer.verify_l3_on"),
+                self.theme.status_verified_bg(),
+                self.theme.status_verified(),
+            )
         } else {
-            self.t("composer.verify_ask")
+            (
+                self.t("composer.verify_ask"),
+                self.theme.soft(),
+                self.theme.muted(),
+            )
         };
-        theme::interactive("composer-verify", label.clone(), &self.theme)
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .px(self.theme.space(8.))
-            .rounded_full()
-            .bg(if self.semantic_verify_enabled {
-                self.theme.status_verified_bg()
-            } else {
-                self.theme.soft()
-            })
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .text_xs()
-            .text_color(if self.semantic_verify_enabled {
-                self.theme.status_verified()
-            } else {
-                self.theme.muted()
-            })
-            .child(theme::icons::check().size(px(11.)))
-            .child(label)
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.dock_hover()))
-            .on_click(cx.listener(|_, _, _, cx| {
+        self.cockpit_chip(
+            "composer-verify",
+            label,
+            (bg, fg),
+            theme::icons::check().size(px(11.)),
+            (None, None),
+            cx.listener(|_, _, _, cx| {
                 cx.emit(ComposerEvent::VerifyToggle);
-            }))
+            }),
+        )
     }
 
     fn skill_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -370,41 +373,22 @@ impl ChatComposer {
             .skill_label
             .as_ref()
             .map_or_else(|| self.t("composer.skill_pick"), ToString::to_string);
+        let (bg, fg) = if active {
+            (self.theme.status_active_bg(), self.theme.status_active())
+        } else {
+            (self.theme.soft(), self.theme.muted())
+        };
         theme::anchor_trigger(
-            theme::interactive("composer-skill", label.clone(), &self.theme)
-                .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .max_w(px(136.))
-                .px(self.theme.space(8.))
-                .rounded_full()
-                .bg(if active {
-                    self.theme.status_active_bg()
-                } else {
-                    self.theme.soft()
-                })
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_xs()
-                .text_color(if active {
-                    self.theme.status_active()
-                } else {
-                    self.theme.muted()
-                })
-                .child(theme::icons::sparkles().size(px(11.)))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .truncate()
-                        .child(label),
-                )
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.dock_hover()))
-                .aria_expanded(self.skill_menu_open)
-                .on_click(cx.listener(|_, _, _, cx| {
+            self.cockpit_chip(
+                "composer-skill",
+                label,
+                (bg, fg),
+                theme::icons::sparkles().size(px(11.)),
+                (Some(136.0), Some(self.skill_menu_open)),
+                cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::SkillMenu);
-                })),
+                }),
+            ),
             "composer-skill-trigger",
             &self.ui,
         )
