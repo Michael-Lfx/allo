@@ -916,3 +916,12 @@ bun scripts/check-ui-contracts.mjs  : passed
   2. `semantic_verify.rs` 传入 `artifact_name`、提示词排除流程性指令（保留字面简报核心规则）、超时由 8s 调至 30s 并在 `flowy.verify` 打出 `l3_reason`，真云端实测达到 **`l3_status="passed"`（`16755ms`、`l3_issue_count=0`）**；
   3. `handle.rs` 新增 `upsert_verification_line` 与 `promote_latest_turn_verifications` / `pending_verifications`，消除旧失败卡残留并将最新核验卡紧贴交付产物卡上方，首屏无需滚动即并排可见（`evidence/15–18`）。
 - 最终门禁：`flowy-agent` **138** passed（1 ignored）/ `flowy-studio` **86** / `flowy-app` **50** / `--all-targets` clippy **0 警告**；`%APPDATA%\Flowy\Flowy\data` 2488 文件无损还原（0 哈希差异）。
+
+### 五、Stage A–B 长期主义引擎加固、真云端对抗压测与合流预检（提交 `89ee4aadd`）
+
+- 严格按已批准的长期主义执行计划推进纯引擎层（零碰 `flowy-studio` 与 23 个 locale）：
+  1. 新增 `verify_contract.rs`：宿主侧 `BriefContract` 从原始简报抽取显式页数下限与按后缀文件名、强化 L1 每页标题/正文检查并输出 `next_action`，彻底堵死 §6.6 自出题自判卷漏洞；
+  2. 新增 `verifier_registry.rs`：零新增第三方 crate（复用工作区 `zip`），抽象可插拔 `ArtifactVerifier` 注册表并内置 `.pptx` / `.docx`（`w:bookmarkStart`）/ `.xlsx`（`row_key` + `sharedStrings`）三大确定性核验器与 `verify_artifact` 工具；
+  3. `delivery.rs` + `handle.rs` 补齐 `InDoubtDelivery` 启动 `WARN` 探测与 `reconcile_in_doubt` 结算接口；
+  4. 真云端对抗实测当场抓出并修复 2 个隐蔽缺陷：① `conversation_artifacts.rs` 接入 `prepare_conversation_artifacts_gated`，封堵 `write_file` 临时脚本（`.ps1`）与未核验文件绕过 `DeliveryStore` 偷渡进资料库的后门；② `publish_tool.rs` 兼容剥离 `outputs/<submission_id>/` 前缀与核验工具完全拉齐。
+- 实证归档（[`证据.md` §11.29](证据.md)）：`evidence/19–21` 实机截图 + 真云端 L3 `flagged` 3 项精准抓错（`10511ms`）+ `InDoubt` 默认 `INFO` 级 `WARN` 检出；全量单测 `core 74 / agent 148 / studio 86 / app 50 / i18n 8`，`clippy --all-targets` 0 警告，`check-ui-contracts` / `accept.sh` 全绿；`git merge-tree HEAD feat/flowy-super-ui` 实测 **Rust 代码 0 冲突**（仅 3 份文档待合）。
