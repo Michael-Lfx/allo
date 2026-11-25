@@ -2219,6 +2219,7 @@ dependencies = [
  "similar",
  "tokio",
  "tracing",
+ "zip 2.6.1",
 ]
 
 [[package]]

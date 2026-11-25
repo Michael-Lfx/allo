@@ -21,7 +21,9 @@ mod projection;
 mod publish_tool;
 pub mod semantic_verify;
 mod title;
+pub mod verifier_registry;
 mod verify;
+pub mod verify_contract;
 
 pub use artifact_store::{
     ArtifactManifest, ArtifactPreference, ArtifactRecord, ArtifactStore,

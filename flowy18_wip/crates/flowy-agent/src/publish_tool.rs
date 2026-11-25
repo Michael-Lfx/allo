@@ -101,6 +101,31 @@ pub fn definition(
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
                     }
+                    // Normalize redundant workspace-relative `outputs/<submission_id>/`
+                    // prefixes so publish_file matches create_deck / verify_deck /
+                    // verify_artifact when models pass the same relative path across tools.
+                    let normalized_path = {
+                        let slashed = parsed.path.replace('\\', "/");
+                        let trimmed =
+                            slashed.strip_prefix("./").unwrap_or(&slashed);
+                        let expected_prefix =
+                            format!("outputs/{submission_id}/");
+                        trimmed
+                            .strip_prefix(&expected_prefix)
+                            .unwrap_or(trimmed)
+                            .to_owned()
+                    };
+                    if Path::new(&normalized_path).is_absolute()
+                        || Path::new(&normalized_path).components().any(|c| {
+                            matches!(c, std::path::Component::ParentDir)
+                        })
+                    {
+                        return publish_error(
+                            "PUBLISH_FAILED",
+                            "chat.publish.failed",
+                            "Couldn't publish the file.",
+                        );
+                    }
                     // The parsed-write importer identifies sources relative to
                     // the session workspace, while publish_file resolves them
                     // inside this turn's output directory.
@@ -111,17 +136,17 @@ pub fn definition(
                             output_root.strip_prefix(workspace_root).ok()
                         })
                         .map_or_else(
-                            || parsed.path.replace('\\', "/"),
+                            || normalized_path.clone(),
                             |relative| {
                                 relative
-                                    .join(Path::new(&parsed.path))
+                                    .join(Path::new(&normalized_path))
                                     .to_string_lossy()
                                     .replace('\\', "/")
                             },
                         );
                     let prepare_args = PrepareArtifact {
                         source_root: output_root.clone(),
-                        relative_path: parsed.path.clone(),
+                        relative_path: normalized_path.clone(),
                         source_relative_path,
                         conversation_import: false,
                         session_id: session_id.clone(),
@@ -132,21 +157,7 @@ pub fn definition(
                         origin: context.session_origin,
                     };
                     let receipt = if let Some(gate) = &gate {
-                        // Validate relative path safety through ArtifactStore
-                        // only after passing the delivery gate; reject parent
-                        // traversal before reading bytes for the gate.
-                        if Path::new(&parsed.path).is_absolute()
-                            || Path::new(&parsed.path).components().any(|c| {
-                                matches!(c, std::path::Component::ParentDir)
-                            })
-                        {
-                            return publish_error(
-                                "PUBLISH_FAILED",
-                                "chat.publish.failed",
-                                "Couldn't publish the file.",
-                            );
-                        }
-                        let artifact = output_root.join(&parsed.path);
+                        let artifact = output_root.join(&normalized_path);
                         match gate.deliver_with(
                             &artifact,
                             false,
@@ -445,5 +456,55 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(value["ui_key"], "chat.publish.cancelled");
         assert_eq!(value["message"], "File publication was cancelled.");
+    }
+
+    #[tokio::test]
+    async fn publish_file_accepts_submission_prefixed_relative_paths() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-prefix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let submission_id = format!("submission-{:032x}", 9);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(output_root.join("sales.csv"), b"col\n1\n").unwrap();
+
+        let tool = definition(store, Some(gate));
+        let result = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-prefixed".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": format!("outputs\\{submission_id}\\sales.csv"),
+                    "delivery_key": "sales",
+                }),
+            },
+            ToolRunContext {
+                signal: CancelToken::new(),
+                agent_id: Some("session-prefix".to_owned()),
+                cwd: Some(root.display().to_string()),
+                todos: None,
+                submission_id: Some(submission_id),
+                session_origin: SessionOrigin::Home,
+                output_root: Some(output_root),
+                artifact_delivery_available: true,
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                ToolExecutionResult::Success {
+                    delivery: Some(_),
+                    ..
+                }
+            ),
+            "submission-prefixed relative path must publish cleanly: {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

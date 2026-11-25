@@ -64,6 +64,15 @@ pub enum DeliveryRecoveryState {
     Delivered,
 }
 
+/// One unresolved `deliver_intent` record found in `delivery/events.jsonl`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InDoubtDelivery {
+    pub delivery_id: String,
+    pub artifact_path: String,
+    pub artifact_hash: String,
+    pub at_ms: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeliveryOutcome {
     pub delivery_id: String,
@@ -124,6 +133,14 @@ enum AuditEvent {
         delivery_id: String,
         artifact_path: String,
         artifact_hash: String,
+        at_ms: u64,
+    },
+    DeliverReconciled {
+        delivery_id: String,
+        artifact_path: String,
+        artifact_hash: String,
+        confirmed_delivered: bool,
+        note: String,
         at_ms: u64,
     },
 }
@@ -323,10 +340,98 @@ impl DeliveryStore {
                 } if id == delivery_id => {
                     state = DeliveryRecoveryState::Delivered;
                 }
+                AuditEvent::DeliverReconciled {
+                    delivery_id: id,
+                    confirmed_delivered,
+                    ..
+                } if id == delivery_id => {
+                    state = if confirmed_delivered {
+                        DeliveryRecoveryState::Delivered
+                    } else {
+                        DeliveryRecoveryState::Blocked
+                    };
+                }
                 _ => {}
             }
         }
         Ok(state)
+    }
+
+    /// Return all deliveries currently stuck in [`DeliveryRecoveryState::InDoubt`]
+    /// (`deliver_intent` persisted with no subsequent `deliver` or
+    /// `deliver_reconciled`), ordered chronologically.
+    pub fn in_doubt_deliveries(&self) -> io::Result<Vec<InDoubtDelivery>> {
+        let mut pending: std::collections::BTreeMap<String, InDoubtDelivery> =
+            std::collections::BTreeMap::new();
+        for event in self.read_events()? {
+            match event {
+                AuditEvent::DeliverIntent {
+                    delivery_id,
+                    artifact_path,
+                    artifact_hash,
+                    at_ms,
+                } => {
+                    pending.insert(
+                        delivery_id.clone(),
+                        InDoubtDelivery {
+                            delivery_id,
+                            artifact_path,
+                            artifact_hash,
+                            at_ms,
+                        },
+                    );
+                }
+                AuditEvent::Deliver { delivery_id, .. }
+                | AuditEvent::DeliverReconciled { delivery_id, .. } => {
+                    pending.remove(&delivery_id);
+                }
+                _ => {}
+            }
+        }
+        let mut list: Vec<InDoubtDelivery> = pending.into_values().collect();
+        list.sort_by_key(|item| item.at_ms);
+        Ok(list)
+    }
+
+    /// Explicitly settle an [`InDoubtDelivery`] once an operator or host check
+    /// verifies whether the target actually received the artifact.
+    pub fn reconcile_in_doubt(
+        &self,
+        delivery_id: &str,
+        confirmed_delivered: bool,
+        note: &str,
+        now_ms: u64,
+    ) -> io::Result<DeliveryRecoveryState> {
+        let Some(entry) = self
+            .in_doubt_deliveries()?
+            .into_iter()
+            .find(|item| item.delivery_id == delivery_id)
+        else {
+            return self.recovery_state(delivery_id);
+        };
+        Self::append_json(
+            &self.events_path(),
+            &AuditEvent::DeliverReconciled {
+                delivery_id: entry.delivery_id.clone(),
+                artifact_path: entry.artifact_path,
+                artifact_hash: entry.artifact_hash.clone(),
+                confirmed_delivered,
+                note: note.to_owned(),
+                at_ms: now_ms,
+            },
+        )?;
+        tracing::info!(
+            target: "flowy.delivery",
+            delivery_id = %entry.delivery_id,
+            artifact_hash = %entry.artifact_hash,
+            confirmed_delivered,
+            "reconciled in-doubt delivery"
+        );
+        Ok(if confirmed_delivered {
+            DeliveryRecoveryState::Delivered
+        } else {
+            DeliveryRecoveryState::Blocked
+        })
     }
 
     /// Whether any completed delivery for `artifact_hash` bypassed verification
@@ -782,6 +887,21 @@ mod tests {
             store.recovery_state(&intent_id).unwrap(),
             DeliveryRecoveryState::InDoubt
         );
+        let unresolved = store.in_doubt_deliveries().unwrap();
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].delivery_id, intent_id);
+        assert_eq!(
+            store
+                .reconcile_in_doubt(
+                    &intent_id,
+                    false,
+                    "verified not committed",
+                    3_000
+                )
+                .unwrap(),
+            DeliveryRecoveryState::Blocked
+        );
+        assert_eq!(store.in_doubt_deliveries().unwrap().as_slice(), []);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

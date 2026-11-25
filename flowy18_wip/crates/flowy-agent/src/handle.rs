@@ -539,6 +539,20 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
+        if let Ok(unresolved) =
+            crate::delivery::DeliveryStore::new(state.root.join("delivery"))
+                .in_doubt_deliveries()
+        {
+            for item in unresolved {
+                tracing::warn!(
+                    target: "flowy.delivery",
+                    delivery_id = %item.delivery_id,
+                    artifact_hash = %item.artifact_hash,
+                    artifact_path = %item.artifact_path,
+                    "unresolved deliver_intent detected at startup"
+                );
+            }
+        }
         *lock(&self.inner.engine) = Some(engine);
         tracing::debug!(
             target: "flowy.boot",
@@ -1452,6 +1466,32 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
+    /// Deliveries that recorded `deliver_intent` before an interrupted write
+    /// and have not yet recorded a terminal `deliver` or `deliver_reconciled`.
+    #[must_use]
+    pub fn in_doubt_deliveries(&self) -> Vec<crate::delivery::InDoubtDelivery> {
+        crate::delivery::DeliveryStore::new(
+            self.inner.state.root.join("delivery"),
+        )
+        .in_doubt_deliveries()
+        .unwrap_or_default()
+    }
+
+    /// Settle one [`crate::delivery::InDoubtDelivery`] once an operator or host
+    /// check verifies whether the artifact was actually delivered.
+    pub fn reconcile_in_doubt_delivery(
+        &self,
+        delivery_id: &str,
+        confirmed_delivered: bool,
+        note: &str,
+    ) -> Result<crate::delivery::DeliveryRecoveryState, &'static str> {
+        crate::delivery::DeliveryStore::new(
+            self.inner.state.root.join("delivery"),
+        )
+        .reconcile_in_doubt(delivery_id, confirmed_delivered, note, now_ms())
+        .map_err(|_| "notice.storage_error")
+    }
+
     /// Whether the configured provider requires the cloud catalog before running.
     #[must_use]
     pub fn requires_cloud_ready(&self) -> bool {
@@ -1816,6 +1856,8 @@ impl AgentHandle {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
+            let contract =
+                crate::verify_contract::BriefContract::from_brief(&prompt);
             let semantic = config.api_key.as_ref().map(|api_key| {
                 crate::semantic_verify::SemanticContext {
                     brief: prompt.clone(),
@@ -1824,11 +1866,18 @@ impl AgentHandle {
                 }
             });
             run_config.registry.register(
-                crate::verify::definition_with_semantic(
+                crate::verify::definition_with_semantic_and_contract(
                     Some(delivery.clone()),
                     semantic,
+                    Some(contract.clone()),
                 ),
             );
+            run_config
+                .registry
+                .register(crate::verifier_registry::definition(
+                    Some(delivery.clone()),
+                    Some(contract),
+                ));
             run_config
                 .registry
                 .register(crate::publish_tool::definition(
@@ -1837,7 +1886,7 @@ impl AgentHandle {
                 ));
             run_config.delivery_committer = Some(Arc::new(store));
             run_config.system = format!(
-                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory, verify any .pptx file with verify_deck before publishing, then explicitly call publish_file with a path relative to the output directory. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
+                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
                 output_root.display()
             );
         }
@@ -2181,14 +2230,15 @@ impl TurnObserver for UiObserver {
             })
             .unwrap_or_else(|| self.state.root.join("sessions").join("cwd"));
         let display_text = tool_result_display_text(name, text);
-        let verification_line = (name == "verify_deck" && !is_error)
-            .then(|| {
-                let gate = crate::delivery::DeliveryStore::new(
-                    self.state.root.join("delivery"),
-                );
-                parse_verification_line(text, Some(&gate))
-            })
-            .flatten();
+        let verification_line =
+            (matches!(name, "verify_deck" | "verify_artifact") && !is_error)
+                .then(|| {
+                    let gate = crate::delivery::DeliveryStore::new(
+                        self.state.root.join("delivery"),
+                    );
+                    parse_verification_line(text, Some(&gate))
+                })
+                .flatten();
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection
                 .finish_tool_call(call_id, &display_text, is_error);
@@ -2462,9 +2512,14 @@ fn backfill_conversation_artifacts(state: &UiState, engine: &Engine) {
         if writes.is_empty() {
             continue;
         }
+        let gate =
+            crate::delivery::DeliveryStore::new(state.root.join("delivery"));
         let commits =
-            crate::conversation_artifacts::prepare_conversation_artifacts(
-                &store, &session, &writes,
+            crate::conversation_artifacts::prepare_conversation_artifacts_gated(
+                &store,
+                Some(&gate),
+                &session,
+                &writes,
             );
         persist_conversation_commits(engine, &store, state, commits);
     }
@@ -2505,9 +2560,14 @@ fn capture_turn_artifacts(
         state.report_storage_error();
         return;
     };
-    let commits = crate::conversation_artifacts::prepare_conversation_artifacts(
-        &store, &session, &writes,
-    );
+    let gate = crate::delivery::DeliveryStore::new(state.root.join("delivery"));
+    let commits =
+        crate::conversation_artifacts::prepare_conversation_artifacts_gated(
+            &store,
+            Some(&gate),
+            &session,
+            &writes,
+        );
     if persist_conversation_commits(engine, &store, state, commits) {
         state.push_update(AgentUpdate::Artifacts);
     }
@@ -3061,8 +3121,10 @@ fn lines_from_messages_with_gate(
                             ),
                             is_error: errored,
                         });
-                        if tool_name == Some("verify_deck")
-                            && !errored
+                        if matches!(
+                            tool_name,
+                            Some("verify_deck" | "verify_artifact")
+                        ) && !errored
                             && let Some(card) =
                                 parse_verification_line(&text, gate)
                         {
@@ -3130,8 +3192,10 @@ fn lines_from_messages_with_gate(
                                 ),
                                 is_error: errored,
                             });
-                            if tool_name == "verify_deck"
-                                && !errored
+                            if matches!(
+                                tool_name,
+                                "verify_deck" | "verify_artifact"
+                            ) && !errored
                                 && let Some(card) =
                                     parse_verification_line(&text, gate)
                             {
@@ -3161,7 +3225,7 @@ fn tool_result_display_text(tool_name: &str, text: &str) -> String {
     {
         return key.to_owned();
     }
-    if tool_name == "verify_deck"
+    if matches!(tool_name, "verify_deck" | "verify_artifact")
         && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
         && let Some(summary) =
             value.get("summary").and_then(|value| value.as_str())
@@ -3351,6 +3415,7 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
     registry.register(crate::verify::definition(None));
+    registry.register(crate::verifier_registry::definition(None, None));
     registry.register(pi_shell_definition(cwd));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.
@@ -3367,7 +3432,7 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
 fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
     let key = match args.name.as_str() {
         "read_file" | "write_file" | "edit_file" | "glob" | "grep"
-        | "create_deck" | "verify_deck" => "path",
+        | "create_deck" | "verify_deck" | "verify_artifact" => "path",
         _ => return None,
     };
     let raw = args.arguments.get(key).and_then(|value| value.as_str())?;
@@ -4414,7 +4479,7 @@ mod guard_tests {
     #[test]
     fn deck_tools_cannot_escape_the_working_directory() {
         let root = Path::new("/work");
-        for tool in ["create_deck", "verify_deck"] {
+        for tool in ["create_deck", "verify_deck", "verify_artifact"] {
             let escaped = args(tool, json!({ "path": "../outside.pptx" }));
             assert!(
                 path_guard(root, &escaped).is_some(),

@@ -21,6 +21,7 @@ use crate::pptx::resolve_turn_path;
 use crate::semantic_verify::{
     SemanticContext, SemanticOutcome, probe_deck_semantics,
 };
+use crate::verify_contract::{BriefContract, SlideL1Stats, next_action_for};
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -58,6 +59,7 @@ impl VerifyReport {
             "artifact_hash": artifact_hash,
             "anchor": self.anchor,
             "ok": self.ok,
+            "next_action": next_action_for(self),
             "semantic_hint": semantic_hint,
             "issues": self.issues.iter().map(|issue| json!({
                 "code": issue.code,
@@ -146,39 +148,78 @@ fn verify_deck_file(
     expected_slides: usize,
     expected: &[DeckAnchor],
 ) -> Result<VerifyReport, String> {
-    verify_deck_file_with_shapes(path, expected_slides, expected)
+    verify_deck_file_with_shapes(path, expected_slides, expected, None)
         .map(|(report, _)| report)
 }
 
-fn verify_deck_file_with_shapes(
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn verify_deck_file_with_shapes(
     path: &Path,
     expected_slides: usize,
     expected: &[DeckAnchor],
+    contract: Option<&BriefContract>,
 ) -> Result<(VerifyReport, Vec<(String, String)>), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let presentation = rpptx::Presentation::from_bytes(&bytes)
         .map_err(|error| error.to_string())?;
     let slides: Vec<rpptx::SlideRef<'_>> = presentation.slides().collect();
     let mut deck = Vec::new();
-    for slide in &slides {
+    let mut per_slide = Vec::with_capacity(slides.len());
+    for (index, slide) in slides.iter().enumerate() {
+        let mut has_title = false;
+        let mut has_body = false;
+        let mut non_empty_shapes = 0_usize;
         for shape in slide.shapes() {
             if let Some(name) = shape.non_visual_name() {
                 let text = shape.text().unwrap_or_default();
                 // Empty placeholders inherited from the layout are not
                 // anchors; only shapes that carry content count.
                 if !text.trim().is_empty() {
+                    non_empty_shapes += 1;
+                    let lower = name.to_ascii_lowercase();
+                    if lower.contains("title") {
+                        has_title = true;
+                    } else {
+                        has_body = true;
+                    }
                     deck.push((name, text));
                 }
             }
         }
+        per_slide.push(SlideL1Stats {
+            index,
+            has_title,
+            has_body,
+            non_empty_shapes,
+        });
     }
-    let report = evaluate(
+    let mut report = evaluate(
         &path.display().to_string(),
         slides.len(),
         expected_slides,
         &deck,
         expected,
     );
+    if let Some(contract) = contract {
+        contract.check_deck(
+            path,
+            slides.len(),
+            expected_slides,
+            &per_slide,
+            expected.len(),
+            &mut report.issues,
+        );
+    } else {
+        BriefContract::default().check_deck(
+            path,
+            slides.len(),
+            expected_slides,
+            &per_slide,
+            expected.len(),
+            &mut report.issues,
+        );
+    }
+    report.ok = report.issues.is_empty();
     Ok((report, deck))
 }
 
@@ -195,6 +236,7 @@ async fn execute(
     context: &flowy_agent_core::ToolRunContext,
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
+    contract: Option<&BriefContract>,
 ) -> ToolExecutionResult {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -214,7 +256,12 @@ async fn execute(
         context.output_root.as_deref(),
         &args.path,
     );
-    match verify_deck_file_with_shapes(&path, args.slides, &args.anchors) {
+    match verify_deck_file_with_shapes(
+        &path,
+        args.slides,
+        &args.anchors,
+        contract,
+    ) {
         Ok((report, shapes)) => {
             let mut report_id = String::new();
             let mut artifact_hash = std::fs::read(&path).map_or_else(
@@ -314,16 +361,17 @@ async fn execute(
 }
 
 pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
-    definition_with_semantic(store, None)
+    definition_with_semantic_and_contract(store, None, None)
 }
 
-pub fn definition_with_semantic(
+pub fn definition_with_semantic_and_contract(
     store: Option<DeliveryStore>,
     semantic: Option<SemanticContext>,
+    contract: Option<BriefContract>,
 ) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_deck",
-        "Verify a generated deck before delivery. Checks the slide count and each named shape against the expected text. Each anchor must be the slide shape name (for create_deck outputs: S0-title, S0-body, S1-title, S1-body, where slide 0 title is title and slide i>0 title is '{title} · {i+1}'). Returns ok plus ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH issues; a failed report is not a tool error.",
+        "Verify a generated deck before delivery. Checks host brief constraints, L1 per-slide title/body completeness, slide count, and each named shape against the expected text. Each anchor must be the slide shape name (for create_deck outputs: S0-title, S0-body, S1-title, S1-body, where slide 0 title is title and slide i>0 title is '{title} · {i+1}'). Returns ok, next_action ('publish' | 'rerender_once' | 'clarify_or_rebuild'), and ANCHOR_MISSING / ANCHOR_DUPLICATE / ANCHOR_INVALID / VALUE_MISMATCH / STRUCTURE issues; a failed report is not a tool error.",
         json!({
             "type": "object",
             "properties": {
@@ -348,12 +396,14 @@ pub fn definition_with_semantic(
         move |args: ToolCallArgs, context: flowy_agent_core::ToolRunContext| {
             let store = store.clone();
             let semantic = semantic.clone();
+            let contract = contract.clone();
             Box::pin(async move {
                 execute(
                     args.arguments,
                     &context,
                     store.as_ref(),
                     semantic.as_ref(),
+                    contract.as_ref(),
                 )
                 .await
             })
@@ -494,6 +544,77 @@ mod tests {
             "verification must succeed: {result:?}"
         );
         assert!(store.check(&deck).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn shrinking_deck_below_brief_min_slides_fails_even_when_worker_lowers_declared_slides()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-verify-anticheat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let deck = root.join("q3-east.pptx");
+        // Worker shrank a requested 3-slide deck down to 2 slides.
+        crate::pptx::write_deck(
+            &deck,
+            "华东区Q3汇报",
+            &["上海6.1亿".to_owned(), "江苏4.2亿".to_owned()],
+        )
+        .unwrap();
+        let store = DeliveryStore::new(root.join("delivery"));
+        let contract = BriefContract::from_brief(
+            "请生成一份3页华东区汇报 q3-east.pptx 并核验后交付",
+        );
+        let tool = definition_with_semantic_and_contract(
+            Some(store.clone()),
+            None,
+            Some(contract),
+        );
+        let context = flowy_agent_core::ToolRunContext {
+            signal: flowy_agent_core::CancelToken::new(),
+            agent_id: Some("s-cheat".to_owned()),
+            cwd: Some(root.display().to_string()),
+            todos: None,
+            submission_id: Some("sub-cheat".to_owned()),
+            session_origin: flowy_agent_core::SessionOrigin::Home,
+            output_root: None,
+            artifact_delivery_available: true,
+        };
+        // Worker also self-declares slides=2 to try to pass L1/L2 self-check.
+        let args = flowy_agent_core::ToolCallArgs {
+            call_id: "call-cheat".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "q3-east.pptx",
+                "slides": 2,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "华东区Q3汇报"},
+                    {"anchor": "S0-body", "value": "上海6.1亿"},
+                    {"anchor": "S1-title", "value": "华东区Q3汇报 · 2"},
+                    {"anchor": "S1-body", "value": "江苏4.2亿"},
+                ],
+            }),
+        };
+        let ToolExecutionResult::Success { value, .. } =
+            (tool.execute)(args, context).await
+        else {
+            panic!("failed verification must return a structured report");
+        };
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["next_action"], "clarify_or_rebuild");
+        let issues = value["issues"].as_array().unwrap();
+        assert!(
+            issues.iter().any(|item| {
+                item["code"] == STRUCTURE && item["field"] == "brief_min_slides"
+            }),
+            "host brief contract must block shrunken slide count: {issues:?}"
+        );
+        // Hard delivery gate must refuse the deck based on the persisted report.
+        assert_eq!(
+            store.check(&deck).unwrap(),
+            Some(delivery::BlockReason::VerificationFailed)
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
