@@ -100,6 +100,80 @@ fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
     }
 }
 
+/// Collects deliverable files from the most recent turn that produced any,
+/// merging file-change summaries with verified/overridden verification
+/// receipts while strictly excluding unsettled failed verifications (§8.3).
+fn collect_latest_deliverables(
+    lines: &[ChatLine],
+) -> Option<Vec<flowy_agent::FileEntry>> {
+    let mut turn_starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, line)| {
+            matches!(line, ChatLine::User { .. }).then_some(ix)
+        })
+        .collect();
+    if turn_starts.first().copied() != Some(0) {
+        turn_starts.insert(0, 0);
+    }
+    turn_starts.push(lines.len());
+
+    for bounds in turn_starts.windows(2).rev() {
+        let mut entries: Vec<flowy_agent::FileEntry> = Vec::new();
+        let mut seen = HashSet::new();
+        for line in &lines[bounds[0]..bounds[1]] {
+            match line {
+                ChatLine::FileChanges { files } => {
+                    for file in files {
+                        if seen.insert(file.path.clone()) {
+                            entries.push(file.clone());
+                        }
+                    }
+                }
+                ChatLine::FileChange {
+                    path,
+                    change,
+                    added,
+                    removed,
+                    binary,
+                } => {
+                    if seen.insert(path.clone()) {
+                        entries.push(flowy_agent::FileEntry {
+                            path: path.clone(),
+                            change: *change,
+                            added: *added,
+                            removed: *removed,
+                            binary: *binary,
+                        });
+                    }
+                }
+                ChatLine::Verification {
+                    artifact_path,
+                    ok,
+                    override_used,
+                    ..
+                } if (*ok || *override_used)
+                    && !artifact_path.trim().is_empty()
+                    && seen.insert(artifact_path.clone()) =>
+                {
+                    entries.push(flowy_agent::FileEntry {
+                        path: artifact_path.clone(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 0,
+                        removed: 0,
+                        binary: false,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if !entries.is_empty() {
+            return Some(entries);
+        }
+    }
+    None
+}
+
 struct StoredFeed {
     lines: Vec<ChatLine>,
     row_ids: Vec<u64>,
@@ -505,6 +579,8 @@ impl ChatFeed {
         content: gpui::Div,
         cx: &Context<'_, Self>,
     ) -> gpui::AnyElement {
+        // shortcut: first expansion plays opacity+slide while PrepaintBounds
+        // captures natural height; subsequent expansions animate 0->H height.
         let policy = self.theme.motion_policy();
         let (measured, handle) = self.measured_height_for(row_id, cx);
         if let Some(entity) = handle {
@@ -521,31 +597,13 @@ impl ChatFeed {
         }
     }
 
-    /// The most recent turn that changed files, for the drawer toggle.
-    /// Old sessions only carry the single-file row, so both shapes count.
+    /// The most recent turn's deliverable files for the drawer toggle,
+    /// combining file-change summaries with verified/overridden artifacts
+    /// while excluding failed unverified verification cards (§8.3).
     pub(crate) fn latest_deliverables(
         &self,
     ) -> Option<Vec<flowy_agent::FileEntry>> {
-        self.lines.iter().rev().find_map(|line| match line {
-            // An empty summary would open a drawer with nothing in it.
-            ChatLine::FileChanges { files } if !files.is_empty() => {
-                Some(files.clone())
-            }
-            ChatLine::FileChange {
-                path,
-                change,
-                added,
-                removed,
-                binary,
-            } => Some(vec![flowy_agent::FileEntry {
-                path: path.clone(),
-                change: *change,
-                added: *added,
-                removed: *removed,
-                binary: *binary,
-            }]),
-            _ => None,
-        })
+        collect_latest_deliverables(&self.lines)
     }
 
     pub(crate) fn sync_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
@@ -2878,5 +2936,56 @@ mod tests {
                 artifact_path,
             }] if report_id == "report-42" && artifact_path == "outputs/sub/deck.pptx"
         ));
+    }
+
+    #[test]
+    fn latest_deliverables_includes_verified_and_overridden_but_excludes_failed()
+     {
+        let failed_only = vec![
+            ChatLine::User {
+                text: "build deck".into(),
+            },
+            ChatLine::Verification {
+                report_id: "r1".into(),
+                artifact_path: "outputs/bad.pptx".into(),
+                artifact_hash: "aaaa".into(),
+                ok: false,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+            },
+        ];
+        assert!(collect_latest_deliverables(&failed_only).is_none());
+
+        let verified_and_overridden = vec![
+            ChatLine::User {
+                text: "build decks".into(),
+            },
+            ChatLine::Verification {
+                report_id: "r2".into(),
+                artifact_path: "outputs/ok.pptx".into(),
+                artifact_hash: "bbbb".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+            },
+            ChatLine::Verification {
+                report_id: "r3".into(),
+                artifact_path: "outputs/override.docx".into(),
+                artifact_hash: "cccc".into(),
+                ok: false,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: true,
+            },
+            ChatLine::Artifact {
+                artifact_id: "a1".into(),
+            },
+        ];
+        let found = collect_latest_deliverables(&verified_and_overridden)
+            .expect("verified and overridden deliverables must surface");
+        let paths: Vec<&str> = found.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["outputs/ok.pptx", "outputs/override.docx"]);
     }
 }

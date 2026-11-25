@@ -858,9 +858,49 @@ impl StudioPanel {
         cx.notify();
     }
 
-    /// Total number of active/queued works visible in the background-tasks pill.
+    /// Running sessions shown in the background-works popover: on Chat,
+    /// excludes the active foreground session (already surfaced by the inline
+    /// process capsule and `WorkingIndicator`); on Home, includes all running
+    /// sessions so folded work stays reachable.
+    #[must_use]
+    pub(crate) fn background_running_session_ids(&self) -> Vec<String> {
+        let active = self.agent.active_session_id();
+        let exclude_active = self.surface == StudioSurface::Chat;
+        let mut ids: Vec<String> = self
+            .agent
+            .busy_session_ids()
+            .into_iter()
+            .filter(|id| {
+                !(exclude_active && active.as_deref() == Some(id.as_str()))
+            })
+            .collect();
+        if !exclude_active
+            && ids.is_empty()
+            && (self.status.is_busy() || self.submission_pending)
+            && let Some(active_id) = active
+        {
+            ids.push(active_id);
+        }
+        ids
+    }
+
+    /// Total active/queued works shown in the background-tasks pill.
     #[must_use]
     pub fn background_work_count(&self) -> usize {
+        let mut running = self.background_running_session_ids().len();
+        if self.surface != StudioSurface::Chat
+            && running == 0
+            && (self.status.is_busy() || self.submission_pending)
+        {
+            running = 1;
+        }
+        running + self.pending_receipts.len()
+    }
+
+    /// Total active/queued works across all sessions (including foreground),
+    /// for the sidebar Chief Assistant status badge.
+    #[must_use]
+    pub fn total_active_work_count(&self) -> usize {
         let mut running = self.agent.running_session_count();
         if (self.status.is_busy() || self.submission_pending) && running == 0 {
             running = 1;

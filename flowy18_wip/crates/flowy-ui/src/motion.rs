@@ -236,10 +236,12 @@ pub fn measure_height<E: Element>(
 /// Pre-measured smooth height reveal container (GPUI equivalent of Linger's
 /// `AutoHeight`).
 ///
-/// When `measured_height > 0.5` and `policy == MotionPolicy::Full`, animates
+/// When `measured_height > 1.0` and `policy == MotionPolicy::Full`, animates
 /// container height from `0` to `measured_height` with `.overflow_hidden()`
 /// using `out_quint()`, releasing the height constraint once `delta >= 0.995`
-/// so dynamically growing content is never clipped.
+/// so dynamically growing content is never clipped. Inner content is marked
+/// `flex_shrink_0` inside a flex column so Flexbox never squashes a nested
+/// `measure_height` element during intermediate animation frames.
 pub fn auto_height_reveal(
     id: impl Into<ElementId>,
     measured_height: f32,
@@ -253,7 +255,9 @@ pub fn auto_height_reveal(
     let has_height = measured_height > 1.0;
     div()
         .w_full()
-        .child(content)
+        .flex()
+        .flex_col()
+        .child(div().w_full().flex_shrink_0().child(content))
         .with_animation(
             id,
             Animation::new(AUTO_HEIGHT).with_easing(out_quint()),
@@ -425,5 +429,47 @@ mod tests {
         // Reconciling the same order again does not bump epoch.
         state.reconcile(&next, 36.0);
         assert_eq!(state.offset_for("c").map(|(e, _)| e), Some(1));
+    }
+
+    struct RevealHarness {
+        measured: Entity<f32>,
+    }
+
+    impl gpui::Render for RevealHarness {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            cx: &mut gpui::Context<'_, Self>,
+        ) -> impl IntoElement {
+            let current = *self.measured.read(cx);
+            div().w(px(320.)).h(px(320.)).child(auto_height_reveal(
+                "reveal-test",
+                current,
+                MotionPolicy::Full,
+                measure_height(
+                    div().w_full().h(px(120.)),
+                    self.measured.clone(),
+                ),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn auto_height_reveal_does_not_squash_measured_content(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext as _;
+        let measured = cx.update(|cx| cx.new(|_| 120.0_f32));
+        let harness = measured.clone();
+        let (_view, cx) =
+            cx.add_window_view(|_, _| RevealHarness { measured: harness });
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let stored = cx.update(|_, cx| *measured.read(cx));
+        assert!(
+            stored >= 119.5,
+            "intermediate height clip must not squash measured height: {stored}"
+        );
     }
 }

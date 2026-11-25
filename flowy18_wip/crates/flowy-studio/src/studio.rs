@@ -139,16 +139,12 @@ impl crate::panel::StudioPanel {
             .iter()
             .map(|session| (session.id.as_str(), session.title.as_str()))
             .collect();
-        let mut running_ids = self.agent.busy_session_ids();
-        if running_ids.is_empty()
-            && (self.status.is_busy() || self.submission_pending)
-            && let Some(active) = self.agent.active_session_id()
-        {
-            running_ids.push(active);
-        }
-        let has_running = !running_ids.is_empty()
-            || self.status.is_busy()
-            || self.submission_pending;
+        let running_ids = self.background_running_session_ids();
+        let show_anonymous_active = self.surface
+            != crate::panel::StudioSurface::Chat
+            && running_ids.is_empty()
+            && (self.status.is_busy() || self.submission_pending);
+        let has_running = !running_ids.is_empty() || show_anonymous_active;
 
         let mut panel = div()
             .id("bg-tasks-panel")
@@ -195,9 +191,7 @@ impl crate::panel::StudioPanel {
                     ),
             );
 
-        if running_ids.is_empty()
-            && (self.status.is_busy() || self.submission_pending)
-        {
+        if show_anonymous_active {
             let status_text = self.t("chat.status_running");
             panel = panel.child(
                 div()

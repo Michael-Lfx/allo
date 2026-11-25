@@ -100,7 +100,7 @@ impl FlowyApp {
                 .find(|session| session.project_id.is_none())
                 .and_then(|session| studio.agent.session_preview(&session.id));
             (
-                studio.background_work_count(),
+                studio.total_active_work_count(),
                 in_chat,
                 in_chat && studio.active_project_id.is_none(),
                 self.section == Section::Studio && !in_chat,
