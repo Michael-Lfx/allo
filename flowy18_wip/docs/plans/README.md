@@ -4,6 +4,7 @@
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
+| [local-first-ui-v2.zh.md](local-first-ui-v2.zh.md) | 已实现（2026-11-25，提交 `370dfdb5a` / `70cff483a` / `c5170e55a`） | Local-First UI v2 可视化工作台看板、居中流程图弹窗、4 筹码驾驶舱、`flowy-agent` 新 6 接口架构升级、ADR 权衡与踩坑溯源手册 |
 | [super-agent-ui-and-motion.zh.md](super-agent-ui-and-motion.zh.md) | 计划（2026-11-25 架构与交互定稿） | Super Agent 常驻助理/项目空间侧栏、全程实时折叠时间线、悬浮任务胶囊、GPUI 120fps 丝滑动效映射与双分支并行方案 |
 | [clawhub-skill-market.md](clawhub-skill-market.md) | 已实现（2026-11-23） | ClawHub 社区货架、官方 JSON、SQLite 缓存、审核过滤与安装门禁 |
 | [conversation-artifact-library-execution.zh.md](conversation-artifact-library-execution.zh.md) | 实施与验证中 | 代码链路、自动化证据、TC-01–35 与待完成原生/发行门禁 |
