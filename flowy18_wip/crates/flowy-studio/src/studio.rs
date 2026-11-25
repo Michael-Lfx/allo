@@ -1,7 +1,8 @@
-use flowy_ui as theme;
+use std::collections::HashMap;
+use std::time::Duration;
 
-/// How many receipts the strip spells out before collapsing into a count.
-const PENDING_STRIP_LIMIT: usize = 3;
+use flowy_ui as theme;
+use gpui::{Context, FontWeight, SharedString, Window, div, prelude::*, px};
 
 /// Last few characters of a receipt id, by **character**, never by byte.
 ///
@@ -12,8 +13,6 @@ fn short_receipt_id(id: &str) -> String {
     let count = id.chars().count();
     id.chars().skip(count.saturating_sub(8)).collect()
 }
-use gpui::{Context, SharedString, Window, div, prelude::*, px};
-use std::time::Duration;
 
 impl crate::panel::StudioPanel {
     /// Where a queued receipt belongs, in the user's words.
@@ -66,64 +65,6 @@ impl crate::panel::StudioPanel {
                     .child(message),
             );
         }
-        // Accepted-but-not-yet-run messages. This strip is the receipt the user
-        // was promised: it is re-read from the journal, so it also reappears
-        // after a restart instead of dying with the process.
-        if !self.pending_receipts.is_empty() {
-            let total = self.pending_receipts.len();
-            let shown = total.min(PENDING_STRIP_LIMIT);
-            let rows = self.pending_receipts[..shown].iter().enumerate().map(
-                |(index, receipt)| {
-                    let preview: String =
-                        receipt.text.chars().take(40).collect();
-                    let label = format!(
-                        "{} · {} · {}",
-                        self.tf(
-                            "chat.pending_receipt",
-                            &[("id", &short_receipt_id(&receipt.id))],
-                        ),
-                        self.receipt_owner(receipt),
-                        preview
-                    );
-                    div()
-                        .id(("pending-receipt", index))
-                        .role(gpui::Role::Status)
-                        .aria_label(label.clone())
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .child(label)
-                },
-            );
-            // The overflow row keeps the strip a fixed-height hint instead of a
-            // wall: nothing drains the journal yet, so the list only grows.
-            let overflow = (total > shown).then(|| {
-                let label = self.tf(
-                    "chat.pending_more",
-                    &[("n", &(total - shown).to_string())],
-                );
-                // Same treatment as the rows above: without `role` and
-                // `aria_label` this line renders but never reaches assistive
-                // technology, so the count would be silent.
-                div()
-                    .id("pending-more")
-                    .role(gpui::Role::Status)
-                    .aria_label(label.clone())
-                    .text_sm()
-                    .text_color(self.theme.muted())
-                    .child(label)
-            });
-            column = column.child(
-                div()
-                    .id("studio-pending")
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .px(self.theme.space(32.))
-                    .py(self.theme.space(6.))
-                    .children(rows)
-                    .children(overflow),
-            );
-        }
         // The drawer sits beside whichever surface is showing, so it works in
         // the conversation too, not just on the home stage.
         let content = if self.surface == crate::panel::StudioSurface::Home {
@@ -167,6 +108,17 @@ impl crate::panel::StudioPanel {
                 self.i18n.locale().is_rtl(),
             ));
         }
+        if self.bg_tasks_open && chrome {
+            column = column.child(theme::popover_above(
+                "bg-tasks-popover",
+                "bg-tasks-trigger",
+                self.bg_tasks_popover(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
+        }
         if self.credits_hover
             && !self.model_info_open
             && !self.model_menu_open
@@ -183,6 +135,282 @@ impl crate::panel::StudioPanel {
             ));
         }
         column
+    }
+
+    fn bg_tasks_popover(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let total = self.background_work_count();
+        let sessions = self.agent.list_sessions();
+        let titles: HashMap<&str, &str> = sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session.title.as_str()))
+            .collect();
+        let mut running_ids = self.agent.busy_session_ids();
+        if running_ids.is_empty()
+            && (self.status.is_busy() || self.submission_pending)
+            && let Some(active) = self.agent.active_session_id()
+        {
+            running_ids.push(active);
+        }
+        let has_running = !running_ids.is_empty()
+            || self.status.is_busy()
+            || self.submission_pending;
+
+        let mut panel = div()
+            .id("bg-tasks-panel")
+            .occlude()
+            .w(px(360.))
+            .max_h(px(340.))
+            .overflow_y_scroll()
+            .bg(self.theme.card())
+            .border_1()
+            .border_color(self.theme.line())
+            .rounded_xl()
+            .shadow_md()
+            .p(self.theme.space(10.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(6.))
+            .child(
+                div()
+                    .w_full()
+                    .px(self.theme.space(4.))
+                    .pb(self.theme.space(4.))
+                    .border_b_1()
+                    .border_color(self.theme.line())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.ink())
+                            .child(self.t("chat.bg_tasks_title")),
+                    )
+                    .child(
+                        div()
+                            .px(self.theme.space(6.))
+                            .py(px(1.))
+                            .rounded_full()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(total.to_string()),
+                    ),
+            );
+
+        if running_ids.is_empty()
+            && (self.status.is_busy() || self.submission_pending)
+        {
+            let status_text = self.t("chat.status_running");
+            panel = panel.child(
+                div()
+                    .id("bg-task-active-status")
+                    .role(gpui::Role::Status)
+                    .aria_label(status_text.clone())
+                    .w_full()
+                    .min_w_0()
+                    .px(self.theme.space(8.))
+                    .py(self.theme.space(6.))
+                    .rounded_lg()
+                    .bg(self.theme.soft().opacity(0.45))
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(self.theme.status_active()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.ink())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(status_text),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(self.theme.space(6.))
+                            .py(px(1.))
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.status_active())
+                            .child(self.t("chat.bg_task_running")),
+                    ),
+            );
+        }
+
+        for (index, session_id) in running_ids.into_iter().enumerate() {
+            let preview = self.agent.session_preview(&session_id);
+            let title = titles
+                .get(session_id.as_str())
+                .copied()
+                .filter(|title| !title.trim().is_empty())
+                .map(str::to_owned)
+                .or_else(|| preview.clone())
+                .unwrap_or_else(|| short_receipt_id(&session_id));
+            let subtitle =
+                preview.filter(|text| text.as_str() != title.as_str());
+            panel = panel.child(
+                theme::interactive(
+                    ("bg-task-running", index as u64),
+                    title.clone(),
+                    &self.theme,
+                )
+                .w_full()
+                .min_w_0()
+                .px(self.theme.space(8.))
+                .py(self.theme.space(6.))
+                .rounded_lg()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(
+                    div()
+                        .size(px(6.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(self.theme.status_active()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.ink())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(title),
+                        )
+                        .when_some(subtitle, |col, text| {
+                            col.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(text),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .px(self.theme.space(6.))
+                        .py(px(1.))
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .text_xs()
+                        .text_color(self.theme.status_active())
+                        .child(self.t("chat.bg_task_running")),
+                )
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.open_session(&session_id, cx);
+                        panel.bg_tasks_open = false;
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+
+        for (index, receipt) in self.pending_receipts.iter().enumerate() {
+            let preview: String = receipt.text.chars().take(40).collect();
+            let owner = self.receipt_owner(receipt);
+            let receipt_tag = self.tf(
+                "chat.pending_receipt",
+                &[("id", &short_receipt_id(&receipt.id))],
+            );
+            let label =
+                format!("{receipt_tag} \u{00b7} {owner} \u{00b7} {preview}");
+            let meta = format!("{receipt_tag} \u{00b7} {owner}");
+            let heading = if preview.trim().is_empty() {
+                receipt_tag
+            } else {
+                preview
+            };
+            panel = panel.child(
+                div()
+                    .id(("pending-receipt", index))
+                    .role(gpui::Role::Status)
+                    .aria_label(label)
+                    .w_full()
+                    .min_w_0()
+                    .px(self.theme.space(8.))
+                    .py(self.theme.space(6.))
+                    .rounded_lg()
+                    .bg(self.theme.soft().opacity(0.45))
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.ink())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(heading),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(meta),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(self.theme.space(6.))
+                            .py(px(1.))
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("chat.bg_task_queued")),
+                    ),
+            );
+        }
+
+        if !has_running && self.pending_receipts.is_empty() {
+            panel = panel.child(
+                div()
+                    .py(self.theme.space(12.))
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .text_center()
+                    .child(self.t("chat.bg_tasks_empty")),
+            );
+        }
+
+        panel
     }
 
     fn model_info(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -443,6 +671,20 @@ impl crate::panel::StudioPanel {
                         self.surface == crate::panel::StudioSurface::Chat,
                         |row| {
                             row.child(
+                                theme::Button::new(
+                                    "fold-desk",
+                                    self.t("dock.fold_desk"),
+                                )
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(|panel, _, _, cx| {
+                                        panel.fold_desk(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
                                 theme::Button::new(
                                     "deliverables",
                                     self.t("chat.deliverables"),

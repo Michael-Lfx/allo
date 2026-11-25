@@ -3,8 +3,8 @@ use flowy_agent::{ChatHistory, ChatLine, TurnStatus};
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, ResolvedTheme, UiContext};
 use gpui::{
-    Context, FontWeight, ListAlignment, ListState, Render, SharedString,
-    Subscription, Window, div, list, prelude::*, px,
+    Animation, AnimationExt, Context, FontWeight, ListAlignment, ListState,
+    Render, SharedString, Subscription, Window, div, list, prelude::*, px,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -553,18 +553,61 @@ impl ChatFeed {
                         .child(text.clone()),
                 )
                 .into_any_element(),
-            ChatLine::Assistant { text } => div()
-                .id(("chat-assistant", self.row_ids[index]))
-                .w_full()
-                .py(self.theme.space(4.))
-                .text_sm()
-                .whitespace_normal()
-                .child(if self.projection.streaming == Some(index) {
-                    div().child(text.clone())
-                } else {
-                    markdown::render(text, self.theme, &self.i18n)
-                })
-                .into_any_element(),
+            ChatLine::Assistant { text } => {
+                let show_identity = index == 0
+                    || !matches!(
+                        self.lines[index - 1],
+                        ChatLine::Assistant { .. }
+                    );
+                div()
+                    .id(("chat-assistant", self.row_ids[index]))
+                    .w_full()
+                    .py(self.theme.space(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(6.))
+                    .when(show_identity, |col| {
+                        col.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(self.theme.space(6.))
+                                .child(
+                                    div()
+                                        .size(px(18.))
+                                        .flex_none()
+                                        .rounded_md()
+                                        .bg(self.theme.assistant_badge_bg())
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            theme::icons::sparkles()
+                                                .size(px(10.))
+                                                .text_color(
+                                                    self.theme
+                                                        .assistant_badge_fg(),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(self.theme.muted())
+                                        .child(self.t("chat.router_name")),
+                                ),
+                        )
+                    })
+                    .child(div().w_full().text_sm().whitespace_normal().child(
+                        if self.projection.streaming == Some(index) {
+                            div().child(text.clone())
+                        } else {
+                            markdown::render(text, self.theme, &self.i18n)
+                        },
+                    ))
+                    .into_any_element()
+            }
             ChatLine::Reasoning {
                 text,
                 duration_secs,
@@ -674,19 +717,17 @@ impl ChatFeed {
                 issues,
                 semantic_hint,
                 override_used,
-            } => self
-                .verification_card(
-                    index,
-                    report_id,
-                    artifact_path,
-                    artifact_hash,
-                    *ok,
-                    issues,
-                    semantic_hint.as_deref(),
-                    *override_used,
-                    cx,
-                )
-                .into_any_element(),
+            } => self.verification_card(
+                index,
+                report_id,
+                artifact_path,
+                artifact_hash,
+                *ok,
+                issues,
+                semantic_hint.as_deref(),
+                *override_used,
+                cx,
+            ),
         }
     }
 
@@ -992,7 +1033,7 @@ impl ChatFeed {
         semantic_hint: Option<&str>,
         override_used: bool,
         cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         let row_id = self.row_ids[index];
         let name = artifact_path
             .rsplit(['/', '\\'])
@@ -1005,37 +1046,263 @@ impl ChatFeed {
         } else {
             self.t("verify.card.failed")
         };
+
+        if ok || override_used {
+            let expanded = self.expanded_rows.contains(&row_id);
+            let compact_label = if ok {
+                self.tf("verify.compact.passed", &[("name", &name)])
+            } else {
+                self.tf("verify.compact.override", &[("name", &name)])
+            };
+            let mut toggle = theme::interactive(
+                ("verify-compact-toggle", row_id),
+                compact_label.clone(),
+                &self.theme,
+            )
+            .aria_expanded(expanded)
+            .w_full()
+            .min_w_0()
+            .px(self.theme.space(10.))
+            .py(self.theme.space(6.))
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.soft()))
+            .child(if ok {
+                theme::icons::check()
+                    .size(px(14.))
+                    .text_color(self.theme.status_verified())
+            } else {
+                theme::icons::circle_alert()
+                    .size(px(14.))
+                    .text_color(self.theme.status_attention())
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if ok {
+                        self.theme.ink()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(compact_label),
+            );
+            if ok && !short_hash.is_empty() {
+                toggle =
+                    toggle.child(
+                        div()
+                            .flex_none()
+                            .px(self.theme.space(6.))
+                            .py(px(1.))
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.tf(
+                                "verify.card.hash",
+                                &[("hash", &short_hash)],
+                            )),
+                    );
+            }
+            if override_used {
+                let badge = self.t("verify.override.badge");
+                toggle = toggle.child(
+                    div()
+                        .id(("verify-override-badge", row_id))
+                        .debug_selector(|| {
+                            "chat-verify-override-badge".to_owned()
+                        })
+                        .role(gpui::Role::Status)
+                        .aria_label(badge.clone())
+                        .flex_none()
+                        .px(self.theme.space(6.))
+                        .py(px(1.))
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .text_xs()
+                        .text_color(self.theme.status_attention())
+                        .child(badge),
+                );
+            }
+            toggle = toggle
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(if expanded {
+                            theme::icons::chevron_down().size(px(12.))
+                        } else {
+                            theme::icons::chevron_right().size(px(12.))
+                        }),
+                )
+                .on_click(cx.listener(move |feed, _, _, cx| {
+                    feed.toggle_detail(row_id, cx);
+                }));
+
+            let mut card = div()
+                .id(("verification-card", row_id))
+                .debug_selector(|| "chat-verification-card".to_owned())
+                .role(if ok {
+                    gpui::Role::Status
+                } else {
+                    gpui::Role::Alert
+                })
+                .aria_label(status_label)
+                .w_full()
+                .max_w(px(540.))
+                .min_w_0()
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.card())
+                .flex()
+                .flex_col()
+                .child(toggle);
+
+            if expanded {
+                let mut details = div()
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(8.))
+                    .border_t_1()
+                    .border_color(self.theme.line())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(6.))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(display_path(artifact_path)),
+                            )
+                            .when(!short_hash.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .px(self.theme.space(6.))
+                                        .py(px(1.))
+                                        .rounded_md()
+                                        .bg(self.theme.soft())
+                                        .text_xs()
+                                        .text_color(self.theme.muted())
+                                        .child(self.tf(
+                                            "verify.card.hash",
+                                            &[("hash", &short_hash)],
+                                        )),
+                                )
+                            }),
+                    );
+                if !issues.is_empty() {
+                    let mut list = div().w_full().flex().flex_col().gap(px(4.));
+                    for (issue_ix, line_text) in self
+                        .format_verification_issues(issues)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        list = list.child(
+                            div()
+                                .id((
+                                    "verify-issue",
+                                    row_id * 100 + issue_ix as u64,
+                                ))
+                                .role(gpui::Role::Status)
+                                .aria_label(line_text.clone())
+                                .text_xs()
+                                .text_color(self.theme.ink())
+                                .whitespace_normal()
+                                .child(line_text),
+                        );
+                    }
+                    details = details.child(list);
+                }
+                if let Some(hint) = semantic_hint
+                    && !hint.trim().is_empty()
+                {
+                    let hint_label =
+                        self.tf("verify.semantic.hint", &[("hint", hint)]);
+                    details = details.child(
+                        div()
+                            .id(("verify-semantic-hint", row_id))
+                            .role(gpui::Role::Status)
+                            .aria_label(hint_label.clone())
+                            .px(self.theme.space(8.))
+                            .py(self.theme.space(4.))
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(hint_label),
+                    );
+                }
+                card = card.child(
+                    details.with_animation(
+                        ("verify-detail-reveal", row_id),
+                        Animation::new(crate::motion::AUTO_HEIGHT)
+                            .with_easing(crate::motion::out_quint()),
+                        |el, delta| {
+                            el.opacity(delta)
+                                .relative()
+                                .top(px(4. * (1.0 - delta)))
+                        },
+                    ),
+                );
+            }
+
+            if override_used && !ok {
+                return card
+                    .with_animation(
+                        ("verify-settled", row_id),
+                        Animation::new(crate::motion::MODERATE)
+                            .with_easing(crate::motion::out_quint()),
+                        |el, delta| {
+                            el.opacity(delta)
+                                .relative()
+                                .top(px(4. * (1.0 - delta)))
+                        },
+                    )
+                    .into_any_element();
+            }
+            return card.into_any_element();
+        }
+
         let check_key = format!("{report_id}:{artifact_path}");
         let checked = self.override_checked.contains(&check_key);
-        let border = if ok || override_used {
-            self.theme.line()
-        } else {
-            self.theme.danger()
-        };
 
         let mut header = div()
             .w_full()
             .flex()
             .items_center()
             .gap(self.theme.space(8.))
-            .child(if ok {
-                theme::icons::check()
-                    .size(px(16.))
-                    .text_color(self.theme.accent())
-            } else {
+            .child(
                 theme::icons::circle_alert()
                     .size(px(16.))
-                    .text_color(self.theme.danger())
-            })
+                    .text_color(self.theme.danger()),
+            )
             .child(
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(if ok {
-                        self.theme.ink()
-                    } else {
-                        self.theme.danger()
-                    })
+                    .text_color(self.theme.danger())
                     .child(status_label.clone()),
             )
             .child(
@@ -1062,39 +1329,18 @@ impl ChatFeed {
                     ),
             );
         }
-        if override_used {
-            let badge = self.t("verify.override.badge");
-            header = header.child(
-                div()
-                    .id(("verify-override-badge", row_id))
-                    .debug_selector(|| "chat-verify-override-badge".to_owned())
-                    .role(gpui::Role::Status)
-                    .aria_label(badge.clone())
-                    .px(self.theme.space(6.))
-                    .py(px(1.))
-                    .rounded_md()
-                    .bg(self.theme.soft())
-                    .text_xs()
-                    .text_color(self.theme.danger())
-                    .child(badge),
-            );
-        }
 
         let mut card = div()
             .id(("verification-card", row_id))
             .debug_selector(|| "chat-verification-card".to_owned())
-            .role(if ok {
-                gpui::Role::Status
-            } else {
-                gpui::Role::Alert
-            })
+            .role(gpui::Role::Alert)
             .aria_label(status_label)
             .w_full()
             .max_w(px(540.))
             .min_w_0()
             .rounded_xl()
             .border_1()
-            .border_color(border)
+            .border_color(self.theme.danger())
             .bg(self.theme.card())
             .flex()
             .flex_col()
@@ -1147,100 +1393,98 @@ impl ChatFeed {
         // §8.3: Never render an ordinary "Send / Deliver" primary button when
         // verification fails. Only an explicit unchecked-by-default checkbox
         // unlocks the override action, leaving a permanent audit mark.
-        if !ok && !override_used {
-            let confirm_label = self.t("verify.override.confirm");
-            let toggle_key = check_key;
-            let action_report = report_id.to_owned();
-            let action_path = artifact_path.to_owned();
-            let checkbox = theme::interactive(
-                ("verify-override-check", row_id),
-                confirm_label.clone(),
-                &self.theme,
-            )
-            .debug_selector(|| "chat-verify-override-check".to_owned())
-            .role(gpui::Role::CheckBox)
-            .aria_toggled(if checked {
-                gpui::accesskit::Toggled::True
-            } else {
-                gpui::accesskit::Toggled::False
-            })
-            .flex()
-            .items_center()
-            .gap(self.theme.space(8.))
-            .cursor_pointer()
-            .child(
-                div()
-                    .size(px(16.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(if checked {
-                        self.theme.accent()
-                    } else {
-                        self.theme.border_strong()
-                    })
-                    .bg(if checked {
-                        self.theme.fill()
-                    } else {
-                        self.theme.canvas()
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(checked, |mark| {
-                        mark.child(
-                            theme::icons::check()
-                                .size(px(12.))
-                                .text_color(self.theme.on_fill()),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(self.theme.ink())
-                    .child(confirm_label),
-            )
-            .on_click(cx.listener(move |feed, _, _, cx| {
-                feed.toggle_override_check(toggle_key.clone(), cx);
-            }));
-
-            let action_btn = theme::Button::new(
-                ("verify-override-submit", row_id),
-                self.t("verify.override.action"),
-            )
-            .variant(theme::ControlVariant::Secondary)
-            .size(theme::ControlSize::Small)
-            .disabled(!checked)
-            .render(
-                &self.theme,
-                cx.listener(move |_, _, _, cx| {
-                    cx.emit(ArtifactAction::OverrideDeliver {
-                        report_id: action_report.clone(),
-                        artifact_path: action_path.clone(),
-                    });
+        let confirm_label = self.t("verify.override.confirm");
+        let toggle_key = check_key;
+        let action_report = report_id.to_owned();
+        let action_path = artifact_path.to_owned();
+        let checkbox = theme::interactive(
+            ("verify-override-check", row_id),
+            confirm_label.clone(),
+            &self.theme,
+        )
+        .debug_selector(|| "chat-verify-override-check".to_owned())
+        .role(gpui::Role::CheckBox)
+        .aria_toggled(if checked {
+            gpui::accesskit::Toggled::True
+        } else {
+            gpui::accesskit::Toggled::False
+        })
+        .flex()
+        .items_center()
+        .gap(self.theme.space(8.))
+        .cursor_pointer()
+        .child(
+            div()
+                .size(px(16.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if checked {
+                    self.theme.accent()
+                } else {
+                    self.theme.border_strong()
+                })
+                .bg(if checked {
+                    self.theme.fill()
+                } else {
+                    self.theme.canvas()
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(checked, |mark| {
+                    mark.child(
+                        theme::icons::check()
+                            .size(px(12.))
+                            .text_color(self.theme.on_fill()),
+                    )
                 }),
-            );
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(self.theme.ink())
+                .child(confirm_label),
+        )
+        .on_click(cx.listener(move |feed, _, _, cx| {
+            feed.toggle_override_check(toggle_key.clone(), cx);
+        }));
 
-            card = card.child(
-                div()
-                    .w_full()
-                    .pt(self.theme.space(4.))
-                    .border_t_1()
-                    .border_color(self.theme.line())
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap(self.theme.space(8.))
-                    .child(checkbox)
-                    .child(crate::library::test_control(
-                        "chat-verify-override-submit",
-                        action_btn,
-                    )),
-            );
-        }
+        let action_btn = theme::Button::new(
+            ("verify-override-submit", row_id),
+            self.t("verify.override.action"),
+        )
+        .variant(theme::ControlVariant::Secondary)
+        .size(theme::ControlSize::Small)
+        .disabled(!checked)
+        .render(
+            &self.theme,
+            cx.listener(move |_, _, _, cx| {
+                cx.emit(ArtifactAction::OverrideDeliver {
+                    report_id: action_report.clone(),
+                    artifact_path: action_path.clone(),
+                });
+            }),
+        );
 
-        card
+        card = card.child(
+            div()
+                .w_full()
+                .pt(self.theme.space(4.))
+                .border_t_1()
+                .border_color(self.theme.line())
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(self.theme.space(8.))
+                .child(checkbox)
+                .child(crate::library::test_control(
+                    "chat-verify-override-submit",
+                    action_btn,
+                )),
+        );
+
+        card.into_any_element()
     }
     fn reasoning_block(
         &self,
@@ -1251,12 +1495,58 @@ impl ChatFeed {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let row_id = self.row_ids[index];
-        let expanded = live || self.expanded_rows.contains(&row_id);
+        let expanded = self.expanded_rows.contains(&row_id);
         let title = if live {
-            self.t("chat.thinking")
+            self.t("chat.reasoning_live")
         } else {
             let duration = self.format_duration_secs(duration_secs);
             self.tf("chat.thought_for", &[("duration", &duration)])
+        };
+        let header_content = if live {
+            div()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .child(
+                    theme::icons::loader_circle()
+                        .size(px(12.))
+                        .text_color(self.theme.status_active()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.muted())
+                        .child(title.clone()),
+                )
+                .with_animation(
+                    ("reasoning-live", row_id),
+                    Animation::new(crate::motion::PULSE)
+                        .repeat()
+                        .with_easing(crate::motion::pulsing_sine()),
+                    |el, delta| el.opacity(0.45f32.mul_add(-delta, 1.0)),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .child(div().text_xs().text_color(self.theme.muted()).child(
+                    if expanded {
+                        theme::icons::chevron_down().size(px(12.))
+                    } else {
+                        theme::icons::chevron_right().size(px(12.))
+                    },
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.muted())
+                        .child(title.clone()),
+                )
+                .into_any_element()
         };
         let mut block = div()
             .id(("chat-reasoning", row_id))
@@ -1267,7 +1557,7 @@ impl ChatFeed {
             .child(
                 theme::interactive(
                     ("chat-reasoning-toggle", row_id),
-                    title.clone(),
+                    title,
                     &self.theme,
                 )
                 .aria_expanded(expanded)
@@ -1279,20 +1569,7 @@ impl ChatFeed {
                 .rounded_md()
                 .cursor_pointer()
                 .hover(|style| style.bg(self.theme.soft()))
-                .child(div().text_xs().text_color(self.theme.muted()).child(
-                    if expanded {
-                        theme::icons::chevron_down()
-                    } else {
-                        theme::icons::chevron_right()
-                    },
-                ))
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.muted())
-                        .child(title),
-                )
+                .child(header_content)
                 .on_click(cx.listener(
                     move |feed, _, _, cx| {
                         feed.toggle_detail(row_id, cx);
@@ -1306,22 +1583,19 @@ impl ChatFeed {
                     .pl(self.theme.space(12.))
                     .border_l_1()
                     .border_color(self.theme.line())
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(4.))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.muted())
-                            .child(self.t("chat.thinking")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .whitespace_normal()
-                            .child(text.to_owned()),
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(text.to_owned())
+                    .with_animation(
+                        ("reasoning-reveal", row_id),
+                        Animation::new(crate::motion::AUTO_HEIGHT)
+                            .with_easing(crate::motion::out_quint()),
+                        |el, delta| {
+                            el.opacity(delta)
+                                .relative()
+                                .top(px(4. * (1.0 - delta)))
+                        },
                     ),
             );
         }
@@ -1337,47 +1611,69 @@ impl ChatFeed {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let row_id = self.row_ids[index];
-        let expanded = running || self.expanded_rows.contains(&row_id);
-        let rail = if running {
-            self.theme.accent()
+        let expanded = self.expanded_rows.contains(&row_id);
+        let heading = if running {
+            self.tf("chat.tool_live", &[("name", name)])
         } else {
-            self.theme.muted()
-        };
-        let label = if target.is_empty() {
             name.to_owned()
+        };
+        let accessible = if target.is_empty() {
+            heading.clone()
         } else {
-            format!("{name} {target}")
+            format!("{heading} {target}")
+        };
+        let status_mark = if running {
+            div()
+                .size(px(6.))
+                .flex_none()
+                .rounded_full()
+                .bg(self.theme.status_active())
+                .with_animation(
+                    ("tool-live-dot", row_id),
+                    Animation::new(crate::motion::PULSE)
+                        .repeat()
+                        .with_easing(crate::motion::pulsing_sine()),
+                    |dot, delta| dot.opacity(0.6f32.mul_add(-delta, 1.0)),
+                )
+                .into_any_element()
+        } else {
+            theme::icons::check()
+                .size(px(12.))
+                .text_color(self.theme.status_verified())
+                .into_any_element()
         };
         let mut row = div()
             .id(("chat-tool", row_id))
             .w_full()
-            .ml(px(6.))
-            .border_l(px(3.))
-            .border_color(rail)
-            .bg(self.theme.soft())
+            .rounded_lg()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.soft().opacity(0.45))
             .flex()
             .flex_col()
             .child(
                 theme::interactive(
                     ("chat-tool-toggle", row_id),
-                    label.clone(),
+                    accessible,
                     &self.theme,
                 )
                 .aria_expanded(expanded)
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(12.))
+                .px(self.theme.space(10.))
+                .rounded_lg()
                 .flex()
                 .items_center()
                 .gap(self.theme.space(8.))
                 .cursor_pointer()
-                .hover(|style| style.bg(self.theme.card()))
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(status_mark)
                 .child(
                     div()
                         .flex_none()
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(self.theme.ink())
-                        .child(SharedString::from(name.to_owned())),
+                        .child(SharedString::from(heading)),
                 )
                 .when(!target.is_empty(), |el| {
                     el.child(
@@ -1391,13 +1687,18 @@ impl ChatFeed {
                             .child(SharedString::from(target.to_owned())),
                     )
                 })
-                .child(div().text_xs().text_color(self.theme.muted()).child(
-                    if expanded {
-                        theme::icons::chevron_down()
-                    } else {
-                        theme::icons::chevron_right()
-                    },
-                ))
+                .when(target.is_empty(), |el| el.child(div().flex_1()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(if expanded {
+                            theme::icons::chevron_down().size(px(12.))
+                        } else {
+                            theme::icons::chevron_right().size(px(12.))
+                        }),
+                )
                 .on_click(cx.listener(
                     move |feed, _, _, cx| {
                         feed.toggle_detail(row_id, cx);
@@ -1407,12 +1708,25 @@ impl ChatFeed {
         if expanded && !target.is_empty() {
             row = row.child(
                 div()
-                    .px(self.theme.space(12.))
+                    .px(self.theme.space(10.))
                     .pb(self.theme.space(8.))
+                    .pt(self.theme.space(4.))
+                    .border_t_1()
+                    .border_color(self.theme.line())
                     .text_xs()
                     .text_color(self.theme.muted())
                     .whitespace_normal()
-                    .child(label),
+                    .child(format!("{name} {target}"))
+                    .with_animation(
+                        ("tool-reveal", row_id),
+                        Animation::new(crate::motion::AUTO_HEIGHT)
+                            .with_easing(crate::motion::out_quint()),
+                        |el, delta| {
+                            el.opacity(delta)
+                                .relative()
+                                .top(px(4. * (1.0 - delta)))
+                        },
+                    ),
             );
         }
         row
