@@ -205,6 +205,12 @@ enum JournalEntry {
         attempt_id: String,
         at_ms: u64,
     },
+    /// Dead receipt replaced by a freshly queued receipt via explicit retry.
+    Superseded {
+        id: String,
+        replaced_by: String,
+        at_ms: u64,
+    },
 }
 
 /// File-backed acceptance journal rooted at one storage directory.
@@ -396,6 +402,17 @@ impl AcceptanceQueue {
                         }
                     }
                 }
+                JournalEntry::Superseded { id, .. } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                        && receipt.completed_at_ms.is_none()
+                        && receipt.dead
+                        && !receipt.cancelled
+                    {
+                        receipt.cancelled = true;
+                        receipt.lease = None;
+                    }
+                }
             }
         }
         if let Some(corrupt_idx) = last_interior_corrupt_line {
@@ -484,6 +501,91 @@ impl AcceptanceQueue {
             .collect();
         pending.sort_by_key(|receipt| receipt.created_at_ms);
         Ok(pending)
+    }
+
+    /// Receipts that remain active or need user visibility: every receipt that
+    /// is neither `Completed` nor `Cancelled` (`Queued`, `Running`, `Retrying`
+    /// including backoff windows, `Quarantined`, and `Dead`), sorted by
+    /// `created_at_ms` ascending.
+    pub fn visible(&self) -> io::Result<Vec<(AcceptedMessage, ReceiptState)>> {
+        self.visible_at(now_ms())
+    }
+
+    /// `visible` at a caller-supplied clock, for deterministic tests.
+    pub fn visible_at(
+        &self,
+        now_ms: u64,
+    ) -> io::Result<Vec<(AcceptedMessage, ReceiptState)>> {
+        let mut visible: Vec<(AcceptedMessage, ReceiptState)> = self
+            .replay()?
+            .into_iter()
+            .filter_map(|receipt| {
+                let state = receipt.state_at(now_ms);
+                (!matches!(
+                    state,
+                    ReceiptState::Completed | ReceiptState::Cancelled
+                ))
+                .then_some((receipt, state))
+            })
+            .collect();
+        visible.sort_by_key(|(receipt, _)| receipt.created_at_ms);
+        Ok(visible)
+    }
+
+    /// Requeue a `Dead` receipt as a fresh receipt ID and atomically supersede
+    /// the original dead record so it exits `visible` and cannot be retried
+    /// twice across restarts or double-clicks.
+    pub fn retry_dead(
+        &self,
+        id: &str,
+        now_ms: u64,
+    ) -> io::Result<Option<AcceptedMessage>> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(dead) = receipts.iter().find(|receipt| {
+            receipt.id == id
+                && receipt.dead
+                && !receipt.cancelled
+                && receipt.completed_at_ms.is_none()
+        }) else {
+            return Ok(None);
+        };
+        let mut new_id = new_receipt_id(now_ms);
+        while new_id == id {
+            new_id = new_receipt_id(now_ms);
+        }
+        let entries = [
+            JournalEntry::Accepted {
+                id: new_id.clone(),
+                session_hint: dead.session_hint.clone(),
+                text: dead.text.clone(),
+                at_ms: now_ms,
+            },
+            JournalEntry::Superseded {
+                id: id.to_owned(),
+                replaced_by: new_id.clone(),
+                at_ms: now_ms,
+            },
+        ];
+        self.append_batch(&entries)?;
+        Ok(Some(AcceptedMessage {
+            id: new_id,
+            session_hint: dead.session_hint.clone(),
+            text: dead.text.clone(),
+            created_at_ms: now_ms,
+            taken_at_ms: None,
+            lease: None,
+            completed_at_ms: None,
+            available_at_ms: None,
+            attempts: 0,
+            dead: false,
+            cancelled: false,
+            quarantined: false,
+            last_attempt_id: None,
+            target_session_id: None,
+            submission_id: None,
+        }))
     }
 
     /// Claim `id` for `attempt_id` until `now_ms + lease_ms`.
@@ -751,13 +853,21 @@ impl AcceptanceQueue {
     }
 
     fn append(&self, entry: &JournalEntry) -> io::Result<()> {
+        self.append_batch(std::slice::from_ref(entry))
+    }
+
+    fn append_batch(&self, entries: &[JournalEntry]) -> io::Result<()> {
         let path = Self::path(&self.root);
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::other("missing acceptance directory"))?;
         fs::create_dir_all(dir)?;
-        let mut line = serde_json::to_vec(entry).map_err(io::Error::other)?;
-        line.push(b'\n');
+        let mut buf = Vec::new();
+        for entry in entries {
+            let line = serde_json::to_vec(entry).map_err(io::Error::other)?;
+            buf.extend_from_slice(&line);
+            buf.push(b'\n');
+        }
         // A crash can leave a partial record without its newline. Terminate it
         // before appending, so the new record never becomes part of the torn
         // line.
@@ -766,7 +876,7 @@ impl AcceptanceQueue {
             .create(true)
             .append(true)
             .open(&path)?;
-        handle.write_all(&line)?;
+        handle.write_all(&buf)?;
         handle.flush()?;
         handle.sync_all()
     }
@@ -1420,6 +1530,115 @@ mod tests {
                 .expect("take b")
                 .is_some()
         );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn visible_at_includes_backoff_running_dead_and_quarantined_in_order() {
+        let root = temp_root("visible-states");
+        let queue = AcceptanceQueue::new(&root);
+
+        let r_done = queue.accept(None, "done", 1_000).expect("done");
+        queue
+            .take(&r_done.id, "a-done", 1_010, 500)
+            .expect("take done")
+            .expect("claimed");
+        assert!(queue.complete(&r_done.id, "a-done", 1_020).expect("done"));
+
+        let r_cancel = queue.accept(None, "cancel", 1_100).expect("cancel");
+        assert!(queue.cancel(&r_cancel.id, 1_110).expect("cancel"));
+
+        let r_backoff = queue.accept(None, "backoff", 1_200).expect("backoff");
+        queue
+            .take(&r_backoff.id, "a-back", 1_210, 500)
+            .expect("take back")
+            .expect("claimed");
+        assert!(
+            queue
+                .release(&r_backoff.id, "a-back", 1_220, 60_000)
+                .expect("release")
+        );
+
+        let r_dead = queue.accept(None, "dead", 1_300).expect("dead");
+        queue
+            .take(&r_dead.id, "a-dead", 1_310, 500)
+            .expect("take dead")
+            .expect("claimed");
+        assert!(queue.give_up(&r_dead.id, "a-dead", 1_320).expect("dead"));
+
+        let r_running = queue.accept(None, "running", 1_400).expect("running");
+        queue
+            .take(&r_running.id, "a-run", 1_410, 10_000)
+            .expect("take run")
+            .expect("claimed");
+
+        let r_queued = queue.accept(None, "queued", 1_500).expect("queued");
+
+        // During backoff (`now = 2_000`), `pending_at` hides backoff/dead/running,
+        // while `visible_at` keeps every non-Completed, non-Cancelled item in
+        // ascending `created_at_ms` order.
+        let pending = queue.pending_at(2_000).expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, r_queued.id);
+
+        let visible = queue.visible_at(2_000).expect("visible");
+        let summary: Vec<(String, ReceiptState)> =
+            visible.into_iter().map(|(m, s)| (m.id, s)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                (r_backoff.id, ReceiptState::Retrying),
+                (r_dead.id, ReceiptState::Dead),
+                (r_running.id, ReceiptState::Running),
+                (r_queued.id, ReceiptState::Queued),
+            ]
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn retry_dead_supersedes_original_and_is_idempotent_across_reopen() {
+        let root = temp_root("retry-dead-supersede");
+        let queue = AcceptanceQueue::new(&root);
+
+        let dead = queue
+            .accept(Some("sess-1"), "deliver deck", 1_000)
+            .expect("accept");
+        queue
+            .take(&dead.id, "a1", 1_010, 500)
+            .expect("take")
+            .expect("claimed");
+        assert!(queue.give_up(&dead.id, "a1", 1_020).expect("give_up"));
+
+        let requeued = queue
+            .retry_dead(&dead.id, 2_000)
+            .expect("retry_dead")
+            .expect("requeued");
+        assert_ne!(requeued.id, dead.id);
+        assert_eq!(requeued.session_hint.as_deref(), Some("sess-1"));
+        assert_eq!(requeued.text, "deliver deck");
+
+        // Second retry on the already-superseded dead id must be rejected.
+        assert!(
+            queue
+                .retry_dead(&dead.id, 2_010)
+                .expect("second retry")
+                .is_none()
+        );
+
+        // Fresh handle after simulated restart only sees the new queued receipt.
+        let reopened = AcceptanceQueue::new(&root);
+        let old = reopened.get(&dead.id).expect("get old").expect("present");
+        assert!(old.dead);
+        assert!(old.cancelled);
+        assert_eq!(old.state_at(2_050), ReceiptState::Cancelled);
+
+        let visible = reopened.visible_at(2_050).expect("visible");
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].0.id, requeued.id);
+        assert_eq!(visible[0].1, ReceiptState::Queued);
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

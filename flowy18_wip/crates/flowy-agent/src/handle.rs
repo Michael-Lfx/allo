@@ -212,6 +212,7 @@ struct UiState {
     context_generation: AtomicU64,
     semantic_verify_enabled: AtomicBool,
     updates: Mutex<VecDeque<AgentUpdate>>,
+    notified_quarantined: Mutex<BTreeSet<String>>,
     load_failed: Mutex<bool>,
     history_unavailable: Mutex<bool>,
     accept_drain: Mutex<()>,
@@ -260,6 +261,7 @@ impl UiState {
                 env_semantic_verify_enabled(),
             ),
             updates: Mutex::new(VecDeque::new()),
+            notified_quarantined: Mutex::new(BTreeSet::new()),
             load_failed: Mutex::new(false),
             history_unavailable: Mutex::new(false),
             accept_drain: Mutex::new(()),
@@ -675,16 +677,14 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
-        for reconciled_id in reconcile_committed_acceptances(
-            &state.root,
-            &engine,
-            state.artifact_store.get(),
-        ) {
-            state.push_update(AgentUpdate::Receipt {
-                id: reconciled_id,
-                state: ReceiptState::Completed,
-            });
-        }
+        push_reconciled_receipt_updates(
+            &state,
+            reconcile_committed_acceptances(
+                &state.root,
+                &engine,
+                state.artifact_store.get(),
+            ),
+        );
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -724,7 +724,12 @@ impl AgentHandle {
         };
         let cwd = ensure_tool_cwd(&self.inner.state.root);
         engine.set_config(engine_config(&config, &cwd));
+        let runnable = config.can_run_turns();
         *lock(&self.inner.config) = config;
+        if runnable && self.inner.state.autonomous_drain.load(Ordering::Acquire)
+        {
+            self.kick_autonomous_drain();
+        }
         Ok(())
     }
 
@@ -1822,8 +1827,19 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
+    /// All receipts that are neither `Completed` nor `Cancelled` (including
+    /// `Queued`, `Running`, `Retrying` in backoff, `Quarantined`, and `Dead`),
+    /// sorted by `created_at_ms` ascending.
+    #[must_use]
+    pub fn visible_acceptances(&self) -> Vec<(AcceptedMessage, ReceiptState)> {
+        AcceptanceQueue::new(self.inner.state.root.clone())
+            .visible()
+            .unwrap_or_default()
+    }
+
     /// Look up any accepted receipt by id across all lifecycle states
-    /// (`Queued`, `Running`, `Retrying`, `Completed`, `Dead`).
+    /// (`Queued`, `Running`, `Retrying`, `Completed`, `Cancelled`,
+    /// `Quarantined`, `Dead`).
     #[must_use]
     pub fn receipt_by_id(&self, id: &str) -> Option<AcceptedMessage> {
         AcceptanceQueue::new(self.inner.state.root.clone())
@@ -1845,8 +1861,6 @@ impl AgentHandle {
     #[must_use]
     pub fn work_status(&self, work_id: &str) -> Option<WorkStatus> {
         let receipt = self.receipt_by_id(work_id);
-        let receipt_state =
-            receipt.as_ref().map(|item| item.state_at(now_ms()));
         let mut session_id = receipt
             .as_ref()
             .and_then(|item| item.target_session_id.clone());
@@ -1879,6 +1893,74 @@ impl AgentHandle {
                 submission_id = Some(work_id.to_owned());
             }
         }
+        Some(self.build_work_status(
+            work_id,
+            receipt,
+            record,
+            session_id,
+            submission_id,
+        ))
+    }
+
+    /// Unified host view of the latest work item in `session_id` (covering
+    /// both queued receipts and direct `submit_chat` / `send` turns), without
+    /// requiring callers to construct internal `submission-*` IDs.
+    #[must_use]
+    pub fn session_work_status(&self, session_id: &str) -> Option<WorkStatus> {
+        let record = lock(&self.inner.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(session_id))?;
+        let submission_id = latest_session_submission_id(&record);
+        if submission_id.is_none()
+            && record.work_contract.is_none()
+            && record.delivery_commits.is_empty()
+        {
+            return None;
+        }
+        let matched_receipt =
+            AcceptanceQueue::new(self.inner.state.root.clone())
+                .all()
+                .ok()
+                .and_then(|receipts| {
+                    receipts
+                        .into_iter()
+                        .filter(|receipt| {
+                            receipt.target_session_id.as_deref()
+                                == Some(session_id)
+                                && match submission_id.as_deref() {
+                                    Some(sub) => {
+                                        receipt.submission_id.as_deref()
+                                            == Some(sub)
+                                    }
+                                    None => true,
+                                }
+                        })
+                        .max_by_key(|receipt| receipt.created_at_ms)
+                });
+        let work_id = matched_receipt
+            .as_ref()
+            .map(|receipt| receipt.id.clone())
+            .or_else(|| submission_id.clone())
+            .unwrap_or_else(|| session_id.to_owned());
+        Some(self.build_work_status(
+            &work_id,
+            matched_receipt,
+            Some(record),
+            Some(session_id.to_owned()),
+            submission_id,
+        ))
+    }
+
+    fn build_work_status(
+        &self,
+        work_id: &str,
+        receipt: Option<AcceptedMessage>,
+        record: Option<SessionRecord>,
+        session_id: Option<String>,
+        submission_id: Option<String>,
+    ) -> WorkStatus {
+        let receipt_state =
+            receipt.as_ref().map(|item| item.state_at(now_ms()));
         let store = self.inner.state.artifact_store.get();
         let committed_ids = store
             .and_then(|s| s.committed_ids().ok())
@@ -1953,7 +2035,7 @@ impl AgentHandle {
                 missing_items = contract.missing_deliverables(&pairs);
             }
         }
-        Some(WorkStatus {
+        WorkStatus {
             work_id: work_id.to_owned(),
             session_id,
             submission_id,
@@ -1963,7 +2045,7 @@ impl AgentHandle {
             required_items,
             delivered_artifact_ids,
             missing_items,
-        })
+        }
     }
 
     /// Host disclosure switch controlling whether `verify_deck` may send
@@ -2012,16 +2094,14 @@ impl AgentHandle {
             return Ok(None);
         }
         if let Some(engine) = lock(&self.inner.engine).as_ref() {
-            for reconciled_id in reconcile_committed_acceptances(
-                &self.inner.state.root,
-                engine,
-                self.inner.state.artifact_store.get(),
-            ) {
-                self.inner.state.push_update(AgentUpdate::Receipt {
-                    id: reconciled_id,
-                    state: ReceiptState::Completed,
-                });
-            }
+            push_reconciled_receipt_updates(
+                &self.inner.state,
+                reconcile_committed_acceptances(
+                    &self.inner.state.root,
+                    engine,
+                    self.inner.state.artifact_store.get(),
+                ),
+            );
         }
         let state = &self.inner.state;
         let previous_active = lock(&state.active).clone();
@@ -2077,13 +2157,18 @@ impl AgentHandle {
                     ) {
                         Ok(session) => session,
                         Err(error) => {
-                            settle_failed_attempt(
+                            if let Some(next_state) = settle_failed_attempt(
                                 &queue,
                                 &claimed.id,
                                 &attempt_id,
                                 claimed.attempts,
                                 now_ms(),
-                            );
+                            ) {
+                                state.push_update(AgentUpdate::Receipt {
+                                    id: claimed.id.clone(),
+                                    state: next_state,
+                                });
+                            }
                             return Err(error);
                         }
                     },
@@ -2094,13 +2179,18 @@ impl AgentHandle {
             {
                 Ok(session) => session,
                 Err(error) => {
-                    settle_failed_attempt(
+                    if let Some(next_state) = settle_failed_attempt(
                         &queue,
                         &claimed.id,
                         &attempt_id,
                         claimed.attempts,
                         now_ms(),
-                    );
+                    ) {
+                        state.push_update(AgentUpdate::Receipt {
+                            id: claimed.id.clone(),
+                            state: next_state,
+                        });
+                    }
                     return Err(error);
                 }
             },
@@ -2124,13 +2214,18 @@ impl AgentHandle {
             Ok(true) => {}
             Ok(false) => return Ok(None),
             Err(_) => {
-                settle_failed_attempt(
+                if let Some(next_state) = settle_failed_attempt(
                     &queue,
                     &claimed.id,
                     &attempt_id,
                     claimed.attempts,
                     now_ms(),
-                );
+                ) {
+                    state.push_update(AgentUpdate::Receipt {
+                        id: claimed.id.clone(),
+                        state: next_state,
+                    });
+                }
                 return Err("notice.storage_error");
             }
         }
@@ -2163,13 +2258,18 @@ impl AgentHandle {
         ) {
             heartbeat_cancel.cancel();
             *lock(&state.accepted_claim) = None;
-            settle_failed_attempt(
+            if let Some(next_state) = settle_failed_attempt(
                 &queue,
                 &claimed.id,
                 &attempt_id,
                 claimed.attempts,
                 now_ms(),
-            );
+            ) {
+                state.push_update(AgentUpdate::Receipt {
+                    id: claimed.id.clone(),
+                    state: next_state,
+                });
+            }
             return Err(error);
         }
         let hb_queue = AcceptanceQueue::new(state.root.clone());
@@ -2482,22 +2582,16 @@ impl AgentHandle {
             }
             CardAction::RetryDeadReceipt { receipt_id } => {
                 let queue = AcceptanceQueue::new(self.inner.state.root.clone());
-                let Some(dead_receipt) = queue
-                    .get(&receipt_id)
+                let Some(requeued) = queue
+                    .retry_dead(&receipt_id, now_ms())
                     .map_err(|_| "notice.storage_error")?
                 else {
                     return Err("notice.agent_failed");
                 };
-                if !dead_receipt.dead {
-                    return Err("notice.agent_failed");
-                }
-                let requeued = queue
-                    .accept(
-                        dead_receipt.session_hint.as_deref(),
-                        &dead_receipt.text,
-                        now_ms(),
-                    )
-                    .map_err(|_| "notice.storage_error")?;
+                self.inner.state.push_update(AgentUpdate::Receipt {
+                    id: receipt_id,
+                    state: ReceiptState::Cancelled,
+                });
                 self.inner.state.push_update(AgentUpdate::Receipt {
                     id: requeued.id.clone(),
                     state: ReceiptState::Queued,
@@ -4564,17 +4658,53 @@ fn settle_failed_attempt(
     attempt_id: &str,
     attempts: u32,
     now: u64,
-) {
+) -> Option<ReceiptState> {
     if attempts >= ACCEPTED_MAX_ATTEMPTS {
-        let _ = queue.give_up(receipt_id, attempt_id, now);
+        queue
+            .give_up(receipt_id, attempt_id, now)
+            .ok()
+            .filter(|&ok| ok)
+            .map(|_| ReceiptState::Dead)
     } else {
-        let _ = queue.release(
-            receipt_id,
-            attempt_id,
-            now,
-            release_backoff(attempts),
-        );
+        queue
+            .release(receipt_id, attempt_id, now, release_backoff(attempts))
+            .ok()
+            .filter(|&ok| ok)
+            .map(|_| ReceiptState::Retrying)
     }
+}
+
+fn latest_session_submission_id(record: &SessionRecord) -> Option<String> {
+    record
+        .messages
+        .iter()
+        .rev()
+        .find(|msg| {
+            msg.role == Role::User
+                && (msg.id.starts_with("submission-")
+                    || record.submission_outcomes.contains_key(&msg.id)
+                    || record.submission_revisions.contains_key(&msg.id))
+        })
+        .map(|msg| msg.id.clone())
+        .or_else(|| {
+            record
+                .delivery_commits
+                .iter()
+                .rev()
+                .find(|commit| {
+                    !commit.submission_id.starts_with("submission-override-")
+                })
+                .or_else(|| record.delivery_commits.last())
+                .map(|commit| commit.submission_id.clone())
+        })
+        .or_else(|| {
+            record
+                .submission_revisions
+                .iter()
+                .max_by_key(|(_, rev)| **rev)
+                .map(|(sub, _)| sub.clone())
+        })
+        .or_else(|| record.submission_outcomes.keys().next_back().cloned())
 }
 
 /// Returns `true` only when `submission_id` has an explicit durable
@@ -4693,13 +4823,32 @@ fn reconcile_partial_work_after_override(
     }
 }
 
+fn push_reconciled_receipt_updates(
+    state: &UiState,
+    events: Vec<(String, ReceiptState)>,
+) {
+    for (id, receipt_state) in events {
+        if receipt_state == ReceiptState::Quarantined {
+            let mut seen = lock(&state.notified_quarantined);
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+        }
+        state.push_update(AgentUpdate::Receipt {
+            id,
+            state: receipt_state,
+        });
+    }
+}
+
 /// Reconcile any previously bound receipt whose engine turn already committed
-/// on disk before the process could append `Completed` to the journal.
+/// on disk before the process could append `Completed` to the journal, and
+/// surface quarantined receipts detected during journal replay.
 fn reconcile_committed_acceptances(
     root: &Path,
     engine: &Engine,
     store: Option<&ArtifactStore>,
-) -> Vec<String> {
+) -> Vec<(String, ReceiptState)> {
     let mut reconciled = Vec::new();
     let queue = AcceptanceQueue::new(root.to_path_buf());
     let Ok(receipts) = queue.replay() else {
@@ -4710,13 +4859,20 @@ fn reconcile_committed_acceptances(
         .unwrap_or_default();
     let now = now_ms();
     for receipt in receipts {
+        if receipt.quarantined
+            && receipt.completed_at_ms.is_none()
+            && !receipt.dead
+            && !receipt.cancelled
+        {
+            reconciled.push((receipt.id, ReceiptState::Quarantined));
+            continue;
+        }
         // Only reconcile unsettled claims (`Taken` + `Bound` with no
         // subsequent `Completed` / `Released` / `Dead` / `Cancelled`): an
         // explicit `Released` clears `lease` to request a retry.
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
-            || receipt.quarantined
             || receipt.lease.is_none()
         {
             continue;
@@ -4739,7 +4895,7 @@ fn reconcile_committed_acceptances(
             .complete_reconciled(&receipt.id, attempt_id, now)
             .unwrap_or(false)
         {
-            reconciled.push(receipt.id.clone());
+            reconciled.push((receipt.id.clone(), ReceiptState::Completed));
             tracing::info!(
                 target: "flowy.acceptance",
                 event = "reconciled_completed",

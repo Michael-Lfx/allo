@@ -947,10 +947,10 @@ fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
     use flowy_agent_core::{AcceptanceQueue, ReceiptState};
 
     let scratch = Scratch::new();
-    let provider = ProviderFixture::start_delayed_text(450, "done slowly");
+    let provider = ProviderFixture::start_delayed_text(750, "done slowly");
     let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
     let _session = handle.create_home_session().unwrap();
-    handle.set_accepted_lease_ms_for_test(150);
+    handle.set_accepted_lease_ms_for_test(300);
 
     let receipt = handle
         .accept_deferred("slow turn needing heartbeat")
@@ -960,8 +960,8 @@ fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
         .expect("dispatch")
         .expect("claimed");
 
-    // Wait well past the initial 150ms lease expiry while the 450ms turn runs.
-    thread::sleep(Duration::from_millis(260));
+    // Wait well past the initial 300ms lease expiry while the 750ms turn runs.
+    thread::sleep(Duration::from_millis(420));
     assert_eq!(
         handle.receipt_state(&receipt.id),
         Some(ReceiptState::Running),
@@ -1526,7 +1526,9 @@ fn cancel_task_receipt_and_card_actions_drive_kernel_without_ui_coupling() {
     };
     assert_ne!(artifact_id, "");
 
-    // 3) CardAction::RetryDeadReceipt requeues a buried receipt as a fresh ID.
+    // 3) CardAction::RetryDeadReceipt requeues a buried receipt as a fresh ID,
+    //    closes the original dead receipt so it exits visible_acceptances(),
+    //    and rejects duplicate retries idempotently (even after restart).
     let queue = AcceptanceQueue::new(&scratch.0);
     let dead = queue.accept(Some(&session), "retry dead", 1_000).unwrap();
     queue
@@ -1534,6 +1536,7 @@ fn cancel_task_receipt_and_card_actions_drive_kernel_without_ui_coupling() {
         .unwrap()
         .unwrap();
     assert!(queue.give_up(&dead.id, "attempt-1", 1_020).unwrap());
+    let _ = handle.drain_updates();
     let requeued = handle
         .apply_card_action(CardAction::RetryDeadReceipt {
             receipt_id: dead.id.clone(),
@@ -1543,11 +1546,236 @@ fn cancel_task_receipt_and_card_actions_drive_kernel_without_ui_coupling() {
         panic!("expected ReceiptRequeued, got {requeued:?}");
     };
     assert_ne!(receipt_id, dead.id);
-    assert_eq!(handle.receipt_state(&dead.id), Some(ReceiptState::Dead));
+    assert_eq!(
+        handle.receipt_state(&dead.id),
+        Some(ReceiptState::Cancelled)
+    );
     assert_eq!(
         handle.receipt_state(&receipt_id),
         Some(ReceiptState::Queued)
     );
+    let updates = handle.drain_updates();
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Cancelled
+        } if id == &dead.id
+    )));
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        AgentUpdate::Receipt {
+            id,
+            state: ReceiptState::Queued
+        } if id == &receipt_id
+    )));
+    let visible = handle.visible_acceptances();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].0.id, receipt_id);
+    assert_eq!(visible[0].1, ReceiptState::Queued);
+    assert!(
+        handle
+            .apply_card_action(CardAction::RetryDeadReceipt {
+                receipt_id: dead.id,
+            })
+            .is_err(),
+        "retrying an already-superseded dead receipt must be rejected"
+    );
+    drop(handle);
+
+    // Simulated restart: old dead receipt must never resurrect into visible_acceptances().
+    let restarted =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let after_restart = restarted.visible_acceptances();
+    assert_eq!(after_restart.len(), 1);
+    assert_eq!(after_restart[0].0.id, receipt_id);
+    assert_eq!(after_restart[0].1, ReceiptState::Queued);
+}
+
+#[test]
+fn apply_config_wakes_autonomous_drain_after_disconnected_boot() {
+    use flowy_agent_core::ReceiptState;
+
+    let scratch = Scratch::new();
+    let disconnected = LlmConfig {
+        provider: "flowy".into(),
+        ..LlmConfig::default()
+    };
+    assert!(!disconnected.can_run_turns());
+
+    let handle = AgentHandle::with_config(scratch.0.clone(), disconnected);
+    handle.set_autonomous_drain(true);
+    let receipt = handle.accept_deferred("wake after apply_config").unwrap();
+
+    // While disconnected (`!can_run_turns()`), the receipt remains Queued.
+    thread::sleep(Duration::from_millis(80));
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Queued)
+    );
+
+    // Applying a runnable config must automatically wake autonomous drain
+    // without any extra UI polling or manual kick.
+    handle.apply_config(LlmConfig::default()).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if handle.receipt_state(&receipt.id) == Some(ReceiptState::Completed) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert_eq!(
+        handle.receipt_state(&receipt.id),
+        Some(ReceiptState::Completed)
+    );
+    assert_eq!(handle.visible_acceptances().len(), 0);
+    handle.prepare_shutdown();
+}
+
+#[test]
+fn visible_acceptances_surfaces_backoff_dead_and_quarantined_and_emits_quarantined_update()
+ {
+    use crate::AgentUpdate;
+    use flowy_agent_core::{AcceptanceQueue, ReceiptState};
+
+    let scratch = Scratch::new();
+    let queue = AcceptanceQueue::new(&scratch.0);
+
+    // 1) Pre-corruption taken receipt whose completion line gets corrupted -> Quarantined.
+    let quarantined = queue.accept(None, "corrupt job", 1_000).unwrap();
+    queue
+        .take(&quarantined.id, "att-q", 1_010, 500)
+        .unwrap()
+        .unwrap();
+    assert!(queue.complete(&quarantined.id, "att-q", 1_020).unwrap());
+
+    // 2) Dead receipt persisted across restart.
+    let dead = queue.accept(None, "dead job", 2_000).unwrap();
+    queue.take(&dead.id, "att-d", 2_010, 500).unwrap().unwrap();
+    assert!(queue.give_up(&dead.id, "att-d", 2_020).unwrap());
+
+    // 3) Retrying receipt in a long future backoff window (hidden from pending_acceptances).
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let backoff = queue.accept(None, "backoff job", 3_000).unwrap();
+    queue
+        .take(&backoff.id, "att-b", now_epoch, 500)
+        .unwrap()
+        .unwrap();
+    assert!(
+        queue
+            .release(&backoff.id, "att-b", now_epoch, 600_000)
+            .unwrap()
+    );
+
+    // 4) Cancelled receipt (must stay excluded).
+    let cancelled = queue.accept(None, "cancelled job", 4_000).unwrap();
+    assert!(queue.cancel(&cancelled.id, 4_010).unwrap());
+
+    // Inject interior corruption on `quarantined`'s completed line while keeping later lines valid.
+    let journal_path = AcceptanceQueue::path(&scratch.0);
+    let raw = fs::read_to_string(&journal_path).unwrap();
+    let mut lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+    let idx = lines
+        .iter()
+        .position(|line| {
+            line.contains("\"completed\"") && line.contains(&quarantined.id)
+        })
+        .expect("completed line");
+    lines[idx] = r#"{"event":"completed","broken"#.to_owned();
+    fs::write(&journal_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+
+    // P2: startup reconciliation emits AgentUpdate::Receipt::Quarantined once.
+    let boot_updates = handle.drain_updates();
+    let q_count = boot_updates
+        .iter()
+        .filter(|u| {
+            matches!(
+                u,
+                AgentUpdate::Receipt {
+                    id,
+                    state: ReceiptState::Quarantined
+                } if id == &quarantined.id
+            )
+        })
+        .count();
+    assert_eq!(q_count, 1, "boot must emit Quarantined once");
+
+    // Calling run_accepted_once must not spam duplicate Quarantined events.
+    assert!(handle.run_accepted_once().unwrap().is_none());
+    let follow_updates = handle.drain_updates();
+    assert!(
+        !follow_updates.iter().any(|u| matches!(
+            u,
+            AgentUpdate::Receipt {
+                id,
+                state: ReceiptState::Quarantined
+            } if id == &quarantined.id
+        )),
+        "quarantined notification must be deduplicated"
+    );
+
+    // pending_acceptances() hides backoff/dead/quarantined, while visible_acceptances() exposes all three.
+    assert_eq!(handle.pending_acceptances().len(), 0);
+    let visible: Vec<(String, ReceiptState)> = handle
+        .visible_acceptances()
+        .into_iter()
+        .map(|(m, s)| (m.id, s))
+        .collect();
+    assert_eq!(
+        visible,
+        vec![
+            (quarantined.id, ReceiptState::Quarantined),
+            (dead.id, ReceiptState::Dead),
+            (backoff.id, ReceiptState::Retrying),
+        ]
+    );
+}
+
+#[test]
+fn session_work_status_supports_direct_submit_chat_without_hardcoded_work_id() {
+    use flowy_agent_core::SubmissionOutcome;
+
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    assert!(
+        handle.session_work_status(&session).is_none(),
+        "empty session before any turn has no work status"
+    );
+
+    // Direct submit_chat (no accept_deferred receipt, no UI formatting of submission-*).
+    let sid = handle
+        .submit_chat(42, "请帮我做报价表和三页汇报，一起交给我")
+        .unwrap();
+    assert_eq!(sid, session);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && handle.turn_status().is_busy() {
+        thread::sleep(Duration::from_millis(15));
+    }
+
+    let status = handle
+        .session_work_status(&session)
+        .expect("direct submit_chat must expose session_work_status");
+    assert_eq!(status.session_id.as_deref(), Some(session.as_str()));
+    assert!(status.receipt_state.is_none());
+    let expected_sub = format!("submission-{:032x}", 42_u128);
+    assert_eq!(status.submission_id.as_deref(), Some(expected_sub.as_str()));
+    assert_eq!(status.contract_revision, Some(1));
+    assert!(matches!(
+        status.outcome,
+        Some(SubmissionOutcome::Partial { .. })
+    ));
+    assert_ne!(status.missing_items.len(), 0);
+    // Must match querying `work_status` by `status.work_id` directly.
+    assert_eq!(handle.work_status(&status.work_id), Some(status));
 }
 
 #[test]
