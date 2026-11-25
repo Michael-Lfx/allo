@@ -29,7 +29,7 @@ pub struct Projection {
 
 impl Projection {
     /// Completed-turn projection kept intact for legacy folding invariants.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn build(
         lines: &[ChatLine],
         streaming: Option<usize>,

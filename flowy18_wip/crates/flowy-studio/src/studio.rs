@@ -82,7 +82,7 @@ impl crate::panel::StudioPanel {
                     row.child(self.right_sheet_drawer(cx))
                 }),
         );
-        if chrome {
+        if chrome && !self.has_flow_modal() {
             let rtl = self.i18n.locale().is_rtl();
             match self.popover {
                 ActivePopover::None => {}
@@ -280,14 +280,18 @@ impl crate::panel::StudioPanel {
             .collect();
 
         for (index, session_id) in running_ids.into_iter().enumerate() {
-            let preview = self.agent.session_preview(&session_id);
-            let title = titles
+            let preview = self
+                .agent
+                .session_preview(&session_id)
+                .map(|text| crate::ports::redact_trace_text(&text));
+            let raw_title = titles
                 .get(session_id.as_str())
                 .copied()
                 .filter(|title| !title.trim().is_empty())
-                .map(str::to_owned)
+                .map(crate::ports::redact_trace_text)
                 .or_else(|| preview.clone())
                 .unwrap_or_else(|| crate::ports::short_id(&session_id));
+            let title = raw_title;
             let subtitle =
                 preview.filter(|text| text.as_str() != title.as_str());
             let inspect_title = title.clone();
@@ -1126,7 +1130,6 @@ impl crate::panel::StudioPanel {
                 theme::icons::sparkles(),
                 self.t("credits.balance"),
                 self.credits_label(),
-                false,
             ));
         if let crate::CreditsViewState::Ready { free, daily, .. } =
             &self.credits
@@ -1174,7 +1177,6 @@ impl crate::panel::StudioPanel {
         mark: theme::icons::Icon,
         label: String,
         value: String,
-        help: bool,
     ) -> impl IntoElement {
         div()
             .flex()
@@ -1187,8 +1189,7 @@ impl crate::panel::StudioPanel {
                     .items_center()
                     .gap(self.theme.space(8.))
                     .child(mark)
-                    .child(div().text_sm().child(label))
-                    .when(help, |row| row.child(self.help_mark())),
+                    .child(div().text_sm().child(label)),
             )
             .child(div().text_sm().child(value))
     }
@@ -1205,24 +1206,6 @@ impl crate::panel::StudioPanel {
             .pl(px(22.))
             .child(div().text_xs().text_color(self.theme.muted()).child(label))
             .children(value.map(|text| div().text_xs().child(text)))
-    }
-
-    fn help_mark(&self) -> impl IntoElement {
-        div()
-            .size(px(14.))
-            .rounded_full()
-            .border_1()
-            .border_color(self.theme.line())
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .text_color(self.theme.muted())
-            .child(
-                theme::icons::circle_help()
-                    .size(px(14.))
-                    .text_color(self.theme.muted()),
-            )
     }
 }
 

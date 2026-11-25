@@ -53,7 +53,9 @@ pub fn path(root: &Path) -> PathBuf {
 }
 
 pub fn root_available(root: &Path) -> bool {
-    root.is_dir() && fs::read_dir(root).is_ok()
+    !crate::ports::is_unsafe_local_path(root)
+        && root.is_dir()
+        && fs::read_dir(root).is_ok()
 }
 
 pub fn load(root: &Path) -> io::Result<Vec<Project>> {
@@ -95,6 +97,9 @@ pub fn update(
     let name = name.trim();
     if name.is_empty() {
         return Err(ProjectError::NameRequired);
+    }
+    if crate::ports::is_unsafe_local_path(folder) {
+        return Err(ProjectError::FolderUnavailable);
     }
     let root = fs::canonicalize(folder)
         .ok()
@@ -172,6 +177,9 @@ pub fn create(
     let name = name.trim();
     if name.is_empty() {
         return Err(ProjectError::NameRequired);
+    }
+    if crate::ports::is_unsafe_local_path(folder) {
+        return Err(ProjectError::FolderUnavailable);
     }
     let root = fs::canonicalize(folder)
         .ok()

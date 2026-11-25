@@ -143,14 +143,15 @@ impl ActivePopover {
     #[must_use]
     pub const fn scope(self) -> Option<&'static str> {
         match self {
-            Self::None => None,
+            // Closed state and information-only Credits hover card must not
+            // claim popup focus scope (prevents hover focus theft).
+            Self::None | Self::Credits => None,
             Self::ModelMenu { .. } => Some("model-list"),
             Self::ModelInfo => Some("model-info"),
             Self::WorkspaceMenu => Some("workspace-menu"),
             Self::SkillMenu => Some("skill-menu"),
             Self::EnvStatus => Some("env-status-popover"),
             Self::BgTasks => Some("bg-tasks-popover"),
-            Self::Credits => Some("credit-card"),
         }
     }
 }
@@ -161,14 +162,17 @@ pub struct FlowModalState {
     pub session: Option<String>,
     pub branch: Option<String>,
     pub tab: crate::overview::FlowModalTab,
-    pub override_ack: bool,
+    /// Bound to `"{report_id}:{artifact_path}"` so background snapshot refreshes
+    /// that switch branches never carry an override acknowledgement onto another
+    /// artifact (§8.3).
+    pub override_ack_key: Option<String>,
 }
 
 impl FlowModalState {
     pub fn close(&mut self) {
         self.session = None;
         self.branch = None;
-        self.override_ack = false;
+        self.override_ack_key = None;
     }
 
     #[must_use]
@@ -195,6 +199,9 @@ pub struct StudioPanel {
         Vec<(flowy_agent::AcceptedMessage, ReceiptState)>,
     /// Receipts currently being requeued via `CardAction::RetryDeadReceipt`.
     pub(crate) retrying_receipts: std::collections::HashSet<String>,
+    /// Verification report IDs currently executing `CardAction::OverrideDeliver`
+    /// on a background worker (prevents double-click re-entry).
+    pub(crate) overriding_reports: std::collections::HashSet<String>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -240,6 +247,7 @@ pub struct StudioPanel {
     pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
     pub(crate) board_generation: u64,
     pub(crate) last_board_refresh: Option<std::time::Instant>,
+    pub(crate) last_trace_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
     pub i18n: I18n,
     pub model: Model,
@@ -252,7 +260,6 @@ pub struct StudioPanel {
     pub product: &'static str,
     pub surface: StudioSurface,
     pub notice: Option<&'static str>,
-    /// Starter copy held back until the user confirms replacing the draft.
     /// Category whose examples the home stage shows.
     pub(crate) starter_category: Category,
     /// Set once the user opens a conversation in this run. Startup initialization
@@ -531,6 +538,7 @@ impl StudioPanel {
             pending_receipts,
             visible_receipts,
             retrying_receipts: std::collections::HashSet::new(),
+            overriding_reports: std::collections::HashSet::new(),
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -575,6 +583,7 @@ impl StudioPanel {
             installed_skills: Vec::new(),
             board_generation: 0,
             last_board_refresh: None,
+            last_trace_refresh: None,
             tiers: Vec::new(),
             i18n,
             model,
@@ -703,29 +712,41 @@ impl StudioPanel {
             cx.emit(StudioEvent::ArtifactsChanged);
         }
         let mut receipt_changed = false;
-        let mut receipt_notice: Option<&'static str> = None;
+        let mut receipt_completed = false;
+        let mut receipt_notice: Option<(&'static str, u8)> = None;
+        let mut set_receipt_notice = |key: &'static str, priority: u8| {
+            if receipt_notice.is_none_or(|(_, cur)| priority > cur) {
+                receipt_notice = Some((key, priority));
+            }
+        };
         for update in &updates {
             if let flowy_agent::AgentUpdate::Receipt { state, .. } = update {
                 receipt_changed = true;
                 match state {
                     ReceiptState::Dead => {
-                        receipt_notice = Some("notice.receipt_gave_up");
+                        set_receipt_notice("notice.receipt_gave_up", 3);
                     }
                     ReceiptState::Quarantined => {
-                        receipt_notice = Some("notice.receipt_quarantined");
+                        set_receipt_notice("notice.receipt_quarantined", 2);
                     }
                     ReceiptState::Retrying if self.agent.autonomous_drain() => {
-                        receipt_notice = Some("notice.receipt_retrying");
+                        set_receipt_notice("notice.receipt_retrying", 1);
+                    }
+                    ReceiptState::Completed => {
+                        receipt_completed = true;
                     }
                     _ => {}
                 }
             }
         }
-        if receipt_changed {
+        if receipt_changed || (initialized && self.agent.autonomous_drain()) {
             self.sync_receipts();
         }
-        if let Some(key) = receipt_notice {
+        if let Some((key, _)) = receipt_notice {
             self.emit_notice(Some(key), cx);
+        }
+        if receipt_completed {
+            cx.emit(StudioEvent::TurnFinished);
         }
         if updates.iter().any(|update| {
             matches!(update, flowy_agent::AgentUpdate::StorageError)
@@ -747,14 +768,31 @@ impl StudioPanel {
         let status_changed = self.status != prev_status;
         if structural_update || status_changed {
             self.refresh_board_snapshot();
+            self.last_trace_refresh = Some(std::time::Instant::now());
         } else if self.surface == StudioSurface::Board
             && self.last_board_refresh.is_none_or(|last| {
                 last.elapsed() >= Duration::from_millis(1200)
             })
         {
             // While streaming deltas, only refresh the board when it is open
-            // and at most once per 1.2s to avoid per-token disk reads.
+            // and at most once per 1.2s to avoid per-token work.
             self.refresh_board_snapshot();
+            self.last_trace_refresh = Some(std::time::Instant::now());
+        } else if let Some(trace_sid) = self.active_trace_session_id()
+            && updates.iter().any(|update| {
+                matches!(
+                    update,
+                    flowy_agent::AgentUpdate::Session { id }
+                        if id == &trace_sid
+                )
+            })
+            && self
+                .last_trace_refresh
+                .is_none_or(|last| last.elapsed() >= Duration::from_millis(300))
+        {
+            self.refresh_trace_cache();
+            self.last_trace_refresh = Some(std::time::Instant::now());
+            cx.notify();
         }
         if !self.agent.autonomous_drain() {
             let background_claim_settled = self.agent.has_active_claim()
@@ -769,8 +807,6 @@ impl StudioPanel {
                 self.refresh_pending_receipts(cx);
             }
         } else if initialized {
-            self.sync_receipts();
-            self.refresh_board_snapshot();
             cx.notify();
         }
     }
@@ -798,7 +834,7 @@ impl StudioPanel {
         }
     }
 
-    fn refresh_working(&self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn refresh_working(&self, cx: &mut Context<'_, Self>) {
         let active_session = self.agent.active_session_id();
         let retrying_current = self
             .retrying_delivery
@@ -928,21 +964,18 @@ impl StudioPanel {
         self.i18n.tf(key, vars)
     }
 
-    /// Open the folder holding `path`. This is the only step that can fail, so
-    /// a failure goes through the existing notice channel instead of silence.
+    /// Open the validated local folder holding `path` (rejecting executables,
+    /// URIs, UNC shares, device namespaces, and symlinks / NTFS reparse points).
     pub(crate) fn reveal_file(
         &mut self,
         path: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        let folder = std::path::Path::new(path)
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty());
-        let Some(folder) = folder else {
+        let Some(folder) = crate::ports::resolve_safe_parent_dir(path) else {
             self.emit_notice(Some("project.view_failed"), cx);
             return;
         };
-        if open::that(folder).is_err() {
+        if open::that(&folder).is_err() {
             self.emit_notice(Some("project.view_failed"), cx);
         }
     }
@@ -1342,7 +1375,9 @@ impl StudioPanel {
     }
 
     /// Explicit override bound to a specific session and real non-empty
-    /// verification `report_id` (required by kernel `f8fb6b491`).
+    /// verification `report_id` (required by kernel `f8fb6b491`). Runs on a
+    /// background worker with an in-flight guard so large SHA-256 hashes and
+    /// `sync_all` never stall the GPUI frame or accept duplicate clicks.
     pub(crate) fn confirm_override_for_session(
         &mut self,
         session_id: &str,
@@ -1354,70 +1389,43 @@ impl StudioPanel {
             self.emit_notice(Some("verify.override.missing_report"), cx);
             return;
         }
-        match self.agent.apply_card_action(CardAction::OverrideDeliver {
-            session_id: session_id.to_owned(),
-            report_id: report_id.to_owned(),
-            artifact_path: artifact_path.to_owned(),
-        }) {
-            Ok(_) => {
-                if let Ok(store) = self.agent.artifact_store()
-                    && let Ok(records) = store.list()
-                {
-                    // Single hash query instead of O(N*E) per-record scan.
-                    let overridden = self.agent.overridden_artifact_hashes();
-                    let items = records
-                        .into_iter()
-                        .map(|record| {
-                            let receipt = record.manifest.receipt;
-                            let extension = std::path::Path::new(&receipt.display_name)
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .unwrap_or_default()
-                                .to_ascii_lowercase();
-                            let override_used =
-                                overridden.contains(&receipt.sha256);
-                            crate::library::LibraryItem {
-                                id: receipt.artifact_id,
-                                title: receipt.display_name,
-                                original_name: record.manifest.original_basename,
-                                description: String::new(),
-                                category: crate::library::Category::Other,
-                                date: String::new(),
-                                time: String::new(),
-                                pending: false,
-                                preview: None,
-                                size_bytes: Some(receipt.size_bytes),
-                                extension,
-                                media_type: receipt.media_type,
-                                delivered_at_ms: receipt.created_at_ms,
-                                delivered_date: String::new(),
-                                delivered_time: String::new(),
-                                source_session_id: receipt.session_id,
-                                source_title: record.manifest.origin_title_snapshot,
-                                source_deleted: false,
-                                source_unavailable: false,
-                                favorite: record.preference.favorite,
-                                availability: if record.corrupt {
-                                    crate::library::ArtifactAvailability::Corrupt
-                                } else if record.available {
-                                    crate::library::ArtifactAvailability::Available
-                                } else {
-                                    crate::library::ArtifactAvailability::Missing
-                                },
-                                override_used,
-                            }
-                        })
-                        .collect();
-                    self.set_artifacts(items, cx);
-                }
-                self.flow_modal.override_ack = false;
-                self.refresh_chat(cx);
-                self.refresh_board_snapshot();
-                self.emit_notice(None, cx);
-                cx.emit(StudioEvent::ArtifactsChanged);
-            }
-            Err(error) => self.emit_notice(Some(error), cx),
+        if !self.overriding_reports.insert(report_id.to_owned()) {
+            return;
         }
+        cx.notify();
+        let agent = self.agent.clone();
+        let sid = session_id.to_owned();
+        let rid = report_id.to_owned();
+        let apath = artifact_path.to_owned();
+        let guard_key = rid.clone();
+        let job = cx.background_executor().spawn(async move {
+            let result = agent.apply_card_action(CardAction::OverrideDeliver {
+                session_id: sid,
+                report_id: rid,
+                artifact_path: apath,
+            });
+            let updates = agent.drain_updates();
+            (result, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (result, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                panel.overriding_reports.remove(guard_key.as_str());
+                panel.process_agent_updates(updates, cx);
+                match result {
+                    Ok(_) => {
+                        panel.flow_modal.override_ack_key = None;
+                        panel.refresh_chat(cx);
+                        panel.refresh_board_snapshot();
+                        panel.emit_notice(None, cx);
+                        cx.emit(StudioEvent::ArtifactsChanged);
+                    }
+                    Err(error) => panel.emit_notice(Some(error), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Resolve a durable artifact anchor only after the session projection is
@@ -1492,6 +1500,8 @@ impl StudioPanel {
             .active_workspace()
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
+        self.flow_modal.close();
+        self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
@@ -1515,6 +1525,8 @@ impl StudioPanel {
             .active_workspace()
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
+        self.flow_modal.close();
+        self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
@@ -1711,46 +1723,13 @@ impl StudioPanel {
     }
 
     fn retry_delivery(&mut self, cx: &mut Context<'_, Self>) {
-        if self.retrying_delivery.is_some()
-            || !matches!(self.status, flowy_agent::TurnStatus::DeliveryFailed)
-        {
+        if !matches!(self.status, flowy_agent::TurnStatus::DeliveryFailed) {
             return;
         }
-        let agent = self.agent.clone();
-        let Some(expected) = agent.active_session_id() else {
+        let Some(expected) = self.agent.active_session_id() else {
             return;
         };
-        self.retrying_delivery = Some(expected.clone());
-        self.refresh_working(cx);
-        cx.notify();
-        let job_expected = expected.clone();
-        let job = cx.background_executor().spawn(async move {
-            let result = agent.apply_card_action(CardAction::RetryDelivery {
-                session_id: job_expected,
-                submission_id: None,
-            });
-            let updates = agent.drain_updates();
-            (result, updates)
-        });
-        cx.spawn(async move |weak, cx| {
-            let (result, updates) = job.await;
-            let _ = weak.update(cx, |panel, cx| {
-                if panel.retrying_delivery.as_deref() == Some(expected.as_str())
-                {
-                    panel.retrying_delivery = None;
-                }
-                panel.process_agent_updates(updates, cx);
-                if let Err(error) = result
-                    && error != "chat.status_delivery_failed"
-                {
-                    panel.emit_notice(Some(error), cx);
-                }
-                panel.refresh_chat(cx);
-                panel.refresh_working(cx);
-                cx.notify();
-            });
-        })
-        .detach();
+        self.retry_delivery_for_session(&expected, cx);
     }
 
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {
@@ -1959,6 +1938,8 @@ impl StudioPanel {
         )
         .map_err(|error| error.notice_key())?;
         self.open_project(&project.id, cx)?;
+        self.refresh_board_snapshot();
+        self.refresh_local_env();
         Ok(project)
     }
 
@@ -2004,11 +1985,15 @@ impl StudioPanel {
         let was_active = self.active_project_id.as_deref() == Some(id);
         crate::projects::remove(&self.store_root, &mut self.projects, id)
             .map_err(|error| error.notice_key())?;
+        if self.board_project_filter.as_deref() == Some(id) {
+            self.board_project_filter = None;
+        }
         if was_active {
             self.active_project_id = None;
             let _ = self.agent.clear_active();
             self.agent.set_workspace_for_new_sessions(None);
             self.surface = StudioSurface::Home;
+            self.flow_modal.close();
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
         }
@@ -2048,7 +2033,9 @@ impl StudioPanel {
         if !crate::projects::root_available(&project.root) {
             return Err("project.folder_unavailable");
         }
-        open::that(&project.root).map_err(|_| "project.view_failed")
+        let safe_dir = crate::ports::resolve_safe_local_dir(&project.root)
+            .ok_or("project.folder_unavailable")?;
+        open::that(&safe_dir).map_err(|_| "project.view_failed")
     }
 
     pub fn open_project(
@@ -2072,6 +2059,7 @@ impl StudioPanel {
         let project_id = project.id.clone();
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
+        self.flow_modal.close();
         self.agent.set_workspace_for_new_sessions(Some(workspace));
         self.agent
             .set_origin_for_new_sessions(SessionOrigin::Project {
@@ -2081,6 +2069,7 @@ impl StudioPanel {
         self.surface = StudioSurface::Home;
         self.set_prompt_text("", cx);
         self.refresh_chat(cx);
+        self.refresh_local_env();
         self.emit_notice(clear_error, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
@@ -3347,7 +3336,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (panel, root) = submission_panel(cx, "override-persist");
-        let (session_id, artifact_id) = panel.update(cx, |panel, cx| {
+        let (session_id, report_id) = panel.update(cx, |panel, cx| {
             let session_id = panel.agent.create_home_session().unwrap();
             panel.open_session(&session_id, cx);
             let workspace =
@@ -3381,8 +3370,13 @@ mod tests {
                 "outputs/submission-override-test/deck.pptx",
                 cx,
             );
+            (session_id, report.id)
+        });
+        let _ = report_id;
+        cx.run_until_parked();
+        let artifact_id = panel.read_with(cx, |panel, _| {
             assert_eq!(panel.notice, None);
-            let artifact_id = panel
+            panel
                 .agent
                 .chat_history()
                 .rows
@@ -3396,8 +3390,7 @@ mod tests {
                         None
                     }
                 })
-                .expect("override delivery appends artifact card");
-            (session_id, artifact_id)
+                .expect("override delivery appends artifact card")
         });
 
         let events =
@@ -3687,6 +3680,41 @@ mod tests {
             assert!(panel.dismiss_overlay("bg-tasks-popover", cx));
             assert_eq!(panel.active_popup_scope(), None);
 
+            // Opening a missing session must not leave a ghost modal focus trap.
+            panel.open_flow_modal("s-missing".into(), None, cx);
+            assert!(!panel.has_flow_modal());
+
+            // A resolvable session opens cleanly and dismisses via overlay scope.
+            panel.board_snapshot.sessions.push(
+                crate::ports::SessionBoardGroup {
+                    session_id: "s-demo".into(),
+                    title: "Demo".into(),
+                    project_id: None,
+                    project_name: None,
+                    workspace_display: String::new(),
+                    updated_at: 0,
+                    branches: vec![crate::ports::WorkBranchSummary {
+                        id: "b-demo".into(),
+                        skill_label: crate::ports::SkillLabel::Key(
+                            "board.skill_work",
+                        ),
+                        phase: crate::ports::BranchPhase::Idle,
+                        deliverable_name: "Demo".into(),
+                        deliverable_path: None,
+                        format: crate::ports::DeliverableFormat::Other,
+                        progress_pct: 100.0,
+                        detail: String::new(),
+                        work_progress: None,
+                    }],
+                    total_branch_count: 1,
+                    session_contract: None,
+                    has_blocker: false,
+                    has_delivered: false,
+                    is_running: false,
+                    is_active: false,
+                    group_kpi: crate::ports::BoardKpiSummary::default(),
+                },
+            );
             panel.open_flow_modal("s-demo".into(), None, cx);
             assert!(panel.has_flow_modal());
             assert!(panel.dismiss_overlay("flow-modal-panel", cx));

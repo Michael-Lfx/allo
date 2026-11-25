@@ -5,10 +5,14 @@ use std::path::Path;
 
 use flowy_agent::{
     AcceptedMessage, AgentHandle, ChatLine, ReceiptState, RequiredDeliverable,
-    SessionSummary, SubmissionOutcome, WorkStatus,
+    SessionSummary, SubmissionOutcome, TurnStatus, VerificationIssue,
+    WorkStatus,
 };
 
-use super::{clip_label, display_path, display_path_str, short_id};
+use super::{
+    basename, clip_label, display_path, display_path_str, redact_trace_text,
+    short_id,
+};
 use crate::projects::Project;
 
 /// Synthetic session group id used to surface unassigned queued/failed receipts.
@@ -73,7 +77,12 @@ pub enum BranchPhase {
         report_id: String,
         artifact_path: String,
         summary: String,
+        issues: Vec<VerificationIssue>,
+        semantic_hint: Option<String>,
+        provenance_warnings: Vec<String>,
     },
+    /// Durable delivery commit failed after turn completion; user can retry.
+    DeliveryFailed,
     /// Actively running a turn or tool call.
     Running { step_label: String, percent: f32 },
     /// Deferred acceptance receipt tracked in `AcceptanceQueue`.
@@ -85,9 +94,39 @@ pub enum BranchPhase {
     Delivered {
         override_used: bool,
         hash_short: String,
+        provenance_warnings: Vec<String>,
     },
     /// Idle conversation without pending deliverables.
     Idle,
+}
+
+impl BranchPhase {
+    #[must_use]
+    pub const fn is_blocker(&self) -> bool {
+        matches!(
+            self,
+            Self::NeedsApproval { .. }
+                | Self::DeliveryFailed
+                | Self::Queued {
+                    state: ReceiptState::Dead | ReceiptState::Quarantined,
+                    ..
+                }
+        )
+    }
+
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        matches!(
+            self,
+            Self::Running { .. }
+                | Self::Queued {
+                    state: ReceiptState::Queued
+                        | ReceiptState::Running
+                        | ReceiptState::Retrying,
+                    ..
+                }
+        )
+    }
 }
 
 /// Localizable skill/stage label shown on board cards and flowchart nodes.
@@ -166,10 +205,16 @@ pub struct SessionBoardGroup {
     pub workspace_display: String,
     pub updated_at: u64,
     pub branches: Vec<WorkBranchSummary>,
+    /// Total branch count before visual truncation (`MAX_DISPLAY_BRANCHES`).
+    pub total_branch_count: usize,
     pub session_contract: Option<WorkContractProgress>,
     pub has_blocker: bool,
+    pub has_delivered: bool,
     pub is_running: bool,
     pub is_active: bool,
+    /// Pre-truncation KPI contribution of this group so project-filtered views
+    /// compute exact KPIs without re-reading kernel state.
+    pub group_kpi: BoardKpiSummary,
 }
 
 impl SessionBoardGroup {
@@ -193,6 +238,32 @@ pub struct BoardKpiSummary {
     pub other_count: usize,
     pub active_sessions: usize,
     pub total_sessions: usize,
+}
+
+impl BoardKpiSummary {
+    /// Aggregates KPI totals across a filtered slice of session groups using
+    /// each group's pre-truncation counts.
+    #[must_use]
+    pub fn from_groups(groups: &[&SessionBoardGroup]) -> Self {
+        let mut out = Self {
+            total_sessions: groups.len(),
+            ..Self::default()
+        };
+        for group in groups {
+            if group.is_active {
+                out.active_sessions += 1;
+            }
+            out.total_branches += group.group_kpi.total_branches;
+            out.approval_count += group.group_kpi.approval_count;
+            out.running_count += group.group_kpi.running_count;
+            out.delivered_count += group.group_kpi.delivered_count;
+            out.sheet_count += group.group_kpi.sheet_count;
+            out.slides_count += group.group_kpi.slides_count;
+            out.doc_count += group.group_kpi.doc_count;
+            out.other_count += group.group_kpi.other_count;
+        }
+        out
+    }
 }
 
 /// Dirty-cached snapshot owned by `StudioPanel`.
@@ -230,30 +301,6 @@ const fn receipt_progress_pct(state: ReceiptState) -> f32 {
     }
 }
 
-const fn branch_is_blocker(phase: &BranchPhase) -> bool {
-    matches!(
-        phase,
-        BranchPhase::NeedsApproval { .. }
-            | BranchPhase::Queued {
-                state: ReceiptState::Dead | ReceiptState::Quarantined,
-                ..
-            }
-    )
-}
-
-const fn branch_is_running(phase: &BranchPhase) -> bool {
-    matches!(
-        phase,
-        BranchPhase::Running { .. }
-            | BranchPhase::Queued {
-                state: ReceiptState::Queued
-                    | ReceiptState::Running
-                    | ReceiptState::Retrying,
-                ..
-            }
-    )
-}
-
 impl BoardDataSource for AgentHandle {
     fn build_board_snapshot(
         &self,
@@ -267,6 +314,8 @@ impl BoardDataSource for AgentHandle {
         let busy_ids: HashSet<String> =
             self.busy_session_ids().into_iter().collect();
         let overridden_hashes = self.overridden_artifact_hashes();
+        let (mut session_contracts, work_contracts) =
+            self.board_work_contracts(visible_receipts);
         let project_map: HashMap<&str, &Project> = projects
             .iter()
             .map(|project| (project.id.as_str(), project))
@@ -307,11 +356,15 @@ impl BoardDataSource for AgentHandle {
         for summary in &sessions {
             let lines = self.session_lines(&summary.id);
             let is_busy = busy_ids.contains(&summary.id);
+            let delivery_failed = matches!(
+                self.session_status(&summary.id),
+                TurnStatus::DeliveryFailed
+            );
             let session_receipts = receipts_by_session
                 .remove(&Some(summary.id.clone()))
                 .unwrap_or_default();
-            let session_contract = self
-                .session_work_status(&summary.id)
+            let session_contract = session_contracts
+                .remove(&summary.id)
                 .and_then(|status| WorkContractProgress::from_status(&status));
 
             let project = summary
@@ -327,19 +380,20 @@ impl BoardDataSource for AgentHandle {
                 summary,
                 &lines,
                 is_busy,
+                delivery_failed,
                 &session_receipts,
                 &overridden_hashes,
                 session_contract.clone(),
-                |work_id| self.work_status(work_id),
+                |work_id| work_contracts.get(work_id).cloned(),
             );
 
-            let has_blocker = branches
-                .iter()
-                .any(|branch| branch_is_blocker(&branch.phase));
+            let has_blocker =
+                branches.iter().any(|branch| branch.phase.is_blocker());
+            let has_delivered = branches.iter().any(|branch| {
+                matches!(branch.phase, BranchPhase::Delivered { .. })
+            });
             let is_running = is_busy
-                || branches
-                    .iter()
-                    .any(|branch| branch_is_running(&branch.phase));
+                || branches.iter().any(|branch| branch.phase.is_running());
             let is_active = has_blocker || is_running;
             if is_active {
                 kpi.active_sessions += 1;
@@ -347,13 +401,16 @@ impl BoardDataSource for AgentHandle {
 
             // Accumulate KPIs across every branch BEFORE visual truncation so
             // sessions with >6 branches never under-report counts.
+            let mut group_kpi = BoardKpiSummary::default();
             for branch in &branches {
                 accumulate_kpi(&mut kpi, branch);
+                accumulate_kpi(&mut group_kpi, branch);
             }
+            let total_branch_count = branches.len();
             branches.sort_by_key(|branch| {
-                if branch_is_blocker(&branch.phase) {
+                if branch.phase.is_blocker() {
                     0_u8
-                } else if branch_is_running(&branch.phase) {
+                } else if branch.phase.is_running() {
                     1
                 } else {
                     2
@@ -361,12 +418,13 @@ impl BoardDataSource for AgentHandle {
             });
             branches.truncate(MAX_DISPLAY_BRANCHES);
 
-            let title = if summary.title.trim().is_empty() {
+            let raw_title = if summary.title.trim().is_empty() {
                 self.session_preview(&summary.id)
                     .unwrap_or_else(|| short_id(&summary.id))
             } else {
                 summary.title.clone()
             };
+            let title = redact_trace_text(&raw_title);
 
             groups.push(SessionBoardGroup {
                 session_id: summary.id.clone(),
@@ -376,10 +434,13 @@ impl BoardDataSource for AgentHandle {
                 workspace_display,
                 updated_at: summary.updated_at,
                 branches,
+                total_branch_count,
                 session_contract,
                 has_blocker,
+                has_delivered,
                 is_running,
                 is_active,
+                group_kpi,
             });
         }
 
@@ -390,13 +451,13 @@ impl BoardDataSource for AgentHandle {
             receipts_by_session.into_values().flatten().collect();
         unassigned.sort_by_key(|(r, _)| r.created_at_ms);
         if !unassigned.is_empty() {
-            let branches: Vec<WorkBranchSummary> = unassigned
+            let mut branches: Vec<WorkBranchSummary> = unassigned
                 .iter()
                 .map(|(receipt, state)| {
-                    let work_progress = self
-                        .work_status(&receipt.id)
-                        .and_then(|s| WorkContractProgress::from_status(&s));
-                    let safe_text = super::redact_trace_text(&receipt.text);
+                    let work_progress = work_contracts
+                        .get(&receipt.id)
+                        .and_then(WorkContractProgress::from_status);
+                    let safe_text = redact_trace_text(&receipt.text);
                     WorkBranchSummary {
                         id: format!("receipt-{}", receipt.id),
                         skill_label: SkillLabel::Key("board.skill_queue"),
@@ -413,16 +474,27 @@ impl BoardDataSource for AgentHandle {
                     }
                 })
                 .collect();
-            let has_blocker = branches
-                .iter()
-                .any(|branch| branch_is_blocker(&branch.phase));
-            let is_running = branches
-                .iter()
-                .any(|branch| branch_is_running(&branch.phase));
+            let has_blocker =
+                branches.iter().any(|branch| branch.phase.is_blocker());
+            let is_running =
+                branches.iter().any(|branch| branch.phase.is_running());
             let is_active = has_blocker || is_running;
+            let mut group_kpi = BoardKpiSummary::default();
             for branch in &branches {
                 accumulate_kpi(&mut kpi, branch);
+                accumulate_kpi(&mut group_kpi, branch);
             }
+            let total_branch_count = branches.len();
+            branches.sort_by_key(|branch| {
+                if branch.phase.is_blocker() {
+                    0_u8
+                } else if branch.phase.is_running() {
+                    1
+                } else {
+                    2
+                }
+            });
+            branches.truncate(MAX_DISPLAY_BRANCHES);
             if is_active {
                 kpi.active_sessions += 1;
             }
@@ -441,10 +513,13 @@ impl BoardDataSource for AgentHandle {
                         .max()
                         .unwrap_or(0),
                     branches,
+                    total_branch_count,
                     session_contract: None,
                     has_blocker,
+                    has_delivered: false,
                     is_running,
                     is_active,
+                    group_kpi,
                 },
             );
         }
@@ -468,6 +543,7 @@ impl BoardDataSource for AgentHandle {
 const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
     match &branch.phase {
         BranchPhase::NeedsApproval { .. }
+        | BranchPhase::DeliveryFailed
         | BranchPhase::Queued {
             state: ReceiptState::Dead | ReceiptState::Quarantined,
             ..
@@ -504,10 +580,15 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pure snapshot projection helper keeping BoardDataSource testable"
+)]
 fn project_session_branches<F>(
     summary: &SessionSummary,
     lines: &[ChatLine],
     is_busy: bool,
+    delivery_failed: bool,
     queued_receipts: &[(AcceptedMessage, ReceiptState)],
     overridden_hashes: &std::collections::BTreeSet<String>,
     session_contract: Option<WorkContractProgress>,
@@ -519,7 +600,7 @@ where
     let mut branches = Vec::new();
     let mut seen_paths = HashSet::new();
 
-    // 1. Collect explicit verification & delivery artifacts (newest first, dedup by path).
+    // 1. Collect explicit verification & delivery artifacts (newest first, dedup by normalized path).
     for (idx, line) in lines.iter().enumerate().rev() {
         if let ChatLine::Verification {
             report_id,
@@ -529,10 +610,11 @@ where
             issues,
             semantic_hint,
             override_used,
-            ..
+            provenance_warnings,
         } = line
         {
-            if !seen_paths.insert(artifact_path.clone()) {
+            let norm_path = display_path_str(artifact_path);
+            if !seen_paths.insert(norm_path.clone()) {
                 continue;
             }
             let overridden =
@@ -540,28 +622,33 @@ where
             let name = basename(artifact_path);
             let format = DeliverableFormat::from_path(artifact_path);
             let hash_short: String = artifact_hash.chars().take(8).collect();
+            let safe_path = redact_trace_text(&norm_path);
+            let safe_hint = semantic_hint.as_deref().map(redact_trace_text);
+            let safe_warnings: Vec<String> = provenance_warnings
+                .iter()
+                .map(|w| redact_trace_text(w))
+                .collect();
             let (phase, progress_pct, detail) = if *ok || overridden {
                 (
                     BranchPhase::Delivered {
                         override_used: overridden,
                         hash_short,
+                        provenance_warnings: safe_warnings,
                     },
                     100.0,
-                    semantic_hint
-                        .clone()
-                        .unwrap_or_else(|| display_path_str(artifact_path)),
+                    safe_hint.unwrap_or_else(|| safe_path.clone()),
                 )
             } else {
                 let issue_count = issues.len();
-                let detail_msg = format!(
-                    "{} ({issue_count})",
-                    display_path_str(artifact_path)
-                );
+                let detail_msg = format!("{safe_path} ({issue_count})");
                 (
                     BranchPhase::NeedsApproval {
                         report_id: report_id.clone(),
                         artifact_path: artifact_path.clone(),
                         summary: detail_msg.clone(),
+                        issues: issues.clone(),
+                        semantic_hint: safe_hint,
+                        provenance_warnings: safe_warnings,
                     },
                     85.0,
                     detail_msg,
@@ -586,7 +673,8 @@ where
         match line {
             ChatLine::FileChanges { files } => {
                 for (f_ix, file) in files.iter().enumerate() {
-                    if !seen_paths.insert(file.path.clone()) {
+                    let norm_path = display_path_str(&file.path);
+                    if !seen_paths.insert(norm_path.clone()) {
                         continue;
                     }
                     let format = DeliverableFormat::from_path(&file.path);
@@ -596,37 +684,59 @@ where
                         phase: BranchPhase::Delivered {
                             override_used: false,
                             hash_short: String::new(),
+                            provenance_warnings: Vec::new(),
                         },
                         deliverable_name: basename(&file.path),
                         deliverable_path: Some(file.path.clone()),
                         format,
                         progress_pct: 100.0,
-                        detail: display_path_str(&file.path),
+                        detail: redact_trace_text(&norm_path),
                         work_progress: None,
                     });
                 }
             }
-            ChatLine::FileChange { path, .. }
-                if seen_paths.insert(path.clone()) =>
-            {
-                let format = DeliverableFormat::from_path(path);
-                branches.push(WorkBranchSummary {
-                    id: format!("{}-f-{idx}", summary.id),
-                    skill_label: infer_skill_label(format, None),
-                    phase: BranchPhase::Delivered {
-                        override_used: false,
-                        hash_short: String::new(),
-                    },
-                    deliverable_name: basename(path),
-                    deliverable_path: Some(path.clone()),
-                    format,
-                    progress_pct: 100.0,
-                    detail: display_path_str(path),
-                    work_progress: None,
-                });
+            ChatLine::FileChange { path, .. } => {
+                let norm_path = display_path_str(path);
+                if seen_paths.insert(norm_path.clone()) {
+                    let format = DeliverableFormat::from_path(path);
+                    branches.push(WorkBranchSummary {
+                        id: format!("{}-f-{idx}", summary.id),
+                        skill_label: infer_skill_label(format, None),
+                        phase: BranchPhase::Delivered {
+                            override_used: false,
+                            hash_short: String::new(),
+                            provenance_warnings: Vec::new(),
+                        },
+                        deliverable_name: basename(path),
+                        deliverable_path: Some(path.clone()),
+                        format,
+                        progress_pct: 100.0,
+                        detail: redact_trace_text(&norm_path),
+                        work_progress: None,
+                    });
+                }
             }
             _ => {}
         }
+    }
+
+    // 2.5 Durable delivery commit failed after turn completion.
+    if delivery_failed {
+        let safe_title = redact_trace_text(&summary.title);
+        branches.insert(
+            0,
+            WorkBranchSummary {
+                id: format!("{}-delivery-failed", summary.id),
+                skill_label: SkillLabel::Key("chat.status_delivery_failed"),
+                phase: BranchPhase::DeliveryFailed,
+                deliverable_name: clip_label(&safe_title, 28),
+                deliverable_path: None,
+                format: DeliverableFormat::Other,
+                progress_pct: 90.0,
+                detail: clip_label(&safe_title, 96),
+                work_progress: None,
+            },
+        );
     }
 
     // 3. Running live turn (surface latest tool call / reasoning step).
@@ -661,18 +771,19 @@ where
             ((done_tools as f32 / (total_tools as f32 + 0.5)) * 90.0)
                 .clamp(20.0, 92.0)
         };
+        let safe_title = redact_trace_text(&summary.title);
         let (skill_label, step_label, detail) =
             if let Some((name, target)) = active_tool {
                 (
                     infer_skill_label(DeliverableFormat::Other, Some(name)),
                     name.to_owned(),
-                    display_path_str(target),
+                    redact_trace_text(&display_path_str(target)),
                 )
             } else {
                 (
                     SkillLabel::Key("chat.router_name"),
                     String::new(),
-                    summary.title.clone(),
+                    safe_title.clone(),
                 )
             };
         branches.insert(
@@ -685,7 +796,7 @@ where
                     percent: pct,
                 },
                 deliverable_name: if step_label.is_empty() {
-                    clip_label(&summary.title, 24)
+                    clip_label(&safe_title, 24)
                 } else {
                     step_label
                 },
@@ -800,14 +911,6 @@ fn infer_skill_label(
     }
 }
 
-fn basename(path: &str) -> String {
-    path.rsplit(['/', '\\'])
-        .next()
-        .filter(|part| !part.is_empty())
-        .unwrap_or(path)
-        .to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,6 +963,7 @@ mod tests {
             &summary,
             &lines,
             false,
+            false,
             &[],
             &std::collections::BTreeSet::new(),
             Some(contract.clone()),
@@ -868,11 +972,13 @@ mod tests {
         assert_eq!(branches.len(), 2);
         assert!(branches.iter().any(|b| matches!(
             &b.phase,
-            BranchPhase::NeedsApproval { report_id, .. } if report_id == "rep-001"
+            BranchPhase::NeedsApproval { report_id, issues, .. }
+                if report_id == "rep-001" && issues.len() == 1
         )));
         assert!(branches.iter().any(|b| matches!(
             &b.phase,
-            BranchPhase::Delivered { override_used: false, hash_short } if hash_short == "3c92a01b"
+            BranchPhase::Delivered { override_used: false, hash_short, .. }
+                if hash_short == "3c92a01b"
         )));
         let blocker = branches
             .iter()
@@ -917,15 +1023,16 @@ mod tests {
             receipt_id: "rcpt-42".into(),
             state: ReceiptState::Dead,
         };
-        assert!(branch_is_blocker(&dead_phase));
-        assert!(!branch_is_running(&dead_phase));
+        assert!(dead_phase.is_blocker());
+        assert!(!dead_phase.is_running());
 
         let retrying_phase = BranchPhase::Queued {
             receipt_id: "rcpt-43".into(),
             state: ReceiptState::Retrying,
         };
-        assert!(!branch_is_blocker(&retrying_phase));
-        assert!(branch_is_running(&retrying_phase));
+        assert!(!retrying_phase.is_blocker());
+        assert!(retrying_phase.is_running());
+        assert!(BranchPhase::DeliveryFailed.is_blocker());
     }
 
     fn temp_board_root(tag: &str) -> std::path::PathBuf {
@@ -958,6 +1065,7 @@ mod tests {
         let branches = project_session_branches(
             &summary,
             &lines,
+            false,
             false,
             &[],
             &std::collections::BTreeSet::new(),
@@ -1012,6 +1120,7 @@ mod tests {
         assert_eq!(group.title, "Background tasks");
         assert_eq!(group.workspace_display, "Default space");
         assert_eq!(group.branches.len(), 2);
+        assert_eq!(group.total_branch_count, 2);
         assert_eq!(snap.kpi.total_branches, 2);
         assert_eq!(snap.kpi.running_count, 1);
         assert_eq!(snap.kpi.approval_count, 1);
@@ -1060,6 +1169,7 @@ mod tests {
             &summary,
             &lines,
             false,
+            false,
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1070,9 +1180,9 @@ mod tests {
             accumulate_kpi(&mut kpi, branch);
         }
         branches.sort_by_key(|branch| {
-            if branch_is_blocker(&branch.phase) {
+            if branch.phase.is_blocker() {
                 0_u8
-            } else if branch_is_running(&branch.phase) {
+            } else if branch.phase.is_running() {
                 1
             } else {
                 2
@@ -1125,6 +1235,7 @@ mod tests {
             &summary,
             &lines,
             false,
+            false,
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1132,5 +1243,35 @@ mod tests {
         );
         assert!(!branches[0].deliverable_name.contains("sk-secret"));
         assert!(!branches[0].detail.contains("tok_1234567890abcdef"));
+
+        // Running tool call target & DeliveryFailed projection.
+        let running_lines = vec![ChatLine::ToolCall {
+            call_id: "t1".into(),
+            name: "shell".into(),
+            target: "API_KEY=sk-live-secret-999999 curl https://user:pass@host"
+                .into(),
+            running: true,
+        }];
+        let running_branches = project_session_branches(
+            &summary,
+            &running_lines,
+            true,
+            true,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            |_| None,
+        );
+        assert!(
+            running_branches
+                .iter()
+                .any(|b| matches!(b.phase, BranchPhase::DeliveryFailed))
+        );
+        let live = running_branches
+            .iter()
+            .find(|b| matches!(b.phase, BranchPhase::Running { .. }))
+            .expect("live branch");
+        assert!(!live.detail.contains("sk-live-secret-999999"));
+        assert!(!live.detail.contains("user:pass"));
     }
 }

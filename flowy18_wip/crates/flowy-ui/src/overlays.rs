@@ -903,12 +903,12 @@ pub fn menu(
 pub fn select_trigger(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
-    expanded: bool,
+    _expanded: bool,
     theme: &ResolvedTheme,
 ) -> InteractiveDiv {
-    crate::interactive(id, label, theme)
-        .aria_expanded(expanded)
-        .test_support()
+    // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+    // `Action::Expand`, which breaks Windows UIA invocation on buttons.
+    crate::interactive(id, label, theme).test_support()
 }
 
 pub fn menu_item(

@@ -537,8 +537,9 @@ pub fn disclosure(
     let id = id.into();
     let arrow_id: ElementId = (id.clone(), "arrow").into();
     let label = label.into();
+    // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+    // `Action::Expand`, which breaks Windows UIA invocation on buttons.
     interactive(id, label.clone(), theme)
-        .aria_expanded(expanded)
         .flex()
         .items_center()
         .gap_2()

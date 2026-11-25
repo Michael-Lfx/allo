@@ -534,6 +534,7 @@ impl FlowyApp {
                             }
                         }
                     }
+                    app.sync_studio_skills(cx);
                     cx.notify();
                 });
                 if finished {

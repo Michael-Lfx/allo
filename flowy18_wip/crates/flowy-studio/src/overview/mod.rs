@@ -15,7 +15,9 @@ use flowy_ui::status_pill;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, prelude::*, px};
 
 use crate::panel::StudioPanel;
-use crate::ports::{BranchPhase, DeliverableFormat, SessionBoardGroup};
+use crate::ports::{
+    BoardKpiSummary, BranchPhase, DeliverableFormat, SessionBoardGroup,
+};
 
 pub use trace_panel::TraceFilter;
 
@@ -47,24 +49,38 @@ impl StudioPanel {
         }
     }
 
+    pub(super) fn format_tag_label(&self, format: DeliverableFormat) -> String {
+        match format {
+            DeliverableFormat::Other => self.t("deliverables.kind_file"),
+            other => other.tag().to_owned(),
+        }
+    }
+
     /// Global Visual Board surface (`StudioSurface::Board`).
     pub(crate) fn board_canvas(&self, cx: &Context<'_, Self>) -> AnyElement {
         let snapshot = &self.board_snapshot;
-        let filtered: Vec<&SessionBoardGroup> = snapshot
+        let project_filtered: Vec<&SessionBoardGroup> = snapshot
             .sessions
             .iter()
             .filter(|group| {
-                if let Some(proj) = self.board_project_filter.as_deref()
-                    && group.project_id.as_deref() != Some(proj)
-                {
-                    return false;
-                }
-                match self.board_filter {
-                    BoardFilter::All => true,
-                    BoardFilter::Approval => group.has_blocker,
-                    BoardFilter::Running => group.is_running,
-                    BoardFilter::Delivered => !group.is_active,
-                }
+                self.board_project_filter.as_deref().is_none_or(|proj| {
+                    group.project_id.as_deref() == Some(proj)
+                })
+            })
+            .collect();
+        let scoped_kpi = if self.board_project_filter.is_some() {
+            BoardKpiSummary::from_groups(&project_filtered)
+        } else {
+            snapshot.kpi.clone()
+        };
+        let filtered: Vec<&SessionBoardGroup> = project_filtered
+            .iter()
+            .copied()
+            .filter(|group| match self.board_filter {
+                BoardFilter::All => true,
+                BoardFilter::Approval => group.has_blocker,
+                BoardFilter::Running => group.is_running,
+                BoardFilter::Delivered => group.has_delivered,
             })
             .collect();
 
@@ -161,15 +177,19 @@ impl StudioPanel {
             .flex()
             .flex_col()
             .gap(self.theme.space(14.))
-            .child(self.board_kpi_strip(cx))
-            .child(self.board_filter_bar(cx))
+            .child(self.board_kpi_strip(&scoped_kpi, &project_filtered, cx))
+            .child(self.board_filter_bar(&scoped_kpi, cx))
             .child(sessions_col)
             .into_any_element()
     }
 
     /// Adaptive 2x2 / 4x1 KPI visualization strip (`flex_wrap` + `min_w(210px)`).
-    fn board_kpi_strip(&self, cx: &Context<'_, Self>) -> AnyElement {
-        let kpi = &self.board_snapshot.kpi;
+    fn board_kpi_strip(
+        &self,
+        kpi: &BoardKpiSummary,
+        visible_sessions: &[&SessionBoardGroup],
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
         let segments = vec![
             DonutSegment::new(
                 kpi.delivered_count as f32,
@@ -326,6 +346,23 @@ impl StudioPanel {
             + kpi.doc_count
             + kpi.other_count)
             .max(1);
+        let raw_shares: Vec<(f32, gpui::Rgba)> = [
+            (kpi.sheet_count, self.theme.file_kind_sheet()),
+            (kpi.slides_count, self.theme.file_kind_slides()),
+            (kpi.doc_count, self.theme.file_kind_doc()),
+            (kpi.other_count, self.theme.file_kind_other()),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, color)| {
+            ((count as f32 / format_total as f32).max(0.06), color)
+        })
+        .collect();
+        let share_sum: f32 = raw_shares
+            .iter()
+            .map(|(share, _)| *share)
+            .sum::<f32>()
+            .max(1.0);
         let mut bar_track = div()
             .w_full()
             .h(px(7.))
@@ -334,17 +371,13 @@ impl StudioPanel {
             .bg(self.theme.soft())
             .flex()
             .gap(px(2.));
-        for (count, color) in [
-            (kpi.sheet_count, self.theme.file_kind_sheet()),
-            (kpi.slides_count, self.theme.file_kind_slides()),
-            (kpi.doc_count, self.theme.file_kind_doc()),
-            (kpi.other_count, self.theme.file_kind_other()),
-        ] {
-            if count > 0 {
-                let share = (count as f32 / format_total as f32).max(0.06);
-                bar_track = bar_track
-                    .child(div().h_full().bg(color).w(gpui::relative(share)));
-            }
+        for (share, color) in raw_shares {
+            bar_track = bar_track.child(
+                div()
+                    .h_full()
+                    .bg(color)
+                    .w(gpui::relative(share / share_sum)),
+            );
         }
         let tile_formats = div()
             .flex_1()
@@ -408,27 +441,27 @@ impl StudioPanel {
                         row.child(
                             div()
                                 .text_color(self.theme.file_kind_other())
-                                .child(format!("FILE {}", kpi.other_count)),
+                                .child(format!(
+                                    "{} {}",
+                                    self.t("deliverables.kind_file"),
+                                    kpi.other_count
+                                )),
                         )
                     }),
             );
 
         let mut spark_bars =
             div().w_full().h(px(22.)).flex().items_end().gap(px(4.));
-        for (idx, group) in
-            self.board_snapshot.sessions.iter().take(8).enumerate()
+        for (idx, group) in visible_sessions.iter().copied().take(8).enumerate()
         {
-            let has_deliverables = group
-                .branches
-                .iter()
-                .any(|b| matches!(b.phase, BranchPhase::Delivered { .. }));
-            let bar_h =
-                (group.branches.len() as f32).mul_add(4.0, 8.0).min(22.0);
+            let bar_h = (group.total_branch_count as f32)
+                .mul_add(4.0, 8.0)
+                .min(22.0);
             let color = if group.has_blocker {
                 self.theme.status_attention()
             } else if group.is_running {
                 self.theme.status_active()
-            } else if has_deliverables {
+            } else if group.has_delivered {
                 self.theme.status_verified().opacity(0.6)
             } else {
                 self.theme.line()
@@ -554,8 +587,11 @@ impl StudioPanel {
             .into_any_element()
     }
 
-    fn board_filter_bar(&self, cx: &Context<'_, Self>) -> AnyElement {
-        let kpi = &self.board_snapshot.kpi;
+    fn board_filter_bar(
+        &self,
+        kpi: &BoardKpiSummary,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
         let filters = [
             (
                 BoardFilter::All,
@@ -600,6 +636,11 @@ impl StudioPanel {
                 .child(label)
                 .on_click(cx.listener(
                     move |panel, _, _, cx| {
+                        if filter == BoardFilter::All
+                            && panel.board_filter == BoardFilter::All
+                        {
+                            panel.board_project_filter = None;
+                        }
                         panel.board_filter = filter;
                         cx.notify();
                     },
@@ -611,7 +652,16 @@ impl StudioPanel {
             pills = pills.child(
                 div().w(px(1.)).h(px(14.)).mx(px(2.)).bg(self.theme.line()),
             );
-            for (p_idx, project) in self.projects.iter().take(4).enumerate() {
+            let mut visible_projects: Vec<&crate::projects::Project> =
+                self.projects.iter().take(4).collect();
+            if let Some(active_pid) = self.board_project_filter.as_deref()
+                && !visible_projects.iter().any(|p| p.id == active_pid)
+                && let Some(active_proj) =
+                    self.projects.iter().find(|p| p.id == active_pid)
+            {
+                visible_projects.push(active_proj);
+            }
+            for (p_idx, project) in visible_projects.into_iter().enumerate() {
                 let pid = project.id.clone();
                 let active = self.board_project_filter.as_deref()
                     == Some(project.id.as_str());
@@ -677,7 +727,7 @@ impl StudioPanel {
                     .render(
                         &self.theme,
                         cx.listener(|panel, _, _, cx| {
-                            panel.new_conversation(cx);
+                            panel.new_task(cx);
                         }),
                     ),
             )
@@ -811,13 +861,20 @@ impl StudioPanel {
         };
 
         let mut branches_col = div().w_full().flex().flex_col().gap(px(6.));
-        for (b_ix, branch) in group.branches.iter().enumerate() {
+        for branch in &group.branches {
             let sid_branch = group.session_id.clone();
             let bid = branch.id.clone();
+            let pct_rounded =
+                branch.progress_pct.clamp(0.0, 100.0).round() as u32;
             let (dot_color, state_label, live) = match &branch.phase {
                 BranchPhase::NeedsApproval { .. } => (
                     self.theme.status_attention(),
                     self.t("board.state_needs_approval"),
+                    false,
+                ),
+                BranchPhase::DeliveryFailed => (
+                    self.theme.status_attention(),
+                    self.t("chat.status_delivery_failed"),
                     false,
                 ),
                 BranchPhase::Running { step_label, .. } => {
@@ -828,10 +885,7 @@ impl StudioPanel {
                     };
                     (
                         self.theme.status_active(),
-                        format!(
-                            "{}% \u{00b7} {step}",
-                            branch.progress_pct as u32
-                        ),
+                        format!("{pct_rounded}% \u{00b7} {step}"),
                         true,
                     )
                 }
@@ -852,9 +906,17 @@ impl StudioPanel {
                 }
             };
             let format_color = self.format_color(branch.format);
+            let dot_id = gpui::SharedString::from(format!(
+                "board-branch-dot-{}",
+                branch.id
+            ));
+            let row_id = gpui::SharedString::from(format!(
+                "board-branch-row-{}",
+                branch.id
+            ));
             let dot = if live {
                 crate::motion::live_dot(
-                    ("board-branch-dot", index * 16 + b_ix as u64),
+                    dot_id,
                     dot_color,
                     self.theme.motion_policy(),
                 )
@@ -866,10 +928,18 @@ impl StudioPanel {
                     .bg(dot_color)
                     .into_any_element()
             };
+            let has_file_deliverable = branch.deliverable_path.is_some();
+            let bar_ratio = if branch.progress_pct <= 0.0
+                || !branch.progress_pct.is_finite()
+            {
+                0.0
+            } else {
+                (branch.progress_pct / 100.0).clamp(0.08, 1.0)
+            };
 
             branches_col = branches_col.child(
                 theme::interactive(
-                    ("board-branch-row", index * 16 + b_ix as u64),
+                    row_id,
                     branch.deliverable_name.clone(),
                     &self.theme,
                 )
@@ -911,17 +981,21 @@ impl StudioPanel {
                                     branch.skill_label.resolve(|k| self.t(k)),
                                 ),
                         )
-                        .child(
-                            div()
-                                .px(px(5.))
-                                .py(px(1.))
-                                .rounded_sm()
-                                .bg(format_color)
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(self.theme.on_ink())
-                                .child(branch.format.tag()),
-                        )
+                        .when(has_file_deliverable, |row| {
+                            row.child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(1.))
+                                    .rounded_sm()
+                                    .bg(format_color)
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(self.theme.on_ink())
+                                    .child(
+                                        self.format_tag_label(branch.format),
+                                    ),
+                            )
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -947,16 +1021,15 @@ impl StudioPanel {
                                 .rounded_full()
                                 .overflow_hidden()
                                 .bg(self.theme.card())
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .rounded_full()
-                                        .bg(dot_color)
-                                        .w(gpui::relative(
-                                            (branch.progress_pct / 100.0)
-                                                .clamp(0.08, 1.0),
-                                        )),
-                                ),
+                                .when(bar_ratio > 0.0, |track| {
+                                    track.child(
+                                        div()
+                                            .h_full()
+                                            .rounded_full()
+                                            .bg(dot_color)
+                                            .w(gpui::relative(bar_ratio)),
+                                    )
+                                }),
                         )
                         .child(
                             div()

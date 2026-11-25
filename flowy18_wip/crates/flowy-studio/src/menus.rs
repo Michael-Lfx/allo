@@ -116,11 +116,15 @@ impl StudioPanel {
                 .child(
                     theme::interactive(
                         "env-toggle-l3",
-                        if l3_enabled {
-                            self.t("env.state_on")
-                        } else {
-                            self.t("env.state_off")
-                        },
+                        format!(
+                            "{} \u{00b7} {}",
+                            self.t("env.toggle_l3_label"),
+                            if l3_enabled {
+                                self.t("env.state_on")
+                            } else {
+                                self.t("env.state_off")
+                            }
+                        ),
                         &self.theme,
                     )
                     .px(self.theme.space(10.))

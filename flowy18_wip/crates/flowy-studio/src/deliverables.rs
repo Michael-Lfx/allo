@@ -41,8 +41,9 @@ fn short_parent_path(path: &str) -> String {
     format!("\u{2026}{tail}")
 }
 
-/// Reading more than this on the UI path would stall the frame.
-const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+/// Reading more than this on the UI path would stall the frame. Matches the
+/// localized `"1MB"` copy in `chat.preview_too_large` across all 23 locales.
+const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
 
 /// What the right-hand inspector sheet shows when opened from the background
 /// works popover (Plan §3.2 #2: single-work step trace without interrupting the
@@ -63,26 +64,38 @@ pub enum PreviewBody {
 
 /// Reads one file for preview, classifying it by extension and size.
 pub fn load_preview(path: &str) -> PreviewBody {
-    let path = Path::new(path);
-    if flowy_agent::has_reserved_device_component(path) {
-        return PreviewBody::Notice("chat.preview_missing");
-    }
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
+    use std::io::Read;
+    let Some(safe_path) = crate::ports::resolve_safe_local_file(path) else {
         return PreviewBody::Notice("chat.preview_missing");
     };
-    if !meta.is_file()
-        || meta.file_type().is_symlink()
-        || flowy_agent::is_windows_reparse_point(&meta)
-    {
+    let Ok(file) = std::fs::File::open(&safe_path) else {
+        return PreviewBody::Notice("chat.preview_missing");
+    };
+    let Ok(meta) = file.metadata() else {
+        return PreviewBody::Notice("chat.preview_missing");
+    };
+    if !meta.is_file() || flowy_agent::is_windows_reparse_point(&meta) {
         return PreviewBody::Notice("chat.preview_missing");
     }
     if meta.len() > MAX_PREVIEW_BYTES {
         return PreviewBody::Notice("chat.preview_too_large");
     }
-    let Ok(bytes) = std::fs::read(path) else {
+    // Bounded read on the opened handle eliminates TOCTOU OOM if the file grows
+    // between metadata check and read.
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(meta.len().min(MAX_PREVIEW_BYTES)).unwrap_or(0),
+    );
+    if file
+        .take(MAX_PREVIEW_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return PreviewBody::Notice("chat.preview_missing");
-    };
-    let extension = path
+    }
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return PreviewBody::Notice("chat.preview_too_large");
+    }
+    let extension = safe_path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
@@ -337,7 +350,10 @@ impl StudioPanel {
                     if target.trim().is_empty() {
                         steps.push(format!("{prefix}{heading}"));
                     } else {
-                        let short: String = target.chars().take(48).collect();
+                        let safe_target =
+                            crate::ports::redact_trace_text(target);
+                        let short: String =
+                            safe_target.chars().take(48).collect();
                         steps.push(format!(
                             "{prefix}{heading} \u{00b7} {short}"
                         ));
@@ -364,10 +380,7 @@ impl StudioPanel {
                     override_used,
                     ..
                 } => {
-                    let name = artifact_path
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(artifact_path);
+                    let name = crate::ports::basename(artifact_path);
                     let status = if *ok {
                         self.t("verify.card.passed")
                     } else if *override_used {
@@ -378,7 +391,8 @@ impl StudioPanel {
                     steps.push(format!("{status} \u{00b7} {name}"));
                 }
                 ChatLine::ToolResult { text, is_error } if *is_error => {
-                    let short: String = text.chars().take(56).collect();
+                    let safe_err = crate::ports::redact_trace_text(text);
+                    let short: String = safe_err.chars().take(56).collect();
                     steps.push(format!("\u{2717} {short}"));
                 }
                 _ => {}
@@ -536,7 +550,9 @@ impl StudioPanel {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.theme.ink())
                                     .whitespace_normal()
-                                    .child(title.to_owned()),
+                                    .child(crate::ports::redact_trace_text(
+                                        title,
+                                    )),
                             )
                             .child(status_badge),
                     )
@@ -623,6 +639,7 @@ impl StudioPanel {
             ReceiptState::Queued
                 | ReceiptState::Running
                 | ReceiptState::Retrying
+                | ReceiptState::Quarantined
         );
         let is_dead = state == ReceiptState::Dead;
         let retrying = self.retrying_receipts.contains(receipt.id.as_str());
@@ -841,6 +858,7 @@ impl StudioPanel {
                                 .text_color(self.theme.ink())
                                 .overflow_hidden()
                                 .whitespace_nowrap()
+                                .truncate()
                                 .child(name),
                         )
                         .when(!parent.is_empty(), |col| {
@@ -850,6 +868,7 @@ impl StudioPanel {
                                     .text_color(self.theme.muted())
                                     .overflow_hidden()
                                     .whitespace_nowrap()
+                                    .truncate()
                                     .child(parent),
                             )
                         }),
@@ -874,6 +893,13 @@ impl StudioPanel {
         }
         if self.active_project_id.is_none()
             && let Some(first) = files.first()
+            && let Some(parent_dir) =
+                crate::ports::resolve_safe_parent_dir(&first.path)
+            && parent_dir.parent().is_some()
+            && !crate::ports::is_same_or_overlapping_dir(
+                &parent_dir,
+                &self.store_root,
+            )
         {
             let first_path = first.path.clone();
             column = column.child(
@@ -905,7 +931,7 @@ impl StudioPanel {
         preview: &PreviewBody,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+        let name = crate::ports::basename(path);
         let external_path = path.to_owned();
         let body = match preview {
             PreviewBody::Text(text) => div()
@@ -958,6 +984,7 @@ impl StudioPanel {
                             .font_weight(FontWeight::MEDIUM)
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .truncate()
                             .child(name),
                     )
                     .child(
@@ -972,7 +999,7 @@ impl StudioPanel {
                             cx.listener({
                                 let reveal_path = external_path.clone();
                                 move |panel, _, _, cx| {
-                                    panel.reveal_file_in_os(&reveal_path, cx);
+                                    panel.reveal_file(&reveal_path, cx);
                                 }
                             }),
                         ),

@@ -23,23 +23,23 @@ impl StudioPanel {
     ) -> impl IntoElement {
         let category = self.starter_category();
         let examples = category.examples();
-        let mut grid =
-            div().w_full().flex().flex_col().gap(self.theme.space(8.));
-        for (row_idx, pair) in examples.chunks(2).enumerate() {
-            let mut row = div()
-                .w_full()
-                .flex()
-                .items_stretch()
-                .gap(self.theme.space(8.));
-            for (col_idx, starter) in pair.iter().enumerate() {
-                let index = (row_idx * 2 + col_idx) as u64;
-                row =
-                    row.child(self.example_card(starter, index, category, cx));
-            }
-            if pair.len() == 1 {
-                row = row.child(div().flex_1().min_w_0());
-            }
-            grid = grid.child(row);
+        let mut grid = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_stretch()
+            .gap(self.theme.space(8.));
+        for (index, starter) in examples.iter().enumerate() {
+            grid = grid.child(
+                // 300px floor yields a clean 2x2 grid up to `STAGE_MAX_W` and
+                // wraps to a single column on narrow viewports (<608px).
+                div().flex_1().min_w(px(300.)).child(self.example_card(
+                    starter,
+                    index as u64,
+                    category,
+                    cx,
+                )),
+            );
         }
         div()
             .id("home-starters")

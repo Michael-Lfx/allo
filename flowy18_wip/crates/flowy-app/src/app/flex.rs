@@ -477,6 +477,7 @@ impl FlowyApp {
         let version = self.prefs.model_info_version.clone();
         self.studio.update(cx, |panel, cx| {
             panel.sync_model(Model::Flex, plan, version, cx);
+            panel.refresh_env_status(cx);
         });
         self.notice = None;
         self.studio

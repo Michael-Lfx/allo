@@ -53,7 +53,9 @@ pub fn donut_chart(
     let ink = theme.ink();
     let center_label = center_label.into();
     let thickness = (size_px * 0.13).clamp(4.0, 8.0);
-    let has_data = segments.iter().any(|segment| segment.value > 0.0);
+    let has_data = segments
+        .iter()
+        .any(|segment| segment.value.is_finite() && segment.value > 0.0);
 
     let ring = canvas(
         move |bounds: Bounds<Pixels>, _window: &mut Window, _cx| bounds,
@@ -74,7 +76,7 @@ pub fn donut_chart(
             let non_zero: Vec<DonutSegment> = segments
                 .iter()
                 .copied()
-                .filter(|seg| seg.value > 0.0)
+                .filter(|seg| seg.value.is_finite() && seg.value > 0.0)
                 .collect();
             let pad = if non_zero.len() > 1 { 0.06 } else { 0.0 };
             let slices = Pie::new()
@@ -131,7 +133,11 @@ pub fn progress_ring(
     running: bool,
     theme: &ResolvedTheme,
 ) -> AnyElement {
-    let clamped = percent.clamp(0.0, 100.0);
+    let clamped = if percent.is_finite() {
+        percent.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
     let track = Hsla::from(theme.soft());
     let stroke = Hsla::from(color);
     let thickness = (size_px * 0.14).clamp(2.2, 4.0);
@@ -149,9 +155,11 @@ pub fn progress_ring(
             let track_slice = ArcData::new(&(), 0, 1.0, 0.0, TAU - 0.002);
             arc.paint(&track_slice, track, &bounds, window);
 
-            let sweep = ((clamped / 100.0) * (TAU - 0.004)).max(0.22);
-            let slice = ArcData::new(&(), 0, clamped, 0.0, sweep);
-            arc.paint(&slice, stroke, &bounds, window);
+            if clamped > 0.0 {
+                let sweep = ((clamped / 100.0) * (TAU - 0.004)).max(0.22);
+                let slice = ArcData::new(&(), 0, clamped, 0.0, sweep);
+                arc.paint(&slice, stroke, &bounds, window);
+            }
         },
     )
     .size(px(size_px))

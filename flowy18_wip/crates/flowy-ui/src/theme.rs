@@ -403,9 +403,10 @@ impl ResolvedTheme {
     pub fn file_kind_sheet(self) -> Rgba {
         rgb(if self.dark { 0x0034_d399 } else { 0x0015_803d })
     }
-    /// Identity tint for presentation deliverables (PPTX).
+    /// Identity tint for presentation deliverables (PPTX). Light mode uses
+    /// `#b45309` (≥ 5.0:1 against white) to meet WCAG AA contrast.
     pub fn file_kind_slides(self) -> Rgba {
-        rgb(if self.dark { 0x00fb_bf24 } else { 0x00d9_7706 })
+        rgb(if self.dark { 0x00fb_bf24 } else { 0x00b4_5309 })
     }
     /// Identity tint for document deliverables (DOCX / PDF / MD).
     pub fn file_kind_doc(self) -> Rgba {

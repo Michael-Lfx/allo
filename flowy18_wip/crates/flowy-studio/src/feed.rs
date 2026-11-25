@@ -120,13 +120,37 @@ fn collect_latest_deliverables(
     turn_starts.push(lines.len());
 
     for bounds in turn_starts.windows(2).rev() {
+        // First pass: record the latest verification state per normalized path
+        // in this turn so unsettled failed verifications are never leaked via
+        // earlier `FileChanges`/`FileChange` rows (§8.3).
+        let mut verification_settled: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for line in &lines[bounds[0]..bounds[1]] {
+            if let ChatLine::Verification {
+                artifact_path,
+                ok,
+                override_used,
+                ..
+            } = line
+                && !artifact_path.trim().is_empty()
+            {
+                verification_settled.insert(
+                    crate::ports::display_path_str(artifact_path),
+                    *ok || *override_used,
+                );
+            }
+        }
         let mut entries: Vec<flowy_agent::FileEntry> = Vec::new();
         let mut seen = HashSet::new();
         for line in &lines[bounds[0]..bounds[1]] {
             match line {
                 ChatLine::FileChanges { files } => {
                     for file in files {
-                        if seen.insert(file.path.clone()) {
+                        let norm = crate::ports::display_path_str(&file.path);
+                        if verification_settled.get(&norm) == Some(&false) {
+                            continue;
+                        }
+                        if seen.insert(norm) {
                             entries.push(file.clone());
                         }
                     }
@@ -138,7 +162,11 @@ fn collect_latest_deliverables(
                     removed,
                     binary,
                 } => {
-                    if seen.insert(path.clone()) {
+                    let norm = crate::ports::display_path_str(path);
+                    if verification_settled.get(&norm) == Some(&false) {
+                        continue;
+                    }
+                    if seen.insert(norm) {
                         entries.push(flowy_agent::FileEntry {
                             path: path.clone(),
                             change: *change,
@@ -155,7 +183,9 @@ fn collect_latest_deliverables(
                     ..
                 } if (*ok || *override_used)
                     && !artifact_path.trim().is_empty()
-                    && seen.insert(artifact_path.clone()) =>
+                    && seen.insert(crate::ports::display_path_str(
+                        artifact_path,
+                    )) =>
                 {
                     entries.push(flowy_agent::FileEntry {
                         path: artifact_path.clone(),
@@ -972,7 +1002,7 @@ impl ChatFeed {
                 issues,
                 semantic_hint,
                 override_used,
-                ..
+                provenance_warnings,
             } => self.verification_card(
                 index,
                 report_id,
@@ -982,6 +1012,7 @@ impl ChatFeed {
                 issues,
                 semantic_hint.as_deref(),
                 *override_used,
+                provenance_warnings,
                 cx,
             ),
         }
@@ -1318,6 +1349,7 @@ impl ChatFeed {
         issues: &[flowy_agent::VerificationIssue],
         semantic_hint: Option<&str>,
         override_used: bool,
+        provenance_warnings: &[String],
         cx: &Context<'_, Self>,
     ) -> gpui::AnyElement {
         let row_id = self.row_ids[index];
@@ -1396,12 +1428,13 @@ impl ChatFeed {
                     )
                     .into_any_element()
             };
+            // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+            // `Action::Expand`, which breaks Windows UIA button clicks.
             let mut toggle = theme::interactive(
                 ("verify-compact-toggle", row_id),
                 compact_label,
                 &self.theme,
             )
-            .aria_expanded(expanded)
             .w_full()
             .min_w_0()
             .px(self.theme.space(10.))
@@ -1522,6 +1555,34 @@ impl ChatFeed {
                         .text_color(self.theme.ink())
                         .whitespace_normal()
                         .child(hint_label),
+                );
+            }
+
+            if !provenance_warnings.is_empty() {
+                let prov_label = format!(
+                    "{}: {}",
+                    self.t("verify.provenance_invalid"),
+                    provenance_warnings
+                        .iter()
+                        .map(|w| crate::ports::redact_trace_text(w))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                card = card.child(
+                    div()
+                        .id(("verify-provenance-warn", row_id))
+                        .role(gpui::Role::Status)
+                        .aria_label(prov_label.clone())
+                        .w_full()
+                        .px(self.theme.space(10.))
+                        .py(self.theme.space(6.))
+                        .border_t_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.status_attention_bg())
+                        .text_xs()
+                        .text_color(self.theme.status_attention())
+                        .whitespace_normal()
+                        .child(prov_label),
                 );
             }
 
@@ -1912,12 +1973,13 @@ impl ChatFeed {
             .flex_col()
             .gap(self.theme.space(4.))
             .child(
+                // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+                // `Action::Expand`, which breaks Windows UIA button clicks.
                 theme::interactive(
                     ("chat-reasoning-toggle", row_id),
                     title,
                     &self.theme,
                 )
-                .aria_expanded(expanded)
                 .w_full()
                 .min_w_0()
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
@@ -2028,12 +2090,13 @@ impl ChatFeed {
             .flex()
             .flex_col()
             .child(
+                // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+                // `Action::Expand`, which breaks Windows UIA button clicks.
                 theme::interactive(
                     ("chat-tool-toggle", row_id),
                     accessible,
                     &self.theme,
                 )
-                .aria_expanded(expanded)
                 .min_h(self.theme.control_height(theme::ControlSize::Small))
                 .px(self.theme.space(10.))
                 .rounded_lg()
@@ -2164,12 +2227,13 @@ impl ChatFeed {
             .flex()
             .flex_col()
             .child(
+                // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+                // `Action::Expand`, which breaks Windows UIA button clicks.
                 theme::interactive(
                     ("chat-tool-out-toggle", row_id),
                     display_preview.clone(),
                     &self.theme,
                 )
-                .aria_expanded(expanded)
                 .w_full()
                 .min_w_0()
                 .min_h(self.theme.control_height(theme::ControlSize::Small))

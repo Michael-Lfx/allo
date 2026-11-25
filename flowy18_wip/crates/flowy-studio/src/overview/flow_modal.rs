@@ -1,6 +1,6 @@
 //! Centered responsive Flowchart Modal rendered in `FlowyApp`'s top-level slot.
 
-use flowy_agent::ReceiptState;
+use flowy_agent::{ReceiptState, VerificationIssue};
 use flowy_ui as theme;
 use flowy_ui::charts::{FlowEdgeStyle, flow_connector, progress_ring};
 use flowy_ui::status_pill;
@@ -23,31 +23,7 @@ impl StudioPanel {
         &self,
         cx: &Context<'_, Self>,
     ) -> Option<AnyElement> {
-        let session_id = self.flow_modal.session.as_deref()?;
-        let group = self
-            .board_snapshot
-            .sessions
-            .iter()
-            .find(|g| g.session_id == session_id)?;
-        let selected_branch = self
-            .flow_modal
-            .branch
-            .as_deref()
-            .and_then(|bid| group.branches.iter().find(|b| b.id == bid))
-            .or_else(|| {
-                group.branches.iter().find(|b| {
-                    matches!(
-                        b.phase,
-                        BranchPhase::NeedsApproval { .. }
-                            | BranchPhase::Queued {
-                                state: ReceiptState::Dead
-                                    | ReceiptState::Quarantined,
-                                ..
-                            }
-                    )
-                })
-            })
-            .or_else(|| group.branches.first())?;
+        let (group, selected_branch) = self.resolve_flow_modal()?;
 
         let open_sid = group.session_id.clone();
         let can_open_session = !group.is_synthetic();
@@ -166,10 +142,28 @@ impl StudioPanel {
             ));
         }
 
+        let hidden_branches = group
+            .total_branch_count
+            .saturating_sub(group.branches.len());
+        let branch_count_label = if hidden_branches > 0 {
+            format!(
+                "{} (+{hidden_branches})",
+                self.tf(
+                    "board.branch_count",
+                    &[("count", &group.total_branch_count.to_string())],
+                )
+            )
+        } else {
+            self.tf(
+                "board.branch_count",
+                &[("count", &group.total_branch_count.to_string())],
+            )
+        };
         let flow_canvas = div()
             .id("flow-modal-canvas")
             .w_full()
-            .overflow_x_scroll()
+            .max_h(px(250.))
+            .overflow_scroll()
             .p(self.theme.space(20.))
             .border_b_1()
             .border_color(self.theme.line())
@@ -202,15 +196,12 @@ impl StudioPanel {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(self.t("dock.chief_assistant")),
                             )
-                            .child(div().text_xs().opacity(0.8).child(
-                                self.tf(
-                                    "board.branch_count",
-                                    &[(
-                                        "count",
-                                        &group.branches.len().to_string(),
-                                    )],
-                                ),
-                            )),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .opacity(0.8)
+                                    .child(branch_count_label),
+                            ),
                     ),
             )
             .child(branch_rows);
@@ -258,7 +249,7 @@ impl StudioPanel {
         let footer = div()
             .id("flow-modal-detail")
             .flex_1()
-            .min_h_0()
+            .min_h(px(180.))
             .overflow_y_scroll()
             .p(self.theme.space(16.))
             .flex()
@@ -298,27 +289,10 @@ impl StudioPanel {
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let policy = self.theme.motion_policy();
-        let (is_app, is_run, is_done) = match &branch.phase {
-            BranchPhase::NeedsApproval { .. }
-            | BranchPhase::Queued {
-                state: ReceiptState::Dead | ReceiptState::Quarantined,
-                ..
-            } => (true, false, false),
-            BranchPhase::Running { .. }
-            | BranchPhase::Queued {
-                state:
-                    ReceiptState::Queued
-                    | ReceiptState::Running
-                    | ReceiptState::Retrying,
-                ..
-            } => (false, true, false),
-            BranchPhase::Delivered { .. }
-            | BranchPhase::Queued {
-                state: ReceiptState::Completed | ReceiptState::Cancelled,
-                ..
-            }
-            | BranchPhase::Idle => (false, false, true),
-        };
+        let is_app = branch.phase.is_blocker();
+        let is_run = branch.phase.is_running();
+        let is_done = !is_app && !is_run;
+        let pct_rounded = branch.progress_pct.clamp(0.0, 100.0).round() as u32;
         let e1_color = if is_done {
             self.theme.status_verified()
         } else {
@@ -357,6 +331,9 @@ impl StudioPanel {
         let gate_title = match &branch.phase {
             BranchPhase::NeedsApproval { .. } => {
                 self.t("board.state_needs_approval")
+            }
+            BranchPhase::DeliveryFailed => {
+                self.t("chat.status_delivery_failed")
             }
             BranchPhase::Running { step_label, .. } => {
                 if step_label.is_empty() {
@@ -423,7 +400,7 @@ impl StudioPanel {
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     panel.flow_modal.branch = Some(bid1.clone());
-                    panel.flow_modal.override_ack = false;
+                    panel.flow_modal.override_ack_key = None;
                     cx.notify();
                 }))
                 .child(progress_ring(
@@ -453,10 +430,7 @@ impl StudioPanel {
                             div()
                                 .text_xs()
                                 .text_color(self.theme.muted())
-                                .child(format!(
-                                    "{}%",
-                                    branch.progress_pct as u32
-                                )),
+                                .child(format!("{pct_rounded}%")),
                         ),
                 ),
             )
@@ -495,7 +469,7 @@ impl StudioPanel {
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     panel.flow_modal.branch = Some(bid2.clone());
-                    panel.flow_modal.override_ack = false;
+                    panel.flow_modal.override_ack_key = None;
                     cx.notify();
                 }))
                 .child(
@@ -523,11 +497,18 @@ impl StudioPanel {
                             self.theme.status_active()
                         })
                         .child(if is_app {
-                            "!"
+                            div().child("!").into_any_element()
                         } else if is_done {
-                            "\u{2713}"
+                            theme::icons::check()
+                                .size(px(12.))
+                                .text_color(self.theme.status_verified())
+                                .into_any_element()
                         } else {
-                            "\u{25cf}"
+                            div()
+                                .size(px(7.))
+                                .rounded_full()
+                                .bg(self.theme.status_active())
+                                .into_any_element()
                         }),
                 )
                 .child(
@@ -570,9 +551,20 @@ impl StudioPanel {
                 policy,
             ))
             .child({
-                let is_plain_qa = matches!(branch.phase, BranchPhase::Idle)
-                    && branch.deliverable_path.is_none();
-                let badge = if is_plain_qa {
+                let has_file_deliverable = branch.deliverable_path.is_some();
+                let badge = if has_file_deliverable {
+                    div()
+                        .flex_none()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded_md()
+                        .bg(format_color)
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(self.theme.on_ink())
+                        .child(self.format_tag_label(branch.format))
+                        .into_any_element()
+                } else {
                     div()
                         .size(px(22.))
                         .flex_none()
@@ -587,27 +579,26 @@ impl StudioPanel {
                                 .text_color(self.theme.muted()),
                         )
                         .into_any_element()
-                } else {
-                    div()
-                        .flex_none()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded_md()
-                        .bg(format_color)
-                        .text_xs()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(self.theme.on_ink())
-                        .child(branch.format.tag())
-                        .into_any_element()
                 };
                 let subtitle = match &branch.phase {
                     BranchPhase::Delivered { hash_short, .. }
                         if !hash_short.is_empty() =>
                     {
-                        format!("sha256:{hash_short}")
+                        self.tf("verify.card.hash", &[("hash", hash_short)])
                     }
-                    BranchPhase::Idle if branch.deliverable_path.is_none() => {
+                    BranchPhase::Idle if !has_file_deliverable => {
                         self.t("chat.status_idle")
+                    }
+                    BranchPhase::Queued { state, .. }
+                        if !has_file_deliverable =>
+                    {
+                        self.receipt_state_visual(*state).1
+                    }
+                    BranchPhase::Running { .. } if !has_file_deliverable => {
+                        self.t("chat.status_running")
+                    }
+                    BranchPhase::DeliveryFailed => {
+                        self.t("chat.status_delivery_failed")
                     }
                     _ => self.t("chat.deliverables"),
                 };
@@ -630,7 +621,7 @@ impl StudioPanel {
                 .gap(self.theme.space(8.))
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     panel.flow_modal.branch = Some(bid3.clone());
-                    panel.flow_modal.override_ack = false;
+                    panel.flow_modal.override_ack_key = None;
                     cx.notify();
                 }))
                 .child(badge)
@@ -713,20 +704,78 @@ impl StudioPanel {
                 report_id,
                 artifact_path,
                 summary,
+                issues,
+                semantic_hint,
+                provenance_warnings,
             } => self.modal_approval_card(
                 &group.session_id,
                 report_id,
                 artifact_path,
                 summary,
+                issues,
+                semantic_hint.as_deref(),
+                provenance_warnings,
                 cx,
             ),
+            BranchPhase::DeliveryFailed => {
+                self.modal_delivery_failed_card(group, branch, cx)
+            }
             BranchPhase::Running { .. } => {
                 self.modal_running_card(group, branch, cx)
             }
             BranchPhase::Queued { receipt_id, state } => {
                 self.modal_queued_card(branch, receipt_id, *state, cx)
             }
-            BranchPhase::Delivered { .. } | BranchPhase::Idle => div()
+            BranchPhase::Delivered {
+                provenance_warnings,
+                ..
+            } => div()
+                .flex_1()
+                .min_w(px(240.))
+                .p(self.theme.space(12.))
+                .rounded_xl()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.canvas())
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.theme.ink())
+                        .child(branch.skill_label.resolve(|k| self.t(k))),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .whitespace_normal()
+                        .child(branch.detail.clone()),
+                )
+                .when(!provenance_warnings.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .px(self.theme.space(8.))
+                            .py(px(4.))
+                            .rounded_md()
+                            .bg(self.theme.status_attention_bg())
+                            .text_xs()
+                            .text_color(self.theme.status_attention())
+                            .whitespace_normal()
+                            .child(format!(
+                                "{}: {}",
+                                self.t("verify.provenance_invalid"),
+                                provenance_warnings.join(", ")
+                            )),
+                    )
+                })
+                .when_some(branch.work_progress.as_ref(), |card, prog| {
+                    card.child(self.contract_progress_block(prog))
+                })
+                .into_any_element(),
+            BranchPhase::Idle => div()
                 .flex_1()
                 .min_w(px(240.))
                 .p(self.theme.space(12.))
@@ -832,7 +881,7 @@ impl StudioPanel {
                             .render(
                                 &self.theme,
                                 cx.listener(move |panel, _, _, cx| {
-                                    panel.reveal_file_in_os(&reveal_path, cx);
+                                    panel.reveal_file(&reveal_path, cx);
                                 }),
                             ),
                         ),
@@ -849,19 +898,172 @@ impl StudioPanel {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "modal approval card surfaces full verification evidence for explicit override"
+    )]
     fn modal_approval_card(
         &self,
         session_id: &str,
         report_id: &str,
         artifact_path: &str,
         summary: &str,
+        issues: &[VerificationIssue],
+        semantic_hint: Option<&str>,
+        provenance_warnings: &[String],
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let ack = self.flow_modal.override_ack;
+        let ack_key = format!("{report_id}:{artifact_path}");
+        let ack = self.flow_modal.override_ack_key.as_deref()
+            == Some(ack_key.as_str());
         let has_report = !report_id.trim().is_empty();
+        let overriding = self.overriding_reports.contains(report_id);
         let sid = session_id.to_owned();
         let rid = report_id.to_owned();
         let apath = artifact_path.to_owned();
+        let toggle_key = ack_key;
+        let confirm_label = self.t("verify.override.confirm");
+
+        let mut body = div()
+            .p(self.theme.space(12.))
+            .bg(self.theme.canvas())
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.ink())
+                    .whitespace_normal()
+                    .child(summary.to_owned()),
+            );
+
+        if !issues.is_empty() {
+            let mut issue_list = div().flex().flex_col().gap(px(4.));
+            for issue in issues.iter().take(6) {
+                let kind = self.t(flowy_agent::verify_ui_key(&issue.code));
+                let row_text = if issue.field.trim().is_empty() {
+                    kind
+                } else {
+                    format!("{kind} \u{00b7} {}", issue.field)
+                };
+                issue_list = issue_list.child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.status_attention())
+                        .whitespace_normal()
+                        .child(row_text),
+                );
+            }
+            body = body.child(issue_list);
+        }
+
+        if let Some(hint) = semantic_hint
+            && !hint.trim().is_empty()
+        {
+            body = body.child(
+                div()
+                    .px(self.theme.space(8.))
+                    .py(px(4.))
+                    .rounded_md()
+                    .bg(self.theme.status_attention_bg())
+                    .text_xs()
+                    .text_color(self.theme.ink())
+                    .whitespace_normal()
+                    .child(self.tf("verify.semantic.hint", &[("hint", hint)])),
+            );
+        }
+
+        if !provenance_warnings.is_empty() {
+            body = body.child(
+                div()
+                    .px(self.theme.space(8.))
+                    .py(px(4.))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.status_attention())
+                    .whitespace_normal()
+                    .child(format!(
+                        "{}: {}",
+                        self.t("verify.provenance_invalid"),
+                        provenance_warnings.join(", ")
+                    )),
+            );
+        }
+
+        body = body
+            .child(
+                theme::interactive(
+                    "fm-override-ack",
+                    confirm_label.clone(),
+                    &self.theme,
+                )
+                .role(gpui::Role::CheckBox)
+                .aria_toggled(ack.into())
+                .flex()
+                .items_center()
+                .gap(self.theme.space(6.))
+                .cursor_pointer()
+                .text_xs()
+                .text_color(self.theme.muted())
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    if panel.flow_modal.override_ack_key.as_deref()
+                        == Some(toggle_key.as_str())
+                    {
+                        panel.flow_modal.override_ack_key = None;
+                    } else {
+                        panel.flow_modal.override_ack_key =
+                            Some(toggle_key.clone());
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .size(px(14.))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(if ack {
+                            self.theme.status_attention()
+                        } else {
+                            self.theme.border_strong()
+                        })
+                        .bg(if ack {
+                            self.theme.status_attention()
+                        } else {
+                            self.theme.card()
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(ack, |box_el| {
+                            box_el.child(
+                                theme::icons::check()
+                                    .size(px(10.))
+                                    .text_color(self.theme.on_ink()),
+                            )
+                        }),
+                )
+                .child(confirm_label),
+            )
+            .child(
+                theme::Button::new(
+                    "fm-override-submit",
+                    self.t("verify.override.action"),
+                )
+                .variant(theme::ControlVariant::Primary)
+                .size(theme::ControlSize::Small)
+                .disabled(!(ack && has_report) || overriding)
+                .render(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        panel.confirm_override_for_session(
+                            &sid, &rid, &apath, cx,
+                        );
+                    }),
+                ),
+            );
+
         div()
             .flex_1()
             .min_w(px(240.))
@@ -883,78 +1085,63 @@ impl StudioPanel {
                     .text_color(self.theme.status_attention())
                     .child(self.t("board.approval_heading")),
             )
+            .child(body)
+            .into_any_element()
+    }
+
+    fn modal_delivery_failed_card(
+        &self,
+        group: &SessionBoardGroup,
+        branch: &WorkBranchSummary,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let retry_sid = group.session_id.clone();
+        let retrying = self.retrying_delivery.as_deref()
+            == Some(group.session_id.as_str());
+        div()
+            .flex_1()
+            .min_w(px(240.))
+            .p(self.theme.space(12.))
+            .rounded_xl()
+            .border_1()
+            .border_color(self.theme.status_attention().opacity(0.5))
+            .bg(self.theme.canvas())
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
             .child(
                 div()
-                    .p(self.theme.space(12.))
-                    .bg(self.theme.canvas())
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.ink())
-                            .whitespace_normal()
-                            .child(summary.to_owned()),
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.theme.status_attention())
+                    .child(self.t("chat.status_delivery_failed")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(branch.detail.clone()),
+            )
+            .when_some(branch.work_progress.as_ref(), |card, prog| {
+                card.child(self.contract_progress_block(prog))
+            })
+            .child(
+                div().flex().items_center().child(
+                    theme::Button::new(
+                        "fm-retry-delivery",
+                        self.t("chat.retry_delivery"),
                     )
-                    .child(
-                        theme::interactive(
-                            "fm-override-ack",
-                            self.t("verify.override.confirm_label"),
-                            &self.theme,
-                        )
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(6.))
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.flow_modal.override_ack =
-                                !panel.flow_modal.override_ack;
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .size(px(14.))
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(if ack {
-                                    self.theme.status_attention()
-                                } else {
-                                    self.theme.border_strong()
-                                })
-                                .bg(if ack {
-                                    self.theme.status_attention()
-                                } else {
-                                    self.theme.card()
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .text_color(self.theme.on_ink())
-                                .child(if ack { "\u{2713}" } else { "" }),
-                        )
-                        .child(self.t("verify.override.confirm_label")),
-                    )
-                    .child(
-                        theme::Button::new(
-                            "fm-override-submit",
-                            self.t("verify.override.action"),
-                        )
-                        .variant(theme::ControlVariant::Primary)
-                        .size(theme::ControlSize::Small)
-                        .disabled(!(ack && has_report))
-                        .render(
-                            &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.confirm_override_for_session(
-                                    &sid, &rid, &apath, cx,
-                                );
-                            }),
-                        ),
+                    .variant(theme::ControlVariant::Primary)
+                    .size(theme::ControlSize::Small)
+                    .disabled(retrying)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.retry_delivery_for_session(&retry_sid, cx);
+                        }),
                     ),
+                ),
             )
             .into_any_element()
     }
@@ -1031,6 +1218,7 @@ impl StudioPanel {
             ReceiptState::Queued
                 | ReceiptState::Running
                 | ReceiptState::Retrying
+                | ReceiptState::Quarantined
         );
         let is_dead = state == ReceiptState::Dead;
         let retrying = self.retrying_receipts.contains(receipt_id);

@@ -111,7 +111,8 @@ impl FlowyApp {
             let default_preview = sessions
                 .iter()
                 .find(|session| session.project_id.is_none())
-                .and_then(|session| studio.agent.session_preview(&session.id));
+                .and_then(|session| studio.agent.session_preview(&session.id))
+                .map(|text| flowy_studio::ports::redact_trace_text(&text));
             let attention_ids: std::collections::HashSet<String> = sessions
                 .iter()
                 .filter(|s| studio.agent.session_needs_attention(&s.id))
