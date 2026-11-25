@@ -971,3 +971,27 @@ flowy-agent      : 165 passed, 0 failed, 1 ignored
 clippy (core + agent, -D warnings) : 0 warning
 cargo check -p flowy-app           : 0 error (0 UI files touched)
 ```
+
+---
+
+## 任务 20 · 路线 1 v2：内核模块化、跨平台通用层与结构化输出收口（2026-11-25）
+
+> **分支与原则**：继续在 `feat/flowy-v0-rc`（`.agents/worktrees/feat-flowy-local-receipt`）推进纯内核 4 连提交（`5beece91c`..`f47804a9d`），严守 **0 触碰 UI 文件**、**只本地 commit 不 push**、**MIT 净室实现（零复制 GPL 代码）**。
+
+### 一、提交账本
+
+1. **`5beece91c` · 纯零行为变更目录拆分**：将 `handle.rs`（6,226 行）拆入 `handle/{mod,artifacts,queue,work,observer,guards,tests}.rs`，将 `verify.rs`（2,146 行）拆入 `verify/{mod,contract,ooxml,tests}.rs`，公开 API 100% 不变。
+2. **`a3fc4214a` · `RunFence` 两阶段取消回收锁（§5.8）**：引入 `ActiveRun { cancelling }` + `Condvar` + 唯一 `RunTicket`（RAII Drop 自动释放并唤醒）+ 轻量 `PublishToken`（杜绝异步观察者拖延围栏）；`Engine` 增 `is_cancelling` / `wait_until_idle`，`prepare_shutdown` 增加 2s 子进程回收等待窗口。
+3. **`13dad5e4c` · 跨平台通用安全与沙箱能力层**：新增 `flowy-agent-core/src/tools/{shell_policy,sandbox}.rs`；将 `shell_policy_guard` 接入 `handle::guards::tool_registry` 拦截隐私/TCC、凭据库（含 `Flowy/Flowy/data/auth`）、全盘删除与提权；`AgentHandle::sandbox_availability()` 诚实上报 `Degraded`，并沉淀纯函数可测的 macOS Seatbelt SBPL 与 Linux `bwrap` 构造器。
+4. **`f47804a9d` · 单工具调用结构化输出与 §6.8 溯源硬门**：经生产网关实测证伪 `response_format`（`json_object` 500 / `json_schema` 退化为空 `issues`）后，新增 `openai_structured_stream_fn` + `complete_structured`（单次 HTTP 绑定 `tool_choice`），升级 `semantic_verify.rs` 至 `submit_semantic_verdict`；新增 `verify/provenance.rs`（缺来源/`model_recall` 仅告警，假 `user_file`/越界/SHA-256 不符硬阻断 `PROVENANCE_INVALID`）。
+
+### 二、现役基线（`f47804a9d`）
+
+```text
+flowy-agent-core : 90 passed, 0 failed, 2 ignored
+flowy-agent      : 168 passed, 0 failed, 2 ignored
+live_cloud_structured_l3 (--ignored, server.flowyaipc.com / AIPC-qwen3.8-flash) : 1 passed (5.14s pass / 7.16s flagged)
+clippy (core + agent lib & agent --all-targets, -D warnings) : 0 warning
+cargo check -p flowy-app : 0 error (0 UI files touched)
+```
+跨平台 macOS / Linux 预留蓝图已落盘 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md)。

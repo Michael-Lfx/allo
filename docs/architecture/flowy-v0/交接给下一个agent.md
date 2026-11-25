@@ -525,3 +525,37 @@ cargo clippy -p flowy-agent-core -p flowy-agent -- -D warnings # 0 warnings
 cargo check -p flowy-app                                       # 0 errors (UI 100% 兼容)
 ```
 GUI 自动化实测工具：`C:\Users\38788\.gemini\config\skills\flowy-gpui-e2e\scripts\ui-shot.ps1`（支持 `-Preflight`、原子 AppData 隔离、`-KeepAuth`、`seed_receipt` + `restart` 热重启、Win32 DPI 感知 `resize`）。
+
+---
+
+## 17. 2026-11-25 现役最新总账（`feat/flowy-v0-rc@f47804a9d`，接管 §16）
+
+> **唯一最新真相（接管 §16.1 / §16.3 / §16.4；§16.2 的 `6+4` UI 契约 100% 保持兼容并新增 `sandbox_availability()` 与 `PROVENANCE_INVALID` 导出）**：在 `65772f857` 与修订 9.3 文档（`10b99bac0`）之后，本轮完成 4 个纯内核提交（`5beece91c`..`f47804a9d`），**仍保持 0 触碰 UI 文件、只本地 commit 未 push**。
+
+### 17.1 本轮新增提交链（紧接 `10b99bac0`）
+
+| 提交 | 内容 | 关键目录 / 文件 |
+| --- | --- | --- |
+| `5beece91c` | 纯零行为变更拆分超大单文件（对外公开 API 100% 不变） | `flowy-agent/src/handle/`（7 文件）、`flowy-agent/src/verify/`（4 文件） |
+| `a3fc4214a` | `RunFence` 两阶段取消回收锁（`ActiveRun.cancelling` + `Condvar` + `RunTicket` RAII + `PublishToken`）+ `prepare_shutdown` 2s 回收等待 | `flowy-agent-core/src/{run_fence,engine,lib}.rs`、`flowy-agent/src/handle/work.rs` |
+| `13dad5e4c` | MIT 净室跨平台 Shell 静态安全策略 + 平台中立沙箱能力层（诚实上报 `Degraded` + SBPL/`bwrap` 纯构造器） | `flowy-agent-core/src/tools/{shell_policy,sandbox,mod}.rs`、`flowy-agent/src/handle/{guards,mod,tests}.rs` |
+| **`f47804a9d`** | 单次 HTTP 工具调用结构化输出（`complete_structured` + `openai_structured_stream_fn`）升级 L3 `submit_semantic_verdict`；§6.8 来源溯源校验 `PROVENANCE_INVALID` | `flowy-agent-core/src/{transport,loop_runner,lib}.rs`、`flowy-agent/src/semantic_verify.rs`、`flowy-agent/src/verify/{provenance,mod,tests}.rs` |
+
+### 17.2 新内核目录速查（接手修改不再碰 6,000 行巨型文件）
+
+- `flowy-agent/src/handle/`：`mod.rs`（主入口）、`queue.rs`（排队与自治排水）、`work.rs`（`WorkStatus`/`cancel_task`/`apply_card_action`/`prepare_shutdown`）、`artifacts.rs`（交付/Override）、`observer.rs`（投影/回填）、`guards.rs`（`path_guard` + `shell_policy_guard`）、`tests.rs`
+- `flowy-agent/src/verify/`：`mod.rs`（工具注册与报告落盘）、`contract.rs`（`BriefContract` 继承）、`ooxml.rs`（`.pptx`/`.docx`/`.xlsx`）、`provenance.rs`（§6.8 来源校验）、`tests.rs`
+- 跨平台沙箱与进程回收蓝图（macOS Seatbelt / Linux `bwrap` / Windows `AppContainer` 约束与真机验收清单）：[`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md)
+
+### 17.3 现役验证命令与最新基线（`f47804a9d`）
+
+```powershell
+# 在 .agents/worktrees/feat-flowy-local-receipt/flowy18_wip 下串行执行：
+cargo test -p flowy-agent-core                                 # 90 passed, 0 failed, 2 ignored
+cargo test -p flowy-agent                                      # 168 passed, 0 failed, 2 ignored
+cargo clippy -p flowy-agent-core -p flowy-agent -- -D warnings # 0 warnings
+cargo clippy -p flowy-agent --all-targets -- -D warnings       # 0 warnings
+cargo check -p flowy-app                                       # 0 errors (UI 100% 兼容)
+# 可选真云端 L3 回归（需本机 Flowy 登录态，消耗少量额度）：
+cargo test -p flowy-agent live_cloud_structured_l3_verifies_pass_and_flagged -- --ignored --nocapture
+```
