@@ -1,9 +1,9 @@
 //! Home starter browsing.
 //!
-//! One selector plus one content row. A centred slogan anchors the stage, a
-//! row of intent chips picks the category, and the four examples below swap in
-//! place. Picking an example overwrites the composer so the prompt can be
-//! previewed without sending it.
+//! One selector plus one content row below the composer. A row of quiet intent
+//! chips picks the category, and the four examples below swap in place. Picking
+//! an example overwrites the composer so the prompt can be previewed without
+//! sending it.
 
 pub mod catalog;
 
@@ -15,16 +15,16 @@ use gpui::{
     SharedString, Window, div, prelude::*, px,
 };
 
-/// Width of the whole stage, shared by the slogan, the chips and the cards.
-const STAGE_W: f32 = 880.;
+/// Width of the whole stage, shared by the hero, the chips and the cards.
+const STAGE_W: f32 = 760.;
 /// Card height. One value: alternating heights made the row look misaligned.
-const CARD_H: f32 = 170.;
+const CARD_H: f32 = 148.;
 /// Card width. Fixed, so a narrow window scrolls the row instead of squeezing
 /// the cards into unreadable slivers.
-const CARD_W: f32 = 220.;
+const CARD_W: f32 = 200.;
 
 impl StudioPanel {
-    /// Slogan, category chips and the current category's four examples.
+    /// Category chips and the current category's four examples.
     pub fn starter_section(
         &self,
         _window: &Window,
@@ -32,7 +32,6 @@ impl StudioPanel {
     ) -> impl IntoElement {
         let gap = self.theme.space(12.);
         let category = self.starter_category();
-        let title = self.t("home.title");
         // Cards are collected rather than assembled: `flowy_ui::carousel_track`
         // owns the rail so every carousel in the app shares one implementation.
         let mut items: Vec<AnyElement> =
@@ -82,18 +81,7 @@ impl StudioPanel {
             .flex()
             .flex_col()
             .items_center()
-            .gap(self.theme.space(18.))
-            .child(
-                div()
-                    .id("home-goal")
-                    .role(gpui::Role::Heading)
-                    .aria_level(1)
-                    .aria_label(title.clone())
-                    .w_full()
-                    .text_2xl()
-                    .text_center()
-                    .child(title),
-            )
+            .gap(self.theme.space(12.))
             .child(self.category_chips(cx))
             .child(rail)
     }
@@ -169,12 +157,12 @@ impl StudioPanel {
             &self.theme,
         )
         .px(self.theme.space(12.))
-        .py(self.theme.space(6.))
-        .rounded(px(6.))
+        .py(self.theme.space(4.))
+        .rounded_full()
         .cursor_pointer()
         .child(
             // Same weight for every chip: a bold selected label changes the
-            // row's width and shifts the centred slogan.
+            // row's width and shifts the centred stage.
             div().text_sm().child(title),
         );
         let soft = self.theme.soft();
@@ -218,24 +206,33 @@ impl StudioPanel {
         .flex()
         .flex_col()
         .rounded_xl()
+        .border_1()
+        .border_color(self.theme.line())
         .bg(self.theme.soft())
+        .hover(|card| card.bg(self.theme.card()))
         .overflow_hidden()
         .child(
             // The cover takes the remaining height; the band below darkens
-            // the image edge and carries the title.
+            // the image edge and carries the title. Explicit top/bottom radii
+            // satisfy GPUI's rounded clipping rule.
             div()
                 .w_full()
                 .flex_1()
                 .min_h_0()
+                .rounded_t_xl()
                 .overflow_hidden()
                 .child(cover.w_full().h_full().object_fit(ObjectFit::Cover)),
         )
         .child(
             div()
                 .w_full()
+                .rounded_b_xl()
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
                 .text_sm()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .truncate()
                 .bg(self.theme.scrim())
                 .child(title),
         )
@@ -250,7 +247,7 @@ impl StudioPanel {
                 category as u32 as u64 * 8 + index,
             ),
             Animation::new(crate::motion::MODERATE).with_easing(
-                crate::motion::delayed(delay, crate::motion::entrance()),
+                crate::motion::delayed(delay, crate::motion::out_quint()),
             ),
             move |card, delta| {
                 card.opacity(delta)

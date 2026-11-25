@@ -1,6 +1,8 @@
 use super::{FlowyApp, Section};
 use flowy_ui as theme;
-use gpui::{Context, Window, div, prelude::*, px};
+use gpui::{
+    Animation, AnimationExt, Context, SharedString, Window, div, prelude::*, px,
+};
 
 #[derive(Clone, Copy)]
 enum DockIcon {
@@ -80,6 +82,17 @@ impl FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let (active_work, in_chat, chief_selected, busy_ids) = {
+            let studio = self.studio.read(cx);
+            (
+                studio.background_work_count(),
+                self.section == Section::Studio
+                    && studio.surface == flowy_studio::StudioSurface::Chat,
+                self.section == Section::Studio
+                    && studio.active_project_id.is_none(),
+                studio.agent.busy_session_ids(),
+            )
+        };
         let mut navigation =
             div().flex().flex_col().gap_1().child(Self::nav_item(
                 &self.theme,
@@ -136,9 +149,184 @@ impl FlowyApp {
             .pt_4()
             .pb_3()
             .child(brand())
+            .child(self.chief_assistant_card(
+                active_work,
+                in_chat,
+                chief_selected,
+                window,
+                cx,
+            ))
             .child(navigation)
-            .child(self.project_section(window, cx))
-            .child(self.task_section(window, cx))
+            .child(self.project_section(&busy_ids, window, cx))
+            .child(self.task_section(&busy_ids, window, cx))
+    }
+
+    fn chief_assistant_card(
+        &self,
+        active_work: usize,
+        in_chat: bool,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let hovered_state =
+            window.use_keyed_state("dock-chief-hovered", cx, |_, _| false);
+        let hovered = *hovered_state.read(cx);
+        let badge_base = div()
+            .size(px(28.))
+            .flex_shrink_0()
+            .rounded_lg()
+            .bg(self.theme.assistant_badge_bg())
+            .text_color(self.theme.assistant_badge_fg())
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                theme::icons::sparkles()
+                    .size(px(14.))
+                    .text_color(self.theme.assistant_badge_fg()),
+            );
+        let badge = if hovered || active_work > 0 {
+            badge_base
+                .with_animation(
+                    "dock-chief-pulse",
+                    Animation::new(theme::motion::PULSE)
+                        .repeat()
+                        .with_easing(theme::motion::pulsing_sine()),
+                    |el, t| el.opacity(0.16_f32.mul_add(t, 0.84)),
+                )
+                .into_any_element()
+        } else {
+            badge_base.into_any_element()
+        };
+
+        let title = self.t("dock.chief_assistant");
+        let subtitle = if active_work > 0 {
+            let count = active_work.to_string();
+            let working =
+                self.tf("dock.chief_working", &[("count", count.as_str())]);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .min_w_0()
+                .child(running_dot("dock-chief-active-dot", self.theme))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .child(working),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .truncate()
+                .text_size(self.theme.caption_size())
+                .text_color(self.theme.muted())
+                .child(self.t("dock.chief_idle"))
+                .into_any_element()
+        };
+
+        let hover_bg = if selected {
+            self.theme.soft()
+        } else {
+            self.theme.dock_hover()
+        };
+
+        theme::interactive("dock-chief-assistant", title.clone(), &self.theme)
+            .mx_2()
+            .mb_2()
+            .px(self.theme.space(8.))
+            .py(px(6.))
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(if selected {
+                self.theme.card()
+            } else {
+                self.theme.dock()
+            })
+            .when(selected, gpui::Styled::shadow_sm)
+            .hover(move |card| card.bg(hover_bg))
+            .on_hover(move |active, window, cx| {
+                let changed = hovered_state.update(cx, |state, cx| {
+                    if *state == *active {
+                        return false;
+                    }
+                    *state = *active;
+                    cx.notify();
+                    true
+                });
+                if changed {
+                    window.refresh();
+                }
+            })
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                app.user_menu = false;
+                app.section = Section::Studio;
+                app.studio.update(
+                    cx,
+                    flowy_studio::StudioPanel::open_chief_assistant,
+                );
+                cx.notify();
+            }))
+            .child(badge)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .text_size(self.theme.body_size())
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(self.theme.ink())
+                            .child(title),
+                    )
+                    .child(subtitle),
+            )
+            .when(in_chat, |card| {
+                let fold_label = self.t("dock.fold_desk");
+                let on_fold = cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.user_menu = false;
+                    app.studio.update(cx, flowy_studio::StudioPanel::fold_desk);
+                    cx.notify();
+                });
+                card.child(theme::tooltip_trigger(
+                    "dock-fold-desk-tip",
+                    dock_icon_button(
+                        "dock-fold-desk-hit",
+                        theme::IconButton::new(
+                            "dock-fold-desk",
+                            fold_label.clone(),
+                            theme::icons::minus(),
+                        ),
+                        &self.theme,
+                        on_fold,
+                    ),
+                    fold_label,
+                    &self.ui,
+                    window,
+                    cx,
+                    self.i18n.locale().is_rtl(),
+                ))
+            })
     }
 
     fn nav_item(
@@ -195,30 +383,43 @@ impl FlowyApp {
 
     fn project_rows(
         &self,
+        busy_ids: &[String],
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let (mut projects, sessions) = {
+        let (mut projects, sessions, active_session) = {
             let studio = self.studio.read(cx);
-            (studio.projects.clone(), studio.agent.list_sessions())
+            (
+                studio.projects.clone(),
+                studio.agent.list_sessions(),
+                studio.agent.active_session_id(),
+            )
         };
         projects.sort_by_key(|project| !project.pinned);
-        let active_session = self.studio.read(cx).agent.active_session_id();
+        let project_ids: Vec<String> =
+            projects.iter().map(|project| project.id.clone()).collect();
+        let flip = window.use_keyed_state("dock-project-flip", cx, |_, _| {
+            theme::motion::FlipState::default()
+        });
+        flip.update(cx, |state, _| state.reconcile(&project_ids, 36.0));
         let mut rows = div().mt(px(2.)).flex().flex_col().gap(px(2.));
         for project in projects {
             let project_id = project.id.clone();
             let expanded = self.expanded_projects.contains(&project_id);
             let menu_open =
                 self.project_menu.as_deref() == Some(project_id.as_str());
+            let project_busy = sessions.iter().any(|session| {
+                session.project_id.as_deref() == Some(project_id.as_str())
+                    && busy_ids.contains(&session.id)
+            });
+            let flip_offset = flip.read(cx).offset_for(&project_id);
             let toggle_label = if expanded {
                 self.tf("project.collapse", &[("name", &project.name)])
             } else {
                 self.tf("project.expand", &[("name", &project.name)])
             };
             let hovered = window.use_keyed_state(
-                gpui::SharedString::from(format!(
-                    "project-row-hovered-{project_id}"
-                )),
+                SharedString::from(format!("project-row-hovered-{project_id}")),
                 cx,
                 |_, _| false,
             );
@@ -280,6 +481,7 @@ impl FlowyApp {
                         .flex_1()
                         .flex()
                         .items_center()
+                        .gap(px(6.))
                         .whitespace_nowrap()
                         .child(
                             div()
@@ -290,6 +492,14 @@ impl FlowyApp {
                                 .text_size(self.theme.body_size())
                                 .child(project.name.clone()),
                         )
+                        .when(project_busy, |row| {
+                            row.child(running_dot(
+                                SharedString::from(format!(
+                                    "dock-project-running-{project_id}"
+                                )),
+                                self.theme,
+                            ))
+                        })
                         .when(project.pinned, |row| {
                             row.child(
                                 theme::icons::pin()
@@ -311,12 +521,28 @@ impl FlowyApp {
                             &project_id,
                         ))
                     });
-            rows = rows.child(row);
+            let row_el = if let Some((epoch, offset_px)) = flip_offset {
+                row.with_animation(
+                    SharedString::from(format!(
+                        "project-flip-{project_id}-{epoch}"
+                    )),
+                    Animation::new(theme::motion::FLIP)
+                        .with_easing(theme::motion::flip_glide()),
+                    move |el, delta| {
+                        el.relative().top(px(offset_px * (1.0 - delta)))
+                    },
+                )
+                .into_any_element()
+            } else {
+                row.into_any_element()
+            };
+            rows = rows.child(row_el);
 
             if expanded {
                 for session in sessions.iter().filter(|session| {
                     session.project_id.as_deref() == Some(project_id.as_str())
                 }) {
+                    let busy = busy_ids.contains(&session.id);
                     rows = rows.child(self.conversation_row(
                         window,
                         cx,
@@ -328,6 +554,7 @@ impl FlowyApp {
                             session.title.clone()
                         },
                         active_session.as_deref() == Some(session.id.as_str()),
+                        busy,
                         div().w(px(16.)).h(px(16.)).flex_shrink_0(),
                         "project-task-row",
                     ));
@@ -410,12 +637,13 @@ impl FlowyApp {
         session_id: String,
         title: String,
         selected: bool,
+        busy: bool,
         leading: impl IntoElement,
         selector: &'static str,
     ) -> impl IntoElement {
         let menu_open = self.task_menu.as_deref() == Some(session_id.as_str());
         let hovered = window.use_keyed_state(
-            gpui::SharedString::from(format!(
+            SharedString::from(format!(
                 "conversation-row-hovered-{session_id}"
             )),
             cx,
@@ -465,6 +693,12 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .when(busy, |row| {
+                row.child(running_dot(
+                    SharedString::from(format!("dock-running-{session_id}")),
+                    self.theme,
+                ))
+            })
             .when(show_menu, |row| {
                 row.child(self.conversation_row_actions(
                     window,
@@ -521,6 +755,7 @@ impl FlowyApp {
 
     fn task_rows(
         &self,
+        busy_ids: &[String],
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
@@ -550,13 +785,14 @@ impl FlowyApp {
         let mut rows = div().flex().flex_col();
         for (index, session) in sessions.into_iter().enumerate() {
             let id = format!("task-{index}");
-            let session_id = session.id.clone();
+            let session_id = session.id;
             let title = if session.title.is_empty() {
                 self.t("dock.new_task")
             } else {
                 session.title
             };
             let selected = active.as_deref() == Some(session_id.as_str());
+            let busy = busy_ids.contains(&session_id);
             rows = rows.child(self.conversation_row(
                 window,
                 cx,
@@ -564,6 +800,7 @@ impl FlowyApp {
                 session_id,
                 title,
                 selected,
+                busy,
                 DockIcon::Task.render(),
                 "task-row",
             ));
@@ -573,6 +810,7 @@ impl FlowyApp {
 
     fn project_section(
         &self,
+        busy_ids: &[String],
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
@@ -591,13 +829,14 @@ impl FlowyApp {
             toggle,
         ));
         if open {
-            section = section.child(self.project_rows(window, cx));
+            section = section.child(self.project_rows(busy_ids, window, cx));
         }
         section
     }
 
     fn task_section(
         &self,
+        busy_ids: &[String],
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
@@ -616,7 +855,7 @@ impl FlowyApp {
             toggle,
         ));
         if open {
-            section = section.child(self.task_rows(window, cx));
+            section = section.child(self.task_rows(busy_ids, window, cx));
         }
         section
     }
@@ -1236,4 +1475,22 @@ fn avatar(theme: &flowy_ui::ResolvedTheme, initial: &str) -> impl IntoElement {
 
 fn menu_divider(theme: &flowy_ui::ResolvedTheme) -> impl IntoElement {
     div().my_1().mx_1().h(px(1.)).bg(theme.line())
+}
+
+fn running_dot(
+    id: impl Into<gpui::ElementId>,
+    theme: theme::ResolvedTheme,
+) -> impl IntoElement {
+    div()
+        .size(px(6.))
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(theme.status_active())
+        .with_animation(
+            id,
+            Animation::new(theme::motion::PULSE)
+                .repeat()
+                .with_easing(theme::motion::pulsing_sine()),
+            |el, t| el.opacity(0.45_f32.mul_add(t, 0.55)),
+        )
 }
