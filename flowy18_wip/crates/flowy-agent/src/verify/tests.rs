@@ -666,3 +666,141 @@ async fn provenance_user_file_validates_existence_confinement_and_sha256() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn followup_contract_handles_quote_date_rename_input_sources_and_chinese_teens()
+{
+    // 1) Input source file "根据 source.csv 做 q3.pptx" must NOT require source.csv.
+    let c1 = BriefContract::from_brief(
+        "根据 source.csv 做一份 十五页 PPT 叫 q3.pptx，报价 35 万，日期 2026-11-25",
+    );
+    assert_eq!(c1.min_slides, Some(15));
+    assert_eq!(c1.expected_filenames, vec!["q3.pptx"]);
+    assert_eq!(
+        c1.pinned_facts.get("quote").map(String::as_str),
+        Some("35万")
+    );
+    assert_eq!(
+        c1.pinned_facts.get("date").map(String::as_str),
+        Some("2026-11-25")
+    );
+
+    // Ordinal "第十二页" must NOT be extracted as 2 slides or 12 slides.
+    let ord = BriefContract::from_brief("修改第十二页标题即可");
+    assert_eq!(ord.min_slides, None);
+
+    // 2) Multi-turn quote & date updates + rename replace old values instead of
+    //    keeping stale quote/date/filename.
+    let w1 = c1.to_work_contract();
+    let c2 = BriefContract::evolve(
+        Some(&w1),
+        "把报价改成 40 万，日期从 2026-11-25 改成 2026-12-01，并改名为 q4.pptx",
+    );
+    assert_eq!(c2.revision, 2);
+    assert_eq!(c2.min_slides, Some(15));
+    assert_eq!(c2.expected_filenames, vec!["q4.pptx"]);
+    assert_eq!(
+        c2.pinned_facts.get("quote").map(String::as_str),
+        Some("40万")
+    );
+    assert_eq!(
+        c2.pinned_facts.get("date").map(String::as_str),
+        Some("2026-12-01")
+    );
+
+    // 3) Quote boundary matching must not false-match "135万" or "3500000" for "35万".
+    let mut issues = Vec::new();
+    c1.check_pinned_facts("报价 135万，日期 2026-11-25", &mut issues);
+    assert!(
+        issues.iter().any(|i| i.field == "brief_quote"),
+        "35万 must not match 135万: {issues:?}"
+    );
+    let mut ok_issues = Vec::new();
+    c1.check_pinned_facts("报价 35万，日期 2026-11-25", &mut ok_issues);
+    assert!(ok_issues.is_empty(), "exact quote must pass: {ok_issues:?}");
+}
+
+#[test]
+fn provenance_invalid_maps_to_dedicated_ui_key_and_fails_closed_without_cwd() {
+    assert_eq!(ui_key(PROVENANCE_INVALID), "verify.provenance_invalid");
+    let eval = evaluate_provenance(
+        &[ProvenanceClaim {
+            field: "S0-body".to_owned(),
+            kind: super::provenance::ProvenanceKind::UserFile,
+            path: Some("data.csv".to_owned()),
+            sha256: None,
+            note: None,
+        }],
+        None,
+    );
+    assert!(
+        eval.issues.iter().any(|i| i.code == PROVENANCE_INVALID),
+        "user_file provenance with cwd=None must fail closed: {eval:?}"
+    );
+}
+
+#[test]
+fn round2_contract_edge_cases_quotes_dates_renames_and_slide_reduction() {
+    // 1. Thousand-separated quotes, trailing sentence period, and trailing non-currency numbers
+    assert_eq!(
+        extract_quote_fact("报价 350,000 元").as_deref(),
+        Some("350000元")
+    );
+    assert_eq!(
+        extract_quote_fact("Update price to 400000.").as_deref(),
+        Some("400000")
+    );
+    assert_eq!(
+        extract_quote_fact("报价 35 万（有效期至 2026-12-01）").as_deref(),
+        Some("35万")
+    );
+    assert_eq!(
+        extract_quote_fact("报价 35 万含 2 年维保，分 3 期付款").as_deref(),
+        Some("35万")
+    );
+    // 2. `.00` currency and sentence-ending amounts match; `.5` still rejected
+    assert!(quote_matches(&compact_text("总价 ¥350,000.00"), "35万"));
+    assert!(quote_matches(
+        &compact_text("Total price is 350000."),
+        "35万"
+    ));
+    assert!(!quote_matches(&compact_text("总价 ¥350,000.50"), "35万"));
+    // 3. Date boundary prevents `2026-12-01` from falsely matching `2026-12-15`
+    assert!(!date_matches(
+        &compact_text("日期 2026-12-15"),
+        "2026-12-01"
+    ));
+    assert!(date_matches(
+        &compact_text("Date: 2026-12-01."),
+        "2026-12-01"
+    ));
+    // 4. Word-bounded input/output markers & targeted rename
+    let spreadsheet =
+        BriefContract::from_brief("Make a spreadsheet named q3.xlsx");
+    assert_eq!(spreadsheet.expected_filenames, vec!["q3.xlsx".to_owned()]);
+    let read_named =
+        BriefContract::from_brief("读取名为 source.csv 的表格生成 q3.pptx");
+    assert_eq!(read_named.expected_filenames, vec!["q3.pptx".to_owned()]);
+    let rename_from = BriefContract::evolve(
+        Some(&read_named.to_work_contract()),
+        "把文件名从 q3.pptx 改成 q4.pptx",
+    );
+    assert_eq!(rename_from.expected_filenames, vec!["q4.pptx".to_owned()]);
+    let multi = BriefContract::from_brief("生成 east.pptx 和 west.pptx");
+    let renamed_one = BriefContract::evolve(
+        Some(&multi.to_work_contract()),
+        "把 west.pptx 改名为 west-v2.pptx",
+    );
+    assert_eq!(
+        renamed_one.expected_filenames,
+        vec!["east.pptx".to_owned(), "west-v2.pptx".to_owned()]
+    );
+    let paren_rename = BriefContract::evolve(
+        Some(&read_named.to_work_contract()),
+        "改名为 q4.pptx（原 q3.pptx）",
+    );
+    assert_eq!(paren_rename.expected_filenames, vec!["q4.pptx".to_owned()]);
+    // 5. Slide-count reduction picks the target count
+    let reduced = BriefContract::from_brief("把 5 页改成 3 页");
+    assert_eq!(reduced.min_slides, Some(3));
+}

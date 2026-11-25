@@ -823,7 +823,7 @@ fn forced_breakpoint_1_bind_failure_and_stale_lease_never_dispatch_engine() {
     let err = handle
         .run_accepted_once()
         .expect_err("bind error must fail closed");
-    assert_eq!(err, "notice.storage_error");
+    assert_eq!(err, "notice.session_storage_failed");
     assert!(
         provider.requests.lock().unwrap().is_empty(),
         "failed bind must result in zero engine/provider invocations"

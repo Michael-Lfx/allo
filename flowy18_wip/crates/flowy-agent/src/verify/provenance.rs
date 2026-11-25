@@ -115,9 +115,17 @@ pub fn evaluate_provenance(
                     );
                     continue;
                 };
-                if let Some(root) = cwd
-                    && !crate::handle::confined_to(root, raw_path)
-                {
+                // Fail-closed: require a known workspace root so `user_file`
+                // provenance can never probe arbitrary host paths.
+                let Some(root) = cwd else {
+                    push_unique(
+                        &mut eval.issues,
+                        PROVENANCE_INVALID,
+                        field_label,
+                    );
+                    continue;
+                };
+                if !crate::handle::confined_to(root, raw_path) {
                     push_unique(
                         &mut eval.issues,
                         PROVENANCE_INVALID,
@@ -129,19 +137,9 @@ pub fn evaluate_provenance(
                     let path = Path::new(raw_path);
                     if path.is_absolute() {
                         path.to_path_buf()
-                    } else if let Some(root) = cwd {
-                        root.join(path)
                     } else {
-                        path.to_path_buf()
+                        root.join(path)
                     }
-                };
-                let Ok(bytes) = std::fs::read(&candidate) else {
-                    push_unique(
-                        &mut eval.issues,
-                        PROVENANCE_INVALID,
-                        field_label,
-                    );
-                    continue;
                 };
                 if let Some(expected_hash) = claim
                     .sha256
@@ -149,7 +147,16 @@ pub fn evaluate_provenance(
                     .map(str::trim)
                     .filter(|hash| !hash.is_empty())
                 {
-                    let actual_hash = delivery::hash_bytes(&bytes);
+                    let Ok(actual_hash) =
+                        delivery::hash_regular_file_streaming(&candidate)
+                    else {
+                        push_unique(
+                            &mut eval.issues,
+                            PROVENANCE_INVALID,
+                            field_label,
+                        );
+                        continue;
+                    };
                     if !actual_hash.eq_ignore_ascii_case(expected_hash) {
                         push_unique(
                             &mut eval.issues,
@@ -157,6 +164,14 @@ pub fn evaluate_provenance(
                             field_label,
                         );
                     }
+                } else if delivery::verify_regular_file_exists(&candidate)
+                    .is_err()
+                {
+                    push_unique(
+                        &mut eval.issues,
+                        PROVENANCE_INVALID,
+                        field_label,
+                    );
                 }
             }
         }

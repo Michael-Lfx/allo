@@ -971,6 +971,7 @@ impl ChatFeed {
                 issues,
                 semantic_hint,
                 override_used,
+                ..
             } => self.verification_card(
                 index,
                 report_id,
@@ -2869,6 +2870,7 @@ mod tests {
                     issues: sample_issues,
                     semantic_hint: Some("标题与正文一致".into()),
                     override_used: false,
+                    provenance_warnings: Vec::new(),
                 }],
                 cx,
             );
@@ -2959,6 +2961,7 @@ mod tests {
                 issues: Vec::new(),
                 semantic_hint: None,
                 override_used: false,
+                provenance_warnings: Vec::new(),
             },
         ];
         assert!(collect_latest_deliverables(&failed_only).is_none());
@@ -2975,6 +2978,7 @@ mod tests {
                 issues: Vec::new(),
                 semantic_hint: None,
                 override_used: false,
+                provenance_warnings: Vec::new(),
             },
             ChatLine::Verification {
                 report_id: "r3".into(),
@@ -2984,6 +2988,7 @@ mod tests {
                 issues: Vec::new(),
                 semantic_hint: None,
                 override_used: true,
+                provenance_warnings: Vec::new(),
             },
             ChatLine::Artifact {
                 artifact_id: "a1".into(),
@@ -3014,6 +3019,7 @@ mod tests {
                     issues: Vec::new(),
                     semantic_hint: Some("第1页写成华南区".into()),
                     override_used: false,
+                    provenance_warnings: Vec::new(),
                 }],
                 cx,
             );

@@ -21,10 +21,61 @@ use crate::types::{
 
 /// Maximum file bytes returned by `read_file` or scanned by `grep`.
 const MAX_READ_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Maximum file bytes allowed for in-memory `edit_file`.
+const MAX_EDIT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_GLOB_PATTERN_CHARS: usize = 4_096;
 const MAX_WALK_DEPTH: usize = 16;
 const MAX_WALK_ENTRIES: usize = 5_000;
 const READ_TRUNCATION_SUFFIX: &str =
     "\n...[truncated: file exceeds 2 MiB host read limit]";
+
+fn is_windows_reserved_device_name(name: &str) -> bool {
+    let trimmed = name.trim_end_matches([' ', '.']);
+    let stem = trimmed.split('.').next().unwrap_or(trimmed).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "CONIN$"
+            | "CONOUT$"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    )
+}
+
+fn has_reserved_device_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(part) => {
+            part.to_str().is_some_and(is_windows_reserved_device_name)
+        }
+        _ => false,
+    })
+}
 
 #[cfg(windows)]
 fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
@@ -173,6 +224,30 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                         }
                     };
                 let path = resolve_path(&run_ctx, &parsed.path);
+                if has_reserved_device_component(&path) {
+                    return ToolExecutionResult::error(
+                        "INVALID_PATH",
+                        format!(
+                            "reserved device path refused: {}",
+                            path.display()
+                        ),
+                    );
+                }
+                match tokio::fs::metadata(&path).await {
+                    Ok(meta) if !meta.is_file() => {
+                        return ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("not a regular file: {}", path.display()),
+                        );
+                    }
+                    Err(err) => {
+                        return ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("cannot read {}: {err}", path.display()),
+                        );
+                    }
+                    Ok(_) => {}
+                }
                 let mut file = match tokio::fs::File::open(&path).await {
                     Ok(file) => file,
                     Err(err) => {
@@ -266,6 +341,28 @@ fn write_file_tool() -> Arc<ToolDefinition> {
                         }
                     };
                 let path = resolve_path(&run_ctx, &parsed.path);
+                if has_reserved_device_component(&path) {
+                    return ToolExecutionResult::error(
+                        "INVALID_PATH",
+                        format!(
+                            "reserved device path refused: {}",
+                            path.display()
+                        ),
+                    );
+                }
+                if let Ok(meta) = tokio::fs::symlink_metadata(&path).await
+                    && (!meta.is_file()
+                        || meta.file_type().is_symlink()
+                        || is_windows_reparse_point(&meta))
+                {
+                    return ToolExecutionResult::error(
+                        "WRITE_FAILED",
+                        format!(
+                            "refusing to write non-regular file: {}",
+                            path.display()
+                        ),
+                    );
+                }
                 if let Some(parent) = path.parent()
                     && let Err(err) = tokio::fs::create_dir_all(parent).await
                 {
@@ -336,7 +433,47 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                             );
                         }
                     };
+                if parsed.old_string.is_empty() {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        "old_string must not be empty",
+                    );
+                }
                 let path = resolve_path(&run_ctx, &parsed.path);
+                if has_reserved_device_component(&path) {
+                    return ToolExecutionResult::error(
+                        "INVALID_PATH",
+                        format!(
+                            "reserved device path refused: {}",
+                            path.display()
+                        ),
+                    );
+                }
+                match tokio::fs::metadata(&path).await {
+                    Ok(meta) if !meta.is_file() => {
+                        return ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("not a regular file: {}", path.display()),
+                        );
+                    }
+                    Ok(meta) if meta.len() > MAX_EDIT_FILE_BYTES => {
+                        return ToolExecutionResult::error(
+                            "FILE_TOO_LARGE",
+                            format!(
+                                "cannot edit {}: exceeds {} MiB host edit limit",
+                                path.display(),
+                                MAX_EDIT_FILE_BYTES / (1024 * 1024)
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        return ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("cannot read {}: {err}", path.display()),
+                        );
+                    }
+                    Ok(_) => {}
+                }
                 let content = match tokio::fs::read_to_string(&path).await {
                     Ok(content) => content,
                     Err(err) => {
@@ -347,12 +484,33 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                     }
                 };
                 let updated = if parsed.replace_all {
-                    if !content.contains(&parsed.old_string) {
+                    let occurrences =
+                        content.matches(&parsed.old_string).count();
+                    if occurrences == 0 {
                         return ToolExecutionResult::error(
                             "NOT_FOUND",
                             format!(
                                 "old_string not found in {}",
                                 path.display()
+                            ),
+                        );
+                    }
+                    let grown = (content.len() as u64)
+                        .saturating_sub(
+                            (occurrences as u64)
+                                .saturating_mul(parsed.old_string.len() as u64),
+                        )
+                        .saturating_add(
+                            (occurrences as u64)
+                                .saturating_mul(parsed.new_string.len() as u64),
+                        );
+                    if grown > MAX_EDIT_FILE_BYTES {
+                        return ToolExecutionResult::error(
+                            "FILE_TOO_LARGE",
+                            format!(
+                                "cannot edit {}: replacement output exceeds {} MiB host edit limit",
+                                path.display(),
+                                MAX_EDIT_FILE_BYTES / (1024 * 1024)
                             ),
                         );
                     }
@@ -441,6 +599,14 @@ fn glob_tool() -> Arc<ToolDefinition> {
                     .or_else(|| run_ctx.cwd.clone().map(PathBuf::from))
                     .unwrap_or_else(|| PathBuf::from("."));
                 let pattern = parsed.pattern.clone();
+                if pattern.chars().count() > MAX_GLOB_PATTERN_CHARS {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        format!(
+                            "glob pattern exceeds {MAX_GLOB_PATTERN_CHARS} character limit"
+                        ),
+                    );
+                }
                 let matches = walk_and_match(&base, &pattern).await;
                 let relative: Vec<String> = matches
                     .iter()
@@ -557,6 +723,16 @@ fn grep_tool() -> Arc<ToolDefinition> {
                             );
                         }
                     };
+                if let Some(include) = &parsed.include
+                    && include.chars().count() > MAX_GLOB_PATTERN_CHARS
+                {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        format!(
+                            "include glob exceeds {MAX_GLOB_PATTERN_CHARS} character limit"
+                        ),
+                    );
+                }
                 let re = match regex::Regex::new(&parsed.pattern) {
                     Ok(re) => re,
                     Err(err) => {

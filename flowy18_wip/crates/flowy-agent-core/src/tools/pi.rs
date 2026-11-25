@@ -31,11 +31,11 @@ pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
     let tool = create_bash_tool(
         &context,
         Some(BashToolOptions {
-            default_timeout: Some(120.0),
+            default_timeout: Some(DEFAULT_SHELL_TIMEOUT_SECS),
             ..BashToolOptions::default()
         }),
     );
-    agent_tool_definition(tool)
+    agent_tool_definition_with(tool, None, Some(DEFAULT_SHELL_TIMEOUT_SECS))
 }
 
 /// Production shell tool for the current platform.
@@ -57,6 +57,8 @@ pub fn pi_shell_definition(cwd: &Path) -> Arc<ToolDefinition> {
 /// Default wall-clock timeout applied to shell commands when the model omits
 /// `timeout`.
 const DEFAULT_SHELL_TIMEOUT_SECS: f64 = 120.0;
+/// Hard upper bound for any model-supplied shell timeout (10 minutes).
+const MAX_SHELL_TIMEOUT_SECS: f64 = 600.0;
 
 /// Windows-only fallback: pi-rust's PowerShell tool in `cwd`.
 #[cfg(windows)]
@@ -84,6 +86,7 @@ hosts show it in the collapsed tool row.";
 ///
 /// Kept private: the host surface is the platform shell definition. A future
 /// generic bridge must also map image content, usage, and termination metadata.
+#[cfg(test)]
 fn agent_tool_definition(tool: Arc<dyn AgentTool>) -> Arc<ToolDefinition> {
     agent_tool_definition_with(tool, None, None)
 }
@@ -103,18 +106,27 @@ fn agent_tool_definition_with(
         move |mut args, run_ctx| {
             let tool = Arc::clone(&tool);
             Box::pin(async move {
-                if let Some(timeout) = default_timeout
-                    && let Some(obj) = args.arguments.as_object_mut()
-                {
-                    let has_valid_timeout = obj
+                if let Some(obj) = args.arguments.as_object_mut() {
+                    let parsed_timeout = obj
                         .get("timeout")
                         .and_then(serde_json::Value::as_f64)
-                        .is_some_and(|v| v.is_finite() && v > 0.0);
-                    if !has_valid_timeout {
-                        obj.insert(
-                            "timeout".to_owned(),
-                            serde_json::json!(timeout),
-                        );
+                        .filter(|v| v.is_finite() && *v > 0.0);
+                    match parsed_timeout {
+                        Some(v) if v > MAX_SHELL_TIMEOUT_SECS => {
+                            obj.insert(
+                                "timeout".to_owned(),
+                                serde_json::json!(MAX_SHELL_TIMEOUT_SECS),
+                            );
+                        }
+                        None => {
+                            if let Some(timeout) = default_timeout {
+                                obj.insert(
+                                    "timeout".to_owned(),
+                                    serde_json::json!(timeout),
+                                );
+                            }
+                        }
+                        Some(_) => {}
                     }
                 }
                 let signal = run_ctx.signal.inner();

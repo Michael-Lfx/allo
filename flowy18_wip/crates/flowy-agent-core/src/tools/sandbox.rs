@@ -165,6 +165,35 @@ fn default_protected_paths() -> Vec<PathBuf> {
         paths.push(home.join(".ssh"));
         paths.push(home.join(".aws"));
         paths.push(home.join(".gnupg"));
+        // macOS Flowy auth store (`ProjectDirs::from("com", "Flowy", "Flowy")`
+        // resolves to `com.Flowy.Flowy`, plus legacy `Flowy` paths).
+        paths.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("com.Flowy.Flowy")
+                .join("auth"),
+        );
+        paths.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("Flowy")
+                .join("auth"),
+        );
+        paths.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("Flowy")
+                .join("data")
+                .join("auth"),
+        );
+        // Linux Flowy auth/config stores
+        paths
+            .push(home.join(".local").join("share").join("flowy").join("auth"));
+        paths.push(home.join(".config").join("flowy").join("auth"));
+    }
+    if let Some(xdg_data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+    {
+        paths.push(xdg_data.join("flowy").join("auth"));
     }
     if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
         paths.push(
@@ -178,10 +207,22 @@ fn default_protected_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn escape_sbpl_literal(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
+fn escape_sbpl_literal(path: &Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    if raw.contains('\0') || raw.contains('\n') || raw.contains('\r') {
+        return None;
+    }
+    Some(raw.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn expand_canonical_variants(path: &Path) -> Vec<PathBuf> {
+    let mut out = vec![path.to_path_buf()];
+    if let Ok(canonical) = std::fs::canonicalize(path)
+        && canonical != path
+    {
+        out.push(canonical);
+    }
+    out
 }
 
 /// Pure, cross-platform testable macOS Seatbelt (SBPL) profile generator for
@@ -195,14 +236,22 @@ pub fn macos_seatbelt_profile(policy: &SandboxPolicy) -> String {
          (allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\"))\n",
     );
     for root in &policy.writable_roots {
-        out.push_str("(allow file-write* (subpath \"");
-        out.push_str(&escape_sbpl_literal(root));
-        out.push_str("\"))\n");
+        for variant in expand_canonical_variants(root) {
+            if let Some(escaped) = escape_sbpl_literal(&variant) {
+                out.push_str("(allow file-write* (subpath \"");
+                out.push_str(&escaped);
+                out.push_str("\"))\n");
+            }
+        }
     }
     for protected in &policy.protected_paths {
-        out.push_str("(deny file-read* file-write* (subpath \"");
-        out.push_str(&escape_sbpl_literal(protected));
-        out.push_str("\"))\n");
+        for variant in expand_canonical_variants(protected) {
+            if let Some(escaped) = escape_sbpl_literal(&variant) {
+                out.push_str("(deny file-read* file-write* (subpath \"");
+                out.push_str(&escaped);
+                out.push_str("\"))\n");
+            }
+        }
     }
     if !policy.allow_network {
         out.push_str("(deny network-outbound)\n");
@@ -211,11 +260,18 @@ pub fn macos_seatbelt_profile(policy: &SandboxPolicy) -> String {
 }
 
 /// Pure, cross-platform testable Linux Bubblewrap (`bwrap`) argument builder.
+///
+/// Always includes `--unshare-pid` (required when mounting `--proc /proc` inside
+/// an unprivileged user namespace), masks existing protected directories with
+/// `--tmpfs`, masks existing protected regular files with `--ro-bind /dev/null`,
+/// and omits missing protected paths so `bwrap` never fails to start when an
+/// optional credential directory (e.g. `~/.aws`) does not exist on the host.
 #[must_use]
 pub fn linux_bwrap_args(policy: &SandboxPolicy, cwd: &Path) -> Vec<String> {
     let mut args = vec![
         "--die-with-parent".to_owned(),
         "--new-session".to_owned(),
+        "--unshare-pid".to_owned(),
         "--ro-bind".to_owned(),
         "/".to_owned(),
         "/".to_owned(),
@@ -233,9 +289,37 @@ pub fn linux_bwrap_args(policy: &SandboxPolicy, cwd: &Path) -> Vec<String> {
         args.push(rendered);
     }
     for protected in &policy.protected_paths {
+        let Ok(meta) = std::fs::symlink_metadata(protected) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            // Symlinked credential store (e.g. `~/.ssh -> /mnt/vault/.ssh`):
+            // resolve and mask the canonical target so reads via either path
+            // cannot expose secrets inside `bwrap`.
+            if let Ok(canon) = std::fs::canonicalize(protected)
+                && let Ok(target_meta) = std::fs::metadata(&canon)
+            {
+                let rendered = canon.to_string_lossy().into_owned();
+                if target_meta.is_dir() {
+                    args.push("--tmpfs".to_owned());
+                    args.push(rendered);
+                } else if target_meta.is_file() {
+                    args.push("--ro-bind".to_owned());
+                    args.push("/dev/null".to_owned());
+                    args.push(rendered);
+                }
+            }
+            continue;
+        }
         let rendered = protected.to_string_lossy().into_owned();
-        args.push("--tmpfs".to_owned());
-        args.push(rendered);
+        if meta.is_dir() {
+            args.push("--tmpfs".to_owned());
+            args.push(rendered);
+        } else if meta.is_file() {
+            args.push("--ro-bind".to_owned());
+            args.push("/dev/null".to_owned());
+            args.push(rendered);
+        }
     }
     if !policy.allow_network {
         args.push("--unshare-net".to_owned());
@@ -248,7 +332,7 @@ pub fn linux_bwrap_args(policy: &SandboxPolicy, cwd: &Path) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::{
         SandboxAvailability, SandboxBackend, SandboxPolicy,
@@ -291,23 +375,47 @@ mod tests {
 
     #[test]
     fn bwrap_args_bind_workspace_mask_secrets_and_toggle_network() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-bwrap-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("ws");
+        let ssh_dir = root.join(".ssh");
+        let shadow_file = root.join("shadow");
+        let missing_aws = root.join(".aws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        std::fs::write(&shadow_file, b"secret").unwrap();
+
         let policy = SandboxPolicy {
-            writable_roots: vec![PathBuf::from("/home/alice/ws")],
-            protected_paths: vec![PathBuf::from("/home/alice/.ssh")],
+            writable_roots: vec![ws.clone()],
+            protected_paths: vec![
+                ssh_dir.clone(),
+                shadow_file.clone(),
+                missing_aws.clone(),
+            ],
             allow_network: false,
         };
-        let args = linux_bwrap_args(&policy, Path::new("/home/alice/ws"));
+        let args = linux_bwrap_args(&policy, &ws);
+        let ws_s = ws.to_string_lossy().into_owned();
+        let ssh_s = ssh_dir.to_string_lossy().into_owned();
+        let shadow_s = shadow_file.to_string_lossy().into_owned();
+        let aws_s = missing_aws.to_string_lossy().into_owned();
+
         assert!(args.contains(&"--die-with-parent".to_owned()));
+        assert!(args.contains(&"--unshare-pid".to_owned()));
         assert!(args.contains(&"--unshare-net".to_owned()));
+        assert!(args.windows(3).any(|w| w == ["--bind", &ws_s, &ws_s]));
+        assert!(args.windows(2).any(|w| w == ["--tmpfs", &ssh_s]));
         assert!(
-            args.windows(3).any(|w| {
-                w == ["--bind", "/home/alice/ws", "/home/alice/ws"]
-            })
+            args.windows(3)
+                .any(|w| w == ["--ro-bind", "/dev/null", &shadow_s]),
+            "existing regular protected file must be masked with /dev/null"
         );
         assert!(
-            args.windows(2)
-                .any(|w| w == ["--tmpfs", "/home/alice/.ssh"])
+            !args.contains(&aws_s),
+            "non-existent protected path must be omitted so bwrap does not fail"
         );
         assert_eq!(args.last().map(String::as_str), Some("--"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

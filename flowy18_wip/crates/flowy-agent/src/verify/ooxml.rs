@@ -88,13 +88,22 @@ pub(super) struct VerifiedDeck {
     pub(super) shapes: Vec<(String, String)>,
 }
 
+/// Cumulative decompressed XML budget per OOXML archive (32 MiB).
+const MAX_ARCHIVE_XML_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum total populated cells processed across all sheets of one `.xlsx`.
+const MAX_XLSX_CELLS: usize = 200_000;
+
 pub(super) fn verify_deck_file_with_shapes(
     path: &Path,
     expected_slides: usize,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
 ) -> Result<VerifiedDeck, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = crate::delivery::read_regular_file_bounded(
+        path,
+        crate::MAX_ARTIFACT_BYTES,
+    )
+    .map_err(|error| error.to_string())?;
     let presentation = rpptx::Presentation::from_bytes(&bytes)
         .map_err(|error| error.to_string())?;
     let slides: Vec<rpptx::SlideRef<'_>> = presentation.slides().collect();
@@ -162,20 +171,64 @@ pub(super) struct VerifiedArtifact {
     pub(super) snippets: Vec<(String, String)>,
 }
 
-pub(super) fn read_zip_xml(
+pub(super) fn read_zip_xml_budgeted(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     entry_name: &str,
+    remaining_budget: &mut u64,
 ) -> Option<String> {
+    let limit = MAX_XML_ENTRY_BYTES.min(*remaining_budget);
+    if limit == 0 {
+        return None;
+    }
     let entry = archive.by_name(entry_name).ok()?;
     let mut buf = Vec::new();
-    entry
-        .take(MAX_XML_ENTRY_BYTES + 1)
-        .read_to_end(&mut buf)
-        .ok()?;
-    if buf.len() as u64 > MAX_XML_ENTRY_BYTES {
+    entry.take(limit + 1).read_to_end(&mut buf).ok()?;
+    // Always charge decompressed bytes against the cumulative archive budget
+    // BEFORE rejecting an oversized entry so many oversized sheets cannot
+    // bypass `MAX_ARCHIVE_XML_BYTES`.
+    *remaining_budget = remaining_budget.saturating_sub(buf.len() as u64);
+    if buf.len() as u64 > limit {
         return None;
     }
     String::from_utf8(buf).ok()
+}
+
+fn collect_direct_para_text_and_bookmarks(
+    para: roxmltree::Node<'_, '_>,
+    text: &mut String,
+    bookmark_names: &mut Vec<String>,
+) {
+    for child in para.children().filter(roxmltree::Node::is_element) {
+        match child.tag_name().name() {
+            // Stop at nested paragraphs (e.g. textboxes or table cells) so
+            // inner paragraphs are scored once in their own pass instead of
+            // causing false ANCHOR_DUPLICATE hits.
+            "p" => {}
+            "t" => {
+                if let Some(chunk) = child.text() {
+                    text.push_str(chunk);
+                }
+            }
+            "tab" => text.push('\t'),
+            "br" => text.push('\n'),
+            "bookmarkStart" => {
+                if let Some(name) = child
+                    .attributes()
+                    .find(|attr| attr.name() == "name")
+                    .map(|attr| attr.value())
+                    && !name.is_empty()
+                    && !name.starts_with('_')
+                {
+                    bookmark_names.push(name.to_owned());
+                }
+            }
+            _ => collect_direct_para_text_and_bookmarks(
+                child,
+                text,
+                bookmark_names,
+            ),
+        }
+    }
 }
 
 pub(super) fn verify_docx_file(
@@ -183,7 +236,11 @@ pub(super) fn verify_docx_file(
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
 ) -> Result<VerifiedArtifact, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = crate::delivery::read_regular_file_bounded(
+        path,
+        crate::MAX_ARTIFACT_BYTES,
+    )
+    .map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
         contract.check_filename(path, "docx", &mut issues);
@@ -200,7 +257,12 @@ pub(super) fn verify_docx_file(
             snippets: Vec::new(),
         });
     };
-    let Some(xml) = read_zip_xml(&mut archive, "word/document.xml") else {
+    let mut xml_budget = MAX_ARCHIVE_XML_BYTES;
+    let Some(xml) = read_zip_xml_budgeted(
+        &mut archive,
+        "word/document.xml",
+        &mut xml_budget,
+    ) else {
         push_unique(&mut issues, STRUCTURE, "docx_document");
         return Ok(VerifiedArtifact {
             report: report_for(path, "bookmark", issues),
@@ -220,23 +282,37 @@ pub(super) fn verify_docx_file(
     let mut bookmarks: Vec<(String, String)> = Vec::new();
     let mut snippets: Vec<(String, String)> = Vec::new();
     let mut all_text = String::new();
-    for para in doc
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "p")
-    {
-        let mut text = String::new();
-        for node in para.descendants().filter(roxmltree::Node::is_element) {
-            match node.tag_name().name() {
-                "t" => {
-                    if let Some(chunk) = node.text() {
-                        text.push_str(chunk);
-                    }
-                }
-                "tab" => text.push('\t'),
-                "br" => text.push('\n'),
-                _ => {}
+    // Track body-level (sibling) `<w:bookmarkStart>` nodes outside `<w:p>` and
+    // attach them to the next paragraph's trimmed text.
+    let mut pending_sibling_bookmarks: Vec<String> = Vec::new();
+    for node in doc.descendants().filter(roxmltree::Node::is_element) {
+        if node.tag_name().name() == "bookmarkStart" {
+            let inside_para = node
+                .ancestors()
+                .skip(1)
+                .any(|anc| anc.is_element() && anc.tag_name().name() == "p");
+            if !inside_para
+                && let Some(name) = node
+                    .attributes()
+                    .find(|attr| attr.name() == "name")
+                    .map(|attr| attr.value())
+                && !name.is_empty()
+                && !name.starts_with('_')
+            {
+                pending_sibling_bookmarks.push(name.to_owned());
             }
+            continue;
         }
+        if node.tag_name().name() != "p" {
+            continue;
+        }
+        let mut text = String::new();
+        let mut para_bookmarks = Vec::new();
+        collect_direct_para_text_and_bookmarks(
+            node,
+            &mut text,
+            &mut para_bookmarks,
+        );
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             non_empty_paragraphs += 1;
@@ -244,19 +320,12 @@ pub(super) fn verify_docx_file(
             all_text.push('\n');
             snippets
                 .push((format!("P{non_empty_paragraphs}"), trimmed.to_owned()));
-        }
-        for bm in para.descendants().filter(|node| {
-            node.is_element() && node.tag_name().name() == "bookmarkStart"
-        }) {
-            if let Some(name) = bm
-                .attributes()
-                .find(|attr| attr.name() == "name")
-                .map(|attr| attr.value())
-                && !name.is_empty()
-                && !name.starts_with('_')
-            {
-                bookmarks.push((name.to_owned(), trimmed.to_owned()));
+            for name in std::mem::take(&mut pending_sibling_bookmarks) {
+                bookmarks.push((name, trimmed.to_owned()));
             }
+        }
+        for name in para_bookmarks {
+            bookmarks.push((name, trimmed.to_owned()));
         }
     }
     if non_empty_paragraphs == 0 {
@@ -275,12 +344,113 @@ pub(super) fn verify_docx_file(
     })
 }
 
+fn numeric_sheet_order_key(name: &str) -> (u32, String) {
+    let lower = name.to_ascii_lowercase();
+    let num = lower
+        .rsplit('/')
+        .next()
+        .and_then(|file| file.strip_prefix("sheet"))
+        .and_then(|rest| rest.strip_suffix(".xml"))
+        .and_then(|digits| digits.parse::<u32>().ok())
+        .unwrap_or(u32::MAX);
+    (num, lower)
+}
+
+fn resolve_xlsx_sheets(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    wb_doc: &roxmltree::Document<'_>,
+    xml_budget: &mut u64,
+) -> Vec<(String, String)> {
+    // Prefer exact workbook relationships (`xl/_rels/workbook.xml.rels`) so
+    // custom sheet filenames and >= 10 sheets map 1:1 with `workbook.xml`.
+    let mut rel_targets: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(rels_xml) =
+        read_zip_xml_budgeted(archive, "xl/_rels/workbook.xml.rels", xml_budget)
+        && let Ok(rels_doc) = roxmltree::Document::parse(&rels_xml)
+    {
+        for rel in rels_doc
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "Relationship")
+        {
+            if let (Some(id), Some(target)) =
+                (rel.attribute("Id"), rel.attribute("Target"))
+            {
+                let trimmed = target.trim_start_matches('/');
+                let full = if trimmed.starts_with("xl/") {
+                    trimmed.to_owned()
+                } else {
+                    format!("xl/{trimmed}")
+                };
+                rel_targets.insert(id.to_owned(), full);
+            }
+        }
+    }
+    let mut mapped: Vec<(String, String)> = Vec::new();
+    for sheet in wb_doc
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "sheet")
+    {
+        let title = sheet.attribute("name").unwrap_or_default().to_owned();
+        let rid = sheet
+            .attributes()
+            .find(|attr| attr.name() == "id")
+            .map(|attr| attr.value());
+        if let Some(rid) = rid
+            && let Some(target) = rel_targets.get(rid)
+            && archive.by_name(target).is_ok()
+        {
+            mapped.push((
+                if title.is_empty() {
+                    format!("Sheet{}", mapped.len() + 1)
+                } else {
+                    title
+                },
+                target.clone(),
+            ));
+        }
+    }
+    if !mapped.is_empty() {
+        return mapped;
+    }
+    let sheet_titles: Vec<String> = wb_doc
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "sheet")
+        .filter_map(|node| node.attribute("name").map(str::to_owned))
+        .collect();
+    let mut sheet_names: Vec<String> = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|e| e.name().to_owned()))
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.starts_with("xl/worksheets/sheet")
+                && Path::new(&lower)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+        })
+        .collect();
+    sheet_names.sort_by_key(|name| numeric_sheet_order_key(name));
+    sheet_names
+        .into_iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            let title = sheet_titles
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("Sheet{}", idx + 1));
+            (title, path)
+        })
+        .collect()
+}
+
 pub(super) fn verify_xlsx_file(
     path: &Path,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
 ) -> Result<VerifiedArtifact, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = crate::delivery::read_regular_file_bounded(
+        path,
+        crate::MAX_ARTIFACT_BYTES,
+    )
+    .map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
         contract.check_filename(path, "xlsx", &mut issues);
@@ -297,7 +467,10 @@ pub(super) fn verify_xlsx_file(
             snippets: Vec::new(),
         });
     };
-    let Some(wb_xml) = read_zip_xml(&mut archive, "xl/workbook.xml") else {
+    let mut xml_budget = MAX_ARCHIVE_XML_BYTES;
+    let Some(wb_xml) =
+        read_zip_xml_budgeted(&mut archive, "xl/workbook.xml", &mut xml_budget)
+    else {
         push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
         return Ok(VerifiedArtifact {
             report: report_for(path, "row_key", issues),
@@ -313,46 +486,34 @@ pub(super) fn verify_xlsx_file(
             snippets: Vec::new(),
         });
     };
-    let sheet_titles: Vec<String> = wb_doc
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "sheet")
-        .filter_map(|node| node.attribute("name").map(str::to_owned))
-        .collect();
-    let shared_strings: Vec<String> =
-        read_zip_xml(&mut archive, "xl/sharedStrings.xml")
-            .and_then(|xml| {
-                let doc = roxmltree::Document::parse(&xml).ok()?;
-                Some(
-                    doc.descendants()
+    let shared_strings: Vec<String> = read_zip_xml_budgeted(
+        &mut archive,
+        "xl/sharedStrings.xml",
+        &mut xml_budget,
+    )
+    .and_then(|xml| {
+        let doc = roxmltree::Document::parse(&xml).ok()?;
+        Some(
+            doc.descendants()
+                .filter(|node| {
+                    node.is_element() && node.tag_name().name() == "si"
+                })
+                .map(|si| {
+                    si.descendants()
                         .filter(|node| {
-                            node.is_element() && node.tag_name().name() == "si"
+                            node.is_element() && node.tag_name().name() == "t"
                         })
-                        .map(|si| {
-                            si.descendants()
-                                .filter(|node| {
-                                    node.is_element()
-                                        && node.tag_name().name() == "t"
-                                })
-                                .filter_map(|node| node.text())
-                                .collect::<String>()
-                        })
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
+                        .filter_map(|node| node.text())
+                        .collect::<String>()
+                })
+                .collect(),
+        )
+    })
+    .unwrap_or_default();
 
-    let mut sheet_names: Vec<String> = (0..archive.len())
-        .filter_map(|i| archive.by_index(i).ok().map(|e| e.name().to_owned()))
-        .filter(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.starts_with("xl/worksheets/sheet")
-                && Path::new(&lower)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-        })
-        .collect();
-    sheet_names.sort();
-    if sheet_names.is_empty() {
+    let resolved_sheets =
+        resolve_xlsx_sheets(&mut archive, &wb_doc, &mut xml_budget);
+    if resolved_sheets.is_empty() {
         push_unique(&mut issues, STRUCTURE, "xlsx_sheets");
         return Ok(VerifiedArtifact {
             report: report_for(path, "row_key", issues),
@@ -362,22 +523,26 @@ pub(super) fn verify_xlsx_file(
     }
 
     let mut non_empty_rows = 0_usize;
+    let mut total_cells = 0_usize;
     let mut cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut qualified_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut row_summaries: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut qualified_row_summaries: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
     let mut row_col_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut qualified_row_col: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut snippets: Vec<(String, String)> = Vec::new();
     let mut all_text = String::new();
 
-    for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
-        let sheet_title = sheet_titles
-            .get(sheet_idx)
-            .cloned()
-            .unwrap_or_else(|| format!("Sheet{}", sheet_idx + 1));
+    'sheets: for (sheet_title, sheet_name) in &resolved_sheets {
         let sheet_key = sheet_title.to_ascii_lowercase();
-        let Some(sheet_xml) = read_zip_xml(&mut archive, sheet_name) else {
+        let Some(sheet_xml) =
+            read_zip_xml_budgeted(&mut archive, sheet_name, &mut xml_budget)
+        else {
             push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
+            if xml_budget == 0 {
+                break 'sheets;
+            }
             continue;
         };
         let Ok(doc) = roxmltree::Document::parse(&sheet_xml) else {
@@ -399,6 +564,11 @@ pub(super) fn verify_xlsx_file(
                 })
                 .enumerate()
             {
+                total_cells = total_cells.saturating_add(1);
+                if total_cells > MAX_XLSX_CELLS {
+                    push_unique(&mut issues, STRUCTURE, "xlsx_cell_limit");
+                    break 'sheets;
+                }
                 let cell_ref = cell.attribute("r").map_or_else(
                     || format!("{}{}", column_letters(col_idx), row_idx + 1),
                     str::to_ascii_uppercase,
@@ -472,6 +642,10 @@ pub(super) fn verify_xlsx_file(
             all_text.push('\n');
             snippets
                 .push((format!("{sheet_title}!{row_key}"), summary.clone()));
+            qualified_row_summaries
+                .entry(format!("{sheet_key}!{row_key}"))
+                .or_default()
+                .push(summary.clone());
             row_summaries
                 .entry(row_key.clone())
                 .or_default()
@@ -512,7 +686,8 @@ pub(super) fn verify_xlsx_file(
                     target_trimmed.to_ascii_uppercase()
                 ))
             } else {
-                row_summaries.get(target_trimmed)
+                qualified_row_summaries
+                    .get(&format!("{sheet_norm}!{target_trimmed}"))
             }
         } else if anchor.anchor.contains(':') {
             row_col_values.get(&anchor.anchor)

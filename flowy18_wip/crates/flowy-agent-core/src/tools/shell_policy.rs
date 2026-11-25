@@ -53,6 +53,7 @@ struct CompiledRules {
     win_delete_host: Regex,
     disk_format: Regex,
     reg_hklm: Regex,
+    ps_encoded_command: Regex,
     exec_policy_machine: Regex,
     sudo_exec: Regex,
     unix_root_perm: Regex,
@@ -62,40 +63,48 @@ struct CompiledRules {
 fn rules() -> &'static CompiledRules {
     static RULES: OnceLock<CompiledRules> = OnceLock::new();
     RULES.get_or_init(|| CompiledRules {
-        tccutil: Regex::new(r"(?i)(?:^|[\s;&|(`])tccutil(?:\s|$|[;&|)])")
-            .expect("tccutil regex"),
+        tccutil: Regex::new(
+            r"(?im)(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?tccutil(?:\s|$|[;&|)\r\n])",
+        )
+        .expect("tccutil regex"),
         osascript_privacy: Regex::new(
-            r"(?i)\bosascript\b[^\n]*(?:system\s+(?:settings|preferences|events)|com\.apple\.preference\.security|accessibility|privacy)",
+            r"(?im)(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?osascript\b[\s\S]*?(?:system\s+(?:settings|preferences|events)|com\.apple\.preference\.security|accessibility|privacy)",
         )
         .expect("osascript privacy regex"),
         unix_rm_host: Regex::new(
-            r#"(?i)(?:^|[;&|(`]\s*)rm\s+(?:-[a-z]*r[a-z]*|--recursive)\b[^\n;&|]*(?:\s+["']?(?:/\*?|~(?:/\*)?|\$home(?:/\*)?|/(?:users|home|etc|system|library|windows|usr|var|bin|sbin)(?:/\*?)?)["']?(?:\s|$|[;&|)]))"#,
+            r#"(?im)(?:^|[;&|(`\r\n]\s*)(?:[^\s;&|(`\r\n]*/)?rm\b[^\r\n;&|]*\s+(?:-[a-z]*r[a-z]*|--recursive)\b[^\r\n;&|]*\s+["']?(?:/+(?:\*?)?|~(?:/\*?)?|\$home(?:/\*?)?|/+(?:users|home)(?:/\*?)?|/+(?:etc|system|library|windows|usr|var|bin|sbin)(?:/[^\s"'`;&|)\r\n]*)?)["']?(?:\s|$|[;&|)\r\n])"#,
         )
         .expect("unix rm regex"),
         win_delete_host: Regex::new(
-            r#"(?i)(?:^|[;&|(`]\s*)(?:remove-item|ri|del|erase|rd|rmdir)\b[^\n;&|]*(?:["']?(?:[a-z]:/(?:windows|users|program files|programdata)?|(?:\$env:userprofile|%userprofile%|\$home))/?\*?["']?(?:\s|$|[;&|)]))"#,
+            r#"(?im)(?:^|[;&|(`\r\n]\s*)(?:remove-item|ri|del|erase|rd|rmdir)\b[^\r\n;&|]*(?:["']?(?:[a-z]:/(?:(?:windows|program files(?:\s*\(x86\))?|programdata)(?:/[^\s"'`;&|)\r\n]*)?|users(?:/\*?)?|(?:\*?)?)|(?:\$env:userprofile|%userprofile%|\$home)(?:/\*?)?)["']?(?:\s|$|[;&|)\r\n]))"#,
         )
         .expect("win delete regex"),
         disk_format: Regex::new(
-            r"(?i)(?:(?:^|[\s;&|(`])(?:mkfs(?:\.[a-z0-9]+)?|diskpart|format-volume|clear-disk|bcdedit)\b|\bdd\b[^\n;&|]*\bof=/dev/)",
+            r"(?im)(?:(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?(?:mkfs(?:\.[a-z0-9]+)?|diskpart(?:\.exe)?|format-volume|clear-disk|bcdedit(?:\.exe)?)\b|(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?dd\b[^\r\n;&|]*\bof=/dev/)",
         )
         .expect("disk format regex"),
         reg_hklm: Regex::new(
-            r"(?i)\breg(?:\.exe)?\s+(?:delete|add)\s+hklm(?:\\|/|[\s])",
+            r"(?im)(?:\breg(?:\.exe)?\s+(?:delete|add|save|export)\s+(?:hklm|hkey_local_machine)(?:\\|/|[\s])|(?:remove-item|remove-itemproperty|set-itemproperty|new-itemproperty|clear-itemproperty)\b[^\r\n;&|]*(?:hklm:|hkey_local_machine))",
         )
         .expect("reg hklm regex"),
+        ps_encoded_command: Regex::new(
+            r"(?im)(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?(?:powershell|pwsh)(?:\.exe)?\b[^\r\n;&|]*\s+-(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)\b",
+        )
+        .expect("ps encoded command regex"),
         exec_policy_machine: Regex::new(
-            r"(?i)\bset-executionpolicy\b[^\n;&|]*\blocalmachine\b",
+            r"(?im)\bset-executionpolicy\b[^\r\n;&|]*\blocalmachine\b",
         )
         .expect("execution policy regex"),
-        sudo_exec: Regex::new(r"(?i)(?:^|[;&|(`]\s*)sudo\s+")
-            .expect("sudo regex"),
+        sudo_exec: Regex::new(
+            r"(?im)(?:^|[;&|(`\r\n]\s*)(?:[^\s;&|(`\r\n]*/)?sudo\s+",
+        )
+        .expect("sudo regex"),
         unix_root_perm: Regex::new(
-            r"(?i)(?:^|[;&|(`]\s*)(?:chmod|chown)\b[^\n;&|]*\s+/(?:\s|$|[;&|)]|(?:etc|usr|system|library|bin|sbin)\b)",
+            r"(?im)(?:^|[;&|(`\r\n]\s*)(?:[^\s;&|(`\r\n]*/)?(?:chmod|chown)\b[^\r\n;&|]*\s+/+(?:\s|$|[;&|)\r\n]|(?:etc|usr|system|library|bin|sbin)\b)",
         )
         .expect("unix root perm regex"),
         system_service: Regex::new(
-            r"(?i)(?:\blaunchctl\s+(?:load|bootstrap)\s+/library/launchdaemons\b|\bsystemctl\s+(?:disable|stop|mask)\b)",
+            r"(?im)(?:(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?launchctl\s+(?:load|bootstrap)\s+/library/launchdaemons\b|(?:^|[\s;&|(`\r\n])(?:[^\s;&|(`\r\n]*/)?systemctl\s+(?:disable|stop|mask)\b)",
         )
         .expect("system service regex"),
     })
@@ -109,6 +118,20 @@ const SENSITIVE_PATH_MARKERS: &[(&str, &str)] = &[
     ("/.gnupg", "GPG keyring"),
     ("~/.gnupg", "GPG keyring"),
     ("flowy/flowy/data/auth", "Flowy account auth store"),
+    (
+        "library/application support/com.flowy.flowy/auth",
+        "macOS Flowy account auth store",
+    ),
+    (
+        "library/application support/flowy/auth",
+        "macOS Flowy account auth store",
+    ),
+    (
+        "library/application support/flowy/data/auth",
+        "macOS Flowy account auth store",
+    ),
+    ("/.local/share/flowy/auth", "Linux Flowy account auth store"),
+    ("/.config/flowy/auth", "Linux Flowy config/auth store"),
     ("/etc/shadow", "Unix shadow password file"),
     ("/etc/sudoers", "Unix sudoers policy"),
     (
@@ -130,12 +153,18 @@ pub fn evaluate_shell_command(
     if trimmed.is_empty() {
         return ShellPolicyDecision::Allow;
     }
+    // Keep pure `\` -> `/` for path regexes so `Remove-Item C:\ -Recurse`
+    // retains `C:/`, and only unescape POSIX `\ ` for sensitive path markers.
     let normalized = trimmed.replace('\\', "/");
-    let lower = normalized.to_ascii_lowercase();
+    let marker_lower = trimmed
+        .replace("\\ ", " ")
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let marker_unquoted = marker_lower.replace(['"', '\''], "");
     let compiled = rules();
 
-    if compiled.tccutil.is_match(trimmed)
-        || compiled.osascript_privacy.is_match(trimmed)
+    if compiled.tccutil.is_match(&normalized)
+        || compiled.osascript_privacy.is_match(&normalized)
     {
         return ShellPolicyDecision::Deny {
             code: SHELL_PRIVACY_TAMPER,
@@ -144,7 +173,7 @@ pub fn evaluate_shell_command(
     }
 
     for (marker, label) in SENSITIVE_PATH_MARKERS {
-        if lower.contains(marker) {
+        if marker_lower.contains(marker) || marker_unquoted.contains(marker) {
             return ShellPolicyDecision::Deny {
                 code: SHELL_CREDENTIAL_ACCESS,
                 reason: format!(
@@ -166,9 +195,10 @@ pub fn evaluate_shell_command(
         };
     }
 
-    if compiled.reg_hklm.is_match(trimmed)
-        || compiled.exec_policy_machine.is_match(trimmed)
-        || compiled.sudo_exec.is_match(trimmed)
+    if compiled.reg_hklm.is_match(&normalized)
+        || compiled.ps_encoded_command.is_match(&normalized)
+        || compiled.exec_policy_machine.is_match(&normalized)
+        || compiled.sudo_exec.is_match(&normalized)
         || compiled.unix_root_perm.is_match(&normalized)
         || compiled.system_service.is_match(&normalized)
     {
@@ -291,6 +321,12 @@ mod tests {
         for cmd in [
             "sudo rm -rf ./something",
             "reg delete HKLM\\Software\\Policies /f",
+            "reg add HKEY_LOCAL_MACHINE\\Software\\Policies /v x /d 1",
+            "Set-ItemProperty -Path HKLM:\\Software\\Test -Name Foo -Value 1",
+            "powershell -enc SQBFAFgA",
+            "pwsh -EncodedCommand SQBFAFgA",
+            "echo ok\nsudo id",
+            "/usr/bin/sudo id",
             "Set-ExecutionPolicy Unrestricted -Scope LocalMachine",
             "chmod -R 777 /etc",
             "systemctl disable sshd",
@@ -307,5 +343,74 @@ mod tests {
                 "expected system tamper block for {cmd:?}, got {decision:?}"
             );
         }
+    }
+
+    #[test]
+    fn blocks_multiline_absolute_path_subdirs_and_cross_platform_auth_bypasses()
+    {
+        let cwd = Path::new("workspace");
+        for cmd in [
+            "echo ok\nrm -rf /",
+            "echo ok\nrm -f -r /etc/ssh",
+            "/bin/rm -rf //",
+            "rm -rf \"/\"",
+            "rm -rf \"$HOME\"",
+            "Remove-Item C:\\ -Recurse -Force",
+            "Write-Output ok\nRemove-Item -Recurse -Force C:\\Windows\\System32",
+        ] {
+            let decision = evaluate_shell_command(cmd, cwd);
+            assert!(
+                matches!(
+                    decision,
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_DESTRUCTIVE_HOST_OP,
+                        ..
+                    }
+                ),
+                "expected destructive block for {cmd:?}, got {decision:?}"
+            );
+        }
+        for privacy_cmd in [
+            "echo ok\n/usr/bin/tccutil reset All",
+            "osascript <<EOF\ntell application \"System Events\" to click button 1\nEOF",
+        ] {
+            assert!(
+                matches!(
+                    evaluate_shell_command(privacy_cmd, cwd),
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_PRIVACY_TAMPER,
+                        ..
+                    }
+                ),
+                "expected privacy tamper block for {privacy_cmd:?}"
+            );
+        }
+        for cred_cmd in [
+            "cat ~/Library/Application\\ Support/com.Flowy.Flowy/auth/session.json",
+            "cat ~/Library/Application\\ Support/Flowy/auth/session.json",
+            "cat ~/Library/\"Application Support\"/Flowy/auth/session.json",
+            "cat ~/.local/share/flowy/auth/token.json",
+            "cat ~/.config/flowy/auth/token.json",
+        ] {
+            assert!(
+                matches!(
+                    evaluate_shell_command(cred_cmd, cwd),
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_CREDENTIAL_ACCESS,
+                        ..
+                    }
+                ),
+                "expected credential block for {cred_cmd:?}"
+            );
+        }
+        // Linux Home workspaces live under `~/.local/share/flowy/sessions/...`
+        // and must remain allowed when not touching `/auth`.
+        assert_eq!(
+            evaluate_shell_command(
+                "ls -la ~/.local/share/flowy/sessions/workspaces/s1/outputs",
+                cwd,
+            ),
+            ShellPolicyDecision::Allow
+        );
     }
 }

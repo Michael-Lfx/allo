@@ -2,7 +2,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{
@@ -14,14 +13,7 @@ use serde_json::json;
 
 use crate::artifact_store::{ArtifactStore, PrepareArtifact};
 use crate::delivery::DeliveryStore;
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
+use crate::handle::now_ms;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,10 +107,42 @@ pub fn definition(
                             .unwrap_or(trimmed)
                             .to_owned()
                     };
-                    if Path::new(&normalized_path).is_absolute()
-                        || Path::new(&normalized_path).components().any(|c| {
-                            matches!(c, std::path::Component::ParentDir)
-                        })
+                    // Strictly accept only normal relative components inside
+                    // `output_root`: reject Windows drive prefixes (`D:foo`),
+                    // rooted-without-drive (`\Users\...`), parent traversals
+                    // (`..`), empty segments, and reserved device names.
+                    let normalized = Path::new(&normalized_path);
+                    let has_normal_component = normalized
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::Normal(_)));
+                    let only_safe_components = normalized.components().all(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::Normal(_)
+                                | std::path::Component::CurDir
+                        )
+                    });
+                    if normalized_path.trim().is_empty()
+                        || normalized_path.contains('\0')
+                        || !has_normal_component
+                        || !only_safe_components
+                        || crate::handle::has_reserved_device_component(
+                            normalized,
+                        )
+                        || !crate::handle::confined_to(
+                            &output_root,
+                            &normalized_path,
+                        )
+                    {
+                        return publish_error(
+                            "PUBLISH_FAILED",
+                            "chat.publish.failed",
+                            "Couldn't publish the file.",
+                        );
+                    }
+                    let artifact_candidate = output_root.join(&normalized_path);
+                    if std::fs::symlink_metadata(&artifact_candidate)
+                        .is_ok_and(|meta| meta.file_type().is_symlink())
                     {
                         return publish_error(
                             "PUBLISH_FAILED",
@@ -156,7 +180,7 @@ pub fn definition(
                         display_name: parsed.display_name,
                         origin: context.session_origin,
                     };
-                    let receipt = if let Some(gate) = &gate {
+                    let (receipt, staged_intent) = if let Some(gate) = &gate {
                         let artifact = output_root.join(&normalized_path);
                         match gate.stage_with(
                             &artifact,
@@ -211,7 +235,12 @@ pub fn definition(
                                     exemption_code = result.outcome.exemption_code.unwrap_or(""),
                                     "publish_file staged through delivery gate"
                                 );
-                                receipt
+                                let intent = Some((
+                                    gate.clone(),
+                                    result.outcome.delivery_id,
+                                    artifact.display().to_string(),
+                                ));
+                                (receipt, intent)
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "publish_file failed in delivery gate or staging");
@@ -235,7 +264,7 @@ pub fn definition(
                         }
                     } else {
                         match store.prepare(prepare_args) {
-                            Ok(receipt) => receipt,
+                            Ok(receipt) => (receipt, None),
                             Err(error) => {
                                 tracing::warn!(%error, "publish_file could not stage the file");
                                 return publish_error(
@@ -247,8 +276,20 @@ pub fn definition(
                         }
                     };
                     if context.signal.is_cancelled() {
-                        // The prepared file remains non-visible and will never
-                        // receive a committed marker without a successful turn.
+                        // Close the staged intent before returning CANCELLED so
+                        // a cancelled tool call never leaves a ghost in_doubt
+                        // entry in the audit log.
+                        if let Some((gate, delivery_id, artifact_path)) =
+                            staged_intent
+                        {
+                            let _ = gate.abort_intent(
+                                &delivery_id,
+                                &artifact_path,
+                                &receipt.sha256,
+                                "publish_cancelled",
+                                now_ms(),
+                            );
+                        }
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
                     }
                     let summary = json!({

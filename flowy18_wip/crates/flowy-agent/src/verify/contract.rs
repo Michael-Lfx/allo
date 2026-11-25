@@ -46,7 +46,39 @@ impl BriefContract {
             return delta;
         };
         let mut required_items = prev.required_items.clone();
+        let is_rename = is_rename_prompt(prompt);
+        let prompt_lower = prompt.to_ascii_lowercase();
         for item in delta.required_items {
+            if is_rename && let Some(new_name) = item.filename.as_deref() {
+                // Prefer replacing the specifically mentioned previous filename
+                // so multi-file decks (e.g. `east.pptx` + `west.pptx`) never
+                // lose sibling deliverables when renaming one file.
+                if let Some(slot) = required_items.iter_mut().find(|existing| {
+                    existing.extension.eq_ignore_ascii_case(&item.extension)
+                        && existing.filename.as_deref().is_some_and(|old| {
+                            !old.eq_ignore_ascii_case(new_name)
+                                && prompt_lower
+                                    .contains(&old.to_ascii_lowercase())
+                        })
+                }) {
+                    *slot = item;
+                    continue;
+                }
+                let same_ext_indices: Vec<usize> = required_items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, existing)| {
+                        existing
+                            .extension
+                            .eq_ignore_ascii_case(&item.extension)
+                            .then_some(idx)
+                    })
+                    .collect();
+                if same_ext_indices.len() == 1 {
+                    required_items[same_ext_indices[0]] = item;
+                    continue;
+                }
+            }
             let duplicate = required_items.iter().any(|existing| {
                 existing.extension.eq_ignore_ascii_case(&item.extension)
                     && match (&existing.filename, &item.filename) {
@@ -217,12 +249,15 @@ impl BriefContract {
 
 pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
     let chars: Vec<(usize, char)> = brief.char_indices().collect();
-    let mut best: Option<usize> = None;
+    let mut matches: Vec<usize> = Vec::new();
     for idx in 0..chars.len() {
-        // Skip ordinals ("第1页"/"第3页") and reference-document counts
-        // ("参考那份20页的旧报告") so they never override the requested target.
-        if idx > 0 && chars[idx - 1].1 == '第' {
-            continue;
+        // Skip ordinals ("第1页"/"第十二页") and middle digits of multi-char
+        // Chinese numerals ("十五页" -> parse "十五"=15 at idx of '十', skip '五').
+        if idx > 0 {
+            let prev_ch = chars[idx - 1].1;
+            if prev_ch == '第' || is_cn_numeral_char(prev_ch) {
+                continue;
+            }
         }
         let prefix_start = idx.saturating_sub(6);
         let prefix_slice: String =
@@ -273,46 +308,204 @@ pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
             })
         };
         if is_cn_unit || is_en_unit {
-            best = Some(best.map_or(num, |prev| prev.max(num)));
+            matches.push(num);
         }
     }
-    best
+    if matches.len() >= 2 {
+        let lower = brief.to_ascii_lowercase();
+        let has_change_cue = [
+            "改", "调", "精简", "缩减", "变", "至", "到", "->", "→", " to ",
+        ]
+        .iter()
+        .any(|cue| lower.contains(cue));
+        if has_change_cue {
+            return matches.last().copied();
+        }
+    }
+    matches.into_iter().max()
+}
+
+const fn is_cn_numeral_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '一' | '二'
+            | '两'
+            | '三'
+            | '四'
+            | '五'
+            | '六'
+            | '七'
+            | '八'
+            | '九'
+            | '十'
+    )
+}
+
+const fn cn_digit(ch: char) -> Option<usize> {
+    match ch {
+        '一' => Some(1),
+        '二' | '两' => Some(2),
+        '三' => Some(3),
+        '四' => Some(4),
+        '五' => Some(5),
+        '六' => Some(6),
+        '七' => Some(7),
+        '八' => Some(8),
+        '九' => Some(9),
+        _ => None,
+    }
 }
 
 pub(super) fn parse_chinese_numeral(
     slice: &[(usize, char)],
 ) -> Option<(usize, usize)> {
-    match (slice.first()?.1, slice.get(1).map(|(_, ch)| *ch)) {
-        ('十', Some('一')) => Some((11, 2)),
-        ('十', Some('二')) => Some((12, 2)),
-        ('十', _) => Some((10, 1)),
-        ('一', _) => Some((1, 1)),
-        ('二' | '两', _) => Some((2, 1)),
-        ('三', _) => Some((3, 1)),
-        ('四', _) => Some((4, 1)),
-        ('五', _) => Some((5, 1)),
-        ('六', _) => Some((6, 1)),
-        ('七', _) => Some((7, 1)),
-        ('八', _) => Some((8, 1)),
-        ('九', _) => Some((9, 1)),
-        _ => None,
+    let first = slice.first()?.1;
+    let second = slice.get(1).map(|(_, ch)| *ch);
+    let third = slice.get(2).map(|(_, ch)| *ch);
+    if first == '十' {
+        if let Some(ones) = second.and_then(cn_digit) {
+            return Some((10 + ones, 2));
+        }
+        return Some((10, 1));
     }
+    let first_val = cn_digit(first)?;
+    if second == Some('十') {
+        let base = first_val * 10;
+        if let Some(ones) = third.and_then(cn_digit) {
+            let total = base + ones;
+            return (total <= 50).then_some((total, 3));
+        }
+        return (base <= 50).then_some((base, 2));
+    }
+    Some((first_val, 1))
+}
+
+fn is_rename_prompt(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    ["改名", "重命名", "更名", "rename", "文件名改"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || (prompt.contains("文件名")
+            && ["改", "换", "变"].iter().any(|verb| prompt.contains(verb)))
+}
+
+fn rfind_marker(haystack: &str, marker: &str) -> Option<usize> {
+    let starts_ascii = marker
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    let ends_ascii = marker
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    if !starts_ascii && !ends_ascii {
+        return haystack.rfind(marker);
+    }
+    for (pos, _) in haystack.rmatch_indices(marker) {
+        let before_ok = !starts_ascii
+            || haystack[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after_ok = !ends_ascii
+            || haystack[pos + marker.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+fn is_input_source_context(prefix: &str) -> bool {
+    let lower = prefix.to_ascii_lowercase();
+    let input_markers = [
+        "根据", "基于", "参考", "读取", "按照", "按", "依据", "从", "由",
+        "原有", "原", "based on", "using", "from", "read",
+    ];
+    let output_markers = [
+        "生成",
+        "输出",
+        "制作",
+        "整理",
+        "保存为",
+        "导出为",
+        "命名为",
+        "改名为",
+        "重命名为",
+        "更名为",
+        "改为",
+        "改成",
+        "交付",
+        "做",
+        "写",
+        "叫",
+        "create",
+        "build",
+        "make",
+        "generate",
+        "deliver",
+        "publish",
+        "save as",
+        "rename to",
+        "to",
+        "output",
+    ];
+    let last_input = input_markers
+        .iter()
+        .filter_map(|m| rfind_marker(&lower, m))
+        .max();
+    let Some(in_pos) = last_input else {
+        return false;
+    };
+    let last_output = output_markers
+        .iter()
+        .filter_map(|m| rfind_marker(&lower, m))
+        .max();
+    last_output.is_none_or(|out_pos| in_pos > out_pos)
 }
 
 pub(super) fn extract_explicit_filenames(brief: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for token in brief.split(|ch: char| {
+    let mut cursor = 0_usize;
+    for raw_token in brief.split(|ch: char| {
         !(ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
     }) {
-        let candidate = token.trim_matches('.');
+        let token_pos = brief[cursor..]
+            .find(raw_token)
+            .map_or(cursor, |rel| cursor + rel);
+        cursor = token_pos + raw_token.len();
+        let candidate = raw_token.trim_matches('.');
         let lower = candidate.to_ascii_lowercase();
         let is_target = [".pptx", ".docx", ".xlsx", ".pdf", ".csv"]
             .iter()
             .any(|ext| lower.ends_with(ext) && lower.len() > ext.len());
-        if is_target
-            && !out
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(candidate))
+        if !is_target {
+            continue;
+        }
+        // Look back up to 24 chars before this filename (stopping at sentence
+        // boundaries) to ignore input source files like "根据 source.csv 做 q3.pptx".
+        let prefix_full = &brief[..token_pos];
+        let clause_prefix = prefix_full
+            .rsplit(['。', '\n', ';', '；', '，', ','])
+            .next()
+            .unwrap_or(prefix_full);
+        let tail_chars: String = clause_prefix
+            .chars()
+            .rev()
+            .take(24)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if is_input_source_context(&tail_chars) {
+            continue;
+        }
+        if !out
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(candidate))
         {
             out.push(candidate.to_owned());
         }
@@ -397,6 +590,24 @@ pub(super) fn extract_pinned_facts(brief: &str) -> BTreeMap<String, String> {
     facts
 }
 
+fn split_quote_clause(after: &str) -> &str {
+    for (idx, ch) in after.char_indices() {
+        if matches!(ch, '，' | '。' | ';' | '；' | '\n') {
+            return &after[..idx];
+        }
+        if ch == ',' {
+            let next_is_digit = after[idx + 1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit());
+            if !next_is_digit {
+                return &after[..idx];
+            }
+        }
+    }
+    after
+}
+
 pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
     let lower = brief.to_ascii_lowercase();
     for keyword in ["报价", "总价", "预算", "quote", "price"] {
@@ -406,14 +617,82 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
             if after.starts_with('表') || after.starts_with('单') {
                 continue;
             }
-            let window: String = after.chars().take(24).collect();
+            // Limit scan to the current clause without breaking thousand
+            // separators like `350,000`.
+            let clause = split_quote_clause(after);
+            let window: String = clause.chars().take(48).collect();
             let chars: Vec<(usize, char)> = window.char_indices().collect();
-            let Some(start_idx) =
-                chars.iter().position(|(_, c)| c.is_ascii_digit())
-            else {
+            // Collect valid price numbers in this clause: `(start_char_idx,
+            // end_char_idx, formatted_quote)`.
+            let mut found: Vec<(usize, usize, String)> = Vec::new();
+            let mut idx = 0_usize;
+            while idx < chars.len() {
+                if !chars[idx].1.is_ascii_digit() {
+                    idx += 1;
+                    continue;
+                }
+                let start_idx = idx;
+                let mut end_idx = start_idx;
+                while end_idx < chars.len() {
+                    let ch = chars[end_idx].1;
+                    let is_internal_sep = matches!(ch, '.' | ',')
+                        && chars
+                            .get(end_idx + 1)
+                            .is_some_and(|(_, next)| next.is_ascii_digit());
+                    if ch.is_ascii_digit() || is_internal_sep {
+                        end_idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let start_byte = chars[start_idx].0;
+                let end_byte =
+                    chars.get(end_idx).map_or(window.len(), |(p, _)| *p);
+                let number = window[start_byte..end_byte]
+                    .replace(',', "")
+                    .trim_end_matches('.')
+                    .to_owned();
+                let tail = window[end_byte..].trim_start();
+                let tail_lower = tail.to_ascii_lowercase();
+                let is_non_currency_unit = tail.starts_with('页')
+                    || tail.starts_with('张')
+                    || tail.starts_with('年')
+                    || tail.starts_with('月')
+                    || tail.starts_with('日')
+                    || tail.starts_with('期')
+                    || tail.starts_with('%')
+                    || tail.starts_with('倍')
+                    || tail.starts_with('人')
+                    || tail.starts_with('个')
+                    || tail.starts_with("小时")
+                    || tail.starts_with('天')
+                    || tail_lower.starts_with("slide")
+                    || (tail.starts_with('-')
+                        && tail[1..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_digit()));
+                if !number.is_empty() && !is_non_currency_unit {
+                    let unit = if tail.starts_with("万元")
+                        || tail.starts_with('万')
+                    {
+                        "万"
+                    } else if tail.starts_with("亿元") || tail.starts_with('亿')
+                    {
+                        "亿"
+                    } else if tail.starts_with('元') {
+                        "元"
+                    } else {
+                        ""
+                    };
+                    found.push((start_idx, end_idx, format!("{number}{unit}")));
+                }
+                idx = end_idx;
+            }
+            let Some((first_start, _, _)) = found.first() else {
                 continue;
             };
-            let prefix_ok = chars[..start_idx].iter().all(|(_, c)| {
+            let prefix_ok = chars[..*first_start].iter().all(|(_, c)| {
                 c.is_whitespace()
                     || matches!(
                         c,
@@ -423,53 +702,62 @@ pub(super) fn extract_quote_fact(brief: &str) -> Option<String> {
                             | '是'
                             | '约'
                             | '共'
+                            | '改'
+                            | '成'
+                            | '调'
+                            | '整'
+                            | '变'
+                            | '更'
+                            | '新'
+                            | '至'
+                            | '到'
+                            | '从'
+                            | '由'
                             | '¥'
                             | '￥'
                             | '$'
                             | '('
                             | '（'
+                            | 't'
+                            | 'o'
+                            | 'T'
+                            | 'O'
                     )
             });
             if !prefix_ok {
                 continue;
             }
-            let mut end_idx = start_idx;
-            while end_idx < chars.len()
-                && (chars[end_idx].1.is_ascii_digit()
-                    || matches!(chars[end_idx].1, '.' | ','))
-            {
-                end_idx += 1;
+            // Start with `found[0]` and only advance to a subsequent price when
+            // the intervening text contains an explicit replacement cue (so
+            // "报价 35 万（有效期至 2026-12-01）" or "报价 35 万分 3 期" never
+            // overwrites the quote with an unrelated trailing number).
+            let mut chosen = 0_usize;
+            for next_i in 1..found.len() {
+                let prev_end = found[chosen].1;
+                let next_start = found[next_i].0;
+                let between: String = chars[prev_end..next_start]
+                    .iter()
+                    .map(|(_, c)| *c)
+                    .collect();
+                let between_lower = between.to_ascii_lowercase();
+                let is_replacement =
+                    ["改", "调", "变", "至", "到", "成", "->", "→", " to "]
+                        .iter()
+                        .any(|cue| between_lower.contains(cue))
+                        && !between.contains("有效")
+                        && !between.contains("截止");
+                if is_replacement {
+                    chosen = next_i;
+                }
             }
-            let start_byte = chars[start_idx].0;
-            let end_byte = chars.get(end_idx).map_or(window.len(), |(p, _)| *p);
-            let number = window[start_byte..end_byte].replace(',', "");
-            if number.is_empty() {
-                continue;
-            }
-            let tail = window[end_byte..].trim_start();
-            if tail.starts_with('页')
-                || tail.starts_with('张')
-                || tail.to_ascii_lowercase().starts_with("slide")
-            {
-                continue;
-            }
-            let unit = if tail.starts_with("万元") || tail.starts_with('万')
-            {
-                "万"
-            } else if tail.starts_with("亿元") || tail.starts_with('亿') {
-                "亿"
-            } else if tail.starts_with('元') {
-                "元"
-            } else {
-                ""
-            };
-            return Some(format!("{number}{unit}"));
+            return Some(found[chosen].2.clone());
         }
     }
     None
 }
 
 pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
+    let mut matches: Vec<(usize, String)> = Vec::new();
     let bytes = brief.as_bytes();
     // 1. YYYY-MM-DD or YYYY/MM/DD
     for i in 0..bytes.len().saturating_sub(7) {
@@ -489,7 +777,7 @@ pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
                     && (1..=31).contains(&d)
                 {
                     let year = &brief[i..i + 4];
-                    return Some(format!("{year}-{m:02}-{d:02}"));
+                    matches.push((i, format!("{year}-{m:02}-{d:02}")));
                 }
             }
         }
@@ -511,13 +799,27 @@ pub(super) fn extract_date_fact(brief: &str) -> Option<String> {
                         && (1..=12).contains(&m)
                         && (1..=31).contains(&d)
                     {
-                        return Some(format!("{y}-{m:02}-{d:02}"));
+                        matches.push((
+                            chars[i - 4].0,
+                            format!("{y}-{m:02}-{d:02}"),
+                        ));
                     }
                 }
             }
         }
     }
-    None
+    matches.sort_by_key(|(pos, _)| *pos);
+    if matches.len() >= 2 {
+        let lower = brief.to_ascii_lowercase();
+        let has_change_verb =
+            ["改", "调", "变", "换", "更新", "->", "→", " to "]
+                .iter()
+                .any(|marker| lower.contains(marker));
+        if has_change_verb {
+            return matches.last().map(|(_, date)| date.clone());
+        }
+    }
+    matches.first().map(|(_, date)| date.clone())
 }
 
 pub(super) fn compact_text(input: &str) -> String {
@@ -528,19 +830,65 @@ pub(super) fn compact_text(input: &str) -> String {
         .collect()
 }
 
+fn contains_with_numeric_boundary(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let needle_starts_digit =
+        needle.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let needle_ends_digit = needle
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_ascii_digit());
+    for (pos, _) in haystack.match_indices(needle) {
+        let before_ok = if needle_starts_digit {
+            haystack[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_digit() || c == '.'))
+        } else {
+            true
+        };
+        let after_ok = if needle_ends_digit {
+            let after_slice = &haystack[pos + needle.len()..];
+            match after_slice.chars().next() {
+                Some(c) if c.is_ascii_digit() => false,
+                Some('.') => {
+                    // Allow sentence-ending periods (`350000.`) and zero
+                    // fractional decimals (`350000.00`), while rejecting
+                    // distinct decimal values (`350000.5` / `35.5`).
+                    let after_dot = &after_slice[1..];
+                    let frac: String = after_dot
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    frac.is_empty() || frac.chars().all(|d| d == '0')
+                }
+                None | Some(_) => true,
+            }
+        } else {
+            true
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn quote_matches(
     normalized_doc: &str,
     expected_quote: &str,
 ) -> bool {
     let target = compact_text(expected_quote);
-    if normalized_doc.contains(&target) {
+    if contains_with_numeric_boundary(normalized_doc, &target) {
         return true;
     }
     if let Some(wan) = target.strip_suffix('万')
         && let Ok(val) = wan.parse::<f64>()
     {
         let expanded = format!("{}", (val * 10_000.0).round() as u64);
-        if normalized_doc.contains(&expanded) {
+        if contains_with_numeric_boundary(normalized_doc, &expanded) {
             return true;
         }
     }
@@ -549,7 +897,7 @@ pub(super) fn quote_matches(
 
 pub(super) fn date_matches(normalized_doc: &str, expected_date: &str) -> bool {
     let target = compact_text(expected_date);
-    if normalized_doc.contains(&target) {
+    if contains_with_numeric_boundary(normalized_doc, &target) {
         return true;
     }
     let parts: Vec<&str> = expected_date.split('-').collect();
@@ -561,9 +909,9 @@ pub(super) fn date_matches(normalized_doc: &str, expected_date: &str) -> bool {
         let dash_short = format!("{y}-{m_num}-{d_num}");
         let cn = format!("{y}年{m_num}月{d_num}日");
         let cn_pad = format!("{y}年{m}月{d}日");
-        return [slash, slash_short, dash_short, cn, cn_pad]
-            .iter()
-            .any(|variant| normalized_doc.contains(variant));
+        return [slash, slash_short, dash_short, cn, cn_pad].iter().any(
+            |variant| contains_with_numeric_boundary(normalized_doc, variant),
+        );
     }
     false
 }

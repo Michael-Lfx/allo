@@ -116,6 +116,8 @@ enum AuditEvent {
     },
     DeliverOverride {
         delivery_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        report_id: String,
         artifact_path: String,
         artifact_hash: String,
         code: String,
@@ -127,12 +129,104 @@ enum AuditEvent {
         artifact_hash: String,
         at_ms: u64,
     },
+    DeliverAborted {
+        delivery_id: String,
+        artifact_path: String,
+        artifact_hash: String,
+        reason: String,
+        at_ms: u64,
+    },
     Deliver {
         delivery_id: String,
         artifact_path: String,
         artifact_hash: String,
         at_ms: u64,
     },
+}
+
+/// Read a regular file into memory with strict safety bounds:
+/// - rejects Windows reserved device names (`CON`, `NUL`, `AUX`, `COM1`..`LPT9`),
+/// - rejects non-regular files (directories, Unix FIFOs, device nodes),
+/// - caps bytes read at `max_bytes` (checked both via metadata and `Read::take`).
+pub(crate) fn read_regular_file_bounded(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    if crate::handle::has_reserved_device_component(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reserved device path refused",
+        ));
+    }
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+    if meta.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds maximum size limit ({max_bytes} bytes)"),
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    let mut buf = Vec::with_capacity(
+        usize::try_from(meta.len().min(max_bytes)).unwrap_or(0),
+    );
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds maximum size limit ({max_bytes} bytes)"),
+        ));
+    }
+    Ok(buf)
+}
+
+/// Verify that `path` points to a non-reserved regular file without loading its
+/// bytes into memory.
+pub(crate) fn verify_regular_file_exists(path: &Path) -> io::Result<()> {
+    if crate::handle::has_reserved_device_component(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reserved device path refused",
+        ));
+    }
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+/// Stream-hash a regular file in fixed 64 KiB chunks without loading the whole
+/// file into memory, rejecting Windows reserved device names and non-regular
+/// files (directories, FIFOs, device nodes).
+pub(crate) fn hash_regular_file_streaming(path: &Path) -> io::Result<String> {
+    verify_regular_file_exists(path)?;
+    let mut file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Known formats that explicitly pass under [`EXEMPT_NO_VERIFIER_V0`] when no
@@ -256,7 +350,8 @@ impl DeliveryStore {
         issues: Vec<Issue>,
         now_ms: u64,
     ) -> io::Result<Report> {
-        let bytes = std::fs::read(artifact)?;
+        let bytes =
+            read_regular_file_bounded(artifact, crate::MAX_ARTIFACT_BYTES)?;
         self.record_report_bytes(artifact, &bytes, issues, now_ms)
     }
 
@@ -348,7 +443,8 @@ impl DeliveryStore {
                         },
                     );
                 }
-                AuditEvent::Deliver { delivery_id, .. } => {
+                AuditEvent::Deliver { delivery_id, .. }
+                | AuditEvent::DeliverAborted { delivery_id, .. } => {
                     pending.remove(&delivery_id);
                 }
                 _ => {}
@@ -385,6 +481,55 @@ impl DeliveryStore {
                 _ => None,
             })
             .collect())
+    }
+
+    /// Whether a specific verification report (or, for legacy events lacking
+    /// `report_id`, the same `(artifact_key, artifact_hash)`) was delivered via
+    /// an explicit user override — preventing cross-session hash collisions
+    /// from prematurely marking another session's failed card as overridden.
+    pub fn report_was_overridden(
+        &self,
+        report_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+    ) -> io::Result<bool> {
+        let events = self.read_events()?;
+        let delivered_ids: BTreeSet<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                AuditEvent::Deliver { delivery_id, .. } => {
+                    Some(delivery_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if delivered_ids.is_empty() {
+            return Ok(false);
+        }
+        let target_key = if artifact_path.is_empty() {
+            String::new()
+        } else {
+            artifact_key(Path::new(artifact_path))
+        };
+        Ok(events.iter().any(|event| match event {
+            AuditEvent::DeliverOverride {
+                delivery_id,
+                report_id: event_report_id,
+                artifact_path: event_path,
+                artifact_hash: event_hash,
+                ..
+            } if delivered_ids.contains(delivery_id.as_str()) => {
+                if !report_id.is_empty() && !event_report_id.is_empty() {
+                    event_report_id == report_id
+                } else if !target_key.is_empty() && !event_path.is_empty() {
+                    artifact_key(Path::new(event_path)) == target_key
+                        && event_hash == artifact_hash
+                } else {
+                    !artifact_hash.is_empty() && event_hash == artifact_hash
+                }
+            }
+            _ => false,
+        }))
     }
 
     /// Whether any completed delivery for `artifact_hash` bypassed verification
@@ -426,6 +571,47 @@ impl DeliveryStore {
         Ok(true)
     }
 
+    /// Explicitly close an unresolved local `deliver_intent` when staging or
+    /// pre-commit persistence fails/cancels before any durable Library commit.
+    /// Idempotent per `delivery_id` and never overrides a committed `Deliver`.
+    pub fn abort_intent(
+        &self,
+        delivery_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+        reason: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        if delivery_id.is_empty() {
+            return Ok(false);
+        }
+        let path = self.events_path();
+        let lock = store_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let events = Self::read_events_from(&path)?;
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                AuditEvent::Deliver { delivery_id: existing, .. }
+                    | AuditEvent::DeliverAborted { delivery_id: existing, .. }
+                    if existing == delivery_id
+            )
+        }) {
+            return Ok(false);
+        }
+        Self::append_json_locked(
+            &path,
+            &AuditEvent::DeliverAborted {
+                delivery_id: delivery_id.to_owned(),
+                artifact_path: artifact_path.to_owned(),
+                artifact_hash: artifact_hash.to_owned(),
+                reason: reason.to_owned(),
+                at_ms: now_ms,
+            },
+        )?;
+        Ok(true)
+    }
+
     /// Confirm every unresolved `deliver_intent` matching `artifact_hash` once
     /// the corresponding Library marker is durable. Idempotent across restarts.
     pub fn confirm_delivered_by_hash(
@@ -458,7 +644,8 @@ impl DeliveryStore {
                         },
                     );
                 }
-                AuditEvent::Deliver { delivery_id, .. } => {
+                AuditEvent::Deliver { delivery_id, .. }
+                | AuditEvent::DeliverAborted { delivery_id, .. } => {
                     pending.remove(&delivery_id);
                 }
                 _ => {}
@@ -488,7 +675,8 @@ impl DeliveryStore {
     /// Check a report without sending anything. `None` means the artifact is
     /// clear to leave; `Some(reason)` must block it.
     pub fn check(&self, artifact: &Path) -> io::Result<Option<BlockReason>> {
-        let bytes = std::fs::read(artifact)?;
+        let bytes =
+            read_regular_file_bounded(artifact, crate::MAX_ARTIFACT_BYTES)?;
         let artifact_hash = hash_bytes(&bytes);
         Ok(match self.latest_report(artifact)? {
             None if exemption_code_for_path(artifact).is_some() => None,
@@ -515,7 +703,7 @@ impl DeliveryStore {
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
         Ok(self
-            .stage_with_hash(artifact, allow_override, now_ms, stage)?
+            .stage_with_hash(artifact, allow_override, now_ms, true, stage)?
             .0)
     }
 
@@ -524,13 +712,15 @@ impl DeliveryStore {
         artifact: &Path,
         allow_override: bool,
         now_ms: u64,
+        abort_on_stage_error: bool,
         stage: F,
     ) -> io::Result<(DeliveryResult<T>, String)>
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
         let delivery_id = format!("delivery-{}-{}", now_ms, next_id());
-        let bytes = std::fs::read(artifact)?;
+        let bytes =
+            read_regular_file_bounded(artifact, crate::MAX_ARTIFACT_BYTES)?;
         let artifact_hash = hash_bytes(&bytes);
         let report = self.latest_report(artifact)?;
         let exemption = if report.is_none() {
@@ -592,6 +782,7 @@ impl DeliveryStore {
                 &self.events_path(),
                 &AuditEvent::DeliverOverride {
                     delivery_id: delivery_id.clone(),
+                    report_id: report_id.clone().unwrap_or_default(),
                     artifact_path: path_display.clone(),
                     artifact_hash: artifact_hash.clone(),
                     code: reason.code().to_owned(),
@@ -614,12 +805,29 @@ impl DeliveryStore {
             &self.events_path(),
             &AuditEvent::DeliverIntent {
                 delivery_id: delivery_id.clone(),
-                artifact_path: path_display,
+                artifact_path: path_display.clone(),
                 artifact_hash: artifact_hash.clone(),
                 at_ms: now_ms,
             },
         )?;
-        let value = stage(&bytes)?;
+        let value = match stage(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                if abort_on_stage_error {
+                    let _ = Self::append_json(
+                        &self.events_path(),
+                        &AuditEvent::DeliverAborted {
+                            delivery_id,
+                            artifact_path: path_display,
+                            artifact_hash,
+                            reason: error.to_string(),
+                            at_ms: now_ms,
+                        },
+                    );
+                }
+                return Err(error);
+            }
+        };
         Ok((
             DeliveryResult {
                 outcome: DeliveryOutcome {
@@ -649,8 +857,13 @@ impl DeliveryStore {
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
-        let (mut result, artifact_hash) =
-            self.stage_with_hash(artifact, allow_override, now_ms, send)?;
+        let (mut result, artifact_hash) = self.stage_with_hash(
+            artifact,
+            allow_override,
+            now_ms,
+            false,
+            send,
+        )?;
         if result.value.is_some() {
             let path_display = artifact.display().to_string();
             self.confirm_delivered(
@@ -692,6 +905,7 @@ impl DeliveryStore {
                 artifact,
                 expected_report_id,
                 now_ms,
+                true,
                 stage,
             )?
             .0)
@@ -702,13 +916,15 @@ impl DeliveryStore {
         artifact: &Path,
         expected_report_id: &str,
         now_ms: u64,
+        abort_on_stage_error: bool,
         stage: F,
     ) -> io::Result<(DeliveryResult<T>, String)>
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
         let delivery_id = format!("delivery-{}-{}", now_ms, next_id());
-        let bytes = std::fs::read(artifact)?;
+        let bytes =
+            read_regular_file_bounded(artifact, crate::MAX_ARTIFACT_BYTES)?;
         let artifact_hash = hash_bytes(&bytes);
         let path_display = artifact.display().to_string();
         let report = self.latest_report(artifact)?;
@@ -781,6 +997,7 @@ impl DeliveryStore {
                 &self.events_path(),
                 &AuditEvent::DeliverOverride {
                     delivery_id: delivery_id.clone(),
+                    report_id: report_id.clone().unwrap_or_default(),
                     artifact_path: path_display.clone(),
                     artifact_hash: artifact_hash.clone(),
                     code: BlockReason::VerificationFailed.code().to_owned(),
@@ -792,12 +1009,29 @@ impl DeliveryStore {
             &self.events_path(),
             &AuditEvent::DeliverIntent {
                 delivery_id: delivery_id.clone(),
-                artifact_path: path_display,
+                artifact_path: path_display.clone(),
                 artifact_hash: artifact_hash.clone(),
                 at_ms: now_ms,
             },
         )?;
-        let value = stage(&bytes)?;
+        let value = match stage(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                if abort_on_stage_error {
+                    let _ = Self::append_json(
+                        &self.events_path(),
+                        &AuditEvent::DeliverAborted {
+                            delivery_id,
+                            artifact_path: path_display,
+                            artifact_hash,
+                            reason: error.to_string(),
+                            at_ms: now_ms,
+                        },
+                    );
+                }
+                return Err(error);
+            }
+        };
         Ok((
             DeliveryResult {
                 outcome: DeliveryOutcome {
@@ -833,6 +1067,7 @@ impl DeliveryStore {
                 artifact,
                 expected_report_id,
                 now_ms,
+                false,
                 send,
             )?;
         if result.value.is_some() {
@@ -1226,6 +1461,79 @@ mod tests {
         assert!(allowed.outcome.delivered);
         assert!(allowed.outcome.override_used);
         assert_eq!(ok_calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stage_failure_aborts_intent_and_override_is_scoped_by_report() {
+        let root = scratch("stage-abort-and-scope");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path_a = root.join("sess-a").join("deck.pptx");
+        let path_b = root.join("sess-b").join("deck.pptx");
+        std::fs::create_dir_all(path_a.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(path_b.parent().unwrap()).unwrap();
+        std::fs::write(&path_a, b"PK identical-bytes").unwrap();
+        std::fs::write(&path_b, b"PK identical-bytes").unwrap();
+
+        let rep_a = store
+            .record_report(
+                &path_a,
+                vec![Issue {
+                    code: "STRUCTURE".into(),
+                    field: "slides".into(),
+                }],
+                1_000,
+            )
+            .unwrap();
+        let rep_b = store
+            .record_report(
+                &path_b,
+                vec![Issue {
+                    code: "STRUCTURE".into(),
+                    field: "slides".into(),
+                }],
+                1_100,
+            )
+            .unwrap();
+
+        // 1) Local `stage_override_for_report` failure must abort the intent
+        //    so no ghost in-doubt delivery remains.
+        let failed =
+            store.stage_override_for_report(&path_a, &rep_a.id, 1_200, |_| {
+                Err::<(), _>(io::Error::other("local prepare failed"))
+            });
+        assert!(failed.is_err());
+        assert!(
+            store.in_doubt_deliveries().unwrap().is_empty(),
+            "failed local staging must close DeliverIntent with DeliverAborted"
+        );
+
+        // 2) Overriding session A's report must NOT mark session B's report as
+        //    overridden even when both files have identical SHA-256 bytes.
+        let (_, send) = counting_sender();
+        let delivered = store
+            .deliver_override_for_report(&path_a, &rep_a.id, 1_300, send)
+            .unwrap();
+        assert!(delivered.outcome.delivered);
+        assert!(
+            store
+                .report_was_overridden(
+                    &rep_a.id,
+                    &path_a.display().to_string(),
+                    &rep_a.artifact_hash,
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .report_was_overridden(
+                    &rep_b.id,
+                    &path_b.display().to_string(),
+                    &rep_b.artifact_hash,
+                )
+                .unwrap(),
+            "session A override must not poison session B's failed card with same sha256"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

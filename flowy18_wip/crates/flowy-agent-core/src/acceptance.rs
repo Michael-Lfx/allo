@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -241,15 +241,21 @@ impl AcceptanceQueue {
     /// corrupt line are quarantined instead of being silently re-dispatched,
     /// while receipts never taken or appended afterwards remain usable.
     pub fn replay(&self) -> io::Result<Vec<AcceptedMessage>> {
-        Ok(self.replay_detailed()?.0)
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(self.replay_detailed_locked()?.0)
     }
 
     /// Whether the journal contains any corrupt interior (non-tail) lines.
     pub fn has_interior_corruption(&self) -> io::Result<bool> {
-        Ok(self.replay_detailed()?.1 > 0)
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(self.replay_detailed_locked()?.1 > 0)
     }
 
-    fn replay_detailed(&self) -> io::Result<(Vec<AcceptedMessage>, usize)> {
+    fn replay_detailed_locked(
+        &self,
+    ) -> io::Result<(Vec<AcceptedMessage>, usize)> {
         let path = Self::path(&self.root);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -459,6 +465,8 @@ impl AcceptanceQueue {
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let id = new_receipt_id(now_ms);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
@@ -466,7 +474,7 @@ impl AcceptanceQueue {
             text: text.to_owned(),
             at_ms: now_ms,
         };
-        self.append(&entry)?;
+        self.append_locked(&entry)?;
         Ok(AcceptedMessage {
             id,
             session_hint: session_hint.map(str::to_owned),
@@ -542,7 +550,7 @@ impl AcceptanceQueue {
     ) -> io::Result<Option<AcceptedMessage>> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(dead) = receipts.iter().find(|receipt| {
             receipt.id == id
                 && receipt.dead
@@ -568,7 +576,7 @@ impl AcceptanceQueue {
                 at_ms: now_ms,
             },
         ];
-        self.append_batch(&entries)?;
+        self.append_batch_locked(&entries)?;
         Ok(Some(AcceptedMessage {
             id: new_id,
             session_hint: dead.session_hint.clone(),
@@ -603,7 +611,7 @@ impl AcceptanceQueue {
     ) -> io::Result<Option<AcceptedMessage>> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut receipts = self.replay()?;
+        let mut receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts
             .iter_mut()
             .find(|receipt| receipt.id == id && receipt.is_claimable(now_ms))
@@ -620,7 +628,7 @@ impl AcceptanceQueue {
         receipt.last_attempt_id = Some(attempt_id.to_owned());
         receipt.lease = Some(lease.clone());
         let claimed = receipt.clone();
-        self.append(&JournalEntry::Taken {
+        self.append_locked(&JournalEntry::Taken {
             id: id.to_owned(),
             attempt_id: attempt_id.to_owned(),
             lease_until_ms: lease.expires_at_ms,
@@ -641,7 +649,7 @@ impl AcceptanceQueue {
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
         else {
             return Ok(false);
@@ -655,7 +663,7 @@ impl AcceptanceQueue {
         {
             return Ok(false);
         }
-        self.append(&JournalEntry::Bound {
+        self.append_locked(&JournalEntry::Bound {
             id: id.to_owned(),
             attempt_id: attempt_id.to_owned(),
             session_id: session_id.to_owned(),
@@ -676,7 +684,7 @@ impl AcceptanceQueue {
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
         else {
             return Ok(false);
@@ -690,7 +698,7 @@ impl AcceptanceQueue {
         {
             return Ok(false);
         }
-        self.append(&JournalEntry::Renewed {
+        self.append_locked(&JournalEntry::Renewed {
             id: id.to_owned(),
             attempt_id: attempt_id.to_owned(),
             lease_until_ms: now_ms.saturating_add(lease_ms),
@@ -704,7 +712,7 @@ impl AcceptanceQueue {
     pub fn cancel(&self, id: &str, now_ms: u64) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
         else {
             return Ok(false);
@@ -715,7 +723,7 @@ impl AcceptanceQueue {
         {
             return Ok(false);
         }
-        self.append(&JournalEntry::Cancelled {
+        self.append_locked(&JournalEntry::Cancelled {
             id: id.to_owned(),
             at_ms: now_ms,
         })?;
@@ -723,7 +731,7 @@ impl AcceptanceQueue {
     }
 
     /// Mark an already-committed receipt complete during crash recovery even if
-    /// its lease has since expired.
+    /// its lease has since expired or it was quarantined by later corruption.
     pub fn complete_reconciled(
         &self,
         id: &str,
@@ -732,7 +740,7 @@ impl AcceptanceQueue {
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
         else {
             return Ok(false);
@@ -740,17 +748,52 @@ impl AcceptanceQueue {
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
-            || receipt.quarantined
             || receipt.last_attempt_id.as_deref() != Some(attempt_id)
         {
             return Ok(false);
         }
-        self.append(&JournalEntry::Completed {
+        self.append_locked(&JournalEntry::Completed {
             id: id.to_owned(),
             attempt_id: attempt_id.to_owned(),
             at_ms: now_ms,
         })?;
         Ok(true)
+    }
+
+    /// Release any unexpired leases left behind by a crashed predecessor
+    /// process on single-instance cold boot (with 0 ms backoff) so they become
+    /// immediately retryable instead of falsely displaying `Running` until
+    /// lease expiry.
+    pub fn release_uncommitted_leases(
+        &self,
+        now_ms: u64,
+    ) -> io::Result<Vec<String>> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay_detailed_locked()?.0;
+        let mut entries = Vec::new();
+        let mut released_ids = Vec::new();
+        for receipt in receipts {
+            if receipt.completed_at_ms.is_none()
+                && !receipt.dead
+                && !receipt.cancelled
+                && !receipt.quarantined
+                && let Some(lease) = &receipt.lease
+                && lease.expires_at_ms > now_ms
+            {
+                released_ids.push(receipt.id.clone());
+                entries.push(JournalEntry::Released {
+                    id: receipt.id,
+                    attempt_id: lease.attempt_id.clone(),
+                    retry_after_ms: 0,
+                    at_ms: now_ms,
+                });
+            }
+        }
+        if !entries.is_empty() {
+            self.append_batch_locked(&entries)?;
+        }
+        Ok(released_ids)
     }
 
     /// Mark the receipt complete. Only the current lease owner can complete it.
@@ -797,7 +840,7 @@ impl AcceptanceQueue {
     ) -> io::Result<bool> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let receipts = self.replay()?;
+        let receipts = self.replay_detailed_locked()?.0;
         let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
         else {
             return Ok(false);
@@ -837,7 +880,7 @@ impl AcceptanceQueue {
                 at_ms: now_ms,
             }
         };
-        self.append(&entry)?;
+        self.append_locked(&entry)?;
         Ok(true)
     }
 
@@ -852,11 +895,11 @@ impl AcceptanceQueue {
         locks.entry(Self::path(&self.root)).or_default().clone()
     }
 
-    fn append(&self, entry: &JournalEntry) -> io::Result<()> {
-        self.append_batch(std::slice::from_ref(entry))
+    fn append_locked(&self, entry: &JournalEntry) -> io::Result<()> {
+        self.append_batch_locked(std::slice::from_ref(entry))
     }
 
-    fn append_batch(&self, entries: &[JournalEntry]) -> io::Result<()> {
+    fn append_batch_locked(&self, entries: &[JournalEntry]) -> io::Result<()> {
         let path = Self::path(&self.root);
         let dir = path
             .parent()
@@ -868,10 +911,10 @@ impl AcceptanceQueue {
             buf.extend_from_slice(&line);
             buf.push(b'\n');
         }
-        // A crash can leave a partial record without its newline. Terminate it
-        // before appending, so the new record never becomes part of the torn
-        // line.
-        ensure_trailing_newline(&path)?;
+        // Repair a crash-truncated trailing line in place (truncate unparseable
+        // partial bytes, or terminate a complete JSON record) so a torn tail
+        // never gets promoted into an interior corrupt line on the next append.
+        repair_torn_tail_locked(&path)?;
         let mut handle = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -898,32 +941,43 @@ fn now_ms() -> u64 {
         })
 }
 
-/// Make sure the next append starts on its own line.
+/// Repair a crash-truncated trailing line before the next append (caller holds
+/// `queue_lock`).
 ///
-/// A crash in the middle of `write_all` can leave a partial record with no
-/// terminating newline. Appending the next record straight after it would make
-/// one unparseable line and lose that record too; a single newline keeps the
-/// torn line isolated (and therefore skippable by `replay`).
-fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
+/// - If the file already ends with `\n` (or is empty / missing), does nothing.
+/// - If the trailing non-newline fragment parses as a complete [`JournalEntry`],
+///   appends `\n` so that valid entry is preserved.
+/// - If the trailing fragment is unparseable (partial crash write), truncates
+///   the file back to the end of the last complete newline-terminated line so
+///   the torn bytes are never promoted into an interior corrupt line that would
+///   quarantine earlier healthy receipts.
+fn repair_torn_tail_locked(path: &Path) -> io::Result<()> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    if metadata.len() == 0 {
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
         return Ok(());
     }
-    let mut file = fs::File::open(path)?;
-    file.seek(SeekFrom::End(-1))?;
-    let mut last = [0_u8; 1];
-    file.read_exact(&mut last)?;
-    if last[0] == b'\n' {
-        return Ok(());
+    let cut = bytes
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |idx| idx + 1);
+    let tail = String::from_utf8_lossy(&bytes[cut..]);
+    let trimmed = tail.trim();
+    if !trimmed.is_empty()
+        && serde_json::from_str::<JournalEntry>(trimmed).is_ok()
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(path)?;
+        handle.write_all(b"\n")?;
+        handle.flush()?;
+        handle.sync_all()
+    } else {
+        let handle = fs::OpenOptions::new().write(true).open(path)?;
+        handle.set_len(cut as u64)?;
+        handle.sync_all()
     }
-    let mut handle = fs::OpenOptions::new().append(true).open(path)?;
-    handle.write_all(b"\n")?;
-    handle.flush()?;
-    handle.sync_all()
 }
 
 #[cfg(test)]
@@ -1640,6 +1694,76 @@ mod tests {
         assert_eq!(visible[0].0.id, requeued.id);
         assert_eq!(visible[0].1, ReceiptState::Queued);
 
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn torn_tail_repaired_in_place_never_quarantines_earlier_taken_receipt() {
+        let root = temp_root("torn-tail-repair");
+        let queue = AcceptanceQueue::new(&root);
+        let first = queue.accept(None, "first", 1_000).expect("accept first");
+        queue
+            .take(&first.id, "att-1", 1_010, 5_000)
+            .expect("take")
+            .expect("claimed");
+        // Append an incomplete non-newline crash tail.
+        let path = AcceptanceQueue::path(&root);
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        handle
+            .write_all(br#"{"event":"renewed","id":"torn"#)
+            .expect("torn write");
+        drop(handle);
+
+        // Next append must truncate the torn tail instead of promoting it into
+        // an interior corrupt line that permanently quarantines `first`.
+        let second =
+            queue.accept(None, "second", 2_000).expect("accept second");
+        assert!(!queue.has_interior_corruption().expect("corrupt flag"));
+        let first_after = queue.get(&first.id).expect("get").expect("present");
+        assert!(
+            !first_after.quarantined,
+            "repaired torn tail must not quarantine healthy taken receipt"
+        );
+        assert_eq!(first_after.state_at(2_000), ReceiptState::Running);
+        assert_eq!(
+            queue
+                .get(&second.id)
+                .expect("get second")
+                .expect("present")
+                .state_at(2_000),
+            ReceiptState::Queued
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn release_uncommitted_leases_moves_dead_predecessor_running_to_retrying() {
+        let root = temp_root("release-stale-leases");
+        let queue = AcceptanceQueue::new(&root);
+        let r = queue
+            .accept(None, "crashed mid-turn", 1_000)
+            .expect("accept");
+        queue
+            .take(&r.id, "att-dead-proc", 1_010, 30_000)
+            .expect("take")
+            .expect("claimed");
+        assert_eq!(
+            queue.get(&r.id).unwrap().unwrap().state_at(2_000),
+            ReceiptState::Running
+        );
+
+        let released = queue
+            .release_uncommitted_leases(2_000)
+            .expect("release stale leases");
+        assert_eq!(released, vec![r.id.clone()]);
+        assert_eq!(
+            queue.get(&r.id).unwrap().unwrap().state_at(2_000),
+            ReceiptState::Retrying
+        );
+        assert_eq!(queue.pending_at(2_000).unwrap().len(), 1);
         fs::remove_dir_all(&root).expect("cleanup");
     }
 }

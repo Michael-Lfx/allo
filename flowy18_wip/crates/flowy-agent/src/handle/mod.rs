@@ -54,8 +54,7 @@ mod queue;
 mod tests;
 mod work;
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) use self::guards::confined_to;
+pub use self::guards::{confined_to, has_reserved_device_component};
 use self::guards::{
     ensure_tool_cwd, session_working_directory, tool_registry, tool_target,
 };
@@ -71,7 +70,8 @@ use self::queue::{
     push_reconciled_receipt_updates, reconcile_committed_acceptances,
 };
 use self::work::{
-    reconcile_partial_work_after_override, submission_committed_in_session,
+    latest_session_submission_id, reconcile_partial_work_after_override,
+    submission_committed_in_session,
 };
 
 #[derive(Clone, Debug)]
@@ -203,6 +203,8 @@ struct UiState {
     accepted_lease_ms: AtomicU64,
     autonomous_drain: AtomicBool,
     drain_wakeup_scheduled: AtomicBool,
+    /// Epoch ms deadline of the currently scheduled drain backoff sleep (`0` = none).
+    drain_sleep_until_ms: AtomicU64,
     drain_cancel: CancelToken,
     #[cfg(test)]
     before_accepted_bind_hook: Mutex<Option<AcceptedSubmitHook>>,
@@ -250,6 +252,7 @@ impl UiState {
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
             autonomous_drain: AtomicBool::new(false),
             drain_wakeup_scheduled: AtomicBool::new(false),
+            drain_sleep_until_ms: AtomicU64::new(0),
             drain_cancel: CancelToken::new(),
             #[cfg(test)]
             before_accepted_bind_hook: Mutex::new(None),
@@ -295,18 +298,32 @@ impl UiState {
     }
 }
 
-struct Harness {
-    runtime: tokio::runtime::Runtime,
+/// External-only owner of the Tokio [`tokio::runtime::Runtime`].
+///
+/// Internal spawned tasks hold only `Weak<Harness>` (which owns a cheap
+/// [`tokio::runtime::Handle`]), guaranteeing `Runtime::drop` never executes on
+/// a Tokio worker thread when external [`AgentHandle`]s are dropped.
+struct RuntimeOwner {
     state: Arc<UiState>,
-    engine: Mutex<Option<Arc<Engine>>>,
-    config: Mutex<LlmConfig>,
+    _runtime: tokio::runtime::Runtime,
 }
 
-impl Drop for Harness {
+impl Drop for RuntimeOwner {
     fn drop(&mut self) {
         self.state.autonomous_drain.store(false, Ordering::Release);
         self.state.drain_cancel.cancel();
     }
+}
+
+/// Lock ordering invariant (outer -> inner; never acquire in reverse):
+/// `accept_drain` -> `dispatch` -> `engine` (clone & release) ->
+/// `index_write` -> `live` -> leaf locks (`active`, `accepted_claim`,
+/// `updates`, `tool_args`, `notified_quarantined`).
+struct Harness {
+    runtime: tokio::runtime::Handle,
+    state: Arc<UiState>,
+    engine: Mutex<Option<Arc<Engine>>>,
+    config: Mutex<LlmConfig>,
 }
 
 struct SubmissionSelection<'a> {
@@ -317,6 +334,7 @@ struct SubmissionSelection<'a> {
 #[derive(Clone)]
 pub struct AgentHandle {
     inner: Arc<Harness>,
+    _runtime: Arc<RuntimeOwner>,
 }
 
 impl std::fmt::Debug for AgentHandle {
@@ -385,14 +403,20 @@ impl AgentHandle {
             .thread_name("flowy-agent")
             .build()
             .expect("tokio runtime for agent harness");
+        let rt_handle = runtime.handle().clone();
         let state = Arc::new(UiState::new(store_root, None));
+        let owner = Arc::new(RuntimeOwner {
+            state: Arc::clone(&state),
+            _runtime: runtime,
+        });
         Self {
             inner: Arc::new(Harness {
-                runtime,
-                state: Arc::clone(&state),
+                runtime: rt_handle,
+                state,
                 engine: Mutex::new(None),
                 config: Mutex::new(config),
             }),
+            _runtime: owner,
         }
     }
 
@@ -411,7 +435,7 @@ impl AgentHandle {
             }
         }
         let config = lock(&self.inner.config).clone();
-        self.boot(config);
+        let boot_receipts = self.boot(config);
         // History is fully loaded and recovered before this point. Keep the
         // library in its existing loading state until the backfill finishes so
         // the UI never flashes an empty catalog first.
@@ -433,8 +457,9 @@ impl AgentHandle {
         self.inner.state.push_update(AgentUpdate::Initialized);
         self.inner.state.push_update(AgentUpdate::Sessions);
         self.inner.state.push_update(AgentUpdate::Artifacts);
+        push_reconciled_receipt_updates(&self.inner.state, boot_receipts);
         if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
-            self.kick_autonomous_drain();
+            self.inner.kick_autonomous_drain();
         }
         tracing::debug!(
             target: "flowy.boot",
@@ -443,7 +468,7 @@ impl AgentHandle {
         );
     }
 
-    fn boot(&self, config: LlmConfig) {
+    fn boot(&self, config: LlmConfig) -> Vec<(String, ReceiptState)> {
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::boot",
@@ -463,7 +488,7 @@ impl AgentHandle {
                     );
                     *lock(&state.load_failed) = true;
                     state.report_storage_error();
-                    return;
+                    return Vec::new();
                 }
                 state.report_storage_error();
                 SessionIndex::default()
@@ -476,7 +501,7 @@ impl AgentHandle {
                 );
                 *lock(&state.load_failed) = true;
                 state.report_storage_error();
-                return;
+                return Vec::new();
             }
         };
         let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
@@ -502,7 +527,7 @@ impl AgentHandle {
                     );
                     *lock(&state.load_failed) = true;
                     state.report_storage_error();
-                    return;
+                    return Vec::new();
                 }
                 state.report_storage_error();
                 match Engine::open(
@@ -519,7 +544,7 @@ impl AgentHandle {
                         );
                         *lock(&state.load_failed) = true;
                         state.report_storage_error();
-                        return;
+                        return Vec::new();
                     }
                 }
             }
@@ -531,7 +556,7 @@ impl AgentHandle {
                 );
                 *lock(&state.load_failed) = true;
                 state.report_storage_error();
-                return;
+                return Vec::new();
             }
         };
         let deleted_sessions = if let Some(store) = state.artifact_store.get() {
@@ -680,14 +705,21 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
-        push_reconciled_receipt_updates(
-            &state,
-            reconcile_committed_acceptances(
-                &state.root,
-                &engine,
-                state.artifact_store.get(),
-            ),
+        let mut receipt_updates = reconcile_committed_acceptances(
+            &state.root,
+            &engine,
+            state.artifact_store.get(),
         );
+        // Desktop is single-instance: any remaining unexpired lease belongs to
+        // a crashed predecessor process and must transition immediately to
+        // Retrying rather than falsely displaying Running until lease expiry.
+        if let Ok(released_ids) = AcceptanceQueue::new(state.root.clone())
+            .release_uncommitted_leases(now_ms())
+        {
+            for id in released_ids {
+                receipt_updates.push((id, ReceiptState::Retrying));
+            }
+        }
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -709,6 +741,7 @@ impl AgentHandle {
             sessions = lock(&state.live).len(),
             "done"
         );
+        receipt_updates
     }
 
     pub fn apply_config(&self, config: LlmConfig) -> Result<(), &'static str> {
@@ -720,7 +753,7 @@ impl AgentHandle {
             }
         }
         if *lock(&self.inner.state.load_failed) {
-            return Err("notice.storage_error");
+            return Err("notice.session_storage_failed");
         }
         let Some(engine) = lock(&self.inner.engine).clone() else {
             return Err("notice.agent_failed");
@@ -731,7 +764,7 @@ impl AgentHandle {
         *lock(&self.inner.config) = config;
         if runnable && self.inner.state.autonomous_drain.load(Ordering::Acquire)
         {
-            self.kick_autonomous_drain();
+            self.inner.kick_autonomous_drain();
         }
         Ok(())
     }
@@ -806,23 +839,50 @@ impl AgentHandle {
     }
 
     /// Returns `true` when `session_id` has an unsettled failed verification
-    /// gate or a turn/delivery error awaiting user attention.
+    /// gate in its latest turn, a `Partial` latest submission, or a
+    /// turn/delivery error awaiting user attention.
     #[must_use]
     pub fn session_needs_attention(&self, session_id: &str) -> bool {
-        lock(&self.inner.state.live)
+        let live_attention = lock(&self.inner.state.live)
             .get(session_id)
             .is_some_and(|session| {
-                matches!(
+                if matches!(
                     session.status,
                     TurnStatus::Error { .. } | TurnStatus::DeliveryFailed
-                ) || session.projection.lines.iter().any(|line| {
+                ) {
+                    return true;
+                }
+                let latest_turn_start = session
+                    .projection
+                    .lines
+                    .iter()
+                    .rposition(|line| matches!(line, ChatLine::User { .. }))
+                    .map_or(0, |index| index + 1);
+                session.projection.lines[latest_turn_start..].iter().any(
+                    |line| {
+                        matches!(
+                            line,
+                            ChatLine::Verification {
+                                ok: false,
+                                override_used: false,
+                                ..
+                            }
+                        )
+                    },
+                )
+            });
+        if live_attention {
+            return true;
+        }
+        let engine = lock(&self.inner.engine).clone();
+        engine
+            .as_ref()
+            .and_then(|engine| engine.session(session_id))
+            .is_some_and(|record| {
+                latest_session_submission_id(&record).is_some_and(|sub_id| {
                     matches!(
-                        line,
-                        ChatLine::Verification {
-                            ok: false,
-                            override_used: false,
-                            ..
-                        }
+                        record.submission_outcomes.get(&sub_id),
+                        Some(SubmissionOutcome::Partial { .. })
                     )
                 })
             })
@@ -871,74 +931,6 @@ impl AgentHandle {
         *lock(&self.inner.state.workspace_for_new_sessions) = None;
         self.set_origin_for_new_sessions(SessionOrigin::Home);
         self.create_session()
-    }
-
-    /// Create a new durable Home session without mutating the caller's
-    /// workspace/origin context, optionally preserving the current UI active
-    /// session.
-    fn create_background_home_session(
-        &self,
-        make_active: bool,
-    ) -> Result<String, &'static str> {
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.inner.state.load_failed) {
-            return Err("notice.storage_error");
-        }
-        let id = format!("s-{}", next_stamp());
-        let now = now_ms();
-        let root = self
-            .inner
-            .state
-            .root
-            .join("sessions")
-            .join("workspaces")
-            .join(&id);
-        std::fs::create_dir_all(&root).map_err(|error| {
-            log_storage_io_error("create session workspace", &root, &error);
-            "notice.storage_error"
-        })?;
-        let session_workspace = Some(SessionWorkspace { root });
-        let engine = lock(&self.inner.engine)
-            .clone()
-            .ok_or("notice.agent_failed")?;
-        engine
-            .create_session_with_metadata(
-                id.clone(),
-                now,
-                SessionOrigin::Home,
-                session_workspace.clone(),
-            )
-            .map_err(|_| "notice.storage_error")?;
-        lock(&self.inner.state.live).insert(
-            id.clone(),
-            Live {
-                projection: ChatProjection::new(),
-                title: String::new(),
-                titled: false,
-                auto_title_pending: false,
-                title_signal: CancelToken::new(),
-                status: TurnStatus::Idle,
-                updated_at: now,
-                turn_started_at: None,
-                workspace: None,
-                origin: SessionOrigin::Home,
-                session_workspace,
-            },
-        );
-        if make_active {
-            *lock(&self.inner.state.active) = Some(id.clone());
-            self.inner
-                .state
-                .context_generation
-                .fetch_add(1, Ordering::AcqRel);
-        }
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        self.inner.state.push_update(AgentUpdate::Sessions);
-        Ok(id)
     }
 
     /// Return the active session's workspace, or the context for the next
@@ -1019,7 +1011,7 @@ impl AgentHandle {
             return Err("library.loading");
         }
         if *lock(&self.inner.state.load_failed) {
-            return Err("notice.storage_error");
+            return Err("notice.session_storage_failed");
         }
         let id = format!("s-{}", next_stamp());
         let now = now_ms();
@@ -1041,7 +1033,7 @@ impl AgentHandle {
                         &root,
                         &error,
                     );
-                    "notice.storage_error"
+                    "notice.session_storage_failed"
                 })?;
                 Some(SessionWorkspace { root })
             }
@@ -1065,7 +1057,7 @@ impl AgentHandle {
                 origin.clone(),
                 session_workspace.clone(),
             )
-            .map_err(|_| "notice.storage_error")?;
+            .map_err(|_| "notice.session_storage_failed")?;
         lock(&self.inner.state.live).insert(
             id.clone(),
             Live {
@@ -1129,7 +1121,7 @@ impl AgentHandle {
             *lock(&self.inner.state.workspace_for_new_sessions) =
                 previous_workspace;
             self.inner.state.report_storage_error();
-            return Err("notice.storage_error");
+            return Err("notice.session_storage_failed");
         }
         self.inner.state.push_update(AgentUpdate::Sessions);
         self.inner
@@ -1241,29 +1233,22 @@ impl AgentHandle {
     /// Whether the handle has an actionable model route (or local test echo).
     #[must_use]
     pub fn can_run_turns(&self) -> bool {
-        lock(&self.inner.config).can_run_turns()
+        self.inner.can_run_turns()
     }
 
     fn root_session_id_for(&self, session_id: &str) -> String {
-        lock(&self.inner.engine)
-            .as_ref()
-            .and_then(|engine| engine.session(session_id))
-            .map_or_else(
-                || session_id.to_owned(),
-                |record| record.effective_root_session_id().to_owned(),
-            )
+        self.inner.root_session_id_for(session_id)
     }
 
-    /// Whether any live session is currently running a turn.
+    /// Whether any live session is currently running a turn or reaping a
+    /// cancelled turn's child processes.
     ///
     /// Draining the acceptance queue is a level condition over the whole
     /// handle: a receipt must not start while another session is still
-    /// running, even if the user is looking at an idle one.
+    /// running or reaping, even if the user is looking at an idle one.
     #[must_use]
     pub fn has_busy_session(&self) -> bool {
-        lock(&self.inner.state.live)
-            .values()
-            .any(|session| session.status.is_busy())
+        self.inner.has_busy_session()
     }
 
     fn submit_message(
@@ -1272,16 +1257,117 @@ impl AgentHandle {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
-        self.submit_message_targeted(None, text, submission, selection, None)
+        self.inner
+            .submit_message_targeted(None, text, submission, selection, None)
+    }
+}
+
+impl Harness {
+    pub(super) fn is_initializing(&self) -> bool {
+        *lock(&self.state.initializing)
     }
 
-    fn submit_message_targeted(
+    pub(super) fn can_run_turns(&self) -> bool {
+        lock(&self.config).can_run_turns()
+    }
+
+    pub(super) fn root_session_id_for(&self, session_id: &str) -> String {
+        lock(&self.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(session_id))
+            .map_or_else(
+                || session_id.to_owned(),
+                |record| record.effective_root_session_id().to_owned(),
+            )
+    }
+
+    pub(super) fn has_busy_session(&self) -> bool {
+        let live_busy = lock(&self.state.live)
+            .values()
+            .any(|session| session.status.is_busy());
+        if live_busy {
+            return true;
+        }
+        let engine = lock(&self.engine).clone();
+        engine
+            .as_ref()
+            .is_some_and(|engine| !engine.active_session_ids().is_empty())
+    }
+
+    pub(super) fn is_session_busy_or_active(&self, id: &str) -> bool {
+        if lock(&self.state.live)
+            .get(id)
+            .is_some_and(|session| session.status.is_busy())
+        {
+            return true;
+        }
+        let engine = lock(&self.engine).clone();
+        engine.as_ref().is_some_and(|engine| engine.is_active(id))
+    }
+
+    /// Create a new durable Home session in the background without ever
+    /// mutating the UI's active selection or `context_generation`.
+    pub(super) fn create_background_home_session(
         &self,
+    ) -> Result<String, &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        if *lock(&self.state.load_failed) {
+            return Err("notice.session_storage_failed");
+        }
+        let id = format!("s-{}", next_stamp());
+        let now = now_ms();
+        let root = self
+            .state
+            .root
+            .join("sessions")
+            .join("workspaces")
+            .join(&id);
+        std::fs::create_dir_all(&root).map_err(|error| {
+            log_storage_io_error("create session workspace", &root, &error);
+            "notice.session_storage_failed"
+        })?;
+        let session_workspace = Some(SessionWorkspace { root });
+        let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
+        engine
+            .create_session_with_metadata(
+                id.clone(),
+                now,
+                SessionOrigin::Home,
+                session_workspace.clone(),
+            )
+            .map_err(|_| "notice.session_storage_failed")?;
+        lock(&self.state.live).insert(
+            id.clone(),
+            Live {
+                projection: ChatProjection::new(),
+                title: String::new(),
+                titled: false,
+                auto_title_pending: false,
+                title_signal: CancelToken::new(),
+                status: TurnStatus::Idle,
+                updated_at: now,
+                turn_started_at: None,
+                workspace: None,
+                origin: SessionOrigin::Home,
+                session_workspace,
+            },
+        );
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
+        }
+        self.state.push_update(AgentUpdate::Sessions);
+        Ok(id)
+    }
+
+    pub(super) fn submit_message_targeted(
+        self: &Arc<Self>,
         explicit_session_id: Option<&str>,
         text: &str,
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
-        turn_done_signal: Option<CancelToken>,
+        pending_claim: Option<AcceptedClaim>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
@@ -1297,21 +1383,41 @@ impl AgentHandle {
         if self.is_initializing() {
             return Err("library.loading");
         }
-        let state = &self.inner.state;
+        let state = &self.state;
         if *lock(&state.load_failed) {
-            return Err("notice.storage_error");
+            return Err("notice.session_storage_failed");
         }
         let _dispatch = lock(&state.dispatch);
-        let engine = lock(&self.inner.engine)
-            .clone()
-            .ok_or("notice.agent_failed")?;
+        // Re-verify receipt liveness inside `dispatch` so a concurrent
+        // `cancel_task(TaskTarget::Receipt)` between `bind` and submit never
+        // dispatches a cancelled prompt (closes Window A TOCTOU).
+        if let Some(claim) = &pending_claim {
+            let queue = AcceptanceQueue::new(state.root.clone());
+            let still_owned = queue
+                .get(&claim.receipt_id)
+                .map_err(|_| "notice.session_storage_failed")?
+                .is_some_and(|receipt| {
+                    receipt.completed_at_ms.is_none()
+                        && !receipt.dead
+                        && !receipt.cancelled
+                        && !receipt.quarantined
+                        && receipt.lease.as_ref().is_some_and(|lease| {
+                            lease.attempt_id == claim.attempt_id
+                        })
+                });
+            if !still_owned {
+                return Err(RECEIPT_SUPERSEDED_ERR);
+            }
+        }
+        let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
         if let Some(session) =
             submission.and_then(|id| engine.submitted_session(id))
         {
             return Ok(session);
         }
         if selection.is_some_and(|selection| {
-            self.context_generation() != selection.generation
+            self.state.context_generation.load(Ordering::Acquire)
+                != selection.generation
                 || lock(&state.active).as_deref() != selection.active
         }) {
             return Err("notice.agent_busy");
@@ -1323,11 +1429,13 @@ impl AgentHandle {
                 }
                 target_id.to_owned()
             }
-            None => self.ensure_active_session()?,
+            None => self.ensure_active_session_locked()?,
         };
         if lock(&state.live)
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
+            || engine.is_active(&id)
+            || (pending_claim.is_some() && self.has_busy_session())
         {
             return Err("notice.agent_busy");
         }
@@ -1339,7 +1447,7 @@ impl AgentHandle {
             );
             state.report_storage_error();
         }
-        let config = lock(&self.inner.config).clone();
+        let config = lock(&self.config).clone();
         let prompt = text.to_owned();
         let stream = config
             .api_key
@@ -1349,16 +1457,11 @@ impl AgentHandle {
             .get(&id)
             .and_then(|session| session.workspace.clone());
         let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
-        let mut run_config = engine_config(
-            &config,
-            &session_working_directory(&state.root, workspace.as_ref()),
-        );
         let cwd = core_session.workspace.as_ref().map_or_else(
             || session_working_directory(&state.root, workspace.as_ref()),
             |workspace| workspace.root.clone(),
         );
-        run_config.cwd = Some(cwd.display().to_string());
-        run_config.registry = tool_registry(&cwd);
+        let mut run_config = engine_config(&config, &cwd);
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -1373,7 +1476,7 @@ impl AgentHandle {
                     &output_root,
                     &error,
                 );
-                "notice.storage_error"
+                "notice.session_storage_failed"
             })?;
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
@@ -1382,27 +1485,18 @@ impl AgentHandle {
                 core_session.work_contract.as_ref(),
                 &prompt,
             );
-            if (core_session.work_contract.is_some() || !contract.is_empty())
-                && let Err(error) = engine.set_session_work_contract(
-                    &id,
-                    contract.to_work_contract(),
-                    Some(&submission_id),
-                )
-            {
-                log_storage_io_error(
-                    "persist work contract",
-                    &flowy_agent_core::SessionIndex::path(&state.root),
-                    &error,
-                );
-                state.report_storage_error();
+            if core_session.work_contract.is_some() || !contract.is_empty() {
+                run_config.work_contract = Some(contract.to_work_contract());
             }
+            let semantic_brief =
+                compose_semantic_brief(&core_session.messages, &prompt);
             let semantic = state
                 .semantic_verify_enabled
                 .load(Ordering::Acquire)
                 .then(|| {
                     config.api_key.as_ref().map(|api_key| {
                         crate::semantic_verify::SemanticContext {
-                            brief: prompt.clone(),
+                            brief: semantic_brief.clone(),
                             route: model_route(&config),
                             api_key: api_key.clone(),
                         }
@@ -1465,7 +1559,7 @@ impl AgentHandle {
                     );
                 }
                 match error {
-                    RunError::Storage(_) => "notice.storage_error",
+                    RunError::Storage(_) => "notice.session_storage_failed",
                     RunError::Busy => "notice.agent_busy",
                     _ => "notice.agent_failed",
                 }
@@ -1504,13 +1598,25 @@ impl AgentHandle {
         if persist_index(state).is_err() {
             state.report_storage_error();
         }
+        let turn_done_signal = if let Some(claim) = pending_claim {
+            let hb = claim.heartbeat_cancel.clone();
+            let receipt_id = claim.receipt_id.clone();
+            *lock(&state.accepted_claim) = Some(claim);
+            state.push_update(AgentUpdate::Receipt {
+                id: receipt_id,
+                state: ReceiptState::Running,
+            });
+            Some(hb)
+        } else {
+            None
+        };
         state.push_update(AgentUpdate::Session { id: id.clone() });
         state.push_update(AgentUpdate::Sessions);
         let state = Arc::clone(state);
-        let weak_harness = Arc::downgrade(&self.inner);
+        let weak_harness = Arc::downgrade(self);
         let receipt = id.clone();
         let completed_submission = submission;
-        self.inner.runtime.spawn(async move {
+        self.runtime.spawn(async move {
             let outcome = turn.await;
             if let Some(signal) = turn_done_signal {
                 signal.cancel();
@@ -1557,38 +1663,40 @@ impl AgentHandle {
                 );
             }
             if state.autonomous_drain.load(Ordering::Acquire)
-                && let Some(inner) = weak_harness.upgrade()
+                && let Some(harness) = weak_harness.upgrade()
             {
-                let handle = Self { inner };
                 let expected_sub = completed_submission
                     .map(|s| format!("submission-{s:032x}"));
-                let owns_claim =
-                    lock(&state.accepted_claim).as_ref().is_some_and(|claim| {
-                        claim.session_id == id
-                            && expected_sub.as_deref()
-                                == Some(claim.submission_id.as_str())
+                let live_delivery_failed =
+                    lock(&state.live).get(&id).is_some_and(|session| {
+                        matches!(session.status, TurnStatus::DeliveryFailed)
                     });
-                if owns_claim {
-                    let completed =
-                        matches!(outcome, Ok(LoopOutcome::Completed))
-                            && expected_sub.as_deref().is_none_or(|sub| {
-                                !matches!(
-                                    engine.session(&id).and_then(|rec| {
-                                        rec.submission_outcomes
-                                            .get(sub)
-                                            .cloned()
-                                    }),
-                                    Some(
-                                        SubmissionOutcome::Partial { .. }
-                                            | SubmissionOutcome::Failed { .. }
-                                            | SubmissionOutcome::Aborted
-                                    )
-                                )
-                            });
-                    let _ = handle.finish_accepted(completed);
-                }
-                handle.kick_autonomous_drain();
-                drop(handle);
+                let has_durable_commit =
+                    expected_sub.as_deref().is_some_and(|sub| {
+                        engine.session(&id).is_some_and(|rec| {
+                            rec.delivery_commits
+                                .iter()
+                                .any(|commit| commit.submission_id == sub)
+                        })
+                    });
+                // Partial deliverables and post-history DeliveryFailed turns
+                // already completed their LLM execution and left durable cards
+                // for user OverrideDeliver / RetryDelivery — settle the queue
+                // receipt instead of re-running the entire prompt 10x. Never
+                // mark `LoopOutcome::Aborted` as Completed: host cancellations
+                // already cleared `accepted_claim` as Cancelled, while provider
+                // stream aborts must release for retry instead of completing.
+                let completed = matches!(outcome, Ok(LoopOutcome::Completed))
+                    || live_delivery_failed
+                    || (matches!(outcome, Err(RunError::Storage(_)))
+                        && has_durable_commit);
+                let _ = harness.finish_accepted_if_owned(
+                    &id,
+                    expected_sub.as_deref(),
+                    completed,
+                );
+                harness.kick_autonomous_drain();
+                drop(harness);
             }
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
@@ -1608,15 +1716,146 @@ impl AgentHandle {
         Ok(receipt)
     }
 
-    fn ensure_active_session(&self) -> Result<String, &'static str> {
-        let active = lock(&self.inner.state.active).clone();
+    fn ensure_active_session_locked(&self) -> Result<String, &'static str> {
+        let active = lock(&self.state.active).clone();
         if let Some(id) = active
-            && lock(&self.inner.state.live).contains_key(&id)
+            && lock(&self.state.live).contains_key(&id)
         {
             return Ok(id);
         }
-        self.create_session()
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        if *lock(&self.state.load_failed) {
+            return Err("notice.session_storage_failed");
+        }
+        let id = format!("s-{}", next_stamp());
+        let now = now_ms();
+        let workspace = lock(&self.state.workspace_for_new_sessions).clone();
+        let origin = lock(&self.state.origin_for_new_sessions).clone();
+        let session_workspace = match &origin {
+            SessionOrigin::Home => {
+                let root = self
+                    .state
+                    .root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&id);
+                std::fs::create_dir_all(&root).map_err(|error| {
+                    log_storage_io_error(
+                        "create session workspace",
+                        &root,
+                        &error,
+                    );
+                    "notice.session_storage_failed"
+                })?;
+                Some(SessionWorkspace { root })
+            }
+            SessionOrigin::Project { .. } => {
+                workspace.as_ref().map(|workspace| SessionWorkspace {
+                    root: workspace.root.clone(),
+                })
+            }
+            SessionOrigin::Unknown => None,
+        };
+        let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
+        engine
+            .create_session_with_metadata(
+                id.clone(),
+                now,
+                origin.clone(),
+                session_workspace.clone(),
+            )
+            .map_err(|_| "notice.session_storage_failed")?;
+        lock(&self.state.live).insert(
+            id.clone(),
+            Live {
+                projection: ChatProjection::new(),
+                title: String::new(),
+                titled: false,
+                auto_title_pending: false,
+                title_signal: CancelToken::new(),
+                status: TurnStatus::Idle,
+                updated_at: now,
+                turn_started_at: None,
+                workspace,
+                origin,
+                session_workspace,
+            },
+        );
+        *lock(&self.state.active) = Some(id.clone());
+        self.state.context_generation.fetch_add(1, Ordering::AcqRel);
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
+        }
+        self.state.push_update(AgentUpdate::Sessions);
+        Ok(id)
     }
+}
+
+/// Internal sentinel returned when a receipt was cancelled/superseded between
+/// `queue.bind` and `dispatch` entry. Never surfaced to callers.
+const RECEIPT_SUPERSEDED_ERR: &str = "__flowy_receipt_superseded__";
+
+/// Compose the full literal brief for L3 semantic verification across turns so
+/// narrow follow-ups (e.g. "只改日期为 2026-12-01") preserve earlier turns'
+/// unrevoked requirements while explicitly prioritizing the latest revision.
+fn compose_semantic_brief(
+    messages: &[Message],
+    current_prompt: &str,
+) -> String {
+    const MAX_BRIEF_CHARS: usize = 2_000;
+    let prior: Vec<String> = messages
+        .iter()
+        .filter(|msg| {
+            msg.role == Role::User && matches!(msg.source, MessageSource::User)
+        })
+        .map(|msg| msg.text().trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .collect();
+    if prior.is_empty() {
+        return current_prompt.to_owned();
+    }
+    // Always place the latest user instruction FIRST so L3's 2,000-char prompt
+    // cap never chops off the newest override/modification request; fill the
+    // remaining budget with prior turns (preserving original turn order).
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "当前最新修改要求（与前序要求冲突时以本轮为准）：\n{current_prompt}"
+    );
+    let header = "\n\n原始与前序用户要求（未在本轮修改的部分仍须满足）：\n";
+    let used = out.chars().count();
+    let remaining_for_prior =
+        MAX_BRIEF_CHARS.saturating_sub(used + header.chars().count());
+    if remaining_for_prior == 0 {
+        return out;
+    }
+    let mut selected: Vec<(usize, String)> = Vec::new();
+    let mut budget = remaining_for_prior;
+    for (idx, text) in prior.iter().enumerate().rev() {
+        if budget < 16 {
+            break;
+        }
+        let prefix = format!("[Turn {}] ", idx + 1);
+        let overhead = prefix.chars().count() + 1;
+        if budget <= overhead {
+            break;
+        }
+        let take_chars = budget - overhead;
+        let snippet: String = text.chars().take(take_chars).collect();
+        budget = budget.saturating_sub(overhead + snippet.chars().count());
+        selected.push((idx + 1, snippet));
+    }
+    if !selected.is_empty() {
+        selected.reverse();
+        out.push_str(header);
+        for (turn_no, snippet) in selected {
+            let _ = writeln!(out, "[Turn {turn_no}] {snippet}");
+        }
+    }
+    out
 }
 
 fn model_route(config: &LlmConfig) -> ModelRoute {
@@ -1646,6 +1885,7 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         cwd: Some(cwd.display().to_string()),
         todos: None,
         delivery_committer: None,
+        work_contract: None,
     }
 }
 
@@ -1691,7 +1931,7 @@ fn next_stamp() -> u64 {
     stamp + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {

@@ -10,7 +10,6 @@ use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     ArtifactReceipt, DeliveryCommit, DeliveryCommitter, SessionOrigin,
@@ -2559,11 +2558,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
+    crate::handle::now_ms()
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

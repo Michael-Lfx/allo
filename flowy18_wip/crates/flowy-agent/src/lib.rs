@@ -19,7 +19,7 @@ mod model_directory;
 mod pptx;
 mod projection;
 mod publish_tool;
-pub mod semantic_verify;
+mod semantic_verify;
 mod title;
 mod verify;
 
@@ -243,7 +243,10 @@ mod tests {
         let index_path = crate::index::SessionIndex::path(&root.0);
         std::fs::remove_file(&index_path).unwrap();
         std::fs::create_dir(&index_path).unwrap();
-        assert_eq!(handle.delete_session(&id), Err("notice.storage_error"));
+        assert_eq!(
+            handle.delete_session(&id),
+            Err("notice.session_storage_failed")
+        );
         let restored = flowy_agent_core::SessionIndex::load(&root.0).unwrap();
         assert_eq!(restored.get(&id), Some(&before));
         assert!(!handle.source_deleted(&id));
@@ -665,10 +668,13 @@ mod tests {
         std::fs::remove_dir_all(root.0.join("sessions")).unwrap();
         std::fs::write(root.0.join("sessions"), b"not a directory").unwrap();
 
-        assert_eq!(handle.create_session(), Err("notice.storage_error"));
+        assert_eq!(
+            handle.create_session(),
+            Err("notice.session_storage_failed")
+        );
         assert_eq!(
             handle.send("cannot durably submit"),
-            Err("notice.storage_error")
+            Err("notice.session_storage_failed")
         );
         assert_eq!(
             handle.active_session_id().as_deref(),
@@ -735,12 +741,25 @@ mod tests {
         let run = handle.run_accepted_once().expect("run").expect("claimed");
         assert_eq!(run.receipt_id, receipt.id);
         assert!(handle.has_active_claim());
-        wait_for_turn(&handle);
-        assert_eq!(handle.turn_status(), TurnStatus::Completed);
+        assert_eq!(
+            handle.active_session_id(),
+            None,
+            "background queue dispatch must not hijack empty Home active selection"
+        );
+        for _ in 0..200 {
+            if !handle.has_busy_session() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            handle.claimed_session_status(),
+            Some(TurnStatus::Completed)
+        );
         handle.finish_accepted(true).expect("complete");
         assert!(!handle.has_active_claim());
         assert_eq!(handle.pending_acceptances().len(), 0);
-        assert!(handle.lines().iter().any(|line| {
+        assert!(handle.session_lines(&run.session_id).iter().any(|line| {
             matches!(line, ChatLine::User { text } if text == "run the receipt")
         }));
         let _ = std::fs::remove_dir_all(&root);
@@ -753,7 +772,12 @@ mod tests {
         let receipt =
             handle.accept_deferred("retry the receipt").expect("accept");
         let first = handle.run_accepted_once().expect("run").expect("claimed");
-        wait_for_turn(&handle);
+        for _ in 0..200 {
+            if !handle.has_busy_session() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         handle.finish_accepted(false).expect("release");
         assert_eq!(
             handle.pending_acceptances().len(),
@@ -768,7 +792,12 @@ mod tests {
             .expect("claimed again");
         assert_eq!(second.receipt_id, receipt.id);
         assert_ne!(second.attempt_id, first.attempt_id);
-        wait_for_turn(&handle);
+        for _ in 0..200 {
+            if !handle.has_busy_session() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         handle.finish_accepted(true).expect("complete");
         assert_eq!(handle.pending_acceptances().len(), 0);
         let _ = std::fs::remove_dir_all(&root);

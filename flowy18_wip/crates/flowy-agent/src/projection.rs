@@ -81,6 +81,8 @@ pub enum ChatLine {
         semantic_hint: Option<String>,
         #[serde(default)]
         override_used: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        provenance_warnings: Vec<String>,
     },
 }
 

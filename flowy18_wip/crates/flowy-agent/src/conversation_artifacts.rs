@@ -295,7 +295,10 @@ pub fn prepare_conversation_artifacts_gated(
             origin: session.origin.clone(),
         };
         let receipt = if let Some(gate) = gate {
-            let file_hash = match fs::read(&full_path) {
+            let file_hash = match crate::delivery::read_regular_file_bounded(
+                &full_path,
+                crate::MAX_ARTIFACT_BYTES,
+            ) {
                 Ok(bytes) => crate::delivery::hash_bytes(&bytes),
                 Err(error) => {
                     store.record_import_diagnostic(format!(
@@ -497,11 +500,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
+    crate::handle::now_ms()
 }
 
 #[cfg(windows)]

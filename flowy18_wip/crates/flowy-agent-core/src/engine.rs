@@ -75,6 +75,9 @@ pub struct EngineConfig {
     pub todos: Option<Arc<dyn TodoSink>>,
     /// Store-side second commit barrier for prepared artifact groups.
     pub delivery_committer: Option<Arc<dyn DeliveryCommitter>>,
+    /// Optional work contract to persist atomically once the session run fence
+    /// is acquired in [`Engine::prepare`].
+    pub work_contract: Option<WorkContract>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -285,6 +288,28 @@ impl Engine {
         inner.index.save(&self.root)
     }
 
+    /// Record the contract revision for an auxiliary submission (such as an
+    /// explicit override delivery or conversation auto-import) without changing
+    /// the session's active `work_contract`.
+    pub fn record_submission_revision(
+        &self,
+        id: &str,
+        submission_id: &str,
+        revision: u32,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record
+            .submission_revisions
+            .insert(submission_id.to_owned(), revision);
+        inner.index.save(&self.root)
+    }
+
     /// Persist a submission outcome directly (for example after an explicit
     /// user override completes a previously partial work revision).
     pub fn set_submission_outcome(
@@ -420,6 +445,28 @@ impl Engine {
     pub fn is_cancelling(&self, id: &str) -> bool {
         let fence = self.inner.lock().unwrap().fences.get(id).cloned();
         fence.is_some_and(|fence| fence.is_cancelling())
+    }
+
+    /// True while session `id` holds an active run fence (either running or
+    /// cancelling/reaping child tools).
+    #[must_use]
+    pub fn is_active(&self, id: &str) -> bool {
+        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        fence.is_some_and(|fence| fence.is_active())
+    }
+
+    /// IDs of all sessions whose run fence is currently active (running or
+    /// cancelling/reaping).
+    #[must_use]
+    pub fn active_session_ids(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .fences
+            .iter()
+            .filter(|(_, fence)| fence.is_active())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Wait up to `timeout` for session `id`'s active/cancelling run to finish
@@ -583,7 +630,20 @@ impl Engine {
                     workspace.root.join("outputs").join(submission)
                 })
             });
-            let previous = (record.status.clone(), record.updated_at);
+            let previous = (
+                record.status.clone(),
+                record.updated_at,
+                record.work_contract.clone(),
+                record.submission_revisions.clone(),
+            );
+            if let Some(contract) = &config.work_contract {
+                if let Some(sub_id) = submission_id.as_deref() {
+                    record
+                        .submission_revisions
+                        .insert(sub_id.to_owned(), contract.revision);
+                }
+                record.work_contract = Some(contract.clone());
+            }
             record.messages.push(Message {
                 id: submission.map_or_else(
                     || format!("u-{now}"),
@@ -602,7 +662,12 @@ impl Engine {
                 let record =
                     inner.index.get_mut(session_id).expect("record exists");
                 record.messages.pop();
-                (record.status, record.updated_at) = previous;
+                (
+                    record.status,
+                    record.updated_at,
+                    record.work_contract,
+                    record.submission_revisions,
+                ) = previous;
                 ticket.finish();
                 drop(inner);
                 return Err(RunError::Storage(error));
@@ -816,56 +881,74 @@ impl Engine {
                     message: "could not save turn history".to_owned(),
                 };
                 inner.index.upsert(before);
-                Err(RunError::Storage(error))
-            } else {
-                if matches!(&result, Ok((_, Some(_)))) {
+                if !ticket.finish() {
+                    return Ok(LoopOutcome::Aborted);
+                }
+                self.observer.storage_error(session_id);
+                self.observer.finished(session_id, LoopOutcome::Failed);
+                return Err(RunError::Storage(error));
+            }
+            match result {
+                Ok((outcome, Some(commit))) => {
                     // This lock also serializes request_cancel. The successful
                     // history save is the delivery's linearization point.
                     inner.finalizing.insert(session_id.to_owned());
+                    drop(inner);
+                    (outcome, commit)
                 }
-                result
+                Ok((outcome, None)) => {
+                    // History is durably saved; finish under the same lock so
+                    // `request_cancel` cannot split durable history from live
+                    // observer/queue state in a gap before `ticket.finish()`.
+                    if !ticket.finish() {
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    self.observer.finished(session_id, outcome);
+                    return Ok(outcome);
+                }
+                Err(error) => {
+                    if !ticket.finish() {
+                        return Ok(LoopOutcome::Aborted);
+                    }
+                    self.observer.finished(session_id, LoopOutcome::Failed);
+                    return Err(error);
+                }
             }
         };
-        let outcome = match stored {
-            Ok((outcome, Some(commit))) => {
-                self.observer.saving_files(session_id);
-                let committed = match delivery_committer {
-                    Some(committer) => committer.commit(&commit).await,
-                    None => {
-                        Err("artifact delivery store is unavailable".to_owned())
-                    }
-                };
-                match committed {
-                    Ok(()) => {
-                        ticket.publish(|| {
-                            self.observer.delivery_committed(&commit);
-                        });
-                        Ok(outcome)
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            target: "flowy.storage",
-                            operation = "commit delivered artifacts",
-                            session = %session_id,
-                            error = %error,
-                            "storage operation failed"
-                        );
-                        self.observer.delivery_failed(&commit, &error);
-                        Err(RunError::Storage(std::io::Error::other(error)))
-                    }
-                }
+        let (pending_outcome, commit) = stored;
+        let mut finalizing_guard = FinalizingGuard {
+            engine: self,
+            session_id: session_id.to_owned(),
+            armed: true,
+        };
+        self.observer.saving_files(session_id);
+        let committed = match delivery_committer {
+            Some(committer) => committer.commit(&commit).await,
+            None => Err("artifact delivery store is unavailable".to_owned()),
+        };
+        let outcome = match committed {
+            Ok(()) => {
+                ticket.publish(|| {
+                    self.observer.delivery_committed(&commit);
+                });
+                Ok(pending_outcome)
             }
-            Ok((outcome, None)) => Ok(outcome),
             Err(error) => {
-                if matches!(error, RunError::Storage(_)) {
-                    self.observer.storage_error(session_id);
-                }
-                Err(error)
+                tracing::error!(
+                    target: "flowy.storage",
+                    operation = "commit delivered artifacts",
+                    session = %session_id,
+                    error = %error,
+                    "storage operation failed"
+                );
+                self.observer.delivery_failed(&commit, &error);
+                Err(RunError::Storage(std::io::Error::other(error)))
             }
         };
         // Keep the per-session flight active while the store writes its marker.
         // The terminal notification is visible before a replacement run starts.
         let mut inner = self.inner.lock().unwrap();
+        finalizing_guard.armed = false;
         if !ticket.finish() {
             inner.finalizing.remove(session_id);
             drop(inner);
@@ -878,6 +961,21 @@ impl Engine {
         inner.finalizing.remove(session_id);
         drop(inner);
         outcome
+    }
+}
+
+struct FinalizingGuard<'a> {
+    engine: &'a Engine,
+    session_id: String,
+    armed: bool,
+}
+
+impl Drop for FinalizingGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut inner = self.engine.inner.lock().unwrap();
+            inner.finalizing.remove(&self.session_id);
+        }
     }
 }
 
@@ -943,10 +1041,9 @@ fn missing_required_for_submission(
                 let receipt_rev = record
                     .submission_revisions
                     .get(&receipt.submission_id)
-                    .copied()
-                    .unwrap_or(current_rev);
+                    .copied();
                 if receipt.submission_id == submission_id
-                    || receipt_rev == current_rev
+                    || receipt_rev == Some(current_rev)
                 {
                     delivered.push((
                         receipt.display_name.clone(),
@@ -1448,6 +1545,7 @@ mod tests {
             cwd: None,
             todos: None,
             delivery_committer: None,
+            work_contract: None,
         }
     }
 

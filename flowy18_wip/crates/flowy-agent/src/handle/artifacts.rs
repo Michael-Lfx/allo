@@ -3,10 +3,11 @@
 use super::{
     AgentHandle, AgentUpdate, ArtifactRecord, ArtifactStore, BTreeSet,
     ChatLine, DeliveryCommit, Path, PathBuf, SessionOrigin, TurnStatus,
-    apply_delivery_commit_to_live, confined_to, confirm_commit_audit, lock,
-    log_storage_io_error, next_stamp, now_ms, persist_index,
+    UiState, apply_delivery_commit_to_live, confined_to, confirm_commit_audit,
+    lock, log_storage_io_error, next_stamp, now_ms, persist_index,
     reconcile_partial_work_after_override,
 };
+use crate::artifact_store::PublicationState;
 
 impl AgentHandle {
     /// The host-side artifact catalog API. A missing store means startup
@@ -17,7 +18,7 @@ impl AgentHandle {
             .artifact_store
             .get()
             .cloned()
-            .ok_or("notice.storage_error")
+            .ok_or("notice.session_storage_failed")
     }
 
     /// A confirmed source deletion is separate from a temporarily missing
@@ -66,7 +67,7 @@ impl AgentHandle {
             .clone()
             .ok_or("notice.agent_failed")?;
         let record = engine.session(session_id).ok_or("notice.agent_failed")?;
-        if record.status.is_busy() {
+        if record.status.is_busy() || engine.is_active(session_id) {
             return Err("notice.agent_busy");
         }
         let store = self.artifact_store()?;
@@ -97,7 +98,7 @@ impl AgentHandle {
                     &error,
                 );
                 self.inner.state.report_storage_error();
-                "notice.storage_error"
+                "notice.session_storage_failed"
             })?;
 
         // Stop a title request before removing the session. `generate_title`
@@ -121,7 +122,7 @@ impl AgentHandle {
                 );
                 self.inner.state.report_storage_error();
             }
-            return Err("notice.storage_error");
+            return Err("notice.session_storage_failed");
         }
         let mut live = lock(&self.inner.state.live);
         let removed = live.remove(session_id);
@@ -138,7 +139,7 @@ impl AgentHandle {
                 self.inner.state.report_storage_error();
                 self.inner.state.push_update(AgentUpdate::Sessions);
                 self.inner.state.push_update(AgentUpdate::Artifacts);
-                return Err("notice.storage_error");
+                return Err("notice.session_storage_failed");
             }
             if engine.set_active(previous_active.clone()).is_err() {
                 self.inner.state.report_storage_error();
@@ -199,7 +200,7 @@ impl AgentHandle {
         session_id: Option<&str>,
     ) -> Result<(), &'static str> {
         let session_id = session_id.ok_or("chat.status_delivery_failed")?;
-        let _dispatch = lock(&self.inner.state.dispatch);
+        let dispatch = lock(&self.inner.state.dispatch);
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
@@ -210,6 +211,7 @@ impl AgentHandle {
             return Err("chat.status_delivery_failed");
         }
         if record.status.is_busy()
+            || engine.is_active(session_id)
             || lock(&self.inner.state.live)
                 .get(session_id)
                 .is_some_and(|session| session.status.is_busy())
@@ -228,7 +230,9 @@ impl AgentHandle {
             session.turn_started_at = Some(now_ms());
         }
         self.inner.state.stream_changed(session_id);
-        if let Err(error) = store.recover_commits(&record.delivery_commits) {
+        let outcome = if let Err(error) =
+            store.recover_commits(&record.delivery_commits)
+        {
             log_storage_io_error(
                 "retry delivered artifacts",
                 &self.inner.state.root.join("artifacts"),
@@ -241,31 +245,46 @@ impl AgentHandle {
                 session.turn_started_at = None;
             }
             self.inner.state.stream_changed(session_id);
-            return Err("chat.status_delivery_failed");
-        }
-        for commit in &record.delivery_commits {
-            confirm_commit_audit(&self.inner.state.root, &store, commit);
-            apply_delivery_commit_to_live(&self.inner.state, commit);
-        }
-        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+            Err("chat.status_delivery_failed")
+        } else {
+            for commit in &record.delivery_commits {
+                confirm_commit_audit(&self.inner.state.root, &store, commit);
+                apply_delivery_commit_to_live(&self.inner.state, commit);
+            }
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.projection.lines.retain(|line| {
+                    !matches!(
+                        line,
+                        ChatLine::Status { text }
+                            if text == "chat.status_delivery_failed"
+                    )
+                });
+                session.status = TurnStatus::Completed;
+                session.turn_started_at = None;
+                session.updated_at = now_ms();
+            }
+            if persist_index(&self.inner.state).is_err() {
+                self.inner.state.report_storage_error();
+            }
+            self.inner.state.stream_changed(session_id);
+            self.inner.state.push_update(AgentUpdate::Sessions);
+            self.inner.state.push_update(AgentUpdate::Artifacts);
+            Ok(())
+        };
+        drop(dispatch);
+        // Entering `TurnStatus::SavingFiles` paused autonomous drain; resume
+        // draining any waiting receipts now that the session is no longer busy.
+        if self
+            .inner
+            .state
+            .autonomous_drain
+            .load(std::sync::atomic::Ordering::Acquire)
         {
-            session.projection.lines.retain(|line| {
-                !matches!(
-                    line,
-                    ChatLine::Status { text }
-                        if text == "chat.status_delivery_failed"
-                )
-            });
-            session.status = TurnStatus::Completed;
-            session.turn_started_at = None;
-            session.updated_at = now_ms();
+            self.inner.kick_autonomous_drain();
         }
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        self.inner.state.stream_changed(session_id);
-        self.inner.state.push_update(AgentUpdate::Artifacts);
-        Ok(())
+        outcome
     }
 
     pub fn artifacts(&self) -> Result<Vec<ArtifactRecord>, std::io::Error> {
@@ -427,10 +446,22 @@ impl AgentHandle {
         let gate =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"));
         let now = now_ms();
-        let current_bytes =
-            std::fs::read(&full_path).map_err(|_| "chat.publish.failed")?;
+        let current_bytes = crate::delivery::read_regular_file_bounded(
+            &full_path,
+            crate::MAX_ARTIFACT_BYTES,
+        )
+        .map_err(|_| "chat.publish.failed")?;
         let current_hash = crate::delivery::hash_bytes(&current_bytes);
-        if let Ok(Some(latest)) = gate.latest_report(&full_path)
+        let latest_report = gate.latest_report(&full_path).ok().flatten();
+        let target_revision = latest_report
+            .as_ref()
+            .and_then(|report| report.contract_revision)
+            .or_else(|| {
+                engine
+                    .session(session_id)
+                    .and_then(|rec| rec.work_contract.map(|c| c.revision))
+            });
+        if let Some(latest) = &latest_report
             && latest.id == report_id
             && latest.artifact_hash == current_hash
             && let Ok(items) = store.list()
@@ -441,33 +472,38 @@ impl AgentHandle {
             })
         {
             let _ = gate.confirm_delivered_by_hash(&current_hash, now);
-            reconcile_partial_work_after_override(&engine, &store, session_id);
-            let existing_id = existing.manifest.receipt.artifact_id;
-            let target_key = crate::delivery::artifact_key(&full_path);
-            if let Some(live) = lock(&state.live).get_mut(session_id) {
-                for line in &mut live.projection.lines {
-                    if let ChatLine::Verification {
-                        report_id: existing_report,
-                        artifact_path: existing_path,
-                        override_used,
-                        ..
-                    } = line
-                        && (existing_report == report_id
-                            || crate::delivery::artifact_key(Path::new(
-                                existing_path,
-                            )) == target_key)
-                    {
-                        *override_used = true;
-                    }
-                }
-                if !live.projection.lines.iter().any(|line| {
-                    matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &existing_id)
-                }) {
-                    live.projection.lines.push(ChatLine::Artifact {
-                        artifact_id: existing_id.clone(),
-                    });
-                }
+            if let Some(rev) = target_revision
+                && existing
+                    .manifest
+                    .receipt
+                    .submission_id
+                    .starts_with("submission-override-")
+            {
+                let _ = engine.record_submission_revision(
+                    session_id,
+                    &existing.manifest.receipt.submission_id,
+                    rev,
+                );
             }
+            reconcile_partial_work_after_override(
+                &engine,
+                &store,
+                session_id,
+                target_revision,
+                Some((
+                    existing.manifest.receipt.display_name.as_str(),
+                    existing.manifest.receipt.delivery_key.as_str(),
+                )),
+            );
+            let existing_id = existing.manifest.receipt.artifact_id;
+            finish_override_live_update(
+                state,
+                session_id,
+                report_id,
+                &full_path,
+                &existing_id,
+                now,
+            );
             return Ok(existing_id);
         }
         let stamp = next_stamp();
@@ -499,11 +535,60 @@ impl AgentHandle {
                             "DELIVERY_ARTIFACT_CHANGED",
                         ));
                     }
+                    // Guard against reusing an already-deleted tombstone
+                    // manifest from an earlier submission so we never persist
+                    // a mismatched DeliveryCommit that poisons session boot.
+                    if receipt.submission_id != submission_id
+                        && let Ok(Some(existing)) =
+                            store.get(&receipt.artifact_id)
+                        && matches!(
+                            existing.manifest.publication_state,
+                            PublicationState::Deleted
+                                | PublicationState::DeletePending
+                        )
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "DELIVERY_ALREADY_DELETED",
+                        ));
+                    }
                     Ok(receipt)
                 },
             )
             .map_err(|_| "chat.publish.failed")?;
         let receipt = result.value.ok_or("chat.publish.not_verified")?;
+        if receipt.submission_id != submission_id {
+            // `store.prepare` reused an already-committed snapshot for the
+            // exact same `(source_relative_path, sha256)`: do NOT write a
+            // conflicting DeliveryCommit with `submission_id` (which
+            // `commit_prepared` would reject and poison startup recovery) AND
+            // never overwrite an earlier non-override turn's revision mapping.
+            let _ = gate.confirm_delivered(
+                &result.outcome.delivery_id,
+                &full_path.display().to_string(),
+                &receipt.sha256,
+                now_ms(),
+            );
+            reconcile_partial_work_after_override(
+                &engine,
+                &store,
+                session_id,
+                target_revision,
+                Some((
+                    receipt.display_name.as_str(),
+                    receipt.delivery_key.as_str(),
+                )),
+            );
+            finish_override_live_update(
+                state,
+                session_id,
+                report_id,
+                &full_path,
+                &receipt.artifact_id,
+                now,
+            );
+            return Ok(receipt.artifact_id);
+        }
         let origin_title_snapshot = lock(&state.live)
             .get(session_id)
             .map_or_else(String::new, |live| live.title.clone());
@@ -516,9 +601,23 @@ impl AgentHandle {
             origin: SessionOrigin::Home,
             origin_title_snapshot,
         };
-        engine
-            .record_delivery_commit(&commit)
-            .map_err(|_| "notice.storage_error")?;
+        if engine.record_delivery_commit(&commit).is_err() {
+            let _ = gate.abort_intent(
+                &result.outcome.delivery_id,
+                &full_path.display().to_string(),
+                &receipt.sha256,
+                "record_delivery_commit_failed",
+                now_ms(),
+            );
+            return Err("notice.session_storage_failed");
+        }
+        if let Some(rev) = target_revision {
+            let _ = engine.record_submission_revision(
+                session_id,
+                &submission_id,
+                rev,
+            );
+        }
         store
             .commit_prepared(&commit)
             .map_err(|_| "chat.publish.failed")?;
@@ -540,40 +639,64 @@ impl AgentHandle {
             override_used = result.outcome.override_used,
             "override delivery committed by user"
         );
-        reconcile_partial_work_after_override(&engine, &store, session_id);
-        let target_key = crate::delivery::artifact_key(&full_path);
-        if let Some(live) = lock(&state.live).get_mut(session_id) {
-            for line in &mut live.projection.lines {
-                if let ChatLine::Verification {
-                    report_id: existing_id,
-                    artifact_path: existing_path,
-                    override_used,
-                    ..
-                } = line
-                    && ((!report_id.is_empty() && existing_id == report_id)
-                        || crate::delivery::artifact_key(Path::new(
-                            existing_path,
-                        )) == target_key)
-                {
-                    *override_used = true;
-                }
-            }
-            if !live.projection.lines.iter().any(|line| {
-                matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &receipt.artifact_id)
-            }) {
-                live.projection.lines.push(ChatLine::Artifact {
-                    artifact_id: receipt.artifact_id.clone(),
-                });
-            }
-            live.updated_at = now;
-        }
-        if persist_index(state).is_err() {
-            state.report_storage_error();
-        }
-        state.push_update(AgentUpdate::Artifacts);
-        state.push_update(AgentUpdate::Session {
-            id: session_id.to_owned(),
-        });
+        reconcile_partial_work_after_override(
+            &engine,
+            &store,
+            session_id,
+            target_revision,
+            None,
+        );
+        finish_override_live_update(
+            state,
+            session_id,
+            report_id,
+            &full_path,
+            &receipt.artifact_id,
+            now,
+        );
         Ok(receipt.artifact_id)
     }
+}
+
+fn finish_override_live_update(
+    state: &UiState,
+    session_id: &str,
+    report_id: &str,
+    full_path: &Path,
+    artifact_id: &str,
+    now: u64,
+) {
+    let target_key = crate::delivery::artifact_key(full_path);
+    if let Some(live) = lock(&state.live).get_mut(session_id) {
+        for line in &mut live.projection.lines {
+            if let ChatLine::Verification {
+                report_id: existing_id,
+                artifact_path: existing_path,
+                override_used,
+                ..
+            } = line
+                && ((!report_id.is_empty() && existing_id == report_id)
+                    || crate::delivery::artifact_key(Path::new(existing_path))
+                        == target_key)
+            {
+                *override_used = true;
+            }
+        }
+        if !live.projection.lines.iter().any(|line| {
+            matches!(line, ChatLine::Artifact { artifact_id: id } if id == artifact_id)
+        }) {
+            live.projection.lines.push(ChatLine::Artifact {
+                artifact_id: artifact_id.to_owned(),
+            });
+        }
+        live.updated_at = now;
+    }
+    if persist_index(state).is_err() {
+        state.report_storage_error();
+    }
+    state.push_update(AgentUpdate::Artifacts);
+    state.push_update(AgentUpdate::Session {
+        id: session_id.to_owned(),
+    });
+    state.push_update(AgentUpdate::Sessions);
 }

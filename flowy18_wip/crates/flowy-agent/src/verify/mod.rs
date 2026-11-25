@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{
@@ -20,13 +19,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::delivery::{self, DeliveryStore};
+use crate::handle::now_ms;
 use crate::pptx::resolve_turn_path;
 use crate::semantic_verify::{
     SemanticContext, SemanticOutcome, probe_deck_semantics,
 };
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) type VerifyFailureTracker = Arc<Mutex<HashMap<String, u32>>>;
+pub type VerifyFailureTracker = Arc<Mutex<HashMap<String, u32>>>;
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -88,6 +87,7 @@ pub fn ui_key(code: &str) -> &'static str {
         ANCHOR_DUPLICATE => "verify.anchor_duplicate",
         ANCHOR_INVALID => "verify.anchor_invalid",
         VALUE_MISMATCH => "verify.value_mismatch",
+        PROVENANCE_INVALID => "verify.provenance_invalid",
         _ => "verify.structure",
     }
 }
@@ -126,14 +126,6 @@ fn next_action_for(report: &VerifyReport) -> &'static str {
     } else {
         "clarify_or_rebuild"
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[expect(
@@ -244,6 +236,7 @@ async fn finalize_report(
         ok = report.ok,
         next_action,
         issue_count = report.issues.len(),
+        provenance_warning_count = provenance_warnings.len(),
         l3_status = l3_outcome.status_code(),
         l3_reason = l3_outcome.reason(),
         l3_issue_count = l3_outcome.issue_count(),
@@ -459,8 +452,7 @@ pub fn definition_with_semantic_and_contract(
     definition_with_options(store, semantic, contract, None)
 }
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn definition_with_options(
+pub fn definition_with_options(
     store: Option<DeliveryStore>,
     semantic: Option<SemanticContext>,
     contract: Option<BriefContract>,
@@ -518,8 +510,7 @@ pub fn artifact_definition(
     artifact_definition_with_options(store, None, contract, None)
 }
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn artifact_definition_with_options(
+pub fn artifact_definition_with_options(
     store: Option<DeliveryStore>,
     semantic: Option<SemanticContext>,
     contract: Option<BriefContract>,

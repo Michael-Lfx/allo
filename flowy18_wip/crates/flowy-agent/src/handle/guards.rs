@@ -89,27 +89,128 @@ pub(super) fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
         .then(|| format!("path escapes the working directory: {raw}"))
 }
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn confined_to(root: &Path, raw: &str) -> bool {
+pub fn is_windows_reserved_device_name(name: &str) -> bool {
+    let trimmed = name.trim_end_matches([' ', '.']);
+    let stem = trimmed.split('.').next().unwrap_or(trimmed).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "CONIN$"
+            | "CONOUT$"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    )
+}
+
+#[cfg(windows)]
+fn is_windows_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+const fn is_windows_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
+pub fn has_reserved_device_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(part) => {
+            part.to_str().is_some_and(is_windows_reserved_device_name)
+        }
+        _ => false,
+    })
+}
+
+pub fn confined_to(root: &Path, raw: &str) -> bool {
+    if raw.trim().is_empty() || raw.contains('\0') {
+        return false;
+    }
     let path = Path::new(raw);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
+    if has_reserved_device_component(path) {
+        return false;
+    }
+    // Reject Windows drive-relative (`C:foo`) or rooted-without-drive (`\foo`)
+    // paths on Windows, and walk component-by-component canonicalizing existing
+    // symlinks/junctions BEFORE folding `..` so `link/../outside` can never
+    // lexically collapse inside `root` while the OS follows `link` outside.
+    let resolved_root = resolve_deepest_ancestor(root);
+    let mut current = if path.is_absolute() {
+        PathBuf::new()
     } else {
-        root.join(path)
+        let has_prefix_or_root = path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            )
+        });
+        if has_prefix_or_root {
+            return false;
+        }
+        resolved_root.clone()
     };
-    let mut normalized = PathBuf::new();
-    for component in joined.components() {
+    for component in path.components() {
         match component {
+            std::path::Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+            }
+            std::path::Component::RootDir => {
+                current.push(component.as_os_str());
+            }
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                normalized.pop();
+                if !current.pop() {
+                    return false;
+                }
+                if let Ok(canon) = std::fs::canonicalize(&current) {
+                    current = canon;
+                }
             }
-            other => normalized.push(other.as_os_str()),
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                if let Ok(meta) = std::fs::symlink_metadata(&current) {
+                    if let Ok(canon) = std::fs::canonicalize(&current) {
+                        current = canon;
+                    } else if meta.file_type().is_symlink()
+                        || is_windows_reparse_point(&meta)
+                    {
+                        // Dangling symlink or NTFS junction: fail closed
+                        // rather than trusting a lexical target.
+                        return false;
+                    }
+                }
+            }
         }
     }
-    let root = resolve_deepest_ancestor(root);
-    let candidate = resolve_deepest_ancestor(&normalized);
-    within(&root, &candidate)
+    let candidate = resolve_deepest_ancestor(&current);
+    within(&resolved_root, &candidate)
 }
 
 pub(super) fn resolve_deepest_ancestor(path: &Path) -> PathBuf {

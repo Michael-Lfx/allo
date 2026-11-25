@@ -129,12 +129,24 @@ fn openai_stream_fn_with_model(
         let options = options.clone();
         let (mut producer, consumer) =
             rpi_ai::event_stream::create_assistant_message_event_stream();
+        let cancel_token = producer.cancellation_token();
         tokio::spawn(async move {
-            let mut inner =
-                provider.stream_simple(&model, &context, &options).await;
-            while let Some(event) = inner.next().await {
-                producer.push(event).await;
+            let mut inner = tokio::select! {
+                () = cancel_token.cancelled() => return,
+                stream = provider.stream_simple(&model, &context, &options) => stream,
+            };
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    maybe_event = inner.next() => {
+                        let Some(event) = maybe_event else {
+                            break;
+                        };
+                        producer.push(event).await;
+                    }
+                }
             }
+            drop(inner);
             tracing::debug!(
                 target: "flowy.prompt",
                 stage = "openai_stream_fn::invoke",

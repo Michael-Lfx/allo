@@ -189,9 +189,14 @@ impl TurnObserver for UiObserver {
         let cwd = lock(&self.state.live)
             .get(session)
             .and_then(|live| {
-                live.workspace
+                live.session_workspace
                     .as_ref()
                     .map(|workspace| workspace.root.clone())
+                    .or_else(|| {
+                        live.workspace
+                            .as_ref()
+                            .map(|workspace| workspace.root.clone())
+                    })
             })
             .unwrap_or_else(|| self.state.root.join("sessions").join("cwd"));
         let display_text = tool_result_display_text(name, text);
@@ -501,7 +506,7 @@ pub(super) fn backfill_conversation_artifacts(
                 &session,
                 &writes,
             );
-        persist_conversation_commits(engine, &store, state, commits);
+        persist_conversation_commits(engine, &store, state, commits, None);
     }
 }
 
@@ -540,6 +545,7 @@ pub(super) fn capture_turn_artifacts(
         state.report_storage_error();
         return;
     };
+    let turn_revision = session.submission_revisions.get(&turn_id).copied();
     let gate = crate::delivery::DeliveryStore::new(state.root.join("delivery"));
     let commits =
         crate::conversation_artifacts::prepare_conversation_artifacts_gated(
@@ -548,7 +554,19 @@ pub(super) fn capture_turn_artifacts(
             &session,
             &writes,
         );
-    if persist_conversation_commits(engine, &store, state, commits) {
+    if persist_conversation_commits(
+        engine,
+        &store,
+        state,
+        commits,
+        turn_revision,
+    ) {
+        super::work::reconcile_partial_work_for_revision(
+            engine,
+            &store,
+            session_id,
+            turn_revision,
+        );
         state.push_update(AgentUpdate::Artifacts);
     }
 }
@@ -558,6 +576,7 @@ pub(super) fn persist_conversation_commits(
     store: &ArtifactStore,
     state: &UiState,
     commits: Vec<DeliveryCommit>,
+    contract_revision: Option<u32>,
 ) -> bool {
     let mut imported = false;
     for commit in commits {
@@ -573,6 +592,13 @@ pub(super) fn persist_conversation_commits(
             ));
             state.report_storage_error();
             continue;
+        }
+        if let Some(revision) = contract_revision {
+            let _ = engine.record_submission_revision(
+                &commit.session_id,
+                &commit.submission_id,
+                revision,
+            );
         }
         if let Err(error) = store.commit_prepared(&commit) {
             log_storage_io_error(
@@ -657,12 +683,12 @@ pub(super) fn persist_index(state: &UiState) -> Result<(), &'static str> {
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
-    let index = SessionIndex {
-        active: lock(&state.active).clone(),
-        sessions,
-    };
     drop(live);
-    index.save(&state.root).map_err(|_| "notice.storage_error")
+    let active = lock(&state.active).clone();
+    let index = SessionIndex { active, sessions };
+    index
+        .save(&state.root)
+        .map_err(|_| "notice.session_storage_failed")
 }
 
 pub(super) fn finish_interrupted_lines(lines: &mut [ChatLine]) {
@@ -951,13 +977,17 @@ pub(super) fn sync_verification_overrides(
 ) {
     for line in lines {
         if let ChatLine::Verification {
+            report_id,
+            artifact_path,
             artifact_hash,
             override_used,
             ..
         } = line
             && !*override_used
-            && !artifact_hash.is_empty()
-            && gate.artifact_was_overridden(artifact_hash).unwrap_or(false)
+            && (!report_id.is_empty() || !artifact_hash.is_empty())
+            && gate
+                .report_was_overridden(report_id, artifact_path, artifact_hash)
+                .unwrap_or(false)
         {
             *override_used = true;
         }
@@ -1060,10 +1090,28 @@ pub(super) fn parse_verification_line(
                 })
                 .collect::<Vec<_>>()
         });
-    let override_used = !artifact_hash.is_empty()
+    let provenance_warnings = value
+        .get("provenance_warnings")
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
+    let override_used = (!report_id.is_empty() || !artifact_hash.is_empty())
         && gate
             .and_then(|store| {
-                store.artifact_was_overridden(&artifact_hash).ok()
+                store
+                    .report_was_overridden(
+                        &report_id,
+                        &artifact_path,
+                        &artifact_hash,
+                    )
+                    .ok()
             })
             .unwrap_or(false);
     Some(ChatLine::Verification {
@@ -1074,16 +1122,8 @@ pub(super) fn parse_verification_line(
         issues,
         semantic_hint,
         override_used,
+        provenance_warnings,
     })
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(super) fn lines_from_messages(
-    messages: &[Message],
-    allowed: &BTreeSet<String>,
-) -> Vec<ChatLine> {
-    lines_from_messages_with_gate(messages, allowed, None)
 }
 
 pub(super) fn lines_from_messages_with_gate(

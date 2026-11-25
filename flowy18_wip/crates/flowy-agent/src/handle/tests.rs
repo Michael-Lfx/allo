@@ -875,6 +875,7 @@ mod guard_tests {
                 }],
                 semantic_hint: None,
                 override_used: false,
+                provenance_warnings: Vec::new(),
             },
         ];
         upsert_verification_line(
@@ -887,6 +888,7 @@ mod guard_tests {
                 issues: Vec::new(),
                 semantic_hint: None,
                 override_used: false,
+                provenance_warnings: Vec::new(),
             },
         );
         lines.push(ChatLine::Assistant {
@@ -1201,6 +1203,16 @@ mod guard_tests {
             !confined_to(&workspace, "escape_link/new_sub/evil.txt"),
             "escaping link with non-existent descendant must not pass confined_to"
         );
+        // Symlink + `..` traversal must resolve link before folding `..` so
+        // `escape_link/../anything` never collapses back inside `workspace`.
+        assert!(
+            !confined_to(&workspace, "escape_link/../escaped_sibling.txt"),
+            "symlink followed by parent traversal must not collapse inside workspace"
+        );
+        // Windows reserved device names must always be refused.
+        assert!(!confined_to(&workspace, "CON"));
+        assert!(!confined_to(&workspace, "subdir/NUL.txt"));
+        assert!(!confined_to(&workspace, "COM1"));
         // Normal non-existent multi-level path inside workspace must still pass.
         assert!(confined_to(&workspace, "outputs/new_sub/good.txt"));
 
@@ -1247,5 +1259,153 @@ mod guard_tests {
                 "expected shell_policy_guard to allow {allowed:?}"
             );
         }
+    }
+
+    #[test]
+    fn dropping_handle_while_autonomous_drain_runs_never_panics_runtime() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-rt-drop-safety-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_autonomous_drain(true);
+        handle
+            .accept_deferred("queued right before immediate handle drop")
+            .expect("accept");
+        // Drop immediately while autonomous drain worker task may still hold a
+        // strong `Arc<Harness>` upgrade inside Tokio worker threads.
+        drop(handle);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_needs_attention_clears_after_turn_2_succeeds_and_flags_partial()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-attention-turns-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let session = handle.create_home_session().expect("session");
+        {
+            let mut live = lock(&handle.inner.state.live);
+            let entry = live.get_mut(&session).expect("live session");
+            entry.projection.lines = vec![
+                ChatLine::User {
+                    text: "Turn 1".into(),
+                },
+                ChatLine::Verification {
+                    report_id: "r1".into(),
+                    artifact_path: "outputs/sub-1/deck.pptx".into(),
+                    artifact_hash: "aaaa".into(),
+                    ok: false,
+                    issues: vec![VerificationIssue {
+                        code: "STRUCTURE".into(),
+                        field: "slides".into(),
+                    }],
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                },
+            ];
+        }
+        assert!(handle.session_needs_attention(&session));
+
+        // Turn 2 succeeds cleanly -> latest turn has no failed card.
+        {
+            let mut live = lock(&handle.inner.state.live);
+            let entry = live.get_mut(&session).expect("live session");
+            entry.projection.lines.push(ChatLine::User {
+                text: "Turn 2 fix".into(),
+            });
+            entry.projection.lines.push(ChatLine::Verification {
+                report_id: "r2".into(),
+                artifact_path: "outputs/sub-2/deck.pptx".into(),
+                artifact_hash: "bbbb".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+            });
+        }
+        assert!(
+            !handle.session_needs_attention(&session),
+            "Turn 1 failure must not keep attention badge stuck after Turn 2 passes"
+        );
+
+        // Latest submission Partial without failed card still needs attention.
+        let engine = lock(&handle.inner.engine).clone().expect("engine");
+        engine
+            .set_submission_outcome(
+                &session,
+                "submission-partial-1",
+                flowy_agent_core::SubmissionOutcome::Partial {
+                    missing: vec!["budget.xlsx".into()],
+                },
+            )
+            .expect("set outcome");
+        assert!(handle.session_needs_attention(&session));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn boot_emits_receipt_updates_after_initialized_and_releases_stale_lease() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-boot-order-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let queue = AcceptanceQueue::new(root.clone());
+        let now = super::now_ms();
+        let stale = queue.accept(None, "crashed in flight", now).unwrap();
+        queue
+            .take(&stale.id, "dead-proc-att", now, 60_000)
+            .unwrap()
+            .unwrap();
+
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let updates = handle.drain_updates();
+        let init_pos = updates
+            .iter()
+            .position(|u| matches!(u, super::AgentUpdate::Initialized))
+            .expect("Initialized emitted");
+        let receipt_pos = updates
+            .iter()
+            .position(|u| {
+                matches!(
+                    u,
+                    super::AgentUpdate::Receipt {
+                        id,
+                        state: ReceiptState::Retrying
+                    } if id == &stale.id
+                )
+            })
+            .expect("stale lease released to Retrying on boot");
+        assert!(
+            receipt_pos > init_pos,
+            "boot receipt updates must arrive strictly after AgentUpdate::Initialized"
+        );
+        assert_eq!(
+            handle.receipt_state(&stale.id),
+            Some(ReceiptState::Retrying)
+        );
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -24,8 +24,21 @@ pub const SEMANTIC_VERDICT_TOOL: &str = "submit_semantic_verdict";
 pub const SEMANTIC_SYSTEM_PROMPT: &str = "\
 你是交付物语义复核器（L3）。\
 只依据简报的字面要求。简报没要求的，缺了不算问题。\
-只复核文件名与幻灯片正文内容是否与简报字面要求一致；忽略流程性指令（如先核验、再交付、发送给我等，这些由程序硬门保证，不写在幻灯片正文里）。\
-请调用 submit_semantic_verdict 工具提交核验结论（其中 ok 必须是 JSON 布尔值；若 ok 为 false，issues 至少包含一条带非空 where / what / why 的记录）。";
+只复核文件名与产物正文内容是否与简报字面要求一致；忽略流程性指令（如先核验、再交付、发送给我等，这些由程序硬门保证，不写在产物正文里）。\
+请调用 submit_semantic_verdict 工具提交核验结论（其中 ok 必须是 JSON 布尔值，issues 必须是数组；若 ok 为 false，issues 至少包含一条带非空 where / what / why 的记录）。";
+
+fn artifact_body_noun(artifact_name: &str) -> &'static str {
+    let ext = std::path::Path::new(artifact_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("pptx") => "幻灯片文本",
+        Some("docx") => "Word 文档正文",
+        Some("xlsx") => "Excel 表格内容",
+        _ => "交付物正文",
+    }
+}
 
 const SEMANTIC_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -131,6 +144,7 @@ impl SemanticOutcome {
     }
 }
 
+#[cfg(test)]
 fn strip_code_fence(raw: &str) -> &str {
     let trimmed = raw.trim();
     let Some(rest) = trimmed.strip_prefix("```") else {
@@ -148,42 +162,45 @@ fn strip_code_fence(raw: &str) -> &str {
 /// call or raw JSON text.
 #[must_use]
 pub fn parse_semantic_value(value: &Value) -> SemanticOutcome {
+    if !value.is_object() {
+        return SemanticOutcome::Inconclusive {
+            reason: "non_object_verdict".to_owned(),
+        };
+    }
     let Some(Value::Bool(ok)) = value.get("ok") else {
         return SemanticOutcome::Inconclusive {
             reason: "non_boolean_ok".to_owned(),
         };
     };
-    let mut parsed_issues = Vec::new();
-    if let Some(items) = value.get("issues") {
-        let Some(array) = items.as_array() else {
-            return SemanticOutcome::Inconclusive {
-                reason: "invalid_issues_array".to_owned(),
-            };
+    let Some(array) = value.get("issues").and_then(Value::as_array) else {
+        return SemanticOutcome::Inconclusive {
+            reason: "missing_or_invalid_issues".to_owned(),
         };
-        for item in array {
-            let location = item
-                .get("where")
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
-            let what = item
-                .get("what")
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
-            let why = item
-                .get("why")
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
-            if location.is_empty() || what.is_empty() || why.is_empty() {
-                return SemanticOutcome::Inconclusive {
-                    reason: "incomplete_issue_fields".to_owned(),
-                };
-            }
-            parsed_issues.push(SemanticIssue {
-                location: location.to_owned(),
-                what: what.to_owned(),
-                why: why.to_owned(),
-            });
+    };
+    let mut parsed_issues = Vec::with_capacity(array.len());
+    for item in array {
+        let location = item
+            .get("where")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
+        let what = item
+            .get("what")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
+        let why = item
+            .get("why")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
+        if location.is_empty() || what.is_empty() || why.is_empty() {
+            return SemanticOutcome::Inconclusive {
+                reason: "incomplete_issue_fields".to_owned(),
+            };
         }
+        parsed_issues.push(SemanticIssue {
+            location: location.to_owned(),
+            what: what.to_owned(),
+            why: why.to_owned(),
+        });
     }
     if !parsed_issues.is_empty() {
         return SemanticOutcome::Flagged {
@@ -199,11 +216,8 @@ pub fn parse_semantic_value(value: &Value) -> SemanticOutcome {
     }
 }
 
-/// Strictly parse and validate the model's L3 JSON verdict string.
-///
-/// Any non-boolean `"ok"` (such as `"false"` or `1`), missing required fields,
-/// or empty issue list on `ok: false` resolves to [`SemanticOutcome::Inconclusive`]
-/// so malformed outputs never masquerade as a clean pass.
+/// Strictly parse and validate the model's L3 JSON verdict string (used in unit tests).
+#[cfg(test)]
 #[must_use]
 pub fn parse_semantic_response(raw: &str) -> SemanticOutcome {
     let cleaned = strip_code_fence(raw);
@@ -232,7 +246,10 @@ pub async fn probe_deck_semantics(
     body.push_str("【简报字面要求】\n");
     let brief: String = ctx.brief.chars().take(2_000).collect();
     body.push_str(&brief);
-    body.push_str("\n\n【产物信息与幻灯片文本】\n");
+    let body_noun = artifact_body_noun(artifact_name);
+    body.push_str("\n\n【产物信息与");
+    body.push_str(body_noun);
+    body.push_str("】\n");
     if !artifact_name.trim().is_empty() {
         body.push_str("- 文件名: ");
         body.push_str(artifact_name.trim());
@@ -246,6 +263,10 @@ pub async fn probe_deck_semantics(
         body.push_str(&snippet);
         body.push('\n');
     }
+    // Derive a synchronous child cancel token linked to the parent turn signal
+    // so an already-cancelled parent stops immediately and a 30s timeout cancels
+    // the underlying HTTP stream without spawning a watcher task.
+    let call_signal = signal.child_token();
     let call = complete_structured(
         StructuredRequest {
             session_id: Some("l3-semantic-verify".to_owned()),
@@ -256,18 +277,29 @@ pub async fn probe_deck_semantics(
                 "Submit the structured L3 semantic review verdict.".to_owned(),
             schema: semantic_verdict_schema(),
             route: ctx.route.clone(),
-            signal: signal.clone(),
+            signal: call_signal.clone(),
         },
         Some(ctx.api_key.clone()),
     );
     let outcome = match tokio::time::timeout(SEMANTIC_TIMEOUT, call).await {
         Ok(Ok(value)) => parse_semantic_value(&value),
-        Ok(Err(_)) => SemanticOutcome::Inconclusive {
-            reason: "provider_error".to_owned(),
-        },
-        Err(_) => SemanticOutcome::Inconclusive {
-            reason: "timeout".to_owned(),
-        },
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: "flowy.verify",
+                artifact = %artifact_name,
+                error = %error,
+                "L3 semantic verification returned provider error"
+            );
+            SemanticOutcome::Inconclusive {
+                reason: "provider_error".to_owned(),
+            }
+        }
+        Err(_) => {
+            call_signal.cancel();
+            SemanticOutcome::Inconclusive {
+                reason: "timeout".to_owned(),
+            }
+        }
     };
     let elapsed_ms =
         u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -455,5 +487,23 @@ mod tests {
             "mismatched brief should be flagged by structured L3"
         );
         assert!(flag_outcome.issue_count() >= 1);
+    }
+
+    #[test]
+    fn missing_issues_field_and_non_object_fail_closed_as_inconclusive() {
+        assert!(matches!(
+            parse_semantic_value(&serde_json::json!({"ok": true})),
+            SemanticOutcome::Inconclusive { reason } if reason == "missing_or_invalid_issues"
+        ));
+        assert!(matches!(
+            parse_semantic_value(&serde_json::json!(true)),
+            SemanticOutcome::Inconclusive { reason } if reason == "non_object_verdict"
+        ));
+        assert_eq!(
+            parse_semantic_value(
+                &serde_json::json!({"ok": true, "issues": []})
+            ),
+            SemanticOutcome::Passed
+        );
     }
 }

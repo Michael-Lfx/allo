@@ -7,6 +7,7 @@ use super::{
     SubmissionOutcome, TaskTarget, TurnState, TurnStatus, WorkStatus, lock,
     log_storage_io_error, now_ms, persist_index,
 };
+use crate::artifact_store::PublicationState;
 
 impl AgentHandle {
     /// Unified host view of a work item identified by either its `receipt_id`
@@ -14,7 +15,19 @@ impl AgentHandle {
     /// outcome, missing deliverables, and currently visible committed files.
     #[must_use]
     pub fn work_status(&self, work_id: &str) -> Option<WorkStatus> {
-        let receipt = self.receipt_by_id(work_id);
+        let receipt = self.receipt_by_id(work_id).or_else(|| {
+            AcceptanceQueue::new(self.inner.state.root.clone())
+                .all()
+                .ok()
+                .and_then(|receipts| {
+                    receipts
+                        .into_iter()
+                        .filter(|item| {
+                            item.submission_id.as_deref() == Some(work_id)
+                        })
+                        .max_by_key(|item| item.created_at_ms)
+                })
+        });
         let mut session_id = receipt
             .as_ref()
             .and_then(|item| item.target_session_id.clone());
@@ -140,9 +153,6 @@ impl AgentHandle {
                 let belongs = match submission_id.as_deref() {
                     Some(sub) => {
                         commit.submission_id == sub
-                            || commit
-                                .submission_id
-                                .starts_with("submission-override-")
                             || contract_revision.is_some_and(|rev| {
                                 rec.submission_revisions
                                     .get(&commit.submission_id)
@@ -156,6 +166,16 @@ impl AgentHandle {
                     for artifact_id in &commit.artifact_ids {
                         if committed_ids.contains(artifact_id)
                             && !delivered_artifact_ids.contains(artifact_id)
+                            && store
+                                .and_then(|s| s.get(artifact_id).ok())
+                                .flatten()
+                                .is_none_or(|item| {
+                                    !matches!(
+                                        item.manifest.publication_state,
+                                        PublicationState::Deleted
+                                            | PublicationState::DeletePending
+                                    )
+                                })
                         {
                             delivered_artifact_ids.push(artifact_id.clone());
                         }
@@ -260,11 +280,13 @@ impl AgentHandle {
             }
             CardAction::RetryDeadReceipt { receipt_id } => {
                 let queue = AcceptanceQueue::new(self.inner.state.root.clone());
-                let Some(requeued) = queue
-                    .retry_dead(&receipt_id, now_ms())
-                    .map_err(|_| "notice.storage_error")?
+                let Some(requeued) =
+                    queue.retry_dead(&receipt_id, now_ms()).map_err(|_| {
+                        self.inner.state.report_storage_error();
+                        "notice.session_storage_failed"
+                    })?
                 else {
-                    return Err("notice.agent_failed");
+                    return Err("notice.receipt_gave_up");
                 };
                 self.inner.state.push_update(AgentUpdate::Receipt {
                     id: receipt_id,
@@ -275,7 +297,7 @@ impl AgentHandle {
                     state: ReceiptState::Queued,
                 });
                 if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
-                    self.kick_autonomous_drain();
+                    self.inner.kick_autonomous_drain();
                 }
                 Ok(CardActionOutcome::ReceiptRequeued {
                     receipt_id: requeued.id,
@@ -286,30 +308,47 @@ impl AgentHandle {
 
     /// Optional graceful-close hint: pauses autonomous draining, cancels
     /// cancellable busy turns (preserving finalizing deliveries), waits briefly
-    /// for cancelled turns/tools to finish reaping, and flushes the UI index.
-    /// Crash correctness never depends on calling this.
+    /// for cancelled turns/tools (including already-cancelling fences) to
+    /// finish reaping, and flushes the UI index. Crash correctness never
+    /// depends on calling this.
     pub fn prepare_shutdown(&self) {
         self.inner
             .state
             .autonomous_drain
             .store(false, Ordering::Release);
         self.inner.state.drain_cancel.cancel();
-        let busy = self.busy_session_ids();
-        let mut cancelled = Vec::new();
-        for session_id in busy {
-            if matches!(
-                self.cancel_task(TaskTarget::Session(session_id.clone())),
-                Ok(CancelOutcome::Cancelled)
-            ) {
-                cancelled.push(session_id);
+        let mut to_wait: BTreeSet<String> =
+            self.busy_session_ids().into_iter().collect();
+        let engine = lock(&self.inner.engine).clone();
+        if let Some(engine) = &engine {
+            for active_id in engine.active_session_ids() {
+                to_wait.insert(active_id);
             }
         }
-        if !cancelled.is_empty()
-            && let Some(engine) = lock(&self.inner.engine).clone()
+        let mut wait_list = Vec::new();
+        for session_id in to_wait {
+            match self.cancel_task(TaskTarget::Session(session_id.clone())) {
+                Ok(CancelOutcome::Cancelled) => {
+                    wait_list.push(session_id);
+                }
+                Ok(CancelOutcome::AlreadySettled) => {
+                    // May still be reaping after an earlier cancel.
+                    if engine
+                        .as_ref()
+                        .is_some_and(|eng| eng.is_active(&session_id))
+                    {
+                        wait_list.push(session_id);
+                    }
+                }
+                Ok(CancelOutcome::FinalizingNotCancellable) | Err(_) => {}
+            }
+        }
+        if !wait_list.is_empty()
+            && let Some(engine) = engine
         {
             let deadline =
                 std::time::Instant::now() + std::time::Duration::from_secs(2);
-            for session_id in cancelled {
+            for session_id in wait_list {
                 let remaining = deadline
                     .saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
@@ -348,13 +387,14 @@ impl AgentHandle {
         let live_busy = lock(&self.inner.state.live)
             .get(id)
             .is_some_and(|session| session.status.is_busy());
-        let engine_busy = engine
-            .as_ref()
-            .and_then(|eng| eng.session(id))
-            .is_some_and(|rec| rec.status.is_busy());
+        let engine_busy = engine.as_ref().is_some_and(|eng| {
+            eng.session(id).is_some_and(|rec| rec.status.is_busy())
+                || (eng.is_active(id) && !eng.is_cancelling(id))
+        });
         if !live_busy && !engine_busy {
             return Ok(CancelOutcome::AlreadySettled);
         }
+        let mut storage_err: Option<&'static str> = None;
         if let Some(engine) = engine {
             match engine.request_cancel(id) {
                 Ok(false) => {
@@ -370,7 +410,12 @@ impl AgentHandle {
                         &error,
                     );
                     self.inner.state.report_storage_error();
-                    return Err("notice.storage_error");
+                    // `request_cancel` already fired `fence.cancel_active()`
+                    // before persisting `history.json`, so still stop live UI
+                    // state and cancel any owned receipt claim before returning
+                    // the storage error (prevents stuck Running UI + orphaned
+                    // receipt state).
+                    storage_err = Some("notice.session_storage_failed");
                 }
             }
         }
@@ -413,6 +458,10 @@ impl AgentHandle {
         self.inner
             .state
             .push_update(AgentUpdate::Session { id: id.to_owned() });
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        if let Some(err) = storage_err {
+            return Err(err);
+        }
         Ok(CancelOutcome::Cancelled)
     }
 
@@ -439,7 +488,7 @@ impl AgentHandle {
             Ok(false) => Ok(CancelOutcome::AlreadySettled),
             Err(_) => {
                 self.inner.state.report_storage_error();
-                Err("notice.storage_error")
+                Err("notice.session_storage_failed")
             }
         }
     }
@@ -480,42 +529,28 @@ pub(super) fn latest_session_submission_id(
         .or_else(|| record.submission_outcomes.keys().next_back().cloned())
 }
 
-/// Returns `true` only when `submission_id` has an explicit durable
-/// `Completed` outcome (and, if it produced a `DeliveryCommit`, every committed
-/// artifact is already visible in `ArtifactStore`). Never mistakes an `Error`,
-/// `Aborted`, `Partial`, or pre-run `User`-only prompt for a completed work.
+/// Returns `true` when `submission_id` has crossed its durable LLM commit point.
+///
+/// Matches `SubmissionOutcome::Completed | Partial` or a successful
+/// `DeliveryCommit` in `history.json`. Even if the Library marker still needs
+/// `retry_delivery`, the LLM turn must never be re-executed on restart. Never
+/// mistakes an `Error`, `Aborted`, or pre-run `User`-only prompt for committed.
 pub(super) fn submission_committed_in_session(
     record: &SessionRecord,
     submission_id: &str,
-    committed_artifacts: &BTreeSet<String>,
 ) -> bool {
-    let commit_visible = |sub_id: &str| {
-        record
-            .delivery_commits
-            .iter()
-            .find(|commit| commit.submission_id == sub_id)
-            .is_none_or(|commit| {
-                commit.completed_successfully
-                    && commit
-                        .artifact_ids
-                        .iter()
-                        .all(|id| committed_artifacts.contains(id))
-            })
-    };
     if let Some(outcome) = record.submission_outcomes.get(submission_id) {
-        return matches!(outcome, SubmissionOutcome::Completed)
-            && commit_visible(submission_id);
+        return matches!(
+            outcome,
+            SubmissionOutcome::Completed | SubmissionOutcome::Partial { .. }
+        );
     }
     if let Some(commit) = record
         .delivery_commits
         .iter()
         .find(|commit| commit.submission_id == submission_id)
     {
-        return commit.completed_successfully
-            && commit
-                .artifact_ids
-                .iter()
-                .all(|id| committed_artifacts.contains(id));
+        return commit.completed_successfully;
     }
     // Legacy fallback for sessions written before `submission_outcomes`
     // existed: only an explicitly Completed session with post-prompt output
@@ -539,12 +574,71 @@ pub(super) fn submission_committed_in_session(
         })
 }
 
-/// Re-evaluate any `Partial` submissions on `session_id` after a user override
-/// delivers a previously missing required file.
+/// Re-evaluate `Partial` submissions for `target_revision` after an override.
+///
+/// `extra_delivered` passes a single reused snapshot's `(display_name,
+/// delivery_key)` without mutating a prior turn's `submission_revisions`.
 pub(super) fn reconcile_partial_work_after_override(
     engine: &Engine,
     store: &ArtifactStore,
     session_id: &str,
+    target_revision: Option<u32>,
+    extra_delivered: Option<(&str, &str)>,
+) {
+    reconcile_partial_work_inner(
+        engine,
+        store,
+        session_id,
+        target_revision,
+        extra_delivered,
+    );
+}
+
+pub(super) fn reconcile_partial_work_for_revision(
+    engine: &Engine,
+    store: &ArtifactStore,
+    session_id: &str,
+    target_revision: Option<u32>,
+) {
+    reconcile_partial_work_inner(
+        engine,
+        store,
+        session_id,
+        target_revision,
+        None,
+    );
+}
+
+fn missing_item_satisfied(
+    missing_label: &str,
+    delivered: &[(&str, &str)],
+) -> bool {
+    let label = missing_label.trim();
+    if label.is_empty() {
+        return false;
+    }
+    let lower = label.to_ascii_lowercase();
+    delivered.iter().any(|(name, key)| {
+        let name_lower = name.to_ascii_lowercase();
+        let key_lower = key.to_ascii_lowercase();
+        if let Some(ext) = lower.strip_prefix("*.") {
+            let suffix = format!(".{ext}");
+            name_lower.ends_with(&suffix) || key_lower.ends_with(&suffix)
+        } else if lower.contains('.') {
+            name_lower == lower || key_lower == lower
+        } else {
+            let suffix = format!(".{lower}");
+            name_lower.ends_with(&suffix) || key_lower.ends_with(&suffix)
+        }
+    })
+}
+
+fn reconcile_partial_work_inner(
+    engine: &Engine,
+    store: &ArtifactStore,
+    session_id: &str,
+    target_revision: Option<u32>,
+    extra_delivered: Option<(&str, &str)>,
 ) {
     let Some(record) = engine.session(session_id) else {
         return;
@@ -555,14 +649,26 @@ pub(super) fn reconcile_partial_work_after_override(
     if contract.required_items.is_empty() {
         return;
     }
+    let active_rev = target_revision.unwrap_or(contract.revision);
     let Ok(committed_ids) = store.committed_ids() else {
         return;
     };
     let mut delivered: Vec<(String, String)> = Vec::new();
     for commit in &record.delivery_commits {
+        let commit_rev = record
+            .submission_revisions
+            .get(&commit.submission_id)
+            .copied();
+        if commit_rev != Some(active_rev) {
+            continue;
+        }
         for artifact_id in &commit.artifact_ids {
             if committed_ids.contains(artifact_id)
                 && let Ok(Some(item)) = store.get(artifact_id)
+                && !matches!(
+                    item.manifest.publication_state,
+                    PublicationState::Deleted | PublicationState::DeletePending
+                )
             {
                 delivered.push((
                     item.manifest.receipt.display_name,
@@ -571,26 +677,50 @@ pub(super) fn reconcile_partial_work_after_override(
             }
         }
     }
+    if let Some((name, key)) = extra_delivered {
+        delivered.push((name.to_owned(), key.to_owned()));
+    }
     let pairs: Vec<(&str, &str)> = delivered
         .iter()
         .map(|(n, k)| (n.as_str(), k.as_str()))
         .collect();
-    let missing = contract.missing_deliverables(&pairs);
-    let partial_subs: Vec<String> = record
+    let legacy_untagged = record.submission_revisions.is_empty()
+        && active_rev == contract.revision;
+    let partial_subs: Vec<(String, Vec<String>)> = record
         .submission_outcomes
         .iter()
-        .filter(|&(_, outcome)| {
-            matches!(outcome, SubmissionOutcome::Partial { .. })
+        .filter_map(|(sub_id, outcome)| {
+            let SubmissionOutcome::Partial { missing } = outcome else {
+                return None;
+            };
+            let matches_rev = match record.submission_revisions.get(sub_id) {
+                Some(&rev) => rev == active_rev,
+                None => legacy_untagged,
+            };
+            matches_rev.then(|| (sub_id.clone(), missing.clone()))
         })
-        .map(|(sub_id, _)| sub_id.clone())
         .collect();
-    for sub_id in partial_subs {
+    if partial_subs.is_empty() {
+        return;
+    }
+    let current_rev_missing = (active_rev == contract.revision)
+        .then(|| contract.missing_deliverables(&pairs));
+    for (sub_id, old_missing) in partial_subs {
+        let missing = if let Some(computed) = &current_rev_missing {
+            computed.clone()
+        } else {
+            // Older revision after `record.work_contract` evolved: narrow the
+            // recorded `Partial { missing }` list against `active_rev`'s
+            // delivered items rather than injecting newer-revision items.
+            old_missing
+                .into_iter()
+                .filter(|item| !missing_item_satisfied(item, &pairs))
+                .collect()
+        };
         let next = if missing.is_empty() {
             SubmissionOutcome::Completed
         } else {
-            SubmissionOutcome::Partial {
-                missing: missing.clone(),
-            }
+            SubmissionOutcome::Partial { missing }
         };
         let _ = engine.set_submission_outcome(session_id, &sub_id, next);
     }

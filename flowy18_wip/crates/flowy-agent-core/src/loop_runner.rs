@@ -300,12 +300,49 @@ pub async fn complete_structured(
     request: StructuredRequest,
     api_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let stream = crate::transport::openai_structured_stream_fn(
+    let forced_stream = crate::transport::openai_structured_stream_fn(
         &request.route,
-        api_key,
+        api_key.clone(),
         &request.tool_name,
     );
-    complete_structured_with_stream(request, stream).await
+    let route = request.route.clone();
+    let fallback_request = StructuredRequest {
+        session_id: request.session_id.clone(),
+        system: request.system.clone(),
+        prompt: request.prompt.clone(),
+        route: request.route.clone(),
+        tool_name: request.tool_name.clone(),
+        tool_description: request.tool_description.clone(),
+        schema: request.schema.clone(),
+        signal: request.signal.clone(),
+    };
+    match complete_structured_with_stream(request, forced_stream).await {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            let lower = err.to_ascii_lowercase();
+            let tool_choice_rejected = lower.contains("tool_choice")
+                && (lower.contains("400")
+                    || lower.contains("422")
+                    || lower.contains("unsupported")
+                    || lower.contains("invalid"));
+            if tool_choice_rejected && !fallback_request.signal.is_cancelled() {
+                tracing::debug!(
+                    target: "flowy.prompt",
+                    error = %err,
+                    "gateway rejected pinned tool_choice; retrying without forced tool_choice"
+                );
+                let fallback_stream =
+                    crate::transport::openai_stream_fn(&route, api_key);
+                complete_structured_with_stream(
+                    fallback_request,
+                    fallback_stream,
+                )
+                .await
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 /// Testable core of [`complete_structured`] accepting an explicit [`StreamFn`].
@@ -313,6 +350,9 @@ pub async fn complete_structured_with_stream(
     request: StructuredRequest,
     stream_fn: StreamFn,
 ) -> Result<serde_json::Value, String> {
+    if request.signal.is_cancelled() {
+        return Err("structured completion cancelled".to_owned());
+    }
     let model = request.route.rpi_model();
     let context = rpi_ai::types::Context {
         system_prompt: Some(request.system),
@@ -336,34 +376,63 @@ pub async fn complete_structured_with_stream(
     };
 
     let mut stream = stream_fn(&model, &context, &options);
-    let mut terminal: Option<AssistantMessage> = None;
-    while let Some(event) = stream.next().await {
-        match event {
-            rpi_ai::types::AssistantMessageEvent::Done { message, .. } => {
-                terminal = Some(message);
-                break;
+    let mut terminal: Option<(rpi_ai::types::DoneReason, AssistantMessage)> =
+        None;
+    loop {
+        tokio::select! {
+            () = request.signal.cancelled() => {
+                return Err("structured completion cancelled".to_owned());
             }
-            rpi_ai::types::AssistantMessageEvent::Error { error, .. } => {
-                let detail = error
-                    .error_message
-                    .clone()
-                    .filter(|msg| !msg.trim().is_empty())
-                    .unwrap_or_else(|| assistant_plain_text(&error));
-                return Err(if detail.is_empty() {
-                    "structured completion stream failed".to_owned()
-                } else {
-                    detail
-                });
+            maybe_event = stream.next() => {
+                let Some(event) = maybe_event else {
+                    break;
+                };
+                match event {
+                    rpi_ai::types::AssistantMessageEvent::Done {
+                        reason,
+                        message,
+                    } => {
+                        terminal = Some((reason, message));
+                        break;
+                    }
+                    rpi_ai::types::AssistantMessageEvent::Error {
+                        error,
+                        ..
+                    } => {
+                        let detail = error
+                            .error_message
+                            .clone()
+                            .filter(|msg| !msg.trim().is_empty())
+                            .unwrap_or_else(|| assistant_plain_text(&error));
+                        return Err(if detail.is_empty() {
+                            "structured completion stream failed".to_owned()
+                        } else {
+                            detail
+                        });
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
     }
-    let Some(message) = terminal else {
+    drop(stream);
+    let Some((done_reason, message)) = terminal else {
         return Err(
             "structured completion stream ended without terminal message"
                 .to_owned(),
         );
     };
+    if done_reason == rpi_ai::types::DoneReason::Length
+        || matches!(
+            message.stop_reason,
+            StopReason::Length | StopReason::Error | StopReason::Aborted
+        )
+    {
+        return Err(format!(
+            "structured completion truncated or aborted (reason={done_reason:?}, stop={:?})",
+            message.stop_reason
+        ));
+    }
     if let Some(call) = message
         .content
         .iter()
@@ -380,16 +449,33 @@ pub async fn complete_structured_with_stream(
             })
         })
     {
-        return Ok(call.arguments.clone());
+        return match &call.arguments {
+            serde_json::Value::Object(_) => Ok(call.arguments.clone()),
+            serde_json::Value::String(encoded) => {
+                let cleaned = strip_json_fence(encoded);
+                match serde_json::from_str::<serde_json::Value>(cleaned) {
+                    Ok(value @ serde_json::Value::Object(_)) => Ok(value),
+                    _ => Err(
+                        "structured tool call arguments were not a JSON object"
+                            .to_owned(),
+                    ),
+                }
+            }
+            _ => Err("structured tool call arguments were not a JSON object"
+                .to_owned()),
+        };
     }
     // Fallback for providers or test doubles that emit inline JSON text instead
     // of a tool call.
     let raw = assistant_plain_text(&message);
     let cleaned = strip_json_fence(&raw);
-    serde_json::from_str::<serde_json::Value>(cleaned).map_err(|_| {
-        "structured completion returned neither tool call nor valid JSON"
-            .to_owned()
-    })
+    match serde_json::from_str::<serde_json::Value>(cleaned) {
+        Ok(value @ serde_json::Value::Object(_)) => Ok(value),
+        _ => Err(
+            "structured completion returned neither tool call nor valid JSON object"
+                .to_owned(),
+        ),
+    }
 }
 
 fn strip_json_fence(raw: &str) -> &str {
@@ -553,9 +639,7 @@ fn assistant_plain_text(assistant: &AssistantMessage) -> String {
 /// A tool result must carry its originating tool name via
 /// [`MessageSource::Tool`]; legacy rows that predate that field are skipped so
 /// one stale history entry cannot fail a whole turn.
-pub fn to_agent_message(
-    message: &Message,
-) -> Result<Option<AgentMessage>, String> {
+fn to_agent_message(message: &Message) -> Result<Option<AgentMessage>, String> {
     if let Some(tool_result) =
         message.content.iter().find_map(|block| match block {
             ContentBlock::ToolResult {
@@ -741,7 +825,7 @@ fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
 
 /// Convert the loop's new messages back to host messages for durable storage.
 #[must_use]
-pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
+fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
     let mut out = Vec::new();
     for message in new_messages {
         match message {
@@ -1543,6 +1627,109 @@ mod tests {
             super::complete_structured_with_stream(req(), bad_stream)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_structured_rejects_length_truncation_non_object_and_cancelled_signal()
+     {
+        let make_req = |signal: CancelToken| super::StructuredRequest {
+            session_id: None,
+            system: "judge".into(),
+            prompt: "check".into(),
+            tool_name: "submit_verdict".into(),
+            tool_description: "submit verdict".into(),
+            schema: serde_json::json!({"type": "object"}),
+            route: route(),
+            signal,
+        };
+
+        // 1) Truncated `DoneReason::Length` must fail closed even if partial
+        //    tool arguments look like `{"ok": true}`.
+        let truncated_stream = rpi_agent::stream_fn(|model, _, _| {
+            let mut msg = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = vec![Content::ToolCall(rpi_ai::types::ToolCall {
+                kind: rpi_ai::types::ToolCallType,
+                id: "tc-trunc".into(),
+                name: "submit_verdict".into(),
+                arguments: serde_json::json!({"ok": true}),
+                thought_signature: None,
+                namespace: None,
+                recorded: None,
+            })];
+            msg.stop_reason = StopReason::Length;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Length,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        assert!(
+            super::complete_structured_with_stream(
+                make_req(CancelToken::new()),
+                truncated_stream,
+            )
+            .await
+            .is_err()
+        );
+
+        // 2) Non-object JSON fallback (e.g. `true` or `[1,2]`) must be rejected.
+        let scalar_stream = rpi_agent::stream_fn(|model, _, _| {
+            let mut msg = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = vec![Content::text("true")];
+            msg.stop_reason = StopReason::Stop;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        assert!(
+            super::complete_structured_with_stream(
+                make_req(CancelToken::new()),
+                scalar_stream,
+            )
+            .await
+            .is_err()
+        );
+
+        // 3) Pre-cancelled token returns error immediately without waiting on stream.
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        let hanging_stream = rpi_agent::stream_fn(|_, _, _| {
+            let (_producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            consumer
+        });
+        assert!(
+            super::complete_structured_with_stream(
+                make_req(cancelled),
+                hanging_stream,
+            )
+            .await
+            .is_err()
         );
     }
 }
