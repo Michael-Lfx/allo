@@ -394,21 +394,7 @@ impl FlowyApp {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(self.theme.ink())
                                     .child(title),
-                            )
-                            .when(active_work > 0, |row| {
-                                row.child(
-                                    div()
-                                        .flex_none()
-                                        .px(px(5.))
-                                        .py(px(1.))
-                                        .rounded_full()
-                                        .bg(self.theme.status_active_bg())
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(self.theme.status_active())
-                                        .child(active_work.to_string()),
-                                )
-                            }),
+                            ),
                     )
                     .child(subtitle),
             )

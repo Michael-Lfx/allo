@@ -863,5 +863,13 @@
   "trace.filter_all": "全部事件",
   "trace.filter_warn": "核验与告警",
   "verify.override.confirm_label": "我已知晓核验未通过，仍强制放行",
-  "verify.override.missing_report": "缺少核验报告编号，请刷新后重试。"
+  "verify.override.missing_report": "缺少核验报告编号，请刷新后重试。",
+  "board.group_active": "进行中与待拍板 ({count})",
+  "board.group_settled": "已完成归档 ({count})",
+  "board.skill_queue": "排队队列",
+  "board.skill_shell": "本机命令",
+  "board.skill_work": "任务",
+  "env.state_ready": "就绪",
+  "env.state_setup": "待配置",
+  "project.open_board": "在工作台看板查看"
 }

@@ -67,16 +67,17 @@ pub struct OpenDeliverables(pub Vec<flowy_agent::FileEntry>);
 
 impl gpui::EventEmitter<OpenDeliverables> for ChatFeed {}
 
-/// Keeps a long path readable in a narrow card: the tail (folder and file
-/// name) matters more than the drive or repository root.
+/// Keeps a long path readable in a narrow card: strips Windows `\\?\` prefixes
+/// and keeps the tail (folder and file name) legible.
 fn display_path(path: &str) -> String {
+    let cleaned = crate::ports::display_path_str(path);
     const MAX: usize = 64;
-    if path.chars().count() <= MAX {
-        return path.to_owned();
+    if cleaned.chars().count() <= MAX {
+        return cleaned;
     }
-    let tail: String = path
+    let tail: String = cleaned
         .chars()
-        .skip(path.chars().count() - (MAX - 1))
+        .skip(cleaned.chars().count() - (MAX - 1))
         .collect();
     format!("\u{2026}{tail}")
 }

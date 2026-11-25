@@ -212,25 +212,25 @@ impl ChatComposer {
                             .w_full()
                             .min_w_0()
                             .flex()
-                            .flex_wrap()
                             .items_center()
                             .justify_between()
-                            .gap(self.theme.space(6.))
+                            .gap(self.theme.space(8.))
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .flex()
                                     .flex_wrap()
                                     .items_center()
                                     .gap(px(4.))
-                                    .min_w_0()
                                     .child(self.model_chip(cx))
                                     .child(self.workspace_chip(cx))
                                     .child(self.verify_chip(cx))
                                     .child(self.skill_chip(cx)),
                             )
-                            .child(
+                            .child(div().flex_none().child(
                                 self.composer_submit(running, has_draft, cx),
-                            ),
+                            )),
                     ),
             )
     }
@@ -416,9 +416,10 @@ impl ChatComposer {
         has_draft: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        // A missing cloud model means no live routing is configured; keep the
-        // send affordance disabled instead of failing after the click.
-        let has_draft = has_draft && self.cloud_ready;
+        // Keep the button actionable whenever a draft exists: if cloud routing
+        // is not ready, clicking guides the user to the model menu just like
+        // pressing Enter instead of silently ignoring clicks.
+        let needs_setup = has_draft && !self.cloud_ready;
         // While a turn is running the stop affordance must stay reachable, and
         // a new message must still be submittable: the host accepts it into its
         // durable queue (`AgentHandle::accept_deferred`) instead of dropping it.
@@ -447,13 +448,32 @@ impl ChatComposer {
         let send_colors =
             self.theme.control_colors(theme::ControlVariant::Primary);
         let send_size = self.theme.control_height(theme::ControlSize::Small);
+        let btn_bg = if needs_setup {
+            self.theme.status_attention()
+        } else {
+            send_colors.background
+        };
+        let btn_fg = if needs_setup {
+            self.theme.on_ink()
+        } else {
+            send_colors.foreground
+        };
+        let btn_hover = if needs_setup {
+            self.theme.status_attention().opacity(0.88)
+        } else {
+            send_colors.hover
+        };
         row.child(
             theme::button(
                 "chat-send",
                 self.t("studio.send"),
                 !has_draft,
                 &self.theme,
-                cx.listener(|_, _, _, cx| {
+                cx.listener(|this, _, _, cx| {
+                    if !this.cloud_ready {
+                        cx.emit(ComposerEvent::CloudNotReady);
+                        return;
+                    }
                     tracing::debug!(
                         target: "flowy.prompt",
                         stage = "ui.composer.chat-send",
@@ -468,11 +488,11 @@ impl ChatComposer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(send_colors.background)
-            .text_color(send_colors.foreground)
+            .bg(btn_bg)
+            .text_color(btn_fg)
             .when(!has_draft, |el| el.opacity(0.45))
             .when(has_draft, move |el| {
-                el.hover(move |style| style.bg(send_colors.hover))
+                el.hover(move |style| style.bg(btn_hover))
             })
             .child(theme::icons::arrow_right().size(px(14.))),
         )

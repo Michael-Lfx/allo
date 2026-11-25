@@ -79,13 +79,16 @@ impl crate::panel::StudioPanel {
         } else {
             self.section_page().into_any_element()
         };
-        column =
-            column.child(div().flex().flex_1().min_h_0().child(content).when(
-                !is_board
-                    && (self.deliverables.is_some()
-                        || self.inspected_work.is_some()),
-                |row| row.child(self.right_sheet_drawer(cx)),
-            ));
+        column = column.child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(content)
+                .when(!is_board && self.right_drawer_open, |row| {
+                    row.child(self.right_sheet_drawer(cx))
+                }),
+        );
         if self.model_info_open && !self.model_menu_open && chrome {
             column = column.child(theme::popover(
                 "model-info",
@@ -167,9 +170,6 @@ impl crate::panel::StudioPanel {
                 cx,
                 self.i18n.locale().is_rtl(),
             ));
-        }
-        if let Some(modal) = self.flow_modal_overlay(cx) {
-            column = column.child(modal);
         }
         column
     }
@@ -853,7 +853,7 @@ impl crate::panel::StudioPanel {
         } else {
             self.t("chat.deliverables")
         };
-        let drawer_open = self.deliverables.is_some();
+        let drawer_open = self.right_drawer_open;
 
         div()
             .h(px(48.))
@@ -1002,12 +1002,7 @@ impl crate::panel::StudioPanel {
     }
 
     fn env_status_pill(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let env = crate::ports::probe_local_env(
-            &self.projects,
-            &self.installed_skills,
-            self.cloud_ready,
-            self.agent.semantic_verify_enabled(),
-        );
+        let env = &self.local_env;
         let ready = matches!(env.overall, crate::ports::EnvSeverity::Ready);
         let dot_color = if ready {
             self.theme.status_verified()
@@ -1041,6 +1036,7 @@ impl crate::panel::StudioPanel {
                 .on_click(cx.listener(|panel, _, _, cx| {
                     panel.env_popover_open = !panel.env_popover_open;
                     if panel.env_popover_open {
+                        panel.refresh_local_env();
                         panel.model_menu_open = false;
                         panel.workspace_menu_open = false;
                         panel.skill_menu_open = false;
@@ -1057,12 +1053,7 @@ impl crate::panel::StudioPanel {
     }
 
     fn env_status_popover(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let env = crate::ports::probe_local_env(
-            &self.projects,
-            &self.installed_skills,
-            self.cloud_ready,
-            self.agent.semantic_verify_enabled(),
-        );
+        let env = &self.local_env;
         let l3_enabled = env.semantic_verify_enabled;
         let mut card = div()
             .id("env-status-card")
@@ -1131,7 +1122,7 @@ impl crate::panel::StudioPanel {
                     ),
             );
 
-        for check in env.checks {
+        for check in &env.checks {
             let color = match check.severity {
                 crate::ports::EnvSeverity::Ready => {
                     self.theme.status_verified()
@@ -1155,7 +1146,7 @@ impl crate::panel::StudioPanel {
                         div()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(color)
-                            .child(check.detail),
+                            .child(check.detail.resolve(|k| self.t(k))),
                     ),
             );
         }

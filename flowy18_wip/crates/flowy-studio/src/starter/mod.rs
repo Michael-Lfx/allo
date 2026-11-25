@@ -123,6 +123,15 @@ impl StudioPanel {
         let glimpse =
             crate::history::clip_words(&prompt, 46).unwrap_or_default();
         let fill_hint = self.t("home.fill_hint");
+        let suggested_id = category.suggested_skill_id();
+        let suggested_skill = self
+            .installed_skills
+            .iter()
+            .find(|chip| chip.id == suggested_id)
+            .cloned();
+        let skill_badge_title =
+            suggested_skill.as_ref().map(|chip| chip.title.clone());
+        let skill_pick_id = suggested_skill.map(|chip| chip.id);
         let scale = crate::motion::travel_scale(self.theme.motion_policy());
         let delay = crate::motion::stagger(index, 28, crate::motion::MODERATE);
         let soft = self.theme.soft();
@@ -166,9 +175,31 @@ impl StudioPanel {
                 .child(
                     div()
                         .flex_none()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .child(fill_hint),
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .when_some(skill_badge_title, |row, skill_name| {
+                            row.child(
+                                div()
+                                    .max_w(px(110.))
+                                    .px(px(6.))
+                                    .py(px(1.))
+                                    .rounded_full()
+                                    .bg(self.theme.soft())
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(skill_name),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.muted())
+                                .child(fill_hint),
+                        ),
                 ),
         )
         .child(
@@ -182,8 +213,13 @@ impl StudioPanel {
                 .child(glimpse),
         )
         .on_click(cx.listener(move |panel, _, _, cx| {
-            // Picking previews the prompt; it never sends.
-            panel.request_fill_prompt(prompt.clone(), cx);
+            // Picking previews the prompt (and mounts the suggested skill); it
+            // never sends automatically.
+            panel.request_fill_prompt_with_skill(
+                prompt.clone(),
+                skill_pick_id.as_deref(),
+                cx,
+            );
         }));
         if scale <= 0.0 {
             return card.into_any_element();

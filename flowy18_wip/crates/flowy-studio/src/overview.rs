@@ -114,9 +114,53 @@ impl StudioPanel {
                     ),
             );
         } else {
-            for (idx, group) in filtered.iter().enumerate() {
-                sessions_col = sessions_col
-                    .child(self.board_session_card(group, idx as u64, cx));
+            let active_groups: Vec<&SessionBoardGroup> =
+                filtered.iter().copied().filter(|g| g.is_active).collect();
+            let settled_groups: Vec<&SessionBoardGroup> =
+                filtered.iter().copied().filter(|g| !g.is_active).collect();
+            let show_headers =
+                !active_groups.is_empty() && !settled_groups.is_empty();
+            let mut card_idx: u64 = 0;
+
+            if !active_groups.is_empty() {
+                if show_headers {
+                    sessions_col = sessions_col.child(
+                        div()
+                            .pt(px(2.))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.muted())
+                            .child(self.tf(
+                                "board.group_active",
+                                &[("count", &active_groups.len().to_string())],
+                            )),
+                    );
+                }
+                for group in active_groups {
+                    sessions_col = sessions_col
+                        .child(self.board_session_card(group, card_idx, cx));
+                    card_idx += 1;
+                }
+            }
+            if !settled_groups.is_empty() {
+                if show_headers {
+                    sessions_col = sessions_col.child(
+                        div()
+                            .pt(self.theme.space(6.))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.muted())
+                            .child(self.tf(
+                                "board.group_settled",
+                                &[("count", &settled_groups.len().to_string())],
+                            )),
+                    );
+                }
+                for group in settled_groups {
+                    sessions_col = sessions_col
+                        .child(self.board_session_card(group, card_idx, cx));
+                    card_idx += 1;
+                }
             }
         }
 
@@ -357,8 +401,10 @@ impl StudioPanel {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
+                    .gap(px(6.))
                     .text_xs()
                     .child(
                         div()
@@ -374,7 +420,14 @@ impl StudioPanel {
                         div()
                             .text_color(self.theme.file_kind_doc())
                             .child(format!("DOCX {}", kpi.doc_count)),
-                    ),
+                    )
+                    .when(kpi.other_count > 0, |row| {
+                        row.child(
+                            div()
+                                .text_color(self.theme.file_kind_other())
+                                .child(format!("FILE {}", kpi.other_count)),
+                        )
+                    }),
             );
 
         // Tile 4: Active Session Spark Bars
@@ -544,31 +597,59 @@ impl StudioPanel {
             );
         }
 
-        if let Some(proj_id) = &self.board_project_filter {
-            let proj_name = self
-                .projects
-                .iter()
-                .find(|p| &p.id == proj_id)
-                .map_or_else(|| proj_id.clone(), |p| p.name.clone());
+        if !self.projects.is_empty() {
             pills = pills.child(
-                theme::interactive(
-                    "board-clear-project",
-                    proj_name.clone(),
-                    &self.theme,
-                )
-                .px(self.theme.space(10.))
-                .py(px(4.))
-                .rounded_full()
-                .bg(self.theme.status_active_bg())
-                .text_xs()
-                .text_color(self.theme.status_active())
-                .cursor_pointer()
-                .child(format!("{proj_name} \u{00d7}"))
-                .on_click(cx.listener(|panel, _, _, cx| {
-                    panel.board_project_filter = None;
-                    cx.notify();
-                })),
+                div().w(px(1.)).h(px(14.)).mx(px(2.)).bg(self.theme.line()),
             );
+            for (p_idx, project) in self.projects.iter().take(4).enumerate() {
+                let pid = project.id.clone();
+                let active = self.board_project_filter.as_deref()
+                    == Some(project.id.as_str());
+                let label = if active {
+                    format!("{} \u{00d7}", project.name)
+                } else {
+                    project.name.clone()
+                };
+                pills = pills.child(
+                    theme::interactive(
+                        ("board-proj-filter", p_idx as u64),
+                        project.name.clone(),
+                        &self.theme,
+                    )
+                    .max_w(px(140.))
+                    .px(self.theme.space(8.))
+                    .py(px(4.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_xs()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .bg(if active {
+                        self.theme.status_active_bg()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .text_color(if active {
+                        self.theme.status_active()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .child(label)
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            if panel.board_project_filter.as_deref()
+                                == Some(pid.as_str())
+                            {
+                                panel.board_project_filter = None;
+                            } else {
+                                panel.board_project_filter = Some(pid.clone());
+                            }
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
         }
 
         div()
@@ -726,11 +807,18 @@ impl StudioPanel {
                     self.t("board.state_needs_approval"),
                     false,
                 ),
-                BranchPhase::Running { step_label, .. } => (
-                    self.theme.status_active(),
-                    format!("{}% · {step_label}", branch.progress_pct as u32),
-                    true,
-                ),
+                BranchPhase::Running { step_label, .. } => {
+                    let step = if step_label.is_empty() {
+                        self.t("chat.status_running")
+                    } else {
+                        step_label.clone()
+                    };
+                    (
+                        self.theme.status_active(),
+                        format!("{}% · {step}", branch.progress_pct as u32),
+                        true,
+                    )
+                }
                 BranchPhase::Queued { .. } => {
                     (self.theme.muted(), self.t("chat.bg_task_queued"), false)
                 }
@@ -803,7 +891,9 @@ impl StudioPanel {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(self.theme.ink())
                                 .whitespace_nowrap()
-                                .child(branch.skill_label.clone()),
+                                .child(
+                                    branch.skill_label.resolve(|k| self.t(k)),
+                                ),
                         )
                         .child(
                             div()
@@ -972,7 +1062,9 @@ impl StudioPanel {
     }
 
     /// Centered wide Flowchart Modal opened when clicking any session on the board.
-    pub(crate) fn flow_modal_overlay(
+    /// Rendered at the top-level `FlowyApp` modal slot so the scrim covers the
+    /// entire window (including dock and titlebar) with generous horizontal room.
+    pub fn flow_modal_overlay(
         &self,
         cx: &Context<'_, Self>,
     ) -> Option<AnyElement> {
@@ -1302,7 +1394,13 @@ impl StudioPanel {
             BranchPhase::NeedsApproval { .. } => {
                 self.t("board.state_needs_approval")
             }
-            BranchPhase::Running { step_label, .. } => step_label.clone(),
+            BranchPhase::Running { step_label, .. } => {
+                if step_label.is_empty() {
+                    self.t("chat.status_running")
+                } else {
+                    step_label.clone()
+                }
+            }
             BranchPhase::Queued { .. } => self.t("chat.bg_task_queued"),
             BranchPhase::Delivered { override_used, .. } => {
                 if *override_used {
@@ -1314,6 +1412,7 @@ impl StudioPanel {
             BranchPhase::Idle => self.t("chat.status_idle"),
         };
 
+        let skill_text = branch.skill_label.resolve(|k| self.t(k));
         let border_selected = if selected {
             self.theme.ink()
         } else {
@@ -1325,11 +1424,15 @@ impl StudioPanel {
         let format_color = self.format_color(branch.format);
 
         div()
+            .px(px(6.))
+            .py(px(4.))
+            .rounded_xl()
+            .when(selected, |row| row.bg(self.theme.soft().opacity(0.6)))
             .flex()
             .items_center()
             .child(flow_connector(
                 ("fm-e1", idx),
-                30.0,
+                22.0,
                 e1_color,
                 e1_style,
                 policy,
@@ -1338,10 +1441,10 @@ impl StudioPanel {
             .child(
                 theme::interactive(
                     ("fm-n1", idx),
-                    branch.skill_label.clone(),
+                    skill_text.clone(),
                     &self.theme,
                 )
-                .w(px(176.))
+                .w(px(148.))
                 .flex_none()
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
@@ -1379,7 +1482,7 @@ impl StudioPanel {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child(branch.skill_label.clone()),
+                                .child(skill_text),
                         )
                         .child(
                             div()
@@ -1394,7 +1497,7 @@ impl StudioPanel {
             )
             .child(flow_connector(
                 ("fm-e2", idx),
-                32.0,
+                22.0,
                 e2_color,
                 e2_style,
                 policy,
@@ -1406,7 +1509,7 @@ impl StudioPanel {
                     gate_title.clone(),
                     &self.theme,
                 )
-                .w(px(184.))
+                .w(px(156.))
                 .flex_none()
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
@@ -1497,7 +1600,7 @@ impl StudioPanel {
             )
             .child(flow_connector(
                 ("fm-e3", idx),
-                32.0,
+                22.0,
                 e3_color,
                 e3_style,
                 policy,
@@ -1509,7 +1612,7 @@ impl StudioPanel {
                     branch.deliverable_name.clone(),
                     &self.theme,
                 )
-                .w(px(204.))
+                .w(px(172.))
                 .flex_none()
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
@@ -1746,7 +1849,7 @@ impl StudioPanel {
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(self.theme.ink())
-                        .child(branch.skill_label.clone()),
+                        .child(branch.skill_label.resolve(|k| self.t(k))),
                 )
                 .child(
                     div()

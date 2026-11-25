@@ -863,5 +863,13 @@
   "trace.filter_all": "全部事件",
   "trace.filter_warn": "核驗與警示",
   "verify.override.confirm_label": "我已知悉核驗未通過，仍強制放行",
-  "verify.override.missing_report": "缺少核驗報告編號，請重新整理後再試。"
+  "verify.override.missing_report": "缺少核驗報告編號，請重新整理後再試。",
+  "board.group_active": "進行中與待確認 ({count})",
+  "board.group_settled": "已完成歸檔 ({count})",
+  "board.skill_queue": "排隊佇列",
+  "board.skill_shell": "本機命令",
+  "board.skill_work": "任務",
+  "env.state_ready": "就緒",
+  "env.state_setup": "待設定",
+  "project.open_board": "在工作台看板檢視"
 }

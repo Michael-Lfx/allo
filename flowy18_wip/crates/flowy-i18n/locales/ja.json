@@ -863,5 +863,13 @@
   "trace.filter_all": "すべてのイベント",
   "trace.filter_warn": "警告と検証",
   "verify.override.confirm_label": "検証不合格を理解したうえで配信します",
-  "verify.override.missing_report": "検証レポート ID がありません。更新して再試行してください。"
+  "verify.override.missing_report": "検証レポート ID がありません。更新して再試行してください。",
+  "board.group_active": "実行中・要確認 ({count})",
+  "board.group_settled": "完了・アーカイブ ({count})",
+  "board.skill_queue": "キュー",
+  "board.skill_shell": "コマンド",
+  "board.skill_work": "作業",
+  "env.state_ready": "準備完了",
+  "env.state_setup": "要設定",
+  "project.open_board": "ワークボードで表示"
 }

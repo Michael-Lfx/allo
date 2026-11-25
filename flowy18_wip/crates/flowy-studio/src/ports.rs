@@ -113,11 +113,28 @@ pub enum BranchPhase {
     Idle,
 }
 
+/// Localizable skill/stage label shown on board cards and flowchart nodes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkillLabel {
+    Key(&'static str),
+    Literal(String),
+}
+
+impl SkillLabel {
+    #[must_use]
+    pub fn resolve<F: Fn(&str) -> String>(&self, t: F) -> String {
+        match self {
+            Self::Key(key) => t(key),
+            Self::Literal(text) => text.clone(),
+        }
+    }
+}
+
 /// One visual flow branch inside a session swimlane / modal flowchart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkBranchSummary {
     pub id: String,
-    pub skill_label: String,
+    pub skill_label: SkillLabel,
     pub phase: BranchPhase,
     pub deliverable_name: String,
     pub deliverable_path: Option<String>,
@@ -293,7 +310,7 @@ impl BoardDataSource for AgentHandle {
                         .unwrap_or(ReceiptState::Queued);
                     WorkBranchSummary {
                         id: format!("receipt-{}", receipt.id),
-                        skill_label: "Queue".to_owned(),
+                        skill_label: SkillLabel::Key("board.skill_queue"),
                         phase: BranchPhase::Queued {
                             receipt_id: receipt.id.clone(),
                             state,
@@ -528,8 +545,8 @@ where
                 )
             } else {
                 (
-                    "Router".to_owned(),
-                    "Running".to_owned(),
+                    SkillLabel::Key("chat.router_name"),
+                    String::new(),
                     summary.title.clone(),
                 )
             };
@@ -542,7 +559,11 @@ where
                     step_label: step_label.clone(),
                     percent: pct,
                 },
-                deliverable_name: step_label,
+                deliverable_name: if step_label.is_empty() {
+                    clip_label(&summary.title, 24)
+                } else {
+                    step_label
+                },
                 deliverable_path: None,
                 format: DeliverableFormat::Other,
                 progress_pct: pct,
@@ -557,7 +578,7 @@ where
             receipt_state_fn(&receipt.id).unwrap_or(ReceiptState::Queued);
         branches.push(WorkBranchSummary {
             id: format!("{}-q-{}", summary.id, receipt.id),
-            skill_label: "Queue".to_owned(),
+            skill_label: SkillLabel::Key("board.skill_queue"),
             phase: BranchPhase::Queued {
                 receipt_id: receipt.id.clone(),
                 state,
@@ -585,7 +606,7 @@ where
             .unwrap_or_else(|| summary.title.clone());
         branches.push(WorkBranchSummary {
             id: format!("{}-idle", summary.id),
-            skill_label: "Router".to_owned(),
+            skill_label: SkillLabel::Key("chat.router_name"),
             phase: BranchPhase::Idle,
             deliverable_name: clip_label(&summary.title, 24),
             deliverable_path: None,
@@ -599,21 +620,28 @@ where
     branches
 }
 
-fn infer_skill_label(format: DeliverableFormat, tool: Option<&str>) -> String {
+fn infer_skill_label(
+    format: DeliverableFormat,
+    tool: Option<&str>,
+) -> SkillLabel {
     if let Some(name) = tool {
         return match name {
-            "create_deck" | "verify_deck" => "PPTX".to_owned(),
-            "read_file" | "write_file" | "edit_file" => "File".to_owned(),
-            "glob" | "grep" => "Search".to_owned(),
-            "bash" | "shell" => "Shell".to_owned(),
-            other => other.to_owned(),
+            "create_deck" | "verify_deck" => {
+                SkillLabel::Key("library.category.slides")
+            }
+            "read_file" | "write_file" | "edit_file" => {
+                SkillLabel::Key("deliverables.kind_file")
+            }
+            "glob" | "grep" => SkillLabel::Key("dock.search"),
+            "bash" | "shell" => SkillLabel::Key("board.skill_shell"),
+            other => SkillLabel::Literal(other.to_owned()),
         };
     }
     match format {
-        DeliverableFormat::Sheet => "Sheet".to_owned(),
-        DeliverableFormat::Slides => "Slides".to_owned(),
-        DeliverableFormat::Doc => "Doc".to_owned(),
-        DeliverableFormat::Other => "Work".to_owned(),
+        DeliverableFormat::Sheet => SkillLabel::Key("deliverables.kind_data"),
+        DeliverableFormat::Slides => SkillLabel::Key("library.category.slides"),
+        DeliverableFormat::Doc => SkillLabel::Key("deliverables.kind_document"),
+        DeliverableFormat::Other => SkillLabel::Key("board.skill_work"),
     }
 }
 
@@ -788,37 +816,83 @@ pub fn format_traces_jsonl(entries: &[RedactedTraceEntry]) -> String {
         .join("\n")
 }
 
-/// Masks secret tokens/keys and clamps payload length before displaying or
-/// exporting trace text.
+fn is_secret_key(raw: &str) -> bool {
+    let key = raw
+        .trim_matches(|c: char| {
+            !c.is_ascii_alphanumeric() && c != '_' && c != '-'
+        })
+        .to_ascii_lowercase();
+    key.contains("key")
+        || key.contains("token")
+        || key.contains("secret")
+        || key.contains("password")
+        || key == "authorization"
+}
+
+fn looks_like_secret_token(raw: &str) -> bool {
+    let core = raw.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | ',' | ';' | '{' | '}' | '[' | ']' | '(' | ')'
+        )
+    });
+    core.len() >= 12
+        && (core.starts_with("sk-")
+            || core.starts_with("ghp_")
+            || core.starts_with("eyJ"))
+}
+
+/// Masks secret tokens/keys (including JSON key-value pairs and JWTs) and
+/// clamps payload length before displaying or exporting trace text.
 #[must_use]
 pub fn redact_trace_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len().min(MAX_TRACE_SUMMARY_BYTES));
     let mut words = raw.split_whitespace();
+    let mut redact_next = false;
     while let Some(word) = words.next() {
         if !out.is_empty() {
             out.push(' ');
         }
-        let lower = word.to_ascii_lowercase();
+        if redact_next {
+            redact_next = false;
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        let stripped = word.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | ',' | ';' | '{' | '}' | '[' | ']')
+        });
+        let lower = stripped.to_ascii_lowercase();
         if lower == "bearer" {
             out.push_str("Bearer [REDACTED]");
             let _ = words.next();
             continue;
         }
-        if let Some((lhs, _)) = word.split_once('=') {
-            let key = lhs.to_ascii_lowercase();
-            if key.contains("key")
-                || key.contains("token")
-                || key.contains("secret")
-                || key.contains("password")
-            {
-                out.push_str(lhs);
-                out.push_str("=[REDACTED]");
-                continue;
-            }
-        }
-        if (word.starts_with("sk-") || word.starts_with("ghp_"))
-            && word.len() >= 12
+        if let Some((lhs, rhs)) = word.split_once('=')
+            && is_secret_key(lhs)
         {
+            out.push_str(lhs);
+            out.push_str("=[REDACTED]");
+            if rhs.is_empty() {
+                redact_next = true;
+            }
+            continue;
+        }
+        if let Some((lhs, rhs)) = word.split_once(':')
+            && is_secret_key(lhs)
+        {
+            out.push_str(lhs);
+            if rhs
+                .trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '}'))
+                .is_empty()
+            {
+                out.push(':');
+                redact_next = true;
+            } else {
+                out.push_str(":[REDACTED]");
+            }
+            continue;
+        }
+        if looks_like_secret_token(word) {
             out.push_str("[REDACTED]");
             continue;
         }
@@ -849,10 +923,26 @@ pub enum EnvSeverity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalEnvDetail {
+    Key(&'static str),
+    Literal(String),
+}
+
+impl LocalEnvDetail {
+    #[must_use]
+    pub fn resolve<F: Fn(&str) -> String>(&self, t: F) -> String {
+        match self {
+            Self::Key(key) => t(key),
+            Self::Literal(text) => text.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalEnvCheck {
     pub label_key: &'static str,
     pub severity: EnvSeverity,
-    pub detail: String,
+    pub detail: LocalEnvDetail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -862,8 +952,18 @@ pub struct LocalEnvSnapshot {
     pub checks: Vec<LocalEnvCheck>,
 }
 
-/// Evaluates lightweight, non-blocking local environment checks without reading
-/// any kernel state files.
+impl Default for LocalEnvSnapshot {
+    fn default() -> Self {
+        Self {
+            overall: EnvSeverity::Warning,
+            semantic_verify_enabled: false,
+            checks: Vec::new(),
+        }
+    }
+}
+
+/// Evaluates lightweight local environment checks without reading any kernel
+/// state files. Call on state changes or popover open — never per render frame.
 #[must_use]
 pub fn probe_local_env(
     projects: &[Project],
@@ -884,7 +984,7 @@ pub fn probe_local_env(
         } else {
             EnvSeverity::Warning
         },
-        detail: if unavailable_projects == 0 {
+        detail: LocalEnvDetail::Literal(if unavailable_projects == 0 {
             format!("{}/{}", projects.len(), projects.len())
         } else {
             format!(
@@ -892,12 +992,12 @@ pub fn probe_local_env(
                 projects.len().saturating_sub(unavailable_projects),
                 projects.len()
             )
-        },
+        }),
     });
     checks.push(LocalEnvCheck {
         label_key: "env.check_skills",
         severity: EnvSeverity::Ready,
-        detail: installed_skills.len().to_string(),
+        detail: LocalEnvDetail::Literal(installed_skills.len().to_string()),
     });
     checks.push(LocalEnvCheck {
         label_key: "env.check_model_route",
@@ -906,20 +1006,20 @@ pub fn probe_local_env(
         } else {
             EnvSeverity::Warning
         },
-        detail: if cloud_ready {
-            "OK".to_owned()
+        detail: LocalEnvDetail::Key(if cloud_ready {
+            "env.state_ready"
         } else {
-            "Setup".to_owned()
-        },
+            "env.state_setup"
+        }),
     });
     checks.push(LocalEnvCheck {
         label_key: "env.check_l3_verify",
         severity: EnvSeverity::Ready,
-        detail: if semantic_verify_enabled {
-            "ON".to_owned()
+        detail: LocalEnvDetail::Key(if semantic_verify_enabled {
+            "env.state_on"
         } else {
-            "OFF".to_owned()
-        },
+            "env.state_off"
+        }),
     });
 
     let overall = if unavailable_projects > 0 || !cloud_ready {
@@ -955,7 +1055,7 @@ mod tests {
 
     #[test]
     fn redact_trace_text_masks_secrets_and_clamps_long_payloads() {
-        let raw = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9 api_key=my-secret-value sk-live-1234567890abcdef ok=true";
+        let raw = r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9 api_key=my-secret-value {"api_key":"sk-live-1234567890abcdef","token": "eyJhbGciOiJIUzI1NiJ9.payload"} ok=true"#;
         let clean = redact_trace_text(raw);
         assert!(!clean.contains("eyJhbGciOiJIUzI1NiJ9"), "{clean}");
         assert!(!clean.contains("my-secret-value"), "{clean}");

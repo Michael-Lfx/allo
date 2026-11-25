@@ -167,6 +167,7 @@ pub struct StudioPanel {
     pub workspace_menu_open: bool,
     pub skill_menu_open: bool,
     pub(crate) board_snapshot: crate::ports::WorkBoardSnapshot,
+    pub(crate) local_env: crate::ports::LocalEnvSnapshot,
     pub(crate) board_filter: crate::overview::BoardFilter,
     pub(crate) board_project_filter: Option<String>,
     pub(crate) flow_modal_session: Option<String>,
@@ -175,9 +176,12 @@ pub struct StudioPanel {
     pub(crate) flow_modal_override_ack: bool,
     pub(crate) trace_filter: crate::overview::TraceFilter,
     pub(crate) drawer_tab: crate::deliverables::RightDrawerTab,
+    pub(crate) right_drawer_open: bool,
     pub(crate) selected_skill: Option<crate::ports::SkillChip>,
     pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
     board_generation: u64,
+    board_dirty: bool,
+    last_board_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
@@ -526,6 +530,7 @@ impl StudioPanel {
             workspace_menu_open: false,
             skill_menu_open: false,
             board_snapshot: crate::ports::WorkBoardSnapshot::default(),
+            local_env: crate::ports::LocalEnvSnapshot::default(),
             board_filter: crate::overview::BoardFilter::All,
             board_project_filter: None,
             flow_modal_session: None,
@@ -534,9 +539,12 @@ impl StudioPanel {
             flow_modal_override_ack: false,
             trace_filter: crate::overview::TraceFilter::All,
             drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
+            right_drawer_open: false,
             selected_skill: None,
             installed_skills: Vec::new(),
             board_generation: 0,
+            board_dirty: false,
+            last_board_refresh: None,
             tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
             i18n,
@@ -564,6 +572,7 @@ impl StudioPanel {
         panel.start_pump(cx);
         panel.refresh_chat(cx);
         panel.refresh_board_snapshot();
+        panel.refresh_local_env();
         // A persisted failed status must be visible on the first frame too.
         panel.refresh_working(cx);
         panel
@@ -666,8 +675,32 @@ impl StudioPanel {
         }) {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
+        let structural_update = initialized
+            || updates.iter().any(|update| {
+                matches!(
+                    update,
+                    flowy_agent::AgentUpdate::Sessions
+                        | flowy_agent::AgentUpdate::Artifacts
+                        | flowy_agent::AgentUpdate::StorageError
+                )
+            });
+        let prev_status = self.status.clone();
         self.refresh_chat(cx);
-        self.refresh_board_snapshot();
+        let status_changed = self.status != prev_status;
+        if structural_update || status_changed {
+            self.refresh_board_snapshot();
+        } else {
+            self.board_dirty = true;
+            // While streaming deltas, only refresh the board when it is open
+            // and at most once per 1.2s to avoid per-token disk reads.
+            if self.surface == StudioSurface::Board
+                && self.last_board_refresh.is_none_or(|last| {
+                    last.elapsed() >= Duration::from_millis(1200)
+                })
+            {
+                self.refresh_board_snapshot();
+            }
+        }
         let background_claim_settled = self.agent.has_active_claim()
             && self
                 .agent
@@ -858,6 +891,7 @@ impl StudioPanel {
     }
 
     fn clear_right_sheet(&mut self) {
+        self.right_drawer_open = false;
         self.deliverables = None;
         self.inspected_work = None;
         self.preview_file = None;
@@ -1065,6 +1099,7 @@ impl StudioPanel {
     /// receipts were waiting for the catalog to finish loading.
     pub fn notify_cloud_ready(&mut self, cx: &mut Context<'_, Self>) {
         self.cloud_ready = true;
+        self.refresh_local_env();
         if self.initialized {
             self.refresh_pending_receipts(cx);
         } else {
@@ -1412,12 +1447,13 @@ impl StudioPanel {
         // it is still what the user asked to send.
         let typed = self.prompt_text(cx);
         let trimmed = typed.trim();
+        let trimmed_draft = trimmed.to_owned();
         let text = if let Some(skill) = &self.selected_skill
             && !trimmed.is_empty()
         {
             format!("[Skill: {}]\n{trimmed}", skill.title)
         } else {
-            trimmed.to_string()
+            trimmed_draft.clone()
         };
         tracing::debug!(
             target: "flowy.prompt",
@@ -1546,7 +1582,8 @@ impl StudioPanel {
                 panel.submission_pending = false;
                 panel.submission_stop = None;
                 let active = panel.agent.active_session_id();
-                let draft_matches = panel.prompt_text(cx).trim() == text;
+                let draft_matches =
+                    panel.prompt_text(cx).trim() == trimmed_draft;
                 match result {
                     Ok(session_id)
                         if active.as_deref() == Some(session_id.as_str()) =>
@@ -1699,6 +1736,23 @@ impl StudioPanel {
         self.fill_prompt(&text, cx);
     }
 
+    /// Fills the prompt from a starter and optionally pre-mounts its suggested
+    /// skill when installed.
+    pub(crate) fn request_fill_prompt_with_skill(
+        &mut self,
+        text: String,
+        skill_id: Option<&str>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(id) = skill_id
+            && let Some(chip) =
+                self.installed_skills.iter().find(|skill| skill.id == id)
+        {
+            self.selected_skill = Some(chip.clone());
+        }
+        self.request_fill_prompt(text, cx);
+    }
+
     /// Switches which category's examples the home stage shows.
     pub(crate) fn set_starter_category(
         &mut self,
@@ -1727,7 +1781,9 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.clear_right_sheet();
+        self.right_drawer_open = true;
         self.deliverables = Some(files);
+        self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
         self.bg_tasks_open = false;
         cx.notify();
     }
@@ -1740,22 +1796,31 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.clear_right_sheet();
+        self.right_drawer_open = true;
         self.inspected_work = Some(work);
+        self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
         self.bg_tasks_open = false;
         cx.notify();
     }
 
-    /// Opens the drawer with the latest turn's files, or closes it if open.
+    /// Toggles the unified right-hand 3-mode drawer (Deliverables / Steps / Trace),
+    /// even before the turn has produced files so Steps and Trace stay reachable.
     pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
-        if self.deliverables.is_some() {
+        if self.right_drawer_open {
             self.close_right_sheet(cx);
             return;
         }
         let files = self.feed.read(cx).latest_deliverables();
-        match files {
-            Some(files) => self.open_deliverables(files, cx),
-            None => self.emit_notice(Some("chat.no_deliverables"), cx),
+        self.clear_right_sheet();
+        self.right_drawer_open = true;
+        if let Some(files) = files {
+            self.deliverables = Some(files);
+            self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
+        } else {
+            self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
         }
+        self.bg_tasks_open = false;
+        cx.notify();
     }
 
     /// Closes whichever right-hand sheet is open (deliverables or single-work
@@ -1847,6 +1912,7 @@ impl StudioPanel {
                 }));
         }
         self.refresh_board_snapshot();
+        self.refresh_local_env();
         cx.notify();
         Ok(())
     }
@@ -1871,6 +1937,7 @@ impl StudioPanel {
             self.emit_notice(None, cx);
         }
         self.refresh_board_snapshot();
+        self.refresh_local_env();
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
         Ok(())
@@ -1962,8 +2029,8 @@ impl StudioPanel {
     }
 
     /// Rebuilds the cached Visual Board snapshot from `AgentHandle`.
-    /// Called strictly on `AgentUpdate`, project changes, or opening the Board
-    /// — never on idle 33ms pump ticks or inside `Render::render`.
+    /// Called strictly on structural `AgentUpdate`, project changes, or opening
+    /// the Board — never per-token or inside `Render::render`.
     pub(crate) fn refresh_board_snapshot(&mut self) {
         use crate::ports::BoardDataSource as _;
         self.board_generation = self.board_generation.wrapping_add(1);
@@ -1974,6 +2041,25 @@ impl StudioPanel {
             &default_label,
             self.board_generation,
         );
+        self.board_dirty = false;
+        self.last_board_refresh = Some(std::time::Instant::now());
+    }
+
+    /// Rebuilds the cached local environment health snapshot (never called per
+    /// render frame).
+    pub(crate) fn refresh_local_env(&mut self) {
+        self.local_env = crate::ports::probe_local_env(
+            &self.projects,
+            &self.installed_skills,
+            self.cloud_ready,
+            self.agent.semantic_verify_enabled(),
+        );
+    }
+
+    /// Public entry point for `flowy-app` after mutating `cloud_ready`.
+    pub fn refresh_env_status(&mut self, cx: &mut Context<'_, Self>) {
+        self.refresh_local_env();
+        cx.notify();
     }
 
     /// Opens the Global Visual Board (`StudioSurface::Board`).
@@ -2063,6 +2149,7 @@ impl StudioPanel {
     ) {
         if self.installed_skills != skills {
             self.installed_skills = skills;
+            self.refresh_local_env();
             cx.notify();
         }
     }
@@ -2081,9 +2168,13 @@ impl StudioPanel {
     }
 
     /// Toggles the kernel L3 semantic verification disclosure switch.
-    pub(crate) fn toggle_semantic_verify(&self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn toggle_semantic_verify(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
         let next = !self.agent.semantic_verify_enabled();
         self.agent.set_semantic_verify_enabled(next);
+        self.refresh_local_env();
         cx.notify();
     }
 

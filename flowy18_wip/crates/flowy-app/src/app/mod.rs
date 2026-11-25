@@ -834,6 +834,7 @@ impl FlowyApp {
                 self.applied_tier = None;
                 self.studio.update(cx, |panel, cx| {
                     panel.cloud_ready = false;
+                    panel.refresh_env_status(cx);
                     panel.set_notice(Some(key), cx);
                 });
                 self.publish_tier_state(cx);
@@ -973,6 +974,7 @@ impl FlowyApp {
                                 was_ready && app.applied_tier.is_some();
                             app.studio.update(cx, |panel, cx| {
                                 panel.cloud_ready = keep_ready;
+                                panel.refresh_env_status(cx);
                                 cx.notify();
                             });
                             app.note(error.key(), cx);
@@ -1407,6 +1409,7 @@ impl FlowyApp {
             panel.credits = flowy_studio::CreditsViewState::Unavailable;
             panel.agent.stop();
             let _ = panel.agent.apply_config(Self::disconnected_config());
+            panel.refresh_env_status(cx);
             cx.notify();
         });
         self.store.clear();
@@ -1470,6 +1473,21 @@ impl FlowyApp {
     ) {
         self.studio
             .update(cx, |panel, cx| panel.fill_prompt_key(key, cx));
+    }
+
+    pub(super) fn open_project_board(
+        &mut self,
+        project_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.project_menu = None;
+        self.user_menu = false;
+        self.push_section(Section::Board, cx);
+        let pid = project_id.to_owned();
+        self.studio.update(cx, |panel, cx| {
+            panel.open_board_for_project(Some(pid), cx);
+        });
+        cx.notify();
     }
 
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
@@ -1975,6 +1993,16 @@ impl Render for FlowyApp {
                 root.child(self.artifact_cleanup_layer(window, cx))
             }
         };
+        if self.active_dialog == state::ActiveDialog::None
+            && self.screen == Screen::Main
+            && self.section != Section::More
+            && self.section != Section::Library
+            && let Some(modal) = self
+                .studio
+                .update(cx, |panel, cx| panel.flow_modal_overlay(cx))
+        {
+            root = root.child(modal);
+        }
         let menu = match self.settings.picker {
             settings::Picker::Language => Some((
                 "language-menu",

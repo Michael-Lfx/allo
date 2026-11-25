@@ -863,5 +863,13 @@
   "trace.filter_all": "모든 이벤트",
   "trace.filter_warn": "경고 및 검증",
   "verify.override.confirm_label": "검증 실패를 이해했으며 강제 전달합니다",
-  "verify.override.missing_report": "검증 보고서 ID가 없습니다. 새로고침 후 다시 시도하세요."
+  "verify.override.missing_report": "검증 보고서 ID가 없습니다. 새로고침 후 다시 시도하세요.",
+  "board.group_active": "진행 중 및 검토 필요 ({count})",
+  "board.group_settled": "완료 및 보관 ({count})",
+  "board.skill_queue": "대기열",
+  "board.skill_shell": "명령어",
+  "board.skill_work": "작업",
+  "env.state_ready": "준비됨",
+  "env.state_setup": "설정 필요",
+  "project.open_board": "워크 보드에서 보기"
 }

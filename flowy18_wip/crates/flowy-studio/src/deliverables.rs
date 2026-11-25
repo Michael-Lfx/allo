@@ -227,6 +227,10 @@ impl StudioPanel {
                         panel.drawer_tab = tab;
                         if matches!(tab, RightDrawerTab::Deliverables) {
                             panel.inspected_work = None;
+                            if panel.deliverables.is_none() {
+                                panel.deliverables =
+                                    panel.feed.read(cx).latest_deliverables();
+                            }
                         }
                         cx.notify();
                     }))

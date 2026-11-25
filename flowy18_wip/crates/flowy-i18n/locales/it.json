@@ -863,5 +863,13 @@
   "trace.filter_all": "All events",
   "trace.filter_warn": "Warnings & checks",
   "verify.override.confirm_label": "I understand this file failed verification",
-  "verify.override.missing_report": "Verification report ID is missing; refresh and retry."
+  "verify.override.missing_report": "Verification report ID is missing; refresh and retry.",
+  "board.group_active": "Active & needs review ({count})",
+  "board.group_settled": "Settled & archived ({count})",
+  "board.skill_queue": "Queue",
+  "board.skill_shell": "Shell",
+  "board.skill_work": "Work",
+  "env.state_ready": "Ready",
+  "env.state_setup": "Setup needed",
+  "project.open_board": "View in Work Board"
 }
