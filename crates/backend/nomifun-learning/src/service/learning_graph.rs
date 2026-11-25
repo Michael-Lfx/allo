@@ -807,12 +807,18 @@ impl LearningService {
         };
 
         let completer = self.course_completer()?;
+        // 契约门的覆盖面按**待挂集**校验（`validate_mounts` 的 `node_titles`
+        // 语义）：fresh 行上的增量挂载，提示词明写既有挂载「不要重复输出」，
+        // 模型只答待挂集是合规回包——不得再要求它为已挂节点重出条目。全量
+        // 节点集只用于下面 `merge_mounts` 的孤儿过滤。
+        let pending_set: std::collections::HashSet<String> =
+            pending.iter().cloned().collect();
         let evaluated = mounting::run_mount_round(
             completer.as_ref(),
             model_override,
             &round_input,
             &block_slugs,
-            &node_title_set,
+            &pending_set,
             Some(&token),
         )
         .await;
@@ -3058,6 +3064,15 @@ impl LearningService {
             )
             .await?;
         applied.attempts_used = attempts_used;
+        // sb2（ADR-0018 决定 4）：批次已提交——登记唤醒意图，让维护调度器对
+        // 这门课跑一个**仅挂载**回合。只发信号，不在这里挂载（ADR-0012
+        // 「挂载不内联生长批」）；手动生长不登记，空手批不走这里。
+        if matches!(
+            engine.trigger,
+            SystemActionTrigger::Settlement | SystemActionTrigger::AutoRefill
+        ) {
+            self.register_growth_wake(course_id, &engine.user_id).await;
+        }
         Ok(applied)
     }
 

@@ -197,8 +197,9 @@ pub fn entries_json(entries: &[MountEntry]) -> String {
 // ── st.mount.* 验证器（生成面执法；与契约文档新章互钉）────────────────────
 
 /// 验证一份挂载产物：`block_slugs` = 当前结构 blocks[].slug 全集（逐字），
-/// `node_titles` = 待挂集（本轮允许评估的节点标题，逐字）。六条款全红——
-/// 违规报告原文注入重试。
+/// `node_titles` = 待挂集（本轮允许评估的节点标题，逐字）——**不是课程全量
+/// 节点**：fresh 行上的增量挂载只对待挂集要求「每个节点恰一条」，已挂节点
+/// 不要求重出条目。六条款全红——违规报告原文注入重试。
 pub fn validate_mounts(
     artifact: &Value,
     block_slugs: &HashSet<String>,
@@ -493,6 +494,7 @@ pub(crate) struct MountRoundInput<'a> {
 /// 逐条挂载回合：装配 STRUCTURE_MOUNT 提示词（temperature 0.0 + thinking）
 /// → json 接缝 → 契约门；违规报告原文注入重试，≤ [`MAX_ATTEMPTS`] 轮，同
 /// 指纹早停（j03 骨架复用）。真取消：令牌循环头检查 + `select!` 竞速。
+/// `node_titles` = **待挂集**（契约门覆盖面的校验域，见 [`validate_mounts`]）。
 pub(crate) async fn run_mount_round(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,

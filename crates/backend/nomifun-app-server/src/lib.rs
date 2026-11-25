@@ -2792,6 +2792,86 @@ async fn learning_maintenance_tick_guarded<T>(
     }
 }
 
+/// 学习维护调度循环一步等待的结果（sb2，ADR-0018 决定 4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LearningMaintenanceWake {
+    /// 定时臂到点（`LEARNING_MAINTENANCE_TICK` 的固定时点）。
+    Timer,
+    /// 被生长唤醒：非空手生长批落库后登记了仅挂载回合。
+    Growth,
+}
+
+/// 调度循环的一步等待：定时臂的固定时点，或被生长唤醒——先到者胜。
+/// `timer_deadline` 是本轮定时臂的**固定时点**（调用方在上一轮定时臂收尾时
+/// 定下）：唤醒臂不重置它，定时节拍不因唤醒漂移。
+async fn wait_learning_maintenance_wake(
+    service: &nomifun_learning::LearningService,
+    timer_deadline: tokio::time::Instant,
+) -> LearningMaintenanceWake {
+    tokio::select! {
+        _ = tokio::time::sleep_until(timer_deadline) => LearningMaintenanceWake::Timer,
+        _ = service.growth_wake_notified() => LearningMaintenanceWake::Growth,
+    }
+}
+
+/// 生长唤醒分支（R-h）：取走被登记的课程，逐课 `spawn` 一个仅挂载任务并立
+/// 即返回——调度循环不 await 任何一个回合。任务闸（上限 5）满闸时回合只在
+/// 各自任务里排队，卡不住 30 秒 tick。返回派发的课程数。
+fn spawn_learning_growth_wakes(
+    service: &std::sync::Arc<nomifun_learning::LearningService>,
+) -> usize {
+    let wakes = service.take_growth_wakes();
+    let spawned = wakes.len();
+    for wake in wakes {
+        tokio::spawn(run_learning_growth_wake_mount(
+            std::sync::Arc::clone(service),
+            wake,
+        ));
+    }
+    spawned
+}
+
+/// 一门课的仅挂载维护回合（生长唤醒派发的任务体）：判定、开关与回合纪律
+/// 都在 learning crate（`run_growth_followup_mount`），这里只包 panic 兜底
+/// （同定时臂）并留结果日志。失败只留痕：Failed 动作簿行由回合自己写，不
+/// 重试、不回滚生长批（R-e）——节点仍在待挂集，下次唤醒再试。
+async fn run_learning_growth_wake_mount(
+    service: std::sync::Arc<nomifun_learning::LearningService>,
+    wake: nomifun_learning::GrowthWake,
+) {
+    let course = wake.course_id.as_str().to_owned();
+    let round = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
+        service
+            .run_growth_followup_mount(&wake.user_id, &wake.course_id, None)
+            .await
+    }))
+    .await;
+    match round {
+        Ok(Ok(Some(summary))) => tracing::info!(
+            course = %course,
+            status = summary.status,
+            pending = summary.pending_nodes,
+            mounted = summary.mounted_nodes,
+            "learning growth followup mount round finished"
+        ),
+        // 未启动（无事可做 / 自动维护关 / 准入复核不过）与失败：原因已由
+        // 回合侧留日志与账本行，这里不再重复。
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(
+                course = %course,
+                %error,
+                "learning growth followup mount round failed"
+            );
+        }
+        Err(cause) => tracing::error!(
+            course = %course,
+            cause = %cause,
+            "learning growth followup mount round panicked; no retry, the nodes stay pending"
+        ),
+    }
+}
+
 /// 学习域自动维护回合调度（k02，learnhub ADR-0028 / maintenance.rs）：
 /// 定时醒来 → 重读设置 → 到期则跑**一轮**维护（先修补后挂载、纯读判定、
 /// 零工作不提交）。单轮在途由「本任务 await 回合」保证；回合内部逐课在
@@ -2799,6 +2879,11 @@ async fn learning_maintenance_tick_guarded<T>(
 ///
 /// 两枚开关都生效：`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册调度器；
 /// `learning.maintenanceAutoEnabled=false` 运行期关（设置页/配置写入即生效）。
+///
+/// sb2（ADR-0018 决定 4）另有一条唤醒臂：非空手生长批落库后登记的课程让
+/// 这里的等待立即返回，循环把每门被登记的课程 `spawn` 成一个**仅挂载**回
+/// 合（不修补、不 await）后直接回到等待，不进定时臂——定时节拍、定时臂的
+/// 代码与开关语义不变。唤醒回合同样受上面两枚开关约束。
 pub fn start_learning_auto_maintenance(
     service: std::sync::Arc<nomifun_learning::LearningService>,
     pool: nomifun_db::sqlx::SqlitePool,
@@ -2819,11 +2904,22 @@ pub fn start_learning_auto_maintenance(
         let _liveness = LearningMaintenanceLivenessGuard;
         // 首轮不立即跑：启动流量留给预热，先等一个缺省间隔。
         let mut last_run = std::time::Instant::now();
+        // 定时臂的固定时点（sb2）：每轮定时臂收尾时重定。被生长唤醒只追加
+        // 一轮仅挂载回合，不重置它——定时节拍不因唤醒漂移。
+        let mut next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
         loop {
+            // 定时到点，或被生长唤醒（ADR-0018 决定 4）。
+            let wake = wait_learning_maintenance_wake(&service, next_tick).await;
+            // 仅挂载回合逐课 spawn，循环不 await（见 spawn 文档）。两臂共用
+            // 同一排空点：登记在任何时刻到达都不会滞留到下一次唤醒。
+            spawn_learning_growth_wakes(&service);
+            if wake == LearningMaintenanceWake::Growth {
+                // 唤醒臂不进定时臂：不读设置、不动 last_run。
+                continue;
+            }
             // 回合体 panic 就地记死因并吞掉（见 guarded 文档）：循环存活，
             // 下个 tick 重新拉起；last_run 照常推进，防 panic 热循环重试。
             let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
-                tokio::time::sleep(LEARNING_MAINTENANCE_TICK).await;
                 // 每醒重读设置：开关/间隔改动下个周期生效。
                 let settings = service.maintenance_settings().await;
                 if !settings.enabled {
@@ -2871,6 +2967,7 @@ pub fn start_learning_auto_maintenance(
                 );
             }
             last_run = std::time::Instant::now();
+            next_tick = tokio::time::Instant::now() + LEARNING_MAINTENANCE_TICK;
         }
     });
 }
@@ -9070,6 +9167,156 @@ mod tests {
             1,
             "下一轮重新拉起且原样透传"
         );
+    }
+
+    /// sb2 唤醒分支夹具：内存库 + 一门带结构的图课程（一个未挂载节点）+ 一条
+    /// fresh 挂载行（10 分钟前落盘，避开去抖）——正好满足登记准入。
+    async fn wakeable_course() -> (
+        std::sync::Arc<nomifun_learning::LearningService>,
+        nomifun_common::LearningCourseId,
+        nomifun_common::UserId,
+    ) {
+        use nomifun_db::sqlx;
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let pool = database.pool().clone();
+        let service = std::sync::Arc::new(nomifun_learning::LearningService::new(pool.clone()));
+        let course = nomifun_common::LearningCourseId::new();
+        let module = nomifun_common::LearningModuleId::new();
+        let lesson = nomifun_common::LearningLessonId::new();
+        let user = nomifun_common::UserId::new();
+        let now = nomifun_common::now_ms();
+        let structure = serde_json::json!({
+            "version": 1,
+            "generated_at": now,
+            "structure": {
+                "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+                "blocks": [
+                    { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "甲的主题" }
+                ],
+                "edges": []
+            },
+            "terrain": { "doors": [] }
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, course_kind, learning_goal, \
+              learning_scope, structure_json, enabled, created_at, updated_at) \
+             VALUES (?, '唤醒课程', '', 'general', 1, 'learning_graph', 'g', '', ?, 1, ?, ?)",
+        )
+        .bind(course.as_str())
+        .bind(&structure)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+             VALUES (?, ?, '学习图', '', 0)",
+        )
+        .bind(module.as_str())
+        .bind(course.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+             VALUES (?, ?, '待挂节点', '', 'p', 0, 10)",
+        )
+        .bind(lesson.as_str())
+        .bind(module.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (hash, version) = nomifun_learning::hash_structure_column(&structure);
+        sqlx::query(
+            "INSERT INTO learning_structure_mounts \
+             (course_id, mounts_json, structure_hash, hash_version, updated_at) \
+             VALUES (?, '[]', ?, ?, ?)",
+        )
+        .bind(course.as_str())
+        .bind(hash as i64)
+        .bind(version)
+        .bind(now - 10 * 60 * 1000)
+        .execute(&pool)
+        .await
+        .unwrap();
+        (service, course, user)
+    }
+
+    /// 该课的仅挂载任务在生成任务注册表里的状态（未入册 = `None`）。
+    fn mount_task_state(
+        service: &nomifun_learning::LearningService,
+        course: &str,
+    ) -> Option<String> {
+        service
+            .generation_task_snapshot()
+            .into_iter()
+            .find(|task| task.kind == "structure_mount" && task.course_id == course)
+            .map(|task| task.state)
+    }
+
+    /// sb2 调度循环的唤醒分支（ADR-0018 决定 4）：真实 `LearningService` 上
+    /// 登记一次生长唤醒 → [`wait_learning_maintenance_wake`] 立即以 Growth 返
+    /// 回（定时臂的时点远未到）→ [`spawn_learning_growth_wakes`] 取空登记，把
+    /// **这一课**派发为仅挂载任务；派发不 await 回合——返回时任务尚未起步。
+    /// 无登记时等待落定时臂、零派发。
+    ///
+    /// 只用 service 实例，不碰进程级 `LEARNING_MAINTENANCE_STARTED`（不调
+    /// `start_learning_auto_maintenance`）——本 crate 无 `serial_test`，这样才
+    /// 能与其它测试并行。
+    #[tokio::test]
+    async fn growth_wake_wakes_the_maintenance_wait_and_dispatches_a_mount_only_task() {
+        let (service, course, user) = wakeable_course().await;
+        service.register_growth_wake(&course, &user).await;
+
+        // 被唤醒：定时臂的时点在一小时后，等待没有走到它。
+        let far_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_learning_maintenance_wake(&service, far_deadline),
+        )
+        .await
+        .expect("登记之后调度循环的等待必须被唤醒");
+        assert_eq!(wake, LearningMaintenanceWake::Growth);
+
+        // 派发：登记取空、恰一门课。调用方不 await——单线程运行时下 spawn 出
+        // 的任务要到本任务让出才起步，此刻注册表里还没有它。
+        assert_eq!(spawn_learning_growth_wakes(&service), 1);
+        assert!(
+            service.take_growth_wakes().is_empty(),
+            "登记已取空"
+        );
+        assert_eq!(
+            mount_task_state(&service, course.as_str()),
+            None,
+            "派发返回时回合尚未起步（循环没有被它卡住）"
+        );
+
+        // 任务自行收尾：这一课的仅挂载任务入册并走到终态（夹具未配模型）。
+        let mut settled = None;
+        for _ in 0..500 {
+            if let Some(state) = mount_task_state(&service, course.as_str()) {
+                if !matches!(state.as_str(), "queued" | "running") {
+                    settled = Some(state);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            settled.as_deref(),
+            Some("failed"),
+            "被登记的课程拿到一个仅挂载任务并自行收尾"
+        );
+        assert_eq!(spawn_learning_growth_wakes(&service), 0, "一条登记只派发一次");
+
+        // 无登记：等待落定时臂（时点已过即到点），零派发。
+        let wake = wait_learning_maintenance_wake(&service, tokio::time::Instant::now()).await;
+        assert_eq!(wake, LearningMaintenanceWake::Timer);
+        assert_eq!(spawn_learning_growth_wakes(&service), 0);
     }
 
     fn request() -> InitializeRequest {

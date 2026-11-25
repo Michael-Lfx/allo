@@ -159,6 +159,14 @@ pub struct LearningService {
     /// companion XP 桥（j05 统一账）：结算落账后的同步授予接缝。缺省
     /// `None`（测试/CLI/无伙伴花名册）——只落学习账，companion 余额滞后。
     companion_xp_sink: Arc<RwLock<Option<Arc<dyn CompanionXpSink>>>>,
+    /// 生长唤醒登记表（sb2，ADR-0018 决定 4）：被登记的课程 → 唤醒意图
+    /// （一课至多一条，后登记覆盖先登记）。维护调度器（app-server）经
+    /// [`Self::take_growth_wakes`] 一次性取空。内存态，重启即失——未及处理
+    /// 的唤醒随进程消失，节点仍在待挂集，下次生长再登记。
+    growth_wakes: Arc<Mutex<HashMap<LearningCourseId, UserId>>>,
+    /// 唤醒信号（跨 crate 端点）：登记后 `notify_one`，调度器经
+    /// [`Self::growth_wake_notified`] 在 `select!` 里等它。
+    growth_wake_notify: Arc<tokio::sync::Notify>,
 }
 
 /// 生长循环的重试读数（learning-smoke grow/loop 输出用；读数面非门禁）。
@@ -223,6 +231,8 @@ impl LearningService {
             mint_search: Arc::new(RwLock::new(None)),
             mint_research_stats: Arc::new(Mutex::new(None)),
             companion_xp_sink: Arc::new(RwLock::new(None)),
+            growth_wakes: Arc::new(Mutex::new(HashMap::new())),
+            growth_wake_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -583,6 +593,7 @@ mod course;
 mod course_outline;
 mod generation_tasks;
 mod generate;
+mod growth_wake;
 mod lesson;
 mod lesson_draft;
 mod memory;
@@ -601,6 +612,10 @@ pub use xp::CompanionXpSink;
 pub(crate) use system_actions::{
     NewSystemAction, SYSTEM_ACTION_DEFAULT_LIMIT, SYSTEM_ACTION_MAX_LIMIT, system_action_limit,
 };
+
+/// 生长唤醒意图（sb2，ADR-0018 决定 4）：维护调度器（app-server）取走后对
+/// 这一课跑一个仅挂载回合。
+pub use growth_wake::GrowthWake;
 
 pub(crate) use crate::learning_graph::system_action::{
     SystemActionKind, SystemActionResult, SystemActionTrigger,
