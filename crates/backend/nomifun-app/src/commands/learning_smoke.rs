@@ -138,7 +138,16 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
             t1,
-        } => run_review_replay(cli, db, provider, model, t1).await,
+            replay_archive,
+            rows,
+        } => match replay_archive {
+            // 档案重放是 opt-in 的另一条臂（run_archive_review_replay）；不传
+            // --replay-archive 走原两条臂，行为不变。
+            Some(archive) => {
+                run_archive_review_replay(cli, archive, rows, db, provider, model).await
+            }
+            None => run_review_replay(cli, db, provider, model, t1).await,
+        },
     }
 }
 
@@ -5648,6 +5657,288 @@ async fn run_t1_review_replay(
     Ok(exit)
 }
 
+// ── T1 档案重放模式（`review-replay --replay-archive`）───────────────────────
+//
+// 上面两条臂（默认 / `--t1`）都由臂**自己装配**评审上下文：只给 `goal` 与已教
+// 账，评审输入只有真机的一半（缺花名册、提名候选集、登记表切片、别名池、地形
+// 门口、语境词等）——在薄材料上量的结论对真实运行无效。真机生长的调用档案
+// （`calls.jsonl`，见 `ArchivingCompleter`）存着当时评审实际收到的 user 原文；
+// 本模式把它**原样重发**：user 取档案行、一字不改，system 不取档案而由正式
+// 代码按当前进程的开关生成（`replay_review_with_raw_user`）。不跑机械校验、
+// 不重试、不降级——读数是模型在给定输入下写出来的原始结论。
+
+/// 档案重放每行采样数。
+const ARCHIVE_REVIEW_REPLAY_RUNS: usize = 2;
+
+/// 档案里选中的一行：回放材料只有 user 原文。
+struct ArchiveReplayRow {
+    /// 档案里的 0 基行号（读数行的 `archive_row`）。
+    row: usize,
+    /// 当时评审实际收到的 user 原文，逐字节重发。
+    user: String,
+}
+
+/// 按 0 基行号从调用档案取行。越界、不是合法 JSON、缺 `user` 字段一律报错
+/// （带路径与行号）——不静默跳过：少发一行会让读数对照错位。
+fn load_archive_rows(path: &Path, rows: &[usize]) -> Result<Vec<ArchiveReplayRow>> {
+    let log = std::fs::read_to_string(path)
+        .with_context(|| format!("读不了调用档案 {}", path.display()))?;
+    let lines: Vec<&str> = log.lines().collect();
+    rows.iter()
+        .map(|row| {
+            let line = lines.get(*row).with_context(|| {
+                format!(
+                    "调用档案 {} 共 {} 行，没有第 {row} 行（--rows 是 0 基行号）",
+                    path.display(),
+                    lines.len()
+                )
+            })?;
+            let record: serde_json::Value = serde_json::from_str(line.trim()).with_context(|| {
+                format!("调用档案 {} 第 {row} 行不是合法 JSON", path.display())
+            })?;
+            let user = record
+                .get("user")
+                .and_then(|value| value.as_str())
+                .with_context(|| {
+                    format!(
+                        "调用档案 {} 第 {row} 行没有 user 字段（或不是字符串）\
+                         ——档案重放只适用于带完整输入的调用行",
+                        path.display()
+                    )
+                })?;
+            Ok(ArchiveReplayRow {
+                row: *row,
+                user: user.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// 档案重放一次采样的结论词。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveVerdict {
+    /// 模型写的 verdict 原文是 `reject`。
+    Reject,
+    /// 模型写的 verdict 原文是 `pass`。
+    Pass,
+    /// 回包是合法 JSON 对象，但 verdict 原文不是 reject/pass（词表外或缺席）
+    /// ——本跑没有评审结论。
+    Degraded,
+    /// 回包不是单个合法 JSON 对象（呓语/截断）——单列，不记成 pass 也不记成
+    /// degraded。
+    Unparsed,
+    /// 调用传输失败（超时/网关/流中断），没有回包。
+    Error,
+}
+
+impl ArchiveVerdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            ArchiveVerdict::Reject => "reject",
+            ArchiveVerdict::Pass => "pass",
+            ArchiveVerdict::Degraded => "degraded",
+            ArchiveVerdict::Unparsed => "unparsed",
+            ArchiveVerdict::Error => "error",
+        }
+    }
+}
+
+/// 档案重放的采样循环：逐行、逐采样一行读数 + 每行一条汇总；返回逐行读数
+/// ——每行是（档案行号, 逐采样的（结论词, 回包 `problems` 行数）），供 EXIT
+/// 判定。单次采样失败（传输失败/回包读不出）只记该采样的结论词，继续下一
+/// 采样——不中止整轮。每行都带 `arm=`；本函数不读环境变量（臂由入口判定后
+/// 传入；system 的开关由薄函数在调用时现读）。
+async fn run_archive_replay(
+    completer: Arc<dyn nomifun_learning::LearningCompleter>,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    usage_log: Option<&Path>,
+    arm: T1Arm,
+    rows: &[ArchiveReplayRow],
+    runs: usize,
+) -> Result<Vec<(usize, Vec<(ArchiveVerdict, usize)>)>> {
+    let tag = format!("[review-replay-archive] arm={}", arm.as_str());
+    let mut readouts = Vec::with_capacity(rows.len());
+    for (position, row) in rows.iter().enumerate() {
+        let mut samples: Vec<(ArchiveVerdict, usize)> = Vec::with_capacity(runs);
+        for run in 0..runs {
+            // 采样标记同 T1 臂：「行序 × 每行采样数 + 采样序」合成编号，整次
+            // 运行内每个采样的请求互不相同（见 [`SampleMarker`]）。
+            let sample = position * runs + run;
+            let marked: Arc<dyn nomifun_learning::LearningCompleter> =
+                Arc::new(SampleMarker::new(completer.clone(), sample as u32));
+            // 游标定位到档案当前末尾：只数本采样自己的新增行。
+            let mut consumed_lines = usage_log.map_or(0, archive_cursor_at_end);
+            let started = std::time::Instant::now();
+            let (verdict, problems, detail) = match nomifun_learning::replay_review_with_raw_user(
+                marked.as_ref(),
+                model_override,
+                &row.user,
+            )
+            .await
+            {
+                Ok(nomifun_learning::ReplayRawReply::Verdict(raw)) => (
+                    // 结论词按模型写的 verdict 原文判（与评审主路
+                    // `verdict == "reject"` 同一比较），不按 problems 条数折算。
+                    match raw.verdict.as_str() {
+                        "reject" => ArchiveVerdict::Reject,
+                        "pass" => ArchiveVerdict::Pass,
+                        _ => ArchiveVerdict::Degraded,
+                    },
+                    raw.problems,
+                    None,
+                ),
+                Ok(nomifun_learning::ReplayRawReply::Unparsed) => {
+                    (ArchiveVerdict::Unparsed, 0, None)
+                }
+                Err(error) => (
+                    ArchiveVerdict::Error,
+                    0,
+                    // 一采样一行：传输失败的死因压成单行附在后面。
+                    Some(
+                        error
+                            .to_string()
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                ),
+            };
+            let elapsed_ms = started.elapsed().as_millis();
+            let (_, reasoning_tokens) = usage_delta_since(usage_log, &mut consumed_lines);
+            println!(
+                "{tag} archive_row={} run {}/{}: verdict={} problems={} elapsed_ms={elapsed_ms} \
+                 reasoning_tokens={}{}",
+                row.row,
+                run + 1,
+                runs,
+                verdict.as_str(),
+                problems,
+                reasoning_tokens
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "absent".into()),
+                detail
+                    .map(|detail| format!(" error={detail}"))
+                    .unwrap_or_default(),
+            );
+            samples.push((verdict, problems));
+        }
+        // 每行一条汇总：逐采样结论词 + 各结论词次数。
+        let words: Vec<&str> = samples
+            .iter()
+            .map(|(verdict, _)| verdict.as_str())
+            .collect();
+        let count = |verdict: ArchiveVerdict| {
+            samples
+                .iter()
+                .filter(|(sample, _)| *sample == verdict)
+                .count()
+        };
+        println!(
+            "{tag} archive_row={} summary: runs={} reject={}/{} pass={}/{} unparsed={}/{} \
+             degraded={}/{} error={}/{}",
+            row.row,
+            words.join(" "),
+            count(ArchiveVerdict::Reject),
+            runs,
+            count(ArchiveVerdict::Pass),
+            runs,
+            count(ArchiveVerdict::Unparsed),
+            runs,
+            count(ArchiveVerdict::Degraded),
+            runs,
+            count(ArchiveVerdict::Error),
+            runs,
+        );
+        readouts.push((row.row, samples));
+    }
+    Ok(readouts)
+}
+
+/// `learning-smoke review-replay --replay-archive`（T1 档案重放模式）。接线同
+/// 另两条臂（临时库 / --db + Archiving 挂载），臂判定同 `--t1`（两开关只关一
+/// 个 = 报错退出）。EXIT 同 smoke「全灭 0/n」语义：全部采样都没有评审结论
+/// （reject/pass 为 0）才非零；结论分布只留痕，不改 EXIT。
+async fn run_archive_review_replay(
+    cli: &Cli,
+    archive: PathBuf,
+    rows: Vec<usize>,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 臂判定与档案行校验都在开库、调模型之前：进不了任何一个臂、或行号写错，
+    // 都不该先花一次模型调用再发现。
+    let arm = t1_current_arm().map_err(anyhow::Error::msg)?;
+    let selected = load_archive_rows(&archive, &rows)?;
+    let (_wiring, archiving, live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+    let pipeline: Arc<dyn nomifun_learning::LearningCompleter> = archiving
+        .clone()
+        .map(|archiving| archiving as Arc<dyn nomifun_learning::LearningCompleter>)
+        .unwrap_or_else(|| live.clone());
+    let usage_log = archiving
+        .as_ref()
+        .map(|archiving| archiving.run_dir().join("calls.jsonl"));
+    // 臂名与两个开关的进程取值进首行：两臂分两次进程跑，靠这一行对上。
+    println!(
+        "[review-replay-archive] arm={} rows=[{}] runs={} (NOMI_LEARNING_REVIEW_PROVENANCE={} NOMI_LEARNING_REVIEW_FRAGMENTS={})",
+        arm.as_str(),
+        rows.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        ARCHIVE_REVIEW_REPLAY_RUNS,
+        switch_shown(nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV),
+        switch_shown(nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV),
+    );
+    let readouts = run_archive_replay(
+        pipeline,
+        model_override
+            .as_ref()
+            .map(|(provider, model)| (provider, model.as_str())),
+        usage_log.as_deref(),
+        arm,
+        &selected,
+        ARCHIVE_REVIEW_REPLAY_RUNS,
+    )
+    .await?;
+    let samples: usize = readouts.iter().map(|(_, samples)| samples.len()).sum();
+    let concluded = readouts
+        .iter()
+        .flat_map(|(_, samples)| samples)
+        .filter(|(verdict, _)| {
+            matches!(verdict, ArchiveVerdict::Reject | ArchiveVerdict::Pass)
+        })
+        .count();
+    let exit = review_replay_exit_code(concluded == 0);
+    if exit != ExitCode::SUCCESS {
+        eprintln!(
+            "review-replay-archive: arm={} 全部采样都没有评审结论（reject/pass 0/{samples}）\
+             ——评审管线真机没走通（凭据/模型可用性先查；逐采样结论词见上行）",
+            arm.as_str()
+        );
+        return Ok(exit);
+    }
+    println!(
+        "OK review-replay-archive arm={} rows={} runs={ARCHIVE_REVIEW_REPLAY_RUNS} samples={samples} reject/pass={concluded}/{samples}",
+        arm.as_str(),
+        selected.len(),
+    );
+    Ok(exit)
+}
+
 #[cfg(test)]
 mod review_replay_tests {
     use super::*;
@@ -6729,6 +7020,244 @@ mod review_replay_tests {
             t1.iter().map(|fixture| fixture.label).collect::<Vec<_>>(),
             ["t1-batch-A-rejected", "t1-batch-B-accepted", "reject-anchor"],
             "--t1 才换成 T1 三夹具"
+        );
+    }
+
+    // ── 档案重放模式（`review-replay --replay-archive`）──────────────────────
+
+    /// 档案重放的 Scripted completer：按调用序弹出预置回包，并捕获每次请求的
+    /// system/user（透传断言面）。
+    #[derive(Default)]
+    struct ScriptedArchive {
+        replies: std::sync::Mutex<VecDeque<Result<String, nomifun_common::AppError>>>,
+        systems: std::sync::Mutex<Vec<String>>,
+        users: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedArchive {
+        fn new(replies: Vec<Result<String, nomifun_common::AppError>>) -> Self {
+            Self {
+                replies: std::sync::Mutex::new(replies.into()),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl nomifun_learning::LearningCompleter for ScriptedArchive {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            unreachable!("review only uses the json seam")
+        }
+
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            system: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            self.systems.lock().unwrap().push(system.to_owned());
+            self.users.lock().unwrap().push(user.to_owned());
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(nomifun_common::AppError::Internal("script exhausted".into()))
+                })
+        }
+    }
+
+    /// 写一份三行的调用档案（行形状同 `ArchivingCompleter`）：第 1 行是一次评审
+    /// 调用，返回它的 user 原文——评审 user 的典型形态：多段、带引号与换行。
+    fn write_call_archive() -> (tempfile::TempDir, PathBuf, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calls.jsonl");
+        let user = concat!(
+            "【学习目标】\n系统学习「编程语言」的核心机制族\n\n",
+            "【待审批次】\n{\"nodes\":[{\"title\":\"类型转换\",\"est\":25}]}\n\n",
+            "【机械点名清单】\n1. 容器 [definition]\n2. 接口 [definition]\n\n",
+            "【提名候选集】\n[{\"concept_id\":\"c-1\",\"name\":\"返回值\"}]",
+        )
+        .to_owned();
+        let lines = [
+            serde_json::json!({
+                "ts": 1, "method": "complete_json_with_thinking", "ok": true,
+                "elapsed_ms": 1, "system_chars": 10, "user_chars": 9,
+                "response_chars": 2, "usage": "absent",
+                "system": "你是一名学习图教练", "user": "{\"nodes\":[]}", "response": "{}",
+            }),
+            serde_json::json!({
+                "ts": 2, "method": "complete_json_with_thinking", "ok": true,
+                "elapsed_ms": 300692, "system_chars": 6663,
+                "user_chars": user.chars().count(), "response_chars": 8906,
+                "usage": {"input_tokens": 1, "output_tokens": 2, "reasoning_tokens": 3},
+                "system": "你是一名概念评审员", "user": user, "response": "{\"verdict\":\"reject\"}",
+            }),
+            serde_json::json!({
+                "ts": 3, "method": "complete_json_with_thinking", "ok": false,
+                "elapsed_ms": 5, "system_chars": 4, "user_chars": 5,
+                "system": "sys", "user": "{\"k\":1}", "error": "boom",
+            }),
+        ];
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, text).unwrap();
+        (dir, path, user)
+    }
+
+    /// user 逐字节透传：档案行的 `user` 原文就是内层 completer 收到的 user
+    /// （不渲染、不重装配——【待审批次】、点名清单、候选集全取档案原文）；每次
+    /// 采样的 system 带各自的采样标记（两次采样的请求互不相同）。
+    #[tokio::test]
+    async fn replay_archive_resends_the_archived_user_byte_for_byte() {
+        let (_dir, path, archived_user) = write_call_archive();
+        let rows = load_archive_rows(&path, &[1]).unwrap();
+        assert_eq!(rows.len(), 1, "只取 --rows 点名的行");
+        assert_eq!(rows[0].row, 1, "读数行用的是档案里的 0 基行号");
+        assert_eq!(rows[0].user.as_bytes(), archived_user.as_bytes());
+
+        let scripted = Arc::new(ScriptedArchive::new(vec![pass_verdict(), pass_verdict()]));
+        run_archive_replay(scripted.clone(), None, None, T1Arm::On, &rows, 2)
+            .await
+            .unwrap();
+        let users = scripted.users.lock().unwrap().clone();
+        let systems = scripted.systems.lock().unwrap().clone();
+        assert_eq!(users.len(), 2, "每行采样 2 次");
+        for user in &users {
+            assert_eq!(
+                user.as_bytes(),
+                archived_user.as_bytes(),
+                "内层收到的 user 须与档案行逐字节相同"
+            );
+        }
+        assert_ne!(systems[0], systems[1], "两次采样的请求须互不相同（采样标记）");
+        for system in &systems {
+            assert!(system.contains("（采样编号 "), "采样标记在 system 里：{system}");
+        }
+    }
+
+    /// system 由当前开关生成、不取档案：on 臂（两开关未设）与 off 臂（两者
+    /// off）下内层收到的 system 不同；off 臂不含 `term_provenance` 与碎片裁决
+    /// 的输出契约段，on 臂含挂号表输出契约。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn replay_archive_system_follows_the_table_switches() {
+        /// 跑一次采样，返回内层收到的 system 去掉末尾采样标记后的正文。
+        async fn base_system() -> String {
+            let (_dir, path, _user) = write_call_archive();
+            let rows = load_archive_rows(&path, &[1]).unwrap();
+            let scripted = Arc::new(ScriptedArchive::new(vec![pass_verdict()]));
+            run_archive_replay(scripted.clone(), None, None, T1Arm::On, &rows, 1)
+                .await
+                .unwrap();
+            let systems = scripted.systems.lock().unwrap().clone();
+            let system = systems.into_iter().next().expect("一次采样一条 system");
+            system
+                .split("\n\n（采样编号 ")
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        }
+
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            None,
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            None,
+        );
+        let system_on = base_system().await;
+        let _off_provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _off_fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        let system_off = base_system().await;
+        assert_ne!(system_on, system_off, "两开关须改变 system");
+        assert!(
+            system_on.contains("term_provenance"),
+            "on 臂 system 须含挂号表输出契约（{} 字）",
+            system_on.len()
+        );
+        assert!(
+            !system_off.contains("term_provenance"),
+            "off 臂 system 不得含 term_provenance"
+        );
+        assert!(
+            !system_off.contains("【碎片裁决 fragments"),
+            "off 臂 system 不得含碎片裁决输出契约段"
+        );
+    }
+
+    /// 回包读数不中止整轮：合法 reject / 截断 / 呓语 → unparsed / 传输失败 →
+    /// error，逐采样照实记录并继续，后面的采样照常得出结论；读不出的回包不记
+    /// 成 pass。
+    #[tokio::test]
+    async fn replay_archive_records_unparseable_and_failed_samples_without_aborting() {
+        let (_dir, path, _user) = write_call_archive();
+        let rows = load_archive_rows(&path, &[1]).unwrap();
+        let reject = serde_json::to_string(&serde_json::json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints",
+                  "issue": "「迭代器协议」定义折入未在册名词", "advice": "改写定义" }
+            ]
+        }))
+        .unwrap();
+        // 截断：回包停在 problems 数组中间，没有闭合。
+        let truncated = "{\"verdict\":\"reject\",\"problems\":[{\"node\":\"\",\"field\":\"mints\"";
+        let scripted = Arc::new(ScriptedArchive::new(vec![
+            Ok(reject),
+            Ok(truncated.to_owned()),
+            Ok("好的，我来评审这一批。".into()),
+            Err(nomifun_common::AppError::Timeout(
+                "json coach call exceeded 600s".into(),
+            )),
+            pass_verdict(),
+        ]));
+        let readouts = run_archive_replay(scripted, None, None, T1Arm::Off, &rows, 5)
+            .await
+            .unwrap();
+        let [(_, samples)] = readouts.as_slice() else {
+            panic!("一行档案 → 一行读数，读数不得因单次失败而缺席");
+        };
+        let verdicts: Vec<ArchiveVerdict> = samples
+            .iter()
+            .map(|(verdict, _)| *verdict)
+            .collect();
+        assert_eq!(
+            verdicts,
+            [
+                ArchiveVerdict::Reject,
+                ArchiveVerdict::Unparsed,
+                ArchiveVerdict::Unparsed,
+                ArchiveVerdict::Error,
+                ArchiveVerdict::Pass,
+            ],
+            "逐采样照实记录：失败的采样只记自己的结论词，后面的采样继续"
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .map(|(_, problems)| *problems)
+                .collect::<Vec<_>>(),
+            [1, 0, 0, 0, 0],
+            "problems 行数取自回包（合法 reject 那一次为 1）"
         );
     }
 }

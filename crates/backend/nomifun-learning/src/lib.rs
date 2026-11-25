@@ -103,6 +103,9 @@ pub use learning_graph::{
     ReplayProvenanceReadout, ReplayReviewVerdict,
     REVIEW_FRAGMENTS_SWITCH_ENV, REVIEW_PROVENANCE_SWITCH_ENV, replay_concept_review,
 };
+/// T1 档案重放缝（smoke review-replay --replay-archive 臂）：录制评审 user 原样
+/// 重发、只读模型原始结论的薄函数与其读数。
+pub use learning_graph::{ReplayRawReply, ReplayRawReview, replay_review_with_raw_user};
 pub use learning_graph::ConceptRefInput;
 pub use learning_graph::basis_declaration::{
     BASIS_DECLARATION_SWITCH_ENV, DECLARATION_SOURCE, DECLARATION_SYSTEM, DeclaredConceptView,
