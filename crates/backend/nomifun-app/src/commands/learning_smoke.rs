@@ -137,7 +137,8 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             db,
             provider,
             model,
-        } => run_review_replay(cli, db, provider, model).await,
+            t1,
+        } => run_review_replay(cli, db, provider, model, t1).await,
     }
 }
 
@@ -4645,6 +4646,16 @@ enum ReplayDirection {
     PassAnchor,
 }
 
+impl ReplayDirection {
+    /// 方向锚的短名（T1 读数行的 `anchor=`）。
+    fn as_str(self) -> &'static str {
+        match self {
+            ReplayDirection::RejectAnchor => "reject",
+            ReplayDirection::PassAnchor => "pass",
+        }
+    }
+}
+
 impl ReplayRunReadout {
     /// 方向命中判定（锁定方向口径）：reject 锚 = problems 非空；pass 锚 =
     /// problems 空且非降级（降级放行 ≠ 评审通过——静默降级是 watch 面）。
@@ -4688,6 +4699,11 @@ struct ReplayFixture {
     goal: String,
     /// 已知面（已教名 ∪ 登记表名 ∪ 本批铸名；小写折叠同生产口径）。
     known: Vec<String>,
+    /// 已教概念账原文（[`nomifun_learning::CoachContext::taught_summary`] 的
+    /// 取值）。`None` = 默认模式的三个夹具：由 `known` 顿号拼接（原行为逐字节
+    /// 不变）；`Some(原文)` = T1 真实批夹具：真机已教账原文照用——带 `@档位`
+    /// 与已会声明的尾部括注，与 `known`（剥掉这些的已知名）不再是同一份文本。
+    taught_summary: Option<String>,
     batch: nomifun_learning::ProposedBatch,
 }
 
@@ -4701,6 +4717,7 @@ fn reject_anchor_fixture() -> ReplayFixture {
         direction: Some(ReplayDirection::RejectAnchor),
         goal: "认识三角形与它的组成".into(),
         known: vec!["三角形".into(), "图形".into()],
+        taught_summary: None,
         batch: nomifun_learning::ProposedBatch {
             nodes: vec![nomifun_learning::ProposedNode {
                 title: "判读三角形".into(),
@@ -4814,6 +4831,7 @@ fn pass_anchor_fixture() -> ReplayFixture {
         direction: Some(ReplayDirection::PassAnchor),
         goal: "函数的内存世界：栈、堆与求值".into(),
         known,
+        taught_summary: None,
         batch: nomifun_learning::ProposedBatch {
             nodes: vec![
                 node(
@@ -4893,6 +4911,7 @@ fn live_real_batch_fixture() -> ReplayFixture {
         direction: None,
         goal: "函数的内存世界：栈、堆与求值".into(),
         known,
+        taught_summary: None,
         batch,
     }
 }
@@ -5047,7 +5066,10 @@ async fn replay_fixture_runs(
 ) -> Result<(Vec<ReplayRunReadout>, Vec<String>)> {
     let context = nomifun_learning::CoachContext {
         goal: fixture.goal.clone(),
-        taught_summary: fixture.known.join("、"),
+        taught_summary: fixture
+            .taught_summary
+            .clone()
+            .unwrap_or_else(|| fixture.known.join("、")),
         ..Default::default()
     };
     let mut readouts = Vec::new();
@@ -5089,16 +5111,24 @@ async fn replay_fixture_runs(
 
 /// `learning-smoke review-replay`（rs5 R-b）：病历回放臂。接线同应用（临时
 /// 库 / --db + ArchivingCompleter 必挂），夹具批在臂内装配后过真实评审
-/// N 跑；方向翻转只留痕，评审全灭才非零。
+/// N 跑；方向翻转只留痕，评审全灭才非零。`--t1` 换成 T1 三夹具与带臂名的
+/// 读数面（[`run_t1_review_replay`]），接线与 EXIT 判据不变。
 async fn run_review_replay(
     cli: &Cli,
     db: Option<PathBuf>,
     provider: Option<String>,
     model: Option<String>,
+    t1: bool,
 ) -> Result<ExitCode> {
     if provider.is_some() != model.is_some() {
         anyhow::bail!("--provider and --model must be provided together");
     }
+    // T1 两臂判定先行：两开关只关一个 = 无法归类的臂——开库、调模型之前就
+    // 报错退出（进不了任何一个臂的读数跑出来也没法用）。
+    let arm = t1
+        .then(t1_current_arm)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     // 臂直调评审单缝，不经 LearningService——wire 只取组合根接线（provider
     // 解析 + Archiving 挂载），service 面不用。
     let (_wiring, archiving, live) =
@@ -5121,14 +5151,30 @@ async fn run_review_replay(
         .as_ref()
         .map(|archiving| archiving.run_dir().join("calls.jsonl"));
 
+    if let Some(arm) = arm {
+        // 臂名与两个开关的进程取值进首行：两臂分两次进程跑，靠这一行对上。
+        println!(
+            "[review-replay-t1] arm={} runs={} (NOMI_LEARNING_REVIEW_PROVENANCE={} NOMI_LEARNING_REVIEW_FRAGMENTS={})",
+            arm.as_str(),
+            T1_REVIEW_REPLAY_RUNS,
+            switch_shown(nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV),
+            switch_shown(nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV),
+        );
+        return run_t1_review_replay(
+            pipeline,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+            usage_log.as_deref(),
+            arm,
+        )
+        .await;
+    }
+
     // G 夹具（11-20 live 批原文）为 readout-only：逐跑读数照实打印，不进
     // 方向汇总（薄面近似下方向无构造性保证——真机 2026-11-20 实录见
     // [`live_real_batch_fixture`] 文档）。
-    let fixtures = [
-        reject_anchor_fixture(),
-        pass_anchor_fixture(),
-        live_real_batch_fixture(),
-    ];
+    let fixtures = review_replay_fixtures(false);
     let mut any_verdict = false;
     let mut summaries = Vec::new();
     for (fixture_index, fixture) in fixtures.iter().enumerate() {
@@ -5222,6 +5268,355 @@ async fn run_review_replay(
         db.as_deref()
             .map(|_| "--db 复用")
             .unwrap_or("从零临时库"),
+    );
+    Ok(exit)
+}
+
+// ── T1：训练轮逐代重测（票 t1-training-wheels-retest）──────────────────────
+//
+// 默认模式的三夹具与读数原样保留；`learning-smoke review-replay --t1` 进本模式。
+// 夹具换成三锚：真实批 A（打回锚）/ 真实批 B（放行锚）/ 三角形折叠批（打回锚，
+// 对照——ADR-0033 当年的证据形态）。三夹具都有构造性保证，全部进方向汇总
+// （默认模式的 live 夹具是 readout-only，T1 不用它）。每夹具每臂 5 次采样，逐跑
+// / 逐夹具读数 + 汇总表带臂名。两臂分两次进程跑（两开关是进程级 env）：调用方
+// 自己设环境变量，臂由进程环境变量判定后进输出。
+
+/// T1 每夹具采样数（票面 R-c：每臂每夹具 5 次独立采样）。
+const T1_REVIEW_REPLAY_RUNS: usize = 5;
+
+/// T1 的两个臂（票面 R-a）：`on` = 现行为（两表义务开关都未设——缺省开）；
+/// `off` = 两开关均设 off。臂名进每一行输出——两臂分两次进程跑，靠它对上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum T1Arm {
+    On,
+    Off,
+}
+
+impl T1Arm {
+    fn as_str(self) -> &'static str {
+        match self {
+            T1Arm::On => "on",
+            T1Arm::Off => "off",
+        }
+    }
+}
+
+/// 臂判定（取值面，纯函数——单测直接喂取值，不触进程 env）：每个开关按全仓
+/// 同一款 off 取值判定（off/0/false = 关；未设或其它值 = 开），与评审里两个
+/// 开关各自的判定同语义——臂名不会与评审实际走的面对不上。两开关同开 = on
+/// 臂，同关 = off 臂；只关一个 = 无法归类的臂（本实验没有这一臂），报错并
+/// 点名两个变量。
+fn t1_arm_from_switch_values(
+    provenance: Option<&str>,
+    fragments: Option<&str>,
+) -> Result<T1Arm, String> {
+    let provenance_off = provenance.is_some_and(nomifun_learning::is_off_switch_value);
+    let fragments_off = fragments.is_some_and(nomifun_learning::is_off_switch_value);
+    match (provenance_off, fragments_off) {
+        (false, false) => Ok(T1Arm::On),
+        (true, true) => Ok(T1Arm::Off),
+        (true, false) | (false, true) => Err(format!(
+            "NOMI_LEARNING_REVIEW_PROVENANCE={} 而 NOMI_LEARNING_REVIEW_FRAGMENTS={}：\
+             T1 两臂要求两开关同开（都不设 = on 臂）或同关（都设 off = off 臂），只关一个不是任何一臂",
+            provenance.unwrap_or("未设"),
+            fragments.unwrap_or("未设"),
+        )),
+    }
+}
+
+/// 臂的进程读数（[`t1_arm_from_switch_values`] 同款语义）：T1 模式启动时读
+/// 一次——开库、调模型之前就拦下无法归类的臂。
+fn t1_current_arm() -> Result<T1Arm, String> {
+    t1_arm_from_switch_values(
+        std::env::var(nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV)
+            .ok()
+            .as_deref(),
+        std::env::var(nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// 开关的进程取值展示（T1 首行读数用）：未设 = `未设`。
+fn switch_shown(env_var: &'static str) -> String {
+    std::env::var(env_var).unwrap_or_else(|_| "未设".to_owned())
+}
+
+/// T1 真实批 A——打回锚（2026-11-24 真机生长留档，录制逐字内嵌）。源 = 仓库外
+/// `allo-sb-notes/t1-batch-A-rejected.txt` 第 2 行（首行是评审 user 的段标题
+/// `【待审批次】`，不入内嵌）：教练初稿 5 节点 / 4 铸名，真机评审打回——
+/// 「迭代器协议」定义依赖「容器」「接口」「元素」「消费方」，均不在已教账。
+/// 7454 字节，sha256 `bc7bd507147f01b77fe9566f63affd0b2b3384d69fe839a9ed0f80ce5c864c09`
+/// （单测按字节数 + sha256 钉逐字一致）。
+const REVIEW_REPLAY_T1_BATCH_A_JSON: &str = r#"{"nodes":[{"title":"类型转换：显式改写值的类别","purpose":"练什么：把整数、浮点、字符串之间互相显式改写，并判断转换后值与类别。日常经验切口：把人民币换算成日元、把米换算成厘米——同样的量换一种单位来表述；升级为程序里把值从一种类别显式改写为另一种类别的操作。","intent":"类型系统线此前已教类型标注（声明类别）与静态检查（运行前判定相容），但程序运行中常需要把输入得到的字符串改写成可参与算术运算的数字——本节点补上「值形态改写」这一操作层，为后续类型推断与参数化类型铺垫「类型可变形」的认知。","scope":"教显式类型转换的核心写法：整数与浮点互转、字符串转数字、数字转字符串，以及转换后值与类别的变化；不教隐式类型转换规则，不教自定义类型之间的转换。","est":25,"difficulty":2,"teaches":[{"name":"类型转换","tier":"apply"}],"assumes":[{"name":"类型标注","tier":"apply"},{"name":"值分类","tier":"apply"},{"name":"赋值语句","tier":"know"}]},{"title":"迭代器协议：按统一接口逐个索取元素","purpose":"练什么：从容器取得迭代器、反复取下一个元素、判定取尽，并追踪遍历过程。日常经验切口：排队取餐时反复听到「下一个」——你不必知道队伍内部怎么排，只需循环索取；升级为程序里对一组元素按统一接口逐次取用的约定。","intent":"控制流线已教循环结构，但循环多依赖下标或计数；迭代器协议把「取下一个」抽象成与底层容器无关的统一接口，是后续协程转移（expert）与跨语言控制流对照的重要台阶。","scope":"教迭代器协议的基本形态：取得迭代器、反复请求下一个元素、取尽后停止；用一段含迭代器遍历的程序演示追踪每次取值；不教自定义迭代器类的实现，不教生成器与惰性求值细节。","est":30,"difficulty":3,"teaches":[{"name":"迭代器协议","tier":"apply"}],"assumes":[{"name":"函数定义","tier":"apply"},{"name":"返回值","tier":"apply"},{"name":"循环结构","tier":"know"},{"name":"条件分支","tier":"know"}]},{"title":"结果类型：判定返回值是成功还是失败","purpose":"练什么：把成功值与错误描述装进同一个返回通道，用分支分别取用并追踪取值。日常经验切口：快递代收点——取件成功拿到包裹，取件失败拿到「查无此单」通知，两种结果都从同一个柜台出来；升级为函数返回值同时承载成功与失败两种可能。","intent":"错误处理线已教错误传播（沿调用栈上抛）与运行期错误识别，但上抛只是跨语言对照中的一种形态；不少语言把错误作为普通值显式返回并强制处理——结果类型是这条线的核心构造，也为后续清理保证（错误路径上释放资源）铺路。","scope":"教结果类型的核心形态：一个返回通道内承载成功值或错误值两种可能，调用方以分支判定并取出；用两段代码对照「上抛异常」与「返回结果类型」两种错误传播写法；不教标准库完整 API，不教问号语法糖与模式匹配（留待后续）。","est":30,"difficulty":3,"teaches":[{"name":"结果类型","tier":"apply"}],"assumes":[{"name":"类型标注","tier":"apply"},{"name":"返回值","tier":"apply"},{"name":"错误传播","tier":"apply"},{"name":"条件分支","tier":"know"}]},{"title":"原子操作：把共享变量的读改写做成不可中断的一步","purpose":"练什么：识别共享变量上的「读-改-写」序列，判断哪些操作原子、哪些不是。日常经验切口：自动取款机取钱——查余额、扣款、出钞必须一口气完成，不能查到一半被别人也扣同一笔；升级为并发程序里把三步合并成不可分割动作的机制。","intent":"并发线已教互斥锁（独占临界区消除竞态）与消息传递（避开共享），但锁有开销与死锁风险；原子操作以不可中断的读改写提供无锁路径，是消除竞态的第二种手段，也是后续内存序（expert）的入口。","scope":"教原子操作的含义：为何「读-改-写」需要原子性、原子操作能消除哪类竞态、哪种写法对应原子自增与比较交换；不教内存序与内存可见性的细节（留待后续专家级节点）。","est":30,"difficulty":3,"teaches":[{"name":"原子操作","tier":"apply"}],"assumes":[{"name":"竞态条件","tier":"apply"},{"name":"共享状态","tier":"apply"},{"name":"赋值语句","tier":"know"}]},{"title":"引用计数：用指向次数归零判断堆对象何时回收","purpose":"练什么：追踪堆对象上引用计数的增减，判定对象在哪个语句处被回收。日常经验切口：图书馆一本书的借阅记录——每有人借走记一笔，没人借了就归架；升级为堆上对象以指向次数归零作为自动回收条件的内存管理机制。","intent":"内存管理线的针对性回应：卡点「值存储位置」停滞在栈上临时量与堆上长存数据的存活差别上——已教堆分配与悬空引用，但未教「自动判定何时可回收」；引用计数是垃圾回收家族中最直观的一支，也是后续对比追踪式 GC 的基准。","scope":"教引用计数的核心机制：每个堆对象带一个计数，赋值、传参、离开作用域时增减，计数归零即回收；用一组示例逐句追踪计数变化并判断对象回收时刻；不教循环引用导致的计数泄漏，不教标记-清除与分代回收等追踪式 GC 算法（留待后续）。","est":30,"difficulty":3,"teaches":[{"name":"引用计数","tier":"apply"}],"assumes":[{"name":"堆分配","tier":"apply"},{"name":"变量绑定","tier":"apply"},{"name":"值存储位置","tier":"apply"},{"name":"函数定义","tier":"apply"}]}],"mints":[{"canonical":"引用计数","aliases":["引用记数","refcount","reference counting"],"definition":"为每个堆对象记录当前指向它的引用数量，计数降为零时自动回收该对象的内存管理策略。","source":"教练提名：内存管理线堆侧回收机制的回应台阶"},{"canonical":"迭代器协议","aliases":["迭代器","iterator","逐个取用接口"],"definition":"规定「从容器里按顺序逐个取出元素」的统一接口约定，消费方只需反复请求下一个元素，无需知道容器内部结构。","source":"教练提名：控制流线遍历抽象的台阶"},{"canonical":"结果类型","aliases":["Result 类型","Option 类型","成功失败同返回"],"definition":"把一次操作的成功值与失败描述装进同一个返回类型，调用方用分支分别取用的错误处理构造。","source":"教练提名：错误处理线显式结果通道的台阶"},{"canonical":"原子操作","aliases":["原子性","atomic operation","atomic"],"definition":"以硬件或语言保证「读-改-写」整体不可被并发交错打断的单一动作。","source":"教练提名：并发线消除竞态的第二手段"}],"new_aliases":[],"note":"本批沿五条机制族各长一个前沿概念节点：类型转换、迭代器协议、结果类型、原子操作、引用计数，其中引用计数作为对『值存储位置』卡点的堆侧回应，并为下一批跨语言机制对照应用铺底。"}"#;
+
+/// T1 真实批 B——放行锚（同格式同源：`allo-sb-notes/t1-batch-B-accepted.txt` 第 2
+/// 行）：按 A 的打回意见点修后 4 节点 / 3 铸名（改写迭代器协议、结果类型两处定义，
+/// 删掉无人引用的「原子操作」铸名），真机评审放行并已落库。
+/// 6165 字节，sha256 `5adc1a1295fbda76d67cee5fc0087e27f4814cd8e71dc9850de9e9cc22edad3d`。
+const REVIEW_REPLAY_T1_BATCH_B_JSON: &str = r#"{"nodes":[{"title":"类型转换：显式改写值的类别","purpose":"练什么：把整数、浮点、字符串之间互相显式改写，并判断转换后值与类别。日常经验切口：把人民币换算成日元、把米换算成厘米——同样的量换一种单位来表述；升级为程序里把值从一种类别显式改写为另一种类别的操作。","intent":"类型系统线此前已教类型标注（声明类别）与静态检查（运行前判定相容），但程序运行中常需要把输入得到的字符串改写成可参与算术运算的数字——本节点补上「值形态改写」这一操作层，为后续类型推断与参数化类型铺垫「类型可变形」的认知。","scope":"教显式类型转换的核心写法：整数与浮点互转、字符串转数字、数字转字符串，以及转换后值与类别的变化；不教隐式类型转换规则，不教自定义类型之间的转换。","est":25,"difficulty":2,"teaches":[{"name":"类型转换","tier":"apply"}],"assumes":[{"name":"类型标注","tier":"apply"},{"name":"值分类","tier":"apply"},{"name":"赋值语句","tier":"know"}]},{"title":"迭代器协议：按统一接口逐个索取元素","purpose":"练什么：从容器取得迭代器、反复取下一个元素、判定取尽，并追踪遍历过程。日常经验切口：排队取餐时反复听到「下一个」——你不必知道队伍内部怎么排，只需循环索取；升级为程序里对一组元素按统一接口逐次取用的约定。","intent":"控制流线已教循环结构，但循环多依赖下标或计数；迭代器协议把「取下一个」抽象成与底层容器无关的统一接口，是后续协程转移（expert）与跨语言控制流对照的重要台阶。","scope":"教迭代器协议的基本形态：取得迭代器、反复请求下一个元素、取尽后停止；用一段含迭代器遍历的程序演示追踪每次取值；不教自定义迭代器类的实现，不教生成器与惰性求值细节。","est":30,"difficulty":3,"teaches":[{"name":"迭代器协议","tier":"apply"}],"assumes":[{"name":"函数定义","tier":"apply"},{"name":"返回值","tier":"apply"},{"name":"循环结构","tier":"know"},{"name":"条件分支","tier":"know"}]},{"title":"结果类型：判定返回值是成功还是失败","purpose":"练什么：把成功值与错误描述装进同一个返回通道，用分支分别取用并追踪取值。日常经验切口：快递代收点——取件成功拿到包裹，取件失败拿到「查无此单」通知，两种结果都从同一个柜台出来；升级为函数返回值同时承载成功与失败两种可能。","intent":"错误处理线已教错误传播（沿调用栈上抛）与运行期错误识别，但上抛只是跨语言对照中的一种形态；不少语言把错误作为普通值显式返回并强制处理——结果类型是这条线的核心构造，也为后续清理保证（错误路径上释放资源）铺路。","scope":"教结果类型的核心形态：一个返回通道内承载成功值或错误值两种可能，调用方以分支判定并取出；用两段代码对照「上抛异常」与「返回结果类型」两种错误传播写法；不教标准库完整 API，不教问号语法糖与模式匹配（留待后续）。","est":30,"difficulty":3,"teaches":[{"name":"结果类型","tier":"apply"}],"assumes":[{"name":"类型标注","tier":"apply"},{"name":"返回值","tier":"apply"},{"name":"错误传播","tier":"apply"},{"name":"条件分支","tier":"know"}]},{"title":"引用计数：用指向次数归零判断堆对象何时回收","purpose":"练什么：追踪堆对象上引用计数的增减，判定对象在哪个语句处被回收。日常经验切口：图书馆一本书的借阅记录——每有人借走记一笔，没人借了就归架；升级为堆上对象以指向次数归零作为自动回收条件的内存管理机制。","intent":"内存管理线的针对性回应：卡点「值存储位置」停滞在栈上临时量与堆上长存数据的存活差别上——已教堆分配与悬空引用，但未教「自动判定何时可回收」；引用计数是垃圾回收家族中最直观的一支，也是后续对比追踪式 GC 的基准。","scope":"教引用计数的核心机制：每个堆对象带一个计数，赋值、传参、离开作用域时增减，计数归零即回收；用一组示例逐句追踪计数变化并判断对象回收时刻；不教循环引用导致的计数泄漏，不教标记-清除与分代回收等追踪式 GC 算法（留待后续）。","est":30,"difficulty":3,"teaches":[{"name":"引用计数","tier":"apply"}],"assumes":[{"name":"堆分配","tier":"apply"},{"name":"变量绑定","tier":"apply"},{"name":"值存储位置","tier":"apply"},{"name":"函数定义","tier":"apply"}]}],"mints":[{"canonical":"引用计数","aliases":["引用记数","refcount","reference counting"],"definition":"为每个堆对象记录当前指向它的引用数量，计数降为零时自动回收该对象的内存管理策略。","source":"教练提名：内存管理线堆侧回收机制的回应台阶"},{"canonical":"迭代器协议","aliases":["迭代器","iterator","逐个取用接口"],"definition":"规定「每次交出下一个、取尽即停」的统一取用规则；使用的一方不必了解被取用的数据原本如何排列。","source":"教练提名：控制流线遍历抽象的台阶"},{"canonical":"结果类型","aliases":["Result 类型","Option 类型","成功失败同返回"],"definition":"把一次操作的成功结果与失败描述装进同一处交回，再用条件分支分别取出的一种错误处理构造。","source":"教练提名：错误处理线显式结果通道的台阶"}],"new_aliases":[],"note":"本批按打回意见，仅改写两处有问题的定义：迭代器协议的定义已绕开「容器／接口／元素／消费方」；结果类型的定义已绕开「返回类型」。同时删掉没有任何节点引用它的「原子操作」铸名。其余节点、概念引用与 est 全部原样保留，并继续为下一批跨语言机制对照应用打底。"}"#;
+
+/// T1 真实批所在课程的已教概念账原文（`CoachContext::taught_summary` 的真机取值；
+/// 源 = `allo-sb-notes/t1-known-surface.txt` 第 2 行，首行段标题由 `render_for_review`
+/// 自带，不入内嵌）。72 个概念：前 27 个是已教账（`概念@档位`，档位词英文——
+/// 教练/评审照抄的词表），其后是学习者已会声明（无档位），尾部括注是生产渲染器
+/// `render_taught_summary` 追加的说明——不属于任何概念名，解析已知名时须剥掉。
+/// 1400 字节，sha256 `de3d01fbe07f72eac8a5159023b3f0a3b99986149d1a66a590b74e6e8dc5e27b`。
+const REVIEW_REPLAY_T1_TAUGHT_SUMMARY: &str = "临界区@apply、互斥锁@apply、值分类@apply、值存储位置@apply、共享状态@apply、函数定义@apply、参数传递@apply、变量绑定@apply、堆分配@apply、悬空引用@apply、执行单元@know、栈帧分配@apply、求值策略@apply、消息传递@apply、短路求值@apply、竞态条件@apply、类型标注@apply、类型检查时机@apply、类型错误识别@apply、语法错误识别@apply、调用栈@apply、运行期类型信息@apply、运行期错误识别@apply、返回值@apply、递归调用@apply、错误传播@apply、静态检查@apply、作用域、作用域遮蔽、全局作用域、函数作用域、初始化、单分支、双分支、变量声明、变量生命周期、名字解析、命令行运行命令、块作用域、复合赋值、多分支链、官方文档、局部作用域、嵌套分支、布尔条件、当型循环、循环体、循环变量更新、循环条件、循环结构、报错信息、提前退出、文档条目、文档示例、无限循环、本地执行、条件分支、源码文件、直到型循环、示例关键行、程序输出、编译执行、解释执行、计数循环、赋值目标、赋值语句、越界引用、跑通判定、跳过本轮、重新赋值、错误文件名、错误行号（尾部无 @ 档位者为学习者已会声明：视为已掌握，等同已知，不要再为其安排教学）";
+
+/// T1 真实批所在课程的学习目标（评审 user 里【学习目标】块的原文）。三份源文件
+/// 里没有它，取自同一真机留档的评审调用原文（live 档案 2026-11-24：批 A 的两次
+/// 评审调用逐字节同文）。它进【学习目标】块，其切片经 `replay_concept_review` 进
+/// 已知面（点名派生的豁免词，与生产 `derive_naming_list` 同缝）。
+/// 261 字节，sha256 `51888021f3c38d2fdbd29969288649927e0066453a42f5cf183b187803295a29`。
+const REVIEW_REPLAY_T1_GOAL: &str = "系统学习编程语言中稳定不变的核心机制族——类型、抽象与组合、控制流、内存管理、并发、错误处理、元编程与执行模型——及其语义约束和组合方式，建立可跨语言迁移的语言设计认知框架。";
+
+/// 已会声明名单的尾部括注原文：生产 `render_taught_summary` 在已会声明（无档
+/// 位的概念名）之后追加的说明——它属于渲染层，不是任何概念名，解析已知名时
+/// 须先剥掉（否则末条概念会带上一整句括注）。
+const T1_TAUGHT_DECLARED_NOTE: &str =
+    "（尾部无 @ 档位者为学习者已会声明：视为已掌握，等同已知，不要再为其安排教学）";
+
+/// 已教概念账原文 → 已知名数组：顿号分条、剥掉尾部括注与 `@档位` 后缀，顺序
+/// 保留，同名只留首现一条（生产 `provenance_known` 是集合语义）。概念名里的
+/// 「」等标点按原文保留，不改写不删减。
+fn t1_known_names(taught_summary: &str) -> Vec<String> {
+    let body = taught_summary
+        .strip_suffix(T1_TAUGHT_DECLARED_NOTE)
+        .unwrap_or(taught_summary);
+    let mut names: Vec<String> = Vec::new();
+    for item in body.split('、') {
+        let name = item.rsplit_once('@').map_or(item, |(name, _tier)| name);
+        if !name.is_empty() && !names.iter().any(|known| known == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// T1 真实批夹具装配：批 JSON（录制原文）+ 真实已教概念账原文 + 真实学习目标。
+/// `known` = 已教概念账的已知名 ∪ 本批铸名正名与别名（小写折叠）——生产
+/// `gate_batch` 装配 `provenance_known` 的同一道缝（已教账 ∪ 登记表活跃名与
+/// 别名 ∪ 本批铸名/提名；登记表名不在臂内，是票面已记录的保守偏差）。漏掉
+/// 本批铸名，批自己的教出名会以未着落片段的身份进点名清单——真机实录的
+/// 清单里没有它们。
+fn t1_real_batch_fixture(
+    label: &'static str,
+    direction: ReplayDirection,
+    batch_json: &str,
+) -> ReplayFixture {
+    let batch: nomifun_learning::ProposedBatch = serde_json::from_str(batch_json)
+        .unwrap_or_else(|error| {
+            panic!("T1 批 JSON 原文必须可解析（夹具 const 与录制逐字一致）：{error}")
+        });
+    let mut known = t1_known_names(REVIEW_REPLAY_T1_TAUGHT_SUMMARY);
+    let minted = batch
+        .mints
+        .iter()
+        .flat_map(|mint| {
+            std::iter::once(mint.canonical.as_str())
+                .chain(mint.aliases.iter().map(String::as_str))
+        })
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty());
+    for name in minted {
+        if !known.iter().any(|known_name| known_name == &name) {
+            known.push(name);
+        }
+    }
+    ReplayFixture {
+        label,
+        direction: Some(direction),
+        goal: REVIEW_REPLAY_T1_GOAL.into(),
+        known,
+        taught_summary: Some(REVIEW_REPLAY_T1_TAUGHT_SUMMARY.into()),
+        batch,
+    }
+}
+
+/// T1 三夹具（票面 R-b 顺序）：真实批 A（打回锚）/ 真实批 B（放行锚）/ 三角形
+/// 折叠批（打回锚，对照——沿用默认模式那一个夹具）。
+fn t1_fixtures() -> Vec<ReplayFixture> {
+    vec![
+        t1_real_batch_fixture(
+            "t1-batch-A-rejected",
+            ReplayDirection::RejectAnchor,
+            REVIEW_REPLAY_T1_BATCH_A_JSON,
+        ),
+        t1_real_batch_fixture(
+            "t1-batch-B-accepted",
+            ReplayDirection::PassAnchor,
+            REVIEW_REPLAY_T1_BATCH_B_JSON,
+        ),
+        reject_anchor_fixture(),
+    ]
+}
+
+/// 两种模式的夹具表：默认 = 原三夹具、原顺序（live 夹具 readout-only，见
+/// [`live_real_batch_fixture`]）；`--t1` = [`t1_fixtures`]。
+fn review_replay_fixtures(t1: bool) -> Vec<ReplayFixture> {
+    if t1 {
+        t1_fixtures()
+    } else {
+        vec![
+            reject_anchor_fixture(),
+            pass_anchor_fixture(),
+            live_real_batch_fixture(),
+        ]
+    }
+}
+
+/// 单夹具的 T1 读数（汇总表的数据源）：夹具标签 + 方向锚 + 逐跑读数。
+#[derive(Debug)]
+struct T1FixtureReadout {
+    label: &'static str,
+    direction: ReplayDirection,
+    runs: Vec<ReplayRunReadout>,
+}
+
+impl T1FixtureReadout {
+    /// 方向命中数（降级不算命中——[`ReplayRunReadout::direction_hit`] 同口径）。
+    fn hits(&self) -> usize {
+        self.runs
+            .iter()
+            .filter(|run| run.direction_hit(self.direction))
+            .count()
+    }
+
+    /// 评审缺席（降级）跑数：单列，不折进命中。
+    fn degraded(&self) -> usize {
+        self.runs.iter().filter(|run| run.degraded).count()
+    }
+}
+
+/// T1 的夹具循环：三夹具各 [`T1_REVIEW_REPLAY_RUNS`] 跑，逐跑一行 + 逐夹具
+/// 一行汇总（方向命中数、降级数），返回逐夹具读数供汇总表。每行带 `arm=`。
+/// 本函数不读环境变量——臂由入口判定后传入（单测直接喂臂与 Scripted）。
+async fn run_t1_replay(
+    completer: Arc<dyn nomifun_learning::LearningCompleter>,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    usage_log: Option<&Path>,
+    arm: T1Arm,
+) -> Result<Vec<T1FixtureReadout>> {
+    let tag = format!("[review-replay-t1] arm={}", arm.as_str());
+    let mut readouts = Vec::new();
+    for (fixture_index, fixture) in t1_fixtures().into_iter().enumerate() {
+        // T1 三夹具都带方向锚（装配点保证）；None 是夹具装配错误。
+        let direction = fixture
+            .direction
+            .unwrap_or_else(|| panic!("T1 夹具 {} 缺方向锚", fixture.label));
+        let label = fixture.label;
+        let mut runs = Vec::with_capacity(T1_REVIEW_REPLAY_RUNS);
+        for run in 0..T1_REVIEW_REPLAY_RUNS {
+            // 一次只跑一跑、读完即打印：真模型一跑数分钟，整夹具跑完再出读数
+            // 要等一二十分钟。采样编号仍按「夹具序 × 每夹具跑数 + 跑序」合成
+            // ——这里把合成结果当 `fixture_index` 传、跑数传 1（单跑不再相乘），
+            // 整次运行内每个采样编号照旧唯一（与整夹具一次跑完同号）。
+            let sample = fixture_index * T1_REVIEW_REPLAY_RUNS + run;
+            let (readout, naming) = replay_fixture_runs(
+                completer.clone(),
+                model_override,
+                &fixture,
+                sample,
+                1,
+                usage_log,
+            )
+            .await?;
+            let [readout] = <[ReplayRunReadout; 1]>::try_from(readout)
+                .expect("单跑恰返回一条读数");
+            println!(
+                "{tag} fixture={label} run {}/{}: verdict={} elapsed_ms={} llm_calls={} reasoning_tokens={}",
+                run + 1,
+                T1_REVIEW_REPLAY_RUNS,
+                readout.verdict_word(),
+                readout.elapsed_ms,
+                readout.llm_calls,
+                readout.reasoning_tokens
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "absent".into()),
+            );
+            if run == 0 {
+                // 夹具机械面读数（点名清单逐跑同形，首跑取一次）。
+                println!(
+                    "{tag} fixture={label} naming_derived=[{}] known={}",
+                    naming.join("、"),
+                    fixture.known.len()
+                );
+            }
+            runs.push(readout);
+        }
+        let readout = T1FixtureReadout {
+            label,
+            direction,
+            runs,
+        };
+        println!(
+            "{tag} fixture={label} summary: direction hits={}/{} degraded={}/{} (anchor={})",
+            readout.hits(),
+            T1_REVIEW_REPLAY_RUNS,
+            readout.degraded(),
+            T1_REVIEW_REPLAY_RUNS,
+            direction.as_str(),
+        );
+        readouts.push(readout);
+    }
+    Ok(readouts)
+}
+
+/// 汇总表（夹具 × 跑）：每夹具一行——逐跑结论词（与逐跑行同词）、方向命中、
+/// 降级；表头与每一行都带臂名。
+fn t1_summary_table(arm: T1Arm, readouts: &[T1FixtureReadout]) -> String {
+    let mut table = format!(
+        "[review-replay-t1] arm={} summary-table（夹具 × 跑；runs = 逐跑结论词）:",
+        arm.as_str()
+    );
+    for readout in readouts {
+        let verdicts: Vec<String> = readout
+            .runs
+            .iter()
+            .map(ReplayRunReadout::verdict_word)
+            .collect();
+        table.push_str(&format!(
+            "\n[review-replay-t1] arm={} | fixture={} | anchor={} | runs={} | hits={}/{} | degraded={}/{}",
+            arm.as_str(),
+            readout.label,
+            readout.direction.as_str(),
+            verdicts.join(" "),
+            readout.hits(),
+            readout.runs.len(),
+            readout.degraded(),
+            readout.runs.len(),
+        ));
+    }
+    table
+}
+
+/// T1 模式的臂主体（接线同默认臂，只是夹具、跑数与读数面不同）：夹具循环 →
+/// 汇总表 → EXIT。EXIT 同默认臂的唯一硬判据——全部夹具全部跑评审缺席 = 评审
+/// 管线没走通 → 非零；方向读数与降级数只留痕，不改 EXIT。
+async fn run_t1_review_replay(
+    pipeline: Arc<dyn nomifun_learning::LearningCompleter>,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    usage_log: Option<&Path>,
+    arm: T1Arm,
+) -> Result<ExitCode> {
+    let readouts = run_t1_replay(pipeline, model_override, usage_log, arm).await?;
+    println!("{}", t1_summary_table(arm, &readouts));
+    let runs: usize = readouts.iter().map(|readout| readout.runs.len()).sum();
+    let degraded: usize = readouts.iter().map(T1FixtureReadout::degraded).sum();
+    let exit = review_replay_exit_code(degraded == runs);
+    if exit != ExitCode::SUCCESS {
+        eprintln!(
+            "review-replay-t1: arm={} 全部夹具全部评审缺席（degraded {degraded}/{runs}）\
+             ——评审管线真机没走通（凭据/模型可用性先查）",
+            arm.as_str()
+        );
+        return Ok(exit);
+    }
+    println!(
+        "OK review-replay-t1 arm={} runs={T1_REVIEW_REPLAY_RUNS} fixtures={} degraded={degraded}/{runs}",
+        arm.as_str(),
+        readouts.len(),
     );
     Ok(exit)
 }
@@ -5707,5 +6102,535 @@ mod review_replay_tests {
         assert_ne!(systems[1], systems[2]);
         // user（被审材料）一字不动。
         assert!(users.iter().all(|u| u == user));
+    }
+
+    // ── T1 模式（训练轮逐代重测；票 t1-training-wheels-retest）─────────────
+    //
+    // `review-replay --t1`：真实批 A（打回锚）/ 真实批 B（放行锚）/ 三角形折叠批
+    // （打回锚，对照）各 5 跑；臂由两表义务开关的进程环境变量判定并进输出。
+
+    /// 内嵌文本的 sha256（十六进制）。
+    fn sha256_hex(text: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    /// 内嵌夹具与录制源逐字一致（票面 Acceptance ① 的「内嵌」面）：字节数 +
+    /// sha256 是在仓库外源文件上独立算出的已知值——测试不读仓库外路径。批 A/B
+    /// = 源文件第 2 行（JSON），已教账 = 已知面源文件第 2 行，学习目标 = 真机
+    /// 评审调用【学习目标】块原文。
+    #[test]
+    fn t1_embedded_fixtures_match_the_recorded_sources_byte_for_byte() {
+        for (name, text, bytes, sha256) in [
+            (
+                "批 A JSON",
+                REVIEW_REPLAY_T1_BATCH_A_JSON,
+                7454,
+                "bc7bd507147f01b77fe9566f63affd0b2b3384d69fe839a9ed0f80ce5c864c09",
+            ),
+            (
+                "批 B JSON",
+                REVIEW_REPLAY_T1_BATCH_B_JSON,
+                6165,
+                "5adc1a1295fbda76d67cee5fc0087e27f4814cd8e71dc9850de9e9cc22edad3d",
+            ),
+            (
+                "已教概念账",
+                REVIEW_REPLAY_T1_TAUGHT_SUMMARY,
+                1400,
+                "de3d01fbe07f72eac8a5159023b3f0a3b99986149d1a66a590b74e6e8dc5e27b",
+            ),
+            (
+                "学习目标",
+                REVIEW_REPLAY_T1_GOAL,
+                261,
+                "51888021f3c38d2fdbd29969288649927e0066453a42f5cf183b187803295a29",
+            ),
+        ] {
+            assert_eq!(
+                (text.len(), sha256_hex(text)),
+                (bytes, sha256.to_owned()),
+                "{name} 内嵌文本与录制源不一致"
+            );
+        }
+    }
+
+    /// T1 三夹具可装配（票面 Acceptance ①）：真实批 A 5 节点 / 批 B 4 节点的
+    /// JSON 可解析、方向锚在场（A 打回 / B 放行 / 三角形对照打回），批 A 节点
+    /// 标题含「迭代器协议」；真实批的已教账是原文（带 `@档位`），已知面条目数
+    /// > 20 且不含 `@`；打回锚的构造性保证 = 缺口名词不在已知面。
+    #[test]
+    fn t1_fixtures_assemble_real_scale_reject_and_pass_anchors() {
+        let fixtures = t1_fixtures();
+        let labels: Vec<&str> = fixtures.iter().map(|fixture| fixture.label).collect();
+        let directions: Vec<Option<ReplayDirection>> =
+            fixtures.iter().map(|fixture| fixture.direction).collect();
+        assert_eq!(
+            labels,
+            ["t1-batch-A-rejected", "t1-batch-B-accepted", "reject-anchor"]
+        );
+        assert_eq!(
+            directions,
+            [
+                Some(ReplayDirection::RejectAnchor),
+                Some(ReplayDirection::PassAnchor),
+                Some(ReplayDirection::RejectAnchor),
+            ],
+            "T1 三夹具都有构造性保证，全部带方向锚"
+        );
+        let [batch_a, batch_b, triangle] = fixtures.as_slice() else {
+            panic!("T1 三夹具");
+        };
+        assert_eq!(batch_a.batch.nodes.len(), 5, "真实批 A：教练初稿 5 节点");
+        assert_eq!(batch_b.batch.nodes.len(), 4, "真实批 B：点修后 4 节点");
+        assert!(
+            batch_a
+                .batch
+                .nodes
+                .iter()
+                .any(|node| node.title.contains("迭代器协议")),
+            "批 A 节点标题须含「迭代器协议」"
+        );
+        // 已知面 = 已教概念账 72 个已知名 + 本批铸名正名与别名（批 A：4 铸名
+        // 12 别名；批 B：3 铸名 9 别名——数字是在批 JSON 上独立数出的）。
+        assert_eq!(batch_a.known.len(), 72 + 16, "批 A 已知面");
+        assert_eq!(batch_b.known.len(), 72 + 12, "批 B 已知面");
+        for (fixture, label) in [(batch_a, "批 A"), (batch_b, "批 B")] {
+            assert!(fixture.known.len() > 20, "{label} 已知面条目数须 > 20");
+            assert!(
+                fixture.known.iter().all(|name| !name.contains('@')),
+                "{label} 已知名不得带 @档位 后缀：{:?}",
+                fixture.known
+            );
+            assert_eq!(
+                fixture.taught_summary.as_deref(),
+                Some(REVIEW_REPLAY_T1_TAUGHT_SUMMARY),
+                "{label} 的已教账须是原文（taught_summary），不是已知名的拼接"
+            );
+            assert_eq!(fixture.goal, REVIEW_REPLAY_T1_GOAL, "{label} 的学习目标");
+        }
+        // 打回锚的构造性保证：真机打回的理由（迭代器协议定义依赖的四个名词）
+        // 不在批 A 的已知面。
+        for gap in ["容器", "接口", "元素", "消费方"] {
+            assert!(
+                !batch_a.known.iter().any(|name| name == gap),
+                "缺口名词 {gap} 不得在批 A 的已知面"
+            );
+        }
+        // 对照夹具沿用默认模式那一个（原样）。
+        assert_eq!(triangle.known, ["三角形", "图形"]);
+        assert!(triangle.taught_summary.is_none());
+    }
+
+    /// T1 批 A 的机械面（打回锚的构造性保证，真机点名清单同形）：点名派生须
+    /// 指名缺口名词（容器/接口/元素/消费方）；本批自己的铸名不得以未着落片段
+    /// 进清单——生产 `gate_batch` 把本批铸名正名与别名并进已知名池，夹具走同
+    /// 一道缝（真机清单里没有本批铸名）。Scripted 注入不起真模型。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn t1_batch_a_naming_calls_out_gap_nouns_but_not_its_own_mints() {
+        // 两机械面关臂：点名清单在开关之前派生（`replay_concept_review`），
+        // 这里只看派生面；回包内容不相干。
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        // 批 A 不含「三角形」→ ScriptedReplay 全走 pass 桶。
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedReplay::new(Vec::new(), vec![pass_verdict()]));
+        let fixtures = t1_fixtures();
+        let [batch_a, ..] = fixtures.as_slice() else {
+            panic!("T1 三夹具");
+        };
+        let (_readouts, naming) = replay_fixture_runs(scripted, None, batch_a, 0, 1, None)
+            .await
+            .unwrap();
+        for gap in ["容器", "接口", "元素", "消费方"] {
+            assert!(
+                naming.iter().any(|term| term.contains(gap)),
+                "批 A 点名派生须指名缺口名词 {gap}：{naming:?}"
+            );
+        }
+        for own in ["迭代器协议", "结果类型", "引用计数", "原子操作"] {
+            assert!(
+                naming.iter().all(|term| !term.contains(own)),
+                "本批铸名 {own} 不得以未着落片段进点名清单：{naming:?}"
+            );
+        }
+    }
+
+    /// 已知面解析：`概念@apply` → `概念`（已会声明无档位，原样）；顺序保留；
+    /// 同名不重复引入（已教账与已会声明同名时只留一条）；尾部括注不进概念名。
+    #[test]
+    fn t1_known_names_strip_tiers_keep_order_and_never_duplicate() {
+        let summary = format!(
+            "堆分配@apply、调用栈@know、变量绑定、堆分配{note}",
+            note = "（尾部无 @ 档位者为学习者已会声明：视为已掌握，等同已知，不要再为其安排教学）"
+        );
+        assert_eq!(
+            t1_known_names(&summary),
+            ["堆分配", "调用栈", "变量绑定"],
+            "剥档位与括注、保序、同名只留一条"
+        );
+        // 真实已教账：72 个概念——条目数与首尾是在源文件上独立数出的已知值。
+        let names = t1_known_names(REVIEW_REPLAY_T1_TAUGHT_SUMMARY);
+        assert_eq!(names.len(), 72);
+        assert_eq!(names.first().map(String::as_str), Some("临界区"));
+        assert_eq!(names.last().map(String::as_str), Some("错误行号"));
+    }
+
+    /// 臂判定（票面 R-a，取值面）：两开关都未设 = on 臂；两者都是 off 取值 =
+    /// off 臂；只关一个 = 无法归类的臂，报错并点名两个变量。off 取值与两个
+    /// 机制自己的开关同语义（off/0/false，大小写与首尾空白宽容）。
+    #[test]
+    fn t1_arm_follows_both_table_switches_and_rejects_a_half_set_pair() {
+        // 两开关同开（未设或非 off 取值）= on 臂。
+        for (provenance, fragments) in [
+            (None, None),
+            (Some("on"), None),
+            (None, Some("1")),
+            (Some("on"), Some("true")),
+        ] {
+            assert_eq!(
+                t1_arm_from_switch_values(provenance, fragments),
+                Ok(T1Arm::On),
+                "{provenance:?} / {fragments:?}"
+            );
+        }
+        // 两开关同关 = off 臂。
+        for (provenance, fragments) in [
+            (Some("off"), Some("off")),
+            (Some("0"), Some(" OFF ")),
+            (Some("false"), Some("False")),
+        ] {
+            assert_eq!(
+                t1_arm_from_switch_values(provenance, fragments),
+                Ok(T1Arm::Off),
+                "{provenance:?} / {fragments:?}"
+            );
+        }
+        // 只关一个（任一个）= 报错，错误信息点名两个变量。
+        for (provenance, fragments) in [
+            (Some("off"), None),
+            (None, Some("off")),
+            (Some("off"), Some("on")),
+            (Some("on"), Some("0")),
+        ] {
+            let error = t1_arm_from_switch_values(provenance, fragments)
+                .expect_err("只关一个开关不是任何一臂");
+            assert!(error.contains(nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV));
+            assert!(error.contains(nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV));
+        }
+    }
+
+    /// 臂的进程读数（env 是进程全局态：`#[serial]` + Drop 恢复守卫——仓库
+    /// 铁律）：两开关未设 → on；两者 off → off；只设一个 → 报错。
+    #[test]
+    #[serial_test::serial]
+    fn t1_current_arm_reads_the_process_switches() {
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            None,
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            None,
+        );
+        assert_eq!(t1_current_arm(), Ok(T1Arm::On), "两开关未设 = on 臂");
+        {
+            let _off_provenance = nomifun_learning::switch_env_guard(
+                nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+                Some("off"),
+            );
+            let _off_fragments = nomifun_learning::switch_env_guard(
+                nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+                Some("off"),
+            );
+            assert_eq!(t1_current_arm(), Ok(T1Arm::Off), "两者 off = off 臂");
+        }
+        {
+            let _off_provenance = nomifun_learning::switch_env_guard(
+                nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+                Some("off"),
+            );
+            assert!(t1_current_arm().is_err(), "只关挂号表 = 报错");
+        }
+        {
+            let _off_fragments = nomifun_learning::switch_env_guard(
+                nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+                Some("off"),
+            );
+            assert!(t1_current_arm().is_err(), "只关碎片面 = 报错");
+        }
+        assert_eq!(t1_current_arm(), Ok(T1Arm::On), "守卫退出后恢复未设");
+    }
+
+    /// T1 三夹具的 Scripted completer：按 prompt 关键词分桶——首个命中的桶
+    /// 胜，全不中落末桶。「读改写」只在批 A（原子操作节点的标题与意图；批 B
+    /// 只在 note 里提了一句已删的「原子操作」铸名，不含它——按「原子操作」
+    /// 分流会把批 B 误送进批 A 桶），「三角形」只在对照夹具，其余 = 批 B。
+    /// 桶空 = Err（传输臂注入——两连败降级；cfg(test) 下 rs4 退避常量为零
+    /// 不减速）。
+    struct ScriptedT1Replay {
+        /// (路由关键词, 桶)；末桶关键词为空 = 兜底。
+        buckets: Vec<(
+            &'static str,
+            std::sync::Mutex<VecDeque<Result<String, nomifun_common::AppError>>>,
+        )>,
+        /// 捕获的评审 system 面（采样编号断言用）。
+        systems: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedT1Replay {
+        /// 桶序固定：(批 A, 对照三角形, 批 B 兜底)。
+        fn new(
+            batch_a: Vec<Result<String, nomifun_common::AppError>>,
+            triangle: Vec<Result<String, nomifun_common::AppError>>,
+            batch_b: Vec<Result<String, nomifun_common::AppError>>,
+        ) -> Self {
+            Self {
+                buckets: vec![
+                    ("读改写", std::sync::Mutex::new(batch_a.into())),
+                    ("三角形", std::sync::Mutex::new(triangle.into())),
+                    ("", std::sync::Mutex::new(batch_b.into())),
+                ],
+                systems: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl nomifun_learning::LearningCompleter for ScriptedT1Replay {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            unreachable!("review only uses the json seam")
+        }
+
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            system: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            self.systems.lock().unwrap().push(system.to_owned());
+            let (_, bucket) = self
+                .buckets
+                .iter()
+                .find(|(key, _)| !key.is_empty() && user.contains(key))
+                .unwrap_or_else(|| {
+                    self.buckets
+                        .last()
+                        .expect("末桶是兜底桶，装配时恒在")
+                });
+            bucket
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(nomifun_common::AppError::Internal("script exhausted".into())))
+        }
+    }
+
+    /// T1 每次采样的采样编号唯一（破缓存的前提，见 [`SampleMarker`]）：三夹具
+    /// × 5 跑 = 15 次请求的 system 两两不同，采样编号恰是 #0–#14 各一次。
+    /// 夹具循环一跑一调 [`replay_fixture_runs`]，编号仍按「夹具序 × 每夹具
+    /// 跑数 + 跑序」合成——夹具内同号会让第 2 跑起被服务端缓存命中。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn t1_every_sample_gets_a_distinct_marker_across_fixtures_and_runs() {
+        /// `n` 个放行回包（回包不是 Clone，逐个造）。
+        fn passes(count: usize) -> Vec<Result<String, nomifun_common::AppError>> {
+            (0..count).map(|_| pass_verdict()).collect()
+        }
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        let scripted = Arc::new(ScriptedT1Replay::new(passes(5), passes(5), passes(5)));
+        run_t1_replay(
+            scripted.clone() as Arc<dyn nomifun_learning::LearningCompleter>,
+            None,
+            None,
+            T1Arm::On,
+        )
+        .await
+        .unwrap();
+        let systems = scripted.systems.lock().unwrap().clone();
+        assert_eq!(systems.len(), 15, "三夹具 × 5 跑");
+        let markers: Vec<String> = systems
+            .iter()
+            .map(|system| {
+                let (_, tail) = system
+                    .rsplit_once("（采样编号 #")
+                    .expect("每次请求的 system 末尾都有采样标记");
+                tail.split('：').next().unwrap_or_default().to_owned()
+            })
+            .collect();
+        assert_eq!(
+            markers,
+            (0..15).map(|sample| sample.to_string()).collect::<Vec<_>>(),
+            "采样编号 #0–#14 各一次"
+        );
+        let unique: std::collections::BTreeSet<&String> = systems.iter().collect();
+        assert_eq!(unique.len(), systems.len(), "15 次请求的 system 两两不同");
+    }
+
+    /// T1 汇总（票面 R-d/R-e 读数面）：Scripted 批 A（打回锚）3 拒 2 放 →
+    /// 命中 3/5；批 B（放行锚）5 放 → 5/5；三角形对照（打回锚）4 拒后桶空 →
+    /// 降级计 1、不算命中（hits=4/5）。汇总表每行带臂名、逐跑结论词、命中与
+    /// 降级。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn t1_summary_counts_direction_hits_and_degraded_runs_per_fixture() {
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        let scripted: Arc<dyn nomifun_learning::LearningCompleter> =
+            Arc::new(ScriptedT1Replay::new(
+                vec![
+                    reject_verdict(),
+                    reject_verdict(),
+                    reject_verdict(),
+                    pass_verdict(),
+                    pass_verdict(),
+                ],
+                vec![
+                    reject_verdict(),
+                    reject_verdict(),
+                    reject_verdict(),
+                    reject_verdict(),
+                ],
+                vec![
+                    pass_verdict(),
+                    pass_verdict(),
+                    pass_verdict(),
+                    pass_verdict(),
+                    pass_verdict(),
+                ],
+            ));
+        let readouts = run_t1_replay(scripted, None, None, T1Arm::Off)
+            .await
+            .unwrap();
+        let by_label = |label: &str| {
+            readouts
+                .iter()
+                .find(|readout| readout.label == label)
+                .unwrap_or_else(|| panic!("汇总里缺夹具 {label}"))
+        };
+        let batch_a = by_label("t1-batch-A-rejected");
+        assert_eq!(batch_a.direction, ReplayDirection::RejectAnchor);
+        assert_eq!(batch_a.runs.len(), 5, "票面 R-c：每夹具每臂 5 次采样");
+        assert_eq!(
+            (batch_a.hits(), batch_a.degraded()),
+            (3, 0),
+            "批 A 3 拒 2 放 → 打回锚命中 3/5"
+        );
+        let batch_b = by_label("t1-batch-B-accepted");
+        assert_eq!(batch_b.direction, ReplayDirection::PassAnchor);
+        assert_eq!(
+            (batch_b.hits(), batch_b.degraded()),
+            (5, 0),
+            "批 B 5 放 → 放行锚命中 5/5"
+        );
+        let triangle = by_label("reject-anchor");
+        assert_eq!(
+            (triangle.direction, triangle.runs.len()),
+            (ReplayDirection::RejectAnchor, 5)
+        );
+        assert_eq!(
+            (triangle.hits(), triangle.degraded()),
+            (4, 1),
+            "4 拒 + 1 降级：降级单计 1，不算命中"
+        );
+        assert!(triangle.runs.iter().any(|run| run.degraded));
+
+        // 汇总表：每夹具一行，带臂名、逐跑结论词、命中与降级。
+        let table = t1_summary_table(T1Arm::Off, &readouts);
+        let row = |label: &str| {
+            table
+                .lines()
+                .find(|line| line.contains(&format!("fixture={label} ")))
+                .unwrap_or_else(|| panic!("汇总表缺 {label} 行：\n{table}"))
+                .to_owned()
+        };
+        let row_a = row("t1-batch-A-rejected");
+        assert!(row_a.contains("arm=off"), "{row_a}");
+        assert!(
+            row_a.contains("reject(problems=1) reject(problems=1) reject(problems=1) pass pass"),
+            "逐跑结论词按跑序：{row_a}"
+        );
+        assert!(row_a.contains("hits=3/5") && row_a.contains("degraded=0/5"), "{row_a}");
+        let row_b = row("t1-batch-B-accepted");
+        assert!(row_b.contains("arm=off") && row_b.contains("hits=5/5"), "{row_b}");
+        let row_triangle = row("reject-anchor");
+        assert!(
+            row_triangle.contains("hits=4/5") && row_triangle.contains("degraded=1/5"),
+            "{row_triangle}"
+        );
+    }
+
+    /// T1 模式不影响默认模式：不传 `--t1` 时夹具表仍是原来的三个、原顺序
+    /// （live 夹具仍是 readout-only、已教账仍由已知名拼接、批内容原样）；只有
+    /// 传了 `--t1` 才换成 T1 三夹具。
+    #[test]
+    fn default_mode_keeps_its_three_fixtures_unless_t1_is_asked_for() {
+        let default = review_replay_fixtures(false);
+        let labels: Vec<&str> = default.iter().map(|fixture| fixture.label).collect();
+        assert_eq!(labels, ["reject-anchor", "pass-anchor", "live-real-batch"]);
+        let directions: Vec<Option<ReplayDirection>> =
+            default.iter().map(|fixture| fixture.direction).collect();
+        assert_eq!(
+            directions,
+            [
+                Some(ReplayDirection::RejectAnchor),
+                Some(ReplayDirection::PassAnchor),
+                None,
+            ],
+            "live 夹具仍是 readout-only"
+        );
+        let [reject, pass, live] = default.as_slice() else {
+            panic!("默认三夹具");
+        };
+        assert_eq!(reject.known, ["三角形", "图形"]);
+        assert_eq!(
+            reject.batch.mints[0].definition,
+            "由三条线段围成的图形，内角和是 180 度。"
+        );
+        assert_eq!(pass.batch.nodes.len(), 3);
+        assert_eq!(live.batch.nodes.len(), 3);
+        assert!(
+            default
+                .iter()
+                .all(|fixture| fixture.taught_summary.is_none()),
+            "默认夹具的已教账仍由已知名拼接（原行为）"
+        );
+
+        let t1 = review_replay_fixtures(true);
+        assert_eq!(
+            t1.iter().map(|fixture| fixture.label).collect::<Vec<_>>(),
+            ["t1-batch-A-rejected", "t1-batch-B-accepted", "reject-anchor"],
+            "--t1 才换成 T1 三夹具"
+        );
     }
 }
