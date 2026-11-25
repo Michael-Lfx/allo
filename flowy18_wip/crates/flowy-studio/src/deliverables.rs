@@ -9,8 +9,9 @@ use std::sync::Arc;
 use flowy_agent::{ChatLine, FileEntry, ReceiptState};
 use flowy_ui as theme;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, FontWeight, Image,
-    ImageFormat, IntoElement, SharedString, div, img, prelude::*, px,
+    AnimationExt, AnyElement, Context, FontWeight, Image, ImageFormat,
+    IntoElement, SharedString, SpringAnimation, Window, div, img, prelude::*,
+    px,
 };
 
 use crate::panel::StudioPanel;
@@ -121,12 +122,14 @@ pub fn load_preview(path: &str) -> PreviewBody {
 }
 
 impl StudioPanel {
-    /// Unified right-hand sheet drawer: 3-mode inspector (Deliverables | Steps |
-    /// Trace) or focused Single-Work Inspector from the background popover.
+    /// Unified right-hand sheet drawer: calm 2-tab inspector (Files | Activity)
+    /// plus a quiet Trace debug toggle and focused Single-Work Inspector.
     pub(crate) fn right_sheet_drawer(
         &self,
-        cx: &Context<'_, Self>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let rtl = self.i18n.locale().is_rtl();
         let active_session = self.agent.active_session_id();
         let body = if let Some(work) = &self.inspected_work {
             match self.drawer_tab {
@@ -157,7 +160,7 @@ impl StudioPanel {
                     let files = self.deliverables.as_deref().unwrap_or(&[]);
                     match (&self.preview_file, &self.preview_body) {
                         (Some(path), Some(preview)) => self
-                            .preview_view(path, preview, cx)
+                            .preview_view(path, preview, window, cx)
                             .into_any_element(),
                         _ => self.deliverables_list(files, cx),
                     }
@@ -198,6 +201,65 @@ impl StudioPanel {
                 }
             }
         };
+
+        let trace_active = self.drawer_tab == RightDrawerTab::Trace;
+        let trace_label = self.t("drawer.toggle_trace");
+        let trace_btn = theme::IconButton::new(
+            "drawer-tab-trace",
+            trace_label.clone(),
+            theme::icons::sliders_horizontal().size(px(14.)),
+        )
+        .variant(if trace_active {
+            theme::ControlVariant::Secondary
+        } else {
+            theme::ControlVariant::Ghost
+        })
+        .size(theme::ControlSize::Small)
+        .render_interactive(
+            &self.theme,
+            cx.listener(|panel, _, _, cx| {
+                panel.drawer_tab = if panel.drawer_tab == RightDrawerTab::Trace
+                {
+                    RightDrawerTab::Deliverables
+                } else {
+                    RightDrawerTab::Trace
+                };
+                panel.refresh_trace_cache();
+                cx.notify();
+            }),
+        );
+        let trace_toggle = theme::tooltip_trigger(
+            "drawer-tab-trace-tip",
+            trace_btn,
+            trace_label,
+            &self.ui,
+            window,
+            cx,
+            rtl,
+        );
+        let close_label = self.t("chat.close");
+        let close_btn = theme::IconButton::new(
+            "deliverables-close",
+            close_label.clone(),
+            theme::icons::x().size(px(14.)),
+        )
+        .variant(theme::ControlVariant::Ghost)
+        .size(theme::ControlSize::Small)
+        .render_interactive(
+            &self.theme,
+            cx.listener(|panel, _, _, cx| {
+                panel.close_right_sheet(cx);
+            }),
+        );
+        let close_button = theme::tooltip_trigger(
+            "deliverables-close-tip",
+            close_btn,
+            close_label,
+            &self.ui,
+            window,
+            cx,
+            rtl,
+        );
 
         let tab_pill =
             |tab: RightDrawerTab, key: &'static str, id: &'static str| {
@@ -271,26 +333,15 @@ impl StudioPanel {
                                 RightDrawerTab::Steps,
                                 "drawer.tab_steps",
                                 "drawer-tab-steps",
-                            ))
-                            .child(tab_pill(
-                                RightDrawerTab::Trace,
-                                "drawer.tab_trace",
-                                "drawer-tab-trace",
                             )),
                     )
                     .child(
-                        theme::Button::new(
-                            "deliverables-close",
-                            self.t("chat.close"),
-                        )
-                        .variant(theme::ControlVariant::Ghost)
-                        .size(theme::ControlSize::Small)
-                        .render(
-                            &self.theme,
-                            cx.listener(|panel, _, _, cx| {
-                                panel.close_right_sheet(cx);
-                            }),
-                        ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(trace_toggle)
+                            .child(close_button),
                     ),
             )
             .child(
@@ -307,18 +358,17 @@ impl StudioPanel {
             sheet.into_any_element()
         } else {
             sheet
-                .with_animation(
-                    // The drawer travels in from the edge. Closing removes it
-                    // at once, which reads as a dismiss rather than a broken
-                    // exit.
+                .with_spring(
+                    // The drawer springs in crisply from the right edge.
                     "deliverables-drawer",
-                    Animation::new(crate::motion::SLOW)
-                        .with_easing(crate::motion::out_quint()),
-                    move |drawer, delta| {
+                    SpringAnimation::new(crate::motion::spring_sheet())
+                        .to(1.0_f32)
+                        .from(0.0_f32),
+                    move |drawer, phase| {
                         drawer
-                            .opacity(delta)
+                            .opacity(phase.clamp(0.0, 1.0))
                             .relative()
-                            .left(px(16. * scale * (1.0 - delta)))
+                            .left(px(32.0 * scale * (1.0 - phase)))
                     },
                 )
                 .into_any_element()
@@ -571,6 +621,10 @@ impl StudioPanel {
                                 )
                                 .variant(theme::ControlVariant::Secondary)
                                 .size(theme::ControlSize::Small)
+                                .trailing_icon(
+                                    theme::icons::arrow_up_right()
+                                        .size(px(12.)),
+                                )
                                 .render(
                                     &self.theme,
                                     cx.listener(move |panel, _, _, cx| {
@@ -710,6 +764,10 @@ impl StudioPanel {
                                     )
                                     .variant(theme::ControlVariant::Secondary)
                                     .size(theme::ControlSize::Small)
+                                    .trailing_icon(
+                                        theme::icons::arrow_up_right()
+                                            .size(px(12.)),
+                                    )
                                     .render(
                                         &self.theme,
                                         cx.listener(move |panel, _, _, cx| {
@@ -776,7 +834,7 @@ impl StudioPanel {
                 .justify_center()
                 .gap(self.theme.space(8.))
                 .child(
-                    theme::icons::document_file()
+                    theme::icons::file_text()
                         .size(px(24.))
                         .text_color(self.theme.muted()),
                 )
@@ -806,7 +864,7 @@ impl StudioPanel {
             let file_kind = crate::file_kind::from_path(&file.path);
             let icon = file_kind.map_or_else(
                 || {
-                    theme::icons::document_file()
+                    theme::icons::file_text()
                         .size(px(18.))
                         .text_color(self.theme.muted())
                         .into_any_element()
@@ -929,8 +987,10 @@ impl StudioPanel {
         &self,
         path: &str,
         preview: &PreviewBody,
-        cx: &Context<'_, Self>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let rtl = self.i18n.locale().is_rtl();
         let name = crate::ports::basename(path);
         let external_path = path.to_owned();
         let body = match preview {
@@ -950,6 +1010,81 @@ impl StudioPanel {
                 .child(self.t(key))
                 .into_any_element(),
         };
+        let back_label = self.t("chat.back");
+        let back_btn = theme::IconButton::new(
+            "preview-back",
+            back_label.clone(),
+            theme::icons::arrow_left().size(px(14.)),
+        )
+        .variant(theme::ControlVariant::Ghost)
+        .size(theme::ControlSize::Small)
+        .render_interactive(
+            &self.theme,
+            cx.listener(|panel, _, _, cx| {
+                panel.set_preview_file(None, cx);
+            }),
+        );
+        let back_button = theme::tooltip_trigger(
+            "preview-back-tip",
+            back_btn,
+            back_label,
+            &self.ui,
+            window,
+            cx,
+            rtl,
+        );
+        let reveal_label = self.t("board.reveal_folder");
+        let reveal_btn = theme::IconButton::new(
+            "preview-reveal-folder",
+            reveal_label.clone(),
+            theme::icons::folder_open().size(px(14.)),
+        )
+        .variant(theme::ControlVariant::Ghost)
+        .size(theme::ControlSize::Small)
+        .render_interactive(
+            &self.theme,
+            cx.listener({
+                let reveal_path = external_path.clone();
+                move |panel, _, _, cx| {
+                    panel.reveal_file(&reveal_path, cx);
+                }
+            }),
+        );
+        let reveal_button = theme::tooltip_trigger(
+            "preview-reveal-folder-tip",
+            reveal_btn,
+            reveal_label,
+            &self.ui,
+            window,
+            cx,
+            rtl,
+        );
+        let open_button =
+            flowy_agent::can_open_with_default_app(&external_path).then(|| {
+                let open_label = self.t("deliverables.open_external");
+                let open_btn = theme::IconButton::new(
+                    "preview-open-external",
+                    open_label.clone(),
+                    theme::icons::external_link().size(px(14.)),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render_interactive(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        panel.open_file_externally(&external_path, cx);
+                    }),
+                );
+                theme::tooltip_trigger(
+                    "preview-open-external-tip",
+                    open_btn,
+                    open_label,
+                    &self.ui,
+                    window,
+                    cx,
+                    rtl,
+                )
+            });
         div()
             .w_full()
             .flex()
@@ -960,22 +1095,12 @@ impl StudioPanel {
                     .w_full()
                     .flex()
                     .items_center()
-                    .gap(self.theme.space(8.))
+                    .gap(self.theme.space(6.))
                     .px(self.theme.space(12.))
                     .py(self.theme.space(8.))
                     .border_b_1()
                     .border_color(self.theme.line())
-                    .child(
-                        theme::Button::new("preview-back", self.t("chat.back"))
-                            .variant(theme::ControlVariant::Ghost)
-                            .size(theme::ControlSize::Small)
-                            .render(
-                                &self.theme,
-                                cx.listener(|panel, _, _, cx| {
-                                    panel.set_preview_file(None, cx);
-                                }),
-                            ),
-                    )
+                    .child(back_button)
                     .child(
                         div()
                             .flex_1()
@@ -987,45 +1112,8 @@ impl StudioPanel {
                             .truncate()
                             .child(name),
                     )
-                    .child(
-                        theme::Button::new(
-                            "preview-reveal-folder",
-                            self.t("board.reveal_folder"),
-                        )
-                        .variant(theme::ControlVariant::Ghost)
-                        .size(theme::ControlSize::Small)
-                        .render(
-                            &self.theme,
-                            cx.listener({
-                                let reveal_path = external_path.clone();
-                                move |panel, _, _, cx| {
-                                    panel.reveal_file(&reveal_path, cx);
-                                }
-                            }),
-                        ),
-                    )
-                    .when(
-                        flowy_agent::can_open_with_default_app(&external_path),
-                        |row| {
-                            row.child(
-                                theme::Button::new(
-                                    "preview-open-external",
-                                    self.t("deliverables.open_external"),
-                                )
-                                .variant(theme::ControlVariant::Ghost)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(move |panel, _, _, cx| {
-                                        panel.open_file_externally(
-                                            &external_path,
-                                            cx,
-                                        );
-                                    }),
-                                ),
-                            )
-                        },
-                    ),
+                    .child(reveal_button)
+                    .children(open_button),
             )
             .child(body)
     }

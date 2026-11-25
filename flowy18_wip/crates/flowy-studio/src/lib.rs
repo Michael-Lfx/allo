@@ -3,6 +3,7 @@
 mod automation;
 mod chat;
 mod composer;
+mod composer_add_menu;
 mod credits;
 mod deliverables;
 mod feed;

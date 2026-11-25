@@ -27,8 +27,8 @@ impl crate::panel::StudioPanel {
 
     pub(crate) fn workspace(
         &self,
-        window: &Window,
-        cx: &Context<'_, Self>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let mut column = div()
             .id("workspace")
@@ -42,7 +42,7 @@ impl crate::panel::StudioPanel {
             .flex_col();
         let chrome = self.surface != crate::panel::StudioSurface::Automation;
         if chrome {
-            column = column.child(self.top_bar(cx));
+            column = column.child(self.top_bar(window, cx));
         }
         if let Some(notice) = self.notice {
             let message = self.t(notice);
@@ -72,24 +72,24 @@ impl crate::panel::StudioPanel {
         } else {
             self.section_page().into_any_element()
         };
+        let drawer = (!is_board && self.right_drawer_open)
+            .then(|| self.right_sheet_drawer(window, cx).into_any_element());
         column = column.child(
             div()
                 .flex()
                 .flex_1()
                 .min_h_0()
                 .child(content)
-                .when(!is_board && self.right_drawer_open, |row| {
-                    row.child(self.right_sheet_drawer(cx))
-                }),
+                .children(drawer),
         );
         if chrome && !self.has_flow_modal() {
             let rtl = self.i18n.locale().is_rtl();
             match self.popover {
                 ActivePopover::None => {}
                 ActivePopover::ModelInfo => {
-                    column = column.child(theme::popover(
+                    column = column.child(theme::popover_above(
                         "model-info",
-                        "model-menu-trigger",
+                        "composer-model-trigger",
                         self.model_info(cx),
                         &self.ui,
                         window,
@@ -98,7 +98,7 @@ impl crate::panel::StudioPanel {
                     ));
                 }
                 ActivePopover::ModelMenu { anchor } => {
-                    column = column.child(theme::popover(
+                    column = column.child(theme::popover_above(
                         "model-list",
                         anchor,
                         self.model_menu(cx),
@@ -108,22 +108,11 @@ impl crate::panel::StudioPanel {
                         rtl,
                     ));
                 }
-                ActivePopover::WorkspaceMenu => {
+                ActivePopover::AddMenu => {
                     column = column.child(theme::popover_above(
-                        "workspace-menu",
-                        "composer-workspace-trigger",
-                        self.workspace_menu(cx),
-                        &self.ui,
-                        window,
-                        cx,
-                        rtl,
-                    ));
-                }
-                ActivePopover::SkillMenu => {
-                    column = column.child(theme::popover_above(
-                        "skill-menu",
-                        "composer-skill-trigger",
-                        self.skill_menu(cx),
+                        "composer-add-menu",
+                        "composer-add-trigger",
+                        self.composer_add_menu(cx),
                         &self.ui,
                         window,
                         cx,
@@ -544,19 +533,6 @@ impl crate::panel::StudioPanel {
             )
     }
 
-    fn model_button_label(&self) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(self.theme.space(4.))
-            .child(self.model_label())
-            .child(if self.is_model_menu_open() {
-                theme::icons::chevron_up()
-            } else {
-                theme::icons::chevron_down()
-            })
-    }
-
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut menu = theme::menu(
             "model-list-content",
@@ -691,6 +667,12 @@ impl crate::panel::StudioPanel {
         self.plan.label_key()
     }
 
+    fn active_session_title(&self) -> Option<String> {
+        let title = self.agent.session_title();
+        let trimmed = title.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    }
+
     fn space_breadcrumb(&self) -> impl IntoElement {
         if self.surface == crate::panel::StudioSurface::Board {
             return div()
@@ -699,21 +681,6 @@ impl crate::panel::StudioPanel {
                 .items_center()
                 .gap(self.theme.space(8.))
                 .min_w_0()
-                .child(
-                    div()
-                        .size(px(22.))
-                        .flex_none()
-                        .rounded_md()
-                        .bg(self.theme.assistant_badge_bg())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            theme::icons::sparkles()
-                                .size(px(11.))
-                                .text_color(self.theme.assistant_badge_fg()),
-                        ),
-                )
                 .child(
                     div()
                         .text_sm()
@@ -739,49 +706,32 @@ impl crate::panel::StudioPanel {
             self.projects.iter().find(|project| project.id == id)
         });
         if let Some(project) = active_project {
-            let monogram = project.name.trim().chars().next().map_or_else(
-                || "S".to_owned(),
-                |c| c.to_uppercase().to_string(),
-            );
-            let folder = project
-                .root
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default()
-                .to_owned();
-            div()
+            let chat_title = (self.surface
+                == crate::panel::StudioSurface::Chat)
+                .then(|| self.active_session_title())
+                .flatten();
+            return div()
                 .id("studio-space-breadcrumb")
                 .flex()
                 .items_center()
-                .gap(self.theme.space(8.))
+                .gap(self.theme.space(6.))
                 .min_w_0()
                 .child(
-                    div()
-                        .size(px(22.))
-                        .flex_none()
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .border_1()
-                        .border_color(self.theme.line())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(self.theme.ink())
-                        .child(monogram),
+                    theme::icons::folder()
+                        .size(px(14.))
+                        .text_color(self.theme.muted()),
                 )
                 .child(
                     div()
                         .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(self.theme.ink())
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .truncate()
                         .child(project.name.clone()),
                 )
-                .when(!folder.is_empty(), |row| {
+                .when_some(chat_title, |row, title| {
                     row.child(
                         div()
                             .text_xs()
@@ -789,57 +739,43 @@ impl crate::panel::StudioPanel {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .truncate()
-                            .child(format!("\u{00b7} {folder}")),
+                            .child(format!("\u{00b7} {title}")),
                     )
-                })
-        } else {
-            div()
+                });
+        }
+        if self.surface == crate::panel::StudioSurface::Chat {
+            let title = self
+                .active_session_title()
+                .unwrap_or_else(|| self.t("dock.chief_assistant"));
+            return div()
                 .id("studio-space-breadcrumb")
                 .flex()
                 .items_center()
-                .gap(self.theme.space(8.))
                 .min_w_0()
                 .child(
                     div()
-                        .size(px(22.))
-                        .flex_none()
-                        .rounded_md()
-                        .bg(self.theme.assistant_badge_bg())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            theme::icons::sparkles()
-                                .size(px(11.))
-                                .text_color(self.theme.assistant_badge_fg()),
-                        ),
-                )
-                .child(
-                    div()
                         .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(self.theme.ink())
-                        .whitespace_nowrap()
-                        .child(self.t("dock.chief_assistant")),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.muted())
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .truncate()
-                        .child(format!(
-                            "\u{00b7} {}",
-                            self.t("studio.space_default_sub")
-                        )),
-                )
+                        .child(title),
+                );
         }
+        // Blank Home stays calm and chrome-free.
+        div().id("studio-space-breadcrumb")
     }
 
-    fn top_bar(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn top_bar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
         let in_chat = self.surface == crate::panel::StudioSurface::Chat;
         let is_board = self.surface == crate::panel::StudioSurface::Board;
+        let is_blank_home = self.surface == crate::panel::StudioSurface::Home
+            && self.active_project_id.is_none();
         let can_return_to_chat = self.surface
             == crate::panel::StudioSurface::Home
             && self.agent.has_messages();
@@ -851,6 +787,70 @@ impl crate::panel::StudioPanel {
             self.t("chat.deliverables")
         };
         let drawer_open = self.right_drawer_open;
+        let env_needs_attention =
+            !matches!(self.local_env.overall, crate::ports::EnvSeverity::Ready);
+        let rtl = self.i18n.locale().is_rtl();
+
+        let deliverables_trigger =
+            (!is_board && (in_chat || deliverable_count > 0)).then(|| {
+                let button = theme::interactive(
+                    "deliverables",
+                    deliverables_label.clone(),
+                    &self.theme,
+                )
+                .h(self.theme.control_height(theme::ControlSize::Small))
+                .px(self.theme.space(8.))
+                .rounded_lg()
+                .border_1()
+                .border_color(if drawer_open {
+                    self.theme.border_strong()
+                } else {
+                    self.theme.canvas()
+                })
+                .bg(if drawer_open {
+                    self.theme.soft()
+                } else {
+                    self.theme.canvas()
+                })
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_color(if drawer_open {
+                    self.theme.ink()
+                } else {
+                    self.theme.muted()
+                })
+                .cursor_pointer()
+                .hover(|style| {
+                    style.bg(self.theme.soft()).text_color(self.theme.ink())
+                })
+                .child(theme::icons::panel_right().size(px(15.)))
+                .when(deliverable_count > 0, |btn| {
+                    btn.child(
+                        div()
+                            .px(px(5.))
+                            .py(px(1.))
+                            .rounded_full()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.ink())
+                            .child(deliverable_count.to_string()),
+                    )
+                })
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.toggle_deliverables(cx);
+                }));
+                theme::tooltip_trigger(
+                    "deliverables-tip",
+                    button,
+                    deliverables_label,
+                    &self.ui,
+                    window,
+                    cx,
+                    rtl,
+                )
+            });
 
         div()
             .h(px(48.))
@@ -859,52 +859,16 @@ impl crate::panel::StudioPanel {
             .items_center()
             .justify_between()
             .gap(self.theme.space(12.))
-            .border_b_1()
-            .border_color(self.theme.line())
+            .when(!is_blank_home, |bar| {
+                bar.border_b_1().border_color(self.theme.line())
+            })
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(self.theme.space(10.))
-                    .child(self.space_breadcrumb())
-                    .child(
-                        div()
-                            .w(px(1.))
-                            .h(px(14.))
-                            .flex_none()
-                            .bg(self.theme.line()),
-                    )
-                    .child(theme::anchor_trigger(
-                        theme::interactive(
-                            "model-menu",
-                            self.model_label(),
-                            &self.theme,
-                        )
-                        .px(self.theme.space(10.))
-                        .py(px(4.))
-                        .rounded_full()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .cursor_pointer()
-                        .hover(|style| {
-                            style
-                                .bg(self.theme.soft())
-                                .text_color(self.theme.ink())
-                        })
-                        .child(self.model_button_label())
-                        .on_click(cx.listener(
-                            |app, _event, _window, cx| {
-                                app.toggle_popover(ActivePopover::ModelMenu {
-                                    anchor: "model-menu-trigger",
-                                });
-                                cx.notify();
-                            },
-                        )),
-                        "model-menu-trigger",
-                        &self.ui,
-                    )),
+                    .child(self.space_breadcrumb()),
             )
             .child(
                 div()
@@ -931,106 +895,34 @@ impl crate::panel::StudioPanel {
                             ),
                         )
                     })
-                    .when(in_chat, |row| {
-                        row.child(
-                            theme::Button::new(
-                                "fold-desk",
-                                self.t("dock.fold_desk"),
-                            )
-                            .variant(theme::ControlVariant::Ghost)
-                            .size(theme::ControlSize::Small)
-                            .render(
-                                &self.theme,
-                                cx.listener(|panel, _, _, cx| {
-                                    panel.fold_desk(cx);
-                                }),
-                            ),
-                        )
+                    .children(deliverables_trigger)
+                    .when(env_needs_attention, |row| {
+                        row.child(self.env_status_pill(cx))
                     })
-                    .when(
-                        !is_board && (in_chat || deliverable_count > 0),
-                        |row| {
-                            row.child(
-                                theme::interactive(
-                                    "deliverables",
-                                    deliverables_label.clone(),
-                                    &self.theme,
-                                )
-                                .px(self.theme.space(10.))
-                                .py(px(4.))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(if drawer_open {
-                                    self.theme.border_strong()
-                                } else {
-                                    self.theme.line()
-                                })
-                                .bg(if drawer_open {
-                                    self.theme.soft()
-                                } else {
-                                    self.theme.canvas()
-                                })
-                                .flex()
-                                .items_center()
-                                .gap(px(5.))
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(self.theme.ink())
-                                .cursor_pointer()
-                                .hover(|style| style.bg(self.theme.soft()))
-                                .child(
-                                    theme::icons::file_fold()
-                                        .size(px(13.))
-                                        .text_color(self.theme.muted()),
-                                )
-                                .child(deliverables_label)
-                                .on_click(
-                                    cx.listener(|panel, _, _, cx| {
-                                        panel.toggle_deliverables(cx);
-                                    }),
-                                ),
-                            )
-                        },
-                    )
-                    .child(self.env_status_pill(cx))
                     .child(self.credit_pill(cx)),
             )
     }
 
     fn env_status_pill(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let env = &self.local_env;
-        let ready = matches!(env.overall, crate::ports::EnvSeverity::Ready);
-        let dot_color = if ready {
-            self.theme.status_verified()
-        } else {
-            self.theme.status_attention()
-        };
-        let label = if ready {
-            self.t("env.pill_ready")
-        } else {
-            self.t("env.pill_attention")
-        };
+        let dot_color = self.theme.status_attention();
+        let label = self.t("env.pill_attention");
         theme::anchor_trigger(
             theme::interactive("env-status-pill", label.clone(), &self.theme)
                 .px(self.theme.space(10.))
                 .py(px(4.))
                 .rounded_full()
-                .bg(self.theme.soft())
+                .bg(self.theme.status_attention_bg())
                 .flex()
                 .items_center()
                 .gap(px(6.))
                 .text_xs()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if ready {
-                    self.theme.muted()
-                } else {
-                    self.theme.status_attention()
-                })
+                .text_color(self.theme.status_attention())
                 .cursor_pointer()
                 .hover(|style| style.bg(self.theme.dock_hover()))
                 // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
-                // `Action::Expand`, so keeping the plain button role matches
-                // `model-menu-trigger` and stays clickable via Windows UIA.
+                // `Action::Expand`, so keeping the plain button role stays
+                // clickable via Windows UIA.
                 .on_click(cx.listener(|panel, _, _, cx| {
                     let opening = panel.popover != ActivePopover::EnvStatus;
                     panel.toggle_popover(ActivePopover::EnvStatus);

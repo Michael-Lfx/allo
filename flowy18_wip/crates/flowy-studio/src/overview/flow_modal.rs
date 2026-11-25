@@ -5,7 +5,7 @@ use flowy_ui as theme;
 use flowy_ui::charts::{FlowEdgeStyle, flow_connector, progress_ring};
 use flowy_ui::status_pill;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, SharedString, div,
+    AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div,
     prelude::*, px,
 };
 
@@ -21,12 +21,39 @@ impl StudioPanel {
     /// entire window (including dock and titlebar) with generous horizontal room.
     pub fn flow_modal_overlay(
         &self,
-        cx: &Context<'_, Self>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
+        let rtl = self.i18n.locale().is_rtl();
         let (group, selected_branch) = self.resolve_flow_modal()?;
+        let group = group.clone();
+        let selected_branch = selected_branch.clone();
 
         let open_sid = group.session_id.clone();
         let can_open_session = !group.is_synthetic();
+        let close_label = self.t("chat.close");
+        let close_btn = theme::IconButton::new(
+            "flow-modal-close",
+            close_label.clone(),
+            theme::icons::x().size(px(14.)),
+        )
+        .variant(theme::ControlVariant::Ghost)
+        .size(theme::ControlSize::Small)
+        .render_interactive(
+            &self.theme,
+            cx.listener(|panel, _, _, cx| {
+                panel.close_flow_modal(cx);
+            }),
+        );
+        let close_button = theme::tooltip_trigger(
+            "flow-modal-close-tip",
+            close_btn,
+            close_label,
+            &self.ui,
+            window,
+            cx,
+            rtl,
+        );
 
         let header = div()
             .w_full()
@@ -98,6 +125,9 @@ impl StudioPanel {
                             )
                             .variant(theme::ControlVariant::Secondary)
                             .size(theme::ControlSize::Small)
+                            .trailing_icon(
+                                theme::icons::arrow_up_right().size(px(12.)),
+                            )
                             .render(
                                 &self.theme,
                                 cx.listener(move |panel, _, _, cx| {
@@ -107,20 +137,7 @@ impl StudioPanel {
                             ),
                         )
                     })
-                    .child(
-                        theme::Button::new(
-                            "flow-modal-close",
-                            self.t("chat.close"),
-                        )
-                        .variant(theme::ControlVariant::Ghost)
-                        .size(theme::ControlSize::Small)
-                        .render(
-                            &self.theme,
-                            cx.listener(|panel, _, _, cx| {
-                                panel.close_flow_modal(cx);
-                            }),
-                        ),
-                    ),
+                    .child(close_button),
             );
 
         let mut branch_rows = div()
@@ -239,7 +256,7 @@ impl StudioPanel {
 
         let detail_body = match self.flow_modal.tab {
             FlowModalTab::Action => {
-                self.modal_action_panel(group, selected_branch, cx)
+                self.modal_action_panel(&group, &selected_branch, window, cx)
             }
             FlowModalTab::Trace => {
                 self.modal_trace_panel(&group.session_id, cx)
@@ -581,10 +598,8 @@ impl StudioPanel {
                         .into_any_element()
                 };
                 let subtitle = match &branch.phase {
-                    BranchPhase::Delivered { hash_short, .. }
-                        if !hash_short.is_empty() =>
-                    {
-                        self.tf("verify.card.hash", &[("hash", hash_short)])
+                    BranchPhase::Delivered { .. } => {
+                        self.t("verify.card.passed")
                     }
                     BranchPhase::Idle if !has_file_deliverable => {
                         self.t("chat.status_idle")
@@ -697,8 +712,10 @@ impl StudioPanel {
         &self,
         group: &SessionBoardGroup,
         branch: &WorkBranchSummary,
-        cx: &Context<'_, Self>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let rtl = self.i18n.locale().is_rtl();
         let left_card = match &branch.phase {
             BranchPhase::NeedsApproval {
                 report_id,
@@ -807,6 +824,65 @@ impl StudioPanel {
         };
 
         let file_path = branch.deliverable_path.clone();
+        let file_actions = file_path.as_ref().map(|path| {
+            let can_open = flowy_agent::can_open_with_default_app(path);
+            let open_path = path.clone();
+            let reveal_path = path.clone();
+            let open_btn = can_open.then(|| {
+                let open_label = self.t("deliverables.open_external");
+                let btn = theme::IconButton::new(
+                    "fm-open-file",
+                    open_label.clone(),
+                    theme::icons::external_link().size(px(14.)),
+                )
+                .variant(theme::ControlVariant::Secondary)
+                .size(theme::ControlSize::Small)
+                .render_interactive(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        panel.open_file_externally(&open_path, cx);
+                    }),
+                );
+                theme::tooltip_trigger(
+                    "fm-open-file-tip",
+                    btn,
+                    open_label,
+                    &self.ui,
+                    window,
+                    cx,
+                    rtl,
+                )
+            });
+            let reveal_label = self.t("board.reveal_folder");
+            let reveal_trigger = theme::IconButton::new(
+                "fm-reveal-folder",
+                reveal_label.clone(),
+                theme::icons::folder_open().size(px(14.)),
+            )
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render_interactive(
+                &self.theme,
+                cx.listener(move |panel, _, _, cx| {
+                    panel.reveal_file(&reveal_path, cx);
+                }),
+            );
+            let reveal_btn = theme::tooltip_trigger(
+                "fm-reveal-folder-tip",
+                reveal_trigger,
+                reveal_label,
+                &self.ui,
+                window,
+                cx,
+                rtl,
+            );
+            div()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(6.))
+                .children(open_btn)
+                .child(reveal_btn)
+        });
         let file_card = div()
             .flex_1()
             .min_w(px(240.))
@@ -844,49 +920,7 @@ impl StudioPanel {
                             )),
                     ),
             )
-            .when_some(file_path, |card, path| {
-                let can_open = flowy_agent::can_open_with_default_app(&path);
-                let open_path = path.clone();
-                let reveal_path = path;
-                card.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(8.))
-                        .when(can_open, |row| {
-                            row.child(
-                                theme::Button::new(
-                                    "fm-open-file",
-                                    self.t("deliverables.open_external"),
-                                )
-                                .variant(theme::ControlVariant::Secondary)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(move |panel, _, _, cx| {
-                                        panel.open_file_externally(
-                                            &open_path, cx,
-                                        );
-                                    }),
-                                ),
-                            )
-                        })
-                        .child(
-                            theme::Button::new(
-                                "fm-reveal-folder",
-                                self.t("board.reveal_folder"),
-                            )
-                            .variant(theme::ControlVariant::Ghost)
-                            .size(theme::ControlSize::Small)
-                            .render(
-                                &self.theme,
-                                cx.listener(move |panel, _, _, cx| {
-                                    panel.reveal_file(&reveal_path, cx);
-                                }),
-                            ),
-                        ),
-                )
-            });
+            .children(file_actions);
 
         div()
             .w_full()

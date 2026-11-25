@@ -26,6 +26,8 @@ pub struct ChatFeed {
     list: ListState,
     expanded_rows: HashSet<u64>,
     measured_heights: HashMap<u64, gpui::Entity<f32>>,
+    copied_row: Option<(u64, u64)>,
+    copy_epoch: u64,
     history: ChatHistory,
     projection: Projection,
     expanded_turns: HashMap<String, HashSet<usize>>,
@@ -270,6 +272,8 @@ impl ChatFeed {
             list,
             expanded_rows: HashSet::new(),
             measured_heights: HashMap::new(),
+            copied_row: None,
+            copy_epoch: 0,
             history: ChatHistory::default(),
             projection: Projection::default(),
             expanded_turns: HashMap::new(),
@@ -281,6 +285,31 @@ impl ChatFeed {
             #[cfg(test)]
             rendered_rows: HashSet::new(),
         }
+    }
+
+    fn copy_assistant_row(
+        &mut self,
+        row_id: u64,
+        text: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.copy_epoch = self.copy_epoch.wrapping_add(1);
+        let epoch = self.copy_epoch;
+        self.copied_row = Some((row_id, epoch));
+        cx.notify();
+        cx.spawn(async move |weak, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1200))
+                .await;
+            let _ = weak.update(cx, |feed, cx| {
+                if feed.copied_row == Some((row_id, epoch)) {
+                    feed.copied_row = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn set_artifacts(
@@ -849,13 +878,22 @@ impl ChatFeed {
                 )
                 .into_any_element(),
             ChatLine::Assistant { text } => {
+                let row_id = self.row_ids[index];
+                let is_streaming = self.projection.streaming == Some(index);
+                let is_copied =
+                    self.copied_row.is_some_and(|(id, _)| id == row_id);
+                let copy_text = text.clone();
+                let soft = self.theme.soft();
+                let ink = self.theme.ink();
+                let verified = self.theme.status_verified();
+                let muted = self.theme.muted();
                 let show_identity = index == 0
                     || !matches!(
                         self.lines[index - 1],
                         ChatLine::Assistant { .. }
                     );
                 div()
-                    .id(("chat-assistant", self.row_ids[index]))
+                    .id(("chat-assistant", row_id))
                     .w_full()
                     .py(self.theme.space(6.))
                     .flex()
@@ -900,16 +938,68 @@ impl ChatFeed {
                             .pl(px(28.))
                             .text_sm()
                             .whitespace_normal()
-                            .child(
-                                if self.projection.streaming == Some(index) {
-                                    div().child(text.clone())
-                                } else {
-                                    markdown::render(
-                                        text, self.theme, &self.i18n,
-                                    )
-                                },
-                            ),
+                            .child(if is_streaming {
+                                div().child(text.clone())
+                            } else {
+                                markdown::render(text, self.theme, &self.i18n)
+                            }),
                     )
+                    .when(!is_streaming && !text.trim().is_empty(), |col| {
+                        let label = if is_copied {
+                            self.t("chat.copied")
+                        } else {
+                            self.t("chat.copy_reply")
+                        };
+                        let icon = if is_copied {
+                            theme::icons::check().size(px(13.))
+                        } else {
+                            theme::icons::copy().size(px(13.))
+                        };
+                        let hover_fg = if is_copied { verified } else { ink };
+                        col.child(
+                            div()
+                                .w_full()
+                                .h(px(26.))
+                                .pl(px(28.))
+                                .flex()
+                                .items_center()
+                                .child(
+                                    theme::interactive(
+                                        ("chat-copy-reply", row_id),
+                                        label,
+                                        &self.theme,
+                                    )
+                                    .size(px(24.))
+                                    .rounded_md()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_color(if is_copied {
+                                        verified
+                                    } else {
+                                        muted
+                                    })
+                                    .when(!is_copied, |btn| btn.opacity(0.45))
+                                    .hover(move |style| {
+                                        style
+                                            .opacity(1.0)
+                                            .bg(soft)
+                                            .text_color(hover_fg)
+                                    })
+                                    .child(icon)
+                                    .on_click(cx.listener(
+                                        move |feed, _, _, cx| {
+                                            feed.copy_assistant_row(
+                                                row_id,
+                                                copy_text.clone(),
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                ),
+                        )
+                    })
                     .into_any_element()
             }
             ChatLine::Reasoning {
@@ -1037,7 +1127,7 @@ impl ChatFeed {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         let icon = crate::file_kind::from_path(path).map_or_else(
             || {
-                theme::icons::document_file()
+                theme::icons::file_text()
                     .size(px(18.))
                     .text_color(self.theme.muted())
                     .into_any_element()
@@ -1129,7 +1219,7 @@ impl ChatFeed {
         .cursor_pointer()
         .hover(|style| style.bg(self.theme.soft()))
         .child(
-            theme::icons::file_fold()
+            theme::icons::file_text()
                 .size(px(18.))
                 .text_color(self.theme.muted()),
         )
@@ -1174,7 +1264,7 @@ impl ChatFeed {
         let icon = item
             .and_then(crate::library::artifact_file_icon)
             .map_or_else(
-                || theme::icons::file_fold().size(px(24.)).into_any_element(),
+                || theme::icons::file_text().size(px(24.)).into_any_element(),
                 |icon| icon.size(px(24.)).into_any_element(),
             );
         let title = item
@@ -1462,23 +1552,6 @@ impl ChatFeed {
                     .truncate()
                     .child(name),
             );
-            if ok && !short_hash.is_empty() {
-                toggle =
-                    toggle.child(
-                        div()
-                            .flex_none()
-                            .px(self.theme.space(6.))
-                            .py(px(1.))
-                            .rounded_md()
-                            .bg(self.theme.soft())
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .child(self.tf(
-                                "verify.card.hash",
-                                &[("hash", &short_hash)],
-                            )),
-                    );
-            }
             if let Some(files) = deliverables_for_quick_open {
                 toggle = toggle.child(
                     theme::Button::new(
@@ -1674,7 +1747,7 @@ impl ChatFeed {
         let check_key = format!("{report_id}:{artifact_path}");
         let checked = self.override_checked.contains(&check_key);
 
-        let mut header = div()
+        let header = div()
             .w_full()
             .rounded_t_xl()
             .bg(self.theme.danger_bg())
@@ -1708,20 +1781,6 @@ impl ChatFeed {
                     .truncate()
                     .child(name),
             );
-        if !short_hash.is_empty() {
-            header = header.child(
-                div()
-                    .px(self.theme.space(6.))
-                    .py(px(1.))
-                    .rounded_md()
-                    .bg(self.theme.card())
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .child(
-                        self.tf("verify.card.hash", &[("hash", &short_hash)]),
-                    ),
-            );
-        }
 
         let mut card = div()
             .id(("verification-card", row_id))
@@ -1936,7 +1995,8 @@ impl ChatFeed {
                 .child(
                     theme::icons::loader_circle()
                         .size(px(12.))
-                        .text_color(self.theme.status_active()),
+                        .text_color(self.theme.status_active())
+                        .spinning(self.theme.motion_policy()),
                 )
                 .child(
                     div()

@@ -285,33 +285,39 @@ fn skill_by_id(id: &str) -> Option<&'static Skill> {
     SKILLS.iter().find(|skill| skill.id == id)
 }
 
+fn installed_skill_chips(
+    installed: &[flowy_skills::InstalledSkill],
+) -> Vec<flowy_studio::SkillChip> {
+    let mut seen = HashSet::new();
+    let mut chips = Vec::with_capacity(installed.len());
+    for skill in installed {
+        let invocation_id =
+            format!("{}/{}", skill.id.owner_handle, skill.id.slug);
+        if seen.insert(invocation_id.clone()) {
+            let title = if skill.name.trim().is_empty() {
+                skill.id.slug.clone()
+            } else {
+                skill.name.clone()
+            };
+            chips.push(flowy_studio::SkillChip {
+                id: invocation_id,
+                title,
+                summary: skill.description.clone(),
+                official: matches!(
+                    skill.origin,
+                    flowy_skills::InstallOrigin::Official
+                ),
+            });
+        }
+    }
+    chips
+}
+
 impl FlowyApp {
-    /// Publishes available built-in & loaded shelf skills into `StudioPanel`
-    /// so the composer `/` skill chip and Local Env popover use real data.
+    /// Publishes only locally installed skills (`self.skills.installed`) into
+    /// `StudioPanel` using real `/skill:<owner>/<slug>` invocation identities.
     pub(super) fn sync_studio_skills(&self, cx: &mut Context<'_, Self>) {
-        let mut seen = HashSet::new();
-        let mut chips =
-            Vec::with_capacity(SKILLS.len() + self.skills.cards.len());
-        for skill in SKILLS {
-            if seen.insert(skill.id.to_owned()) {
-                chips.push(flowy_studio::SkillChip {
-                    id: skill.id.to_owned(),
-                    title: self.t(skill.title),
-                    summary: self.t(skill.summary),
-                    official: matches!(skill.author, Author::Official),
-                });
-            }
-        }
-        for card in &self.skills.cards {
-            if seen.insert(card.slug.clone()) {
-                chips.push(flowy_studio::SkillChip {
-                    id: card.slug.clone(),
-                    title: card.title.clone(),
-                    summary: card.summary.clone(),
-                    official: card.official,
-                });
-            }
-        }
+        let chips = installed_skill_chips(&self.skills.installed);
         self.studio
             .update(cx, |panel, cx| panel.set_installed_skills(chips, cx));
     }
@@ -2804,5 +2810,57 @@ mod shelf_tests {
         let mut capped = probe(800., -500., 0);
         capped.cards = capped.cap;
         assert!(!follow_ready(&capped));
+    }
+
+    #[test]
+    fn installed_skill_chips_only_include_real_installed_skills_with_canonical_ids()
+     {
+        assert_eq!(super::installed_skill_chips(&[]), Vec::new());
+
+        let official = flowy_skills::InstalledSkill {
+            id: flowy_skills::SkillId {
+                owner_handle: "flowy".into(),
+                slug: "xlsx-summary".into(),
+                version: "1.0.0".into(),
+            },
+            name: "Excel Summary".into(),
+            description: "Summarize spreadsheets cleanly.".into(),
+            root: std::path::PathBuf::from("."),
+            skill_path: std::path::PathBuf::from("SKILL.md"),
+            content: String::new(),
+            auto_invoke: true,
+            scripts_enabled: false,
+            origin: flowy_skills::InstallOrigin::Official,
+            latest_version: None,
+        };
+        let community = flowy_skills::InstalledSkill {
+            id: flowy_skills::SkillId {
+                owner_handle: "alice".into(),
+                slug: "notes-digest".into(),
+                version: "0.2.0".into(),
+            },
+            name: String::new(),
+            description: "Digest notes".into(),
+            root: std::path::PathBuf::from("."),
+            skill_path: std::path::PathBuf::from("SKILL.md"),
+            content: String::new(),
+            auto_invoke: true,
+            scripts_enabled: false,
+            origin: flowy_skills::InstallOrigin::Community,
+            latest_version: None,
+        };
+
+        let chips = super::installed_skill_chips(&[
+            official.clone(),
+            official,
+            community,
+        ]);
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0].id, "flowy/xlsx-summary");
+        assert_eq!(chips[0].title, "Excel Summary");
+        assert!(chips[0].official);
+        assert_eq!(chips[1].id, "alice/notes-digest");
+        assert_eq!(chips[1].title, "notes-digest");
+        assert!(!chips[1].official);
     }
 }

@@ -462,6 +462,7 @@ impl FlowyApp {
         ];
         let expanded_projects =
             studio.read(cx).active_project_id.iter().cloned().collect();
+        let initial_installed_skills = studio.read(cx).skill_catalog();
         let mut app = Self {
             active_dialog: state::ActiveDialog::None,
             ui,
@@ -519,7 +520,7 @@ impl FlowyApp {
                 follow_armed: std::cell::Cell::new(false),
                 empty_follows: 0,
                 follow_mark: 0,
-                installed: Vec::new(),
+                installed: initial_installed_skills,
                 install: None,
                 install_task: None,
                 script_confirm: None,
@@ -1969,7 +1970,7 @@ impl Render for FlowyApp {
             && self.section != Section::Library
             && let Some(modal) = self
                 .studio
-                .update(cx, |panel, cx| panel.flow_modal_overlay(cx))
+                .update(cx, |panel, cx| panel.flow_modal_overlay(window, cx))
         {
             root = root.child(modal);
         }
@@ -2227,7 +2228,10 @@ pub fn run(cx: &mut App) {
         // Keep the platform's quit shortcut available without a tray icon.
         KeyBinding::new("ctrl-q", flowy_shell::QuitApp, None),
     ]);
-    cx.set_reduce_motion(true);
+    cx.set_reduce_motion(
+        flowy_ui::ResolvedTheme::default().motion_policy()
+            == flowy_ui::MotionPolicy::Reduced,
+    );
     flowy_ui::install_initial_tab_focus(cx).detach();
     tracing::debug!(
         target: "flowy.boot",

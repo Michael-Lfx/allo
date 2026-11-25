@@ -60,7 +60,10 @@ impl DeliverableFormat {
     }
 }
 
-/// User-facing skill option pushed from `flowy-app` (`flowy-skills`) into Studio.
+/// User-facing installed skill option pushed from `flowy-app` into Studio.
+///
+/// `id` uses the canonical `<owner_handle>/<slug>` invocation identity
+/// expected by `flowy-agent`'s `/skill:<owner>/<slug>` protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillChip {
     pub id: String,

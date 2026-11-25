@@ -698,7 +698,7 @@ impl Render for PreviewPanel {
                     .justify_center()
                     .gap(px(14.))
                     .child(
-                        ui::icons::file_fold()
+                        ui::icons::file_text()
                             .size(px(36.))
                             .text_color(t.muted()),
                     )

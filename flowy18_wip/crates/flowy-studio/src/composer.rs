@@ -1,11 +1,14 @@
 //! Composer keeps its own input/visual updates while the feed stays cached.
+use std::f32::consts::FRAC_PI_4;
+
 use flowy_agent::{Model, TurnStatus};
 use flowy_i18n::I18n;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{
-    Context, Entity, EventEmitter, Render, SharedString, Subscription, Window,
-    div, prelude::*, px,
+    AnimationExt, Context, Entity, EventEmitter, Render, SharedString,
+    SpringAnimation, Subscription, Transformation, Window, div, prelude::*, px,
+    radians,
 };
 use gpui_kit::base::input::TextareaState;
 
@@ -19,9 +22,9 @@ pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
-    WorkspaceMenu,
-    VerifyToggle,
-    SkillMenu,
+    AddMenu,
+    ClearWorkspace,
+    ClearSkill,
     CloudNotReady,
 }
 
@@ -36,10 +39,8 @@ pub struct ComposerViewState {
     pub cloud_ready: bool,
     pub workspace_label: SharedString,
     pub workspace_bound: bool,
-    pub workspace_menu_open: bool,
-    pub semantic_verify_enabled: bool,
     pub skill_label: Option<SharedString>,
-    pub skill_menu_open: bool,
+    pub add_menu_open: bool,
 }
 
 pub struct ChatComposer {
@@ -53,10 +54,8 @@ pub struct ChatComposer {
     model_label: SharedString,
     workspace_label: SharedString,
     workspace_bound: bool,
-    workspace_menu_open: bool,
-    semantic_verify_enabled: bool,
     skill_label: Option<SharedString>,
-    skill_menu_open: bool,
+    add_menu_open: bool,
     cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
@@ -92,10 +91,8 @@ impl ChatComposer {
             model_label: SharedString::default(),
             workspace_label: SharedString::default(),
             workspace_bound: false,
-            workspace_menu_open: false,
-            semantic_verify_enabled: false,
             skill_label: None,
-            skill_menu_open: false,
+            add_menu_open: false,
             cloud_ready: false,
             model_menu_open: false,
             running: false,
@@ -116,10 +113,8 @@ impl ChatComposer {
             || self.cloud_ready != next.cloud_ready
             || self.workspace_label != next.workspace_label
             || self.workspace_bound != next.workspace_bound
-            || self.workspace_menu_open != next.workspace_menu_open
-            || self.semantic_verify_enabled != next.semantic_verify_enabled
             || self.skill_label != next.skill_label
-            || self.skill_menu_open != next.skill_menu_open
+            || self.add_menu_open != next.add_menu_open
         {
             self.model = next.model;
             self.model_menu_open = next.model_menu_open;
@@ -128,10 +123,8 @@ impl ChatComposer {
             self.cloud_ready = next.cloud_ready;
             self.workspace_label = next.workspace_label;
             self.workspace_bound = next.workspace_bound;
-            self.workspace_menu_open = next.workspace_menu_open;
-            self.semantic_verify_enabled = next.semantic_verify_enabled;
             self.skill_label = next.skill_label;
-            self.skill_menu_open = next.skill_menu_open;
+            self.add_menu_open = next.add_menu_open;
             cx.notify();
         }
     }
@@ -145,7 +138,8 @@ impl ChatComposer {
         self.i18n.t(key)
     }
 
-    /// Cursor-style floating composer: dark card, model/access/mode chips, send/stop.
+    /// Calm personal-assistant composer: single `+` menu + active-only context
+    /// chips on the left; single model picker + stop/send on the right.
     pub(crate) fn chat_composer(
         &self,
         running: bool,
@@ -226,15 +220,34 @@ impl ChatComposer {
                                     .flex()
                                     .flex_wrap()
                                     .items_center()
-                                    .gap(px(4.))
-                                    .child(self.model_chip(cx))
-                                    .child(self.workspace_chip(cx))
-                                    .child(self.verify_chip(cx))
-                                    .child(self.skill_chip(cx)),
+                                    .gap(px(6.))
+                                    .child(self.add_menu_trigger(cx))
+                                    .when(self.workspace_bound, |row| {
+                                        row.child(
+                                            self.active_workspace_chip(cx),
+                                        )
+                                    })
+                                    .when_some(
+                                        self.skill_label.as_ref(),
+                                        |row, label| {
+                                            row.child(self.active_skill_chip(
+                                                label.clone(),
+                                                cx,
+                                            ))
+                                        },
+                                    ),
                             )
-                            .child(div().flex_none().child(
-                                self.composer_submit(running, has_draft, cx),
-                            )),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(self.model_selector(cx))
+                                    .child(self.composer_submit(
+                                        running, has_draft, cx,
+                                    )),
+                            ),
                     ),
             )
     }
@@ -247,162 +260,255 @@ impl ChatComposer {
         }
     }
 
-    fn cockpit_chip(
-        &self,
-        id: &'static str,
-        labels: (String, Option<String>),
-        colors: (gpui::Rgba, gpui::Rgba),
-        icon: theme::icons::Icon,
-        layout: (Option<f32>, bool),
-        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-    ) -> impl gpui::StatefulInteractiveElement + gpui::Element {
-        let (label, accessible_label) = labels;
-        let aria_label = accessible_label.unwrap_or_else(|| label.clone());
-        let (bg, fg) = colors;
-        let (max_w, open) = layout;
-        let label_el = if max_w.is_some() {
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .truncate()
-                .child(label)
-                .into_any_element()
-        } else {
-            label.into_any_element()
-        };
+    fn add_menu_trigger(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let side = self.theme.control_height(theme::ControlSize::Small);
+        let open = self.add_menu_open;
+        let plus_icon =
+            if crate::motion::travel_scale(self.theme.motion_policy()) > 0.0 {
+                let target = if open { FRAC_PI_4 } else { 0.0_f32 };
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .with_spring(
+                        "composer-add-spin",
+                        SpringAnimation::new(crate::motion::spring_snappy())
+                            .to(target),
+                        |el, angle| {
+                            el.child(
+                                theme::icons::plus()
+                                    .size(px(14.))
+                                    .with_transformation(
+                                        Transformation::rotate(radians(angle)),
+                                    ),
+                            )
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                let icon = theme::icons::plus().size(px(14.));
+                if open {
+                    icon.with_transformation(Transformation::rotate(radians(
+                        FRAC_PI_4,
+                    )))
+                    .into_any_element()
+                } else {
+                    icon.into_any_element()
+                }
+            };
         // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
-        // `Action::Expand`, so keeping the plain button role ensures both mouse
-        // and Windows UIA clicks work identically.
-        theme::interactive(id, aria_label, &self.theme)
-            .focus_visible(|style| style.border_color(self.theme.focus_ring()))
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .when_some(max_w, |chip, width| chip.max_w(px(width)))
-            .px(self.theme.space(8.))
+        // `Action::Expand`, so keeping a plain button stays clickable via UIA.
+        theme::anchor_trigger(
+            theme::interactive(
+                "composer-add",
+                self.t("composer.add_label"),
+                &self.theme,
+            )
+            .w(side)
+            .h(side)
             .rounded_full()
             .border_1()
-            .border_color(if open { self.theme.border_strong() } else { bg })
-            .bg(bg)
+            .border_color(if open {
+                self.theme.border_strong()
+            } else {
+                self.theme.line()
+            })
+            .bg(if open {
+                self.theme.soft()
+            } else {
+                self.theme.card()
+            })
+            .text_color(self.theme.ink())
             .flex()
             .items_center()
-            .gap(px(4.))
-            .text_xs()
-            .text_color(fg)
+            .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(self.theme.dock_hover()))
-            .on_click(on_click)
-            .child(icon)
-            .child(label_el)
-    }
-
-    fn model_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let label = self.composer_model_label();
-        let (bg, fg) = if self.cloud_ready {
-            (self.theme.soft(), self.theme.ink())
-        } else {
-            (
-                self.theme.status_attention_bg(),
-                self.theme.status_attention(),
-            )
-        };
-        theme::anchor_trigger(
-            self.cockpit_chip(
-                "composer-model",
-                (label, None),
-                (bg, fg),
-                theme::icons::sparkles().size(px(12.)),
-                (None, self.model_menu_open),
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
-                }),
-            ),
-            "composer-model-trigger",
+            .hover(|style| style.bg(self.theme.soft()))
+            .child(plus_icon)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::AddMenu);
+            })),
+            "composer-add-trigger",
             &self.ui,
         )
     }
 
-    fn workspace_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn active_workspace_chip(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let label = if self.workspace_label.is_empty() {
             self.t("composer.workspace_default")
         } else {
             self.workspace_label.to_string()
         };
-        // Scope the accessible name when bound to a project so screen readers
-        // and UIA distinguish the composer workspace picker from the sidebar's
-        // project folder button with the same project name.
-        let aria_label = self
-            .workspace_bound
-            .then(|| format!("{}: {label}", self.t("dock.projects")));
-        let (bg, fg) = if self.workspace_bound {
-            (self.theme.status_active_bg(), self.theme.status_active())
-        } else {
+        let aria_label = format!("{}: {label}", self.t("dock.projects"));
+        let bg = self.theme.status_active_bg();
+        let fg = self.theme.status_active();
+        div()
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .max_w(px(184.))
+            .pl(self.theme.space(8.))
+            .pr(px(4.))
+            .rounded_full()
+            .bg(bg)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                theme::interactive(
+                    "composer-workspace-pill",
+                    aria_label,
+                    &self.theme,
+                )
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_xs()
+                .text_color(fg)
+                .cursor_pointer()
+                .child(theme::icons::folder().size(px(12.)).text_color(fg))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(label),
+                )
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::AddMenu);
+                })),
+            )
+            .child(
+                theme::interactive(
+                    "composer-clear-workspace",
+                    self.t("composer.clear_workspace"),
+                    &self.theme,
+                )
+                .size(px(18.))
+                .flex_none()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.dock_hover()))
+                .child(theme::icons::x().size(px(11.)).text_color(fg))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::ClearWorkspace);
+                })),
+            )
+    }
+
+    fn active_skill_chip(
+        &self,
+        label: SharedString,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let bg = self.theme.status_active_bg();
+        let fg = self.theme.status_active();
+        div()
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .max_w(px(172.))
+            .pl(self.theme.space(8.))
+            .pr(px(4.))
+            .rounded_full()
+            .bg(bg)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                theme::interactive(
+                    "composer-skill-pill",
+                    label.clone(),
+                    &self.theme,
+                )
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_xs()
+                .text_color(fg)
+                .cursor_pointer()
+                .child(theme::icons::sparkles().size(px(11.)).text_color(fg))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(label),
+                )
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::AddMenu);
+                })),
+            )
+            .child(
+                theme::interactive(
+                    "composer-clear-skill",
+                    self.t("composer.skill_clear"),
+                    &self.theme,
+                )
+                .size(px(18.))
+                .flex_none()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.dock_hover()))
+                .child(theme::icons::x().size(px(11.)).text_color(fg))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::ClearSkill);
+                })),
+            )
+    }
+
+    fn model_selector(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let label = self.composer_model_label();
+        let open = self.model_menu_open;
+        let (bg, fg) = if !self.cloud_ready {
+            (
+                self.theme.status_attention_bg(),
+                self.theme.status_attention(),
+            )
+        } else if open {
             (self.theme.soft(), self.theme.ink())
-        };
-        theme::anchor_trigger(
-            self.cockpit_chip(
-                "composer-workspace",
-                (label, aria_label),
-                (bg, fg),
-                theme::icons::folder().size(px(12.)),
-                (Some(148.0), self.workspace_menu_open),
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::WorkspaceMenu);
-                }),
-            ),
-            "composer-workspace-trigger",
-            &self.ui,
-        )
-    }
-
-    fn verify_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let (label, bg, fg) = if self.semantic_verify_enabled {
-            (
-                self.t("composer.verify_l3_on"),
-                self.theme.status_verified_bg(),
-                self.theme.status_verified(),
-            )
         } else {
-            (
-                self.t("composer.verify_ask"),
-                self.theme.soft(),
-                self.theme.muted(),
-            )
+            (self.theme.card(), self.theme.muted())
         };
-        self.cockpit_chip(
-            "composer-verify",
-            (label, None),
-            (bg, fg),
-            theme::icons::check().size(px(11.)),
-            (None, false),
-            cx.listener(|_, _, _, cx| {
-                cx.emit(ComposerEvent::VerifyToggle);
-            }),
-        )
-    }
-
-    fn skill_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let active = self.skill_label.is_some();
-        let label = self
-            .skill_label
-            .as_ref()
-            .map_or_else(|| self.t("composer.skill_pick"), ToString::to_string);
-        let (bg, fg) = if active {
-            (self.theme.status_active_bg(), self.theme.status_active())
+        let chevron = if open {
+            theme::icons::chevron_up().size(px(12.))
         } else {
-            (self.theme.soft(), self.theme.muted())
+            theme::icons::chevron_down().size(px(12.))
         };
+        // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+        // `Action::Expand`, so keeping a plain button stays clickable via UIA.
         theme::anchor_trigger(
-            self.cockpit_chip(
-                "composer-skill",
-                (label, None),
-                (bg, fg),
-                theme::icons::sparkles().size(px(11.)),
-                (Some(136.0), self.skill_menu_open),
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::SkillMenu);
-                }),
-            ),
-            "composer-skill-trigger",
+            theme::interactive("composer-model", label.clone(), &self.theme)
+                .min_h(self.theme.control_height(theme::ControlSize::Small))
+                .px(self.theme.space(8.))
+                .rounded_full()
+                .bg(bg)
+                .text_xs()
+                .text_color(fg)
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .cursor_pointer()
+                .hover(|style| {
+                    style.bg(self.theme.soft()).text_color(self.theme.ink())
+                })
+                .child(label)
+                .child(chevron)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
+                })),
+            "composer-model-trigger",
             &self.ui,
         )
     }
@@ -425,26 +531,41 @@ impl ChatComposer {
             .flex_row()
             .items_center()
             .gap(self.theme.space(4.));
+        let send_size = self.theme.control_height(theme::ControlSize::Small);
         if running {
+            let danger_bg = self.theme.danger_bg();
+            let danger_fg = self.theme.danger();
             row = row.child(
-                theme::IconButton::new(
+                theme::interactive(
                     "chat-stop",
                     self.t("chat.stop"),
-                    theme::icons::square(),
-                )
-                .size(theme::ControlSize::Small)
-                .variant(theme::ControlVariant::Ghost)
-                .render(
                     &self.theme,
-                    cx.listener(|_, _, _, cx| {
-                        cx.emit(ComposerEvent::Stop);
-                    }),
-                ),
+                )
+                .w(send_size)
+                .h(send_size)
+                .rounded_full()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.soft())
+                .text_color(self.theme.ink())
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .bg(danger_bg)
+                        .border_color(danger_fg.opacity(0.45))
+                        .text_color(danger_fg)
+                })
+                .child(theme::icons::square().size(px(11.)))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::Stop);
+                })),
             );
         }
         let send_colors =
             self.theme.control_colors(theme::ControlVariant::Primary);
-        let send_size = self.theme.control_height(theme::ControlSize::Small);
         let btn_bg = if needs_setup {
             self.theme.status_attention()
         } else {
@@ -487,11 +608,11 @@ impl ChatComposer {
             .justify_center()
             .bg(btn_bg)
             .text_color(btn_fg)
-            .when(!has_draft, |el| el.opacity(0.45))
+            .when(!has_draft, |el| el.opacity(0.4))
             .when(has_draft, move |el| {
                 el.hover(move |style| style.bg(btn_hover))
             })
-            .child(theme::icons::arrow_right().size(px(14.))),
+            .child(theme::icons::arrow_up().size(px(14.))),
         )
     }
 }

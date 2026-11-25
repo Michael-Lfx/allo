@@ -174,14 +174,18 @@ impl Renderer<'_> {
     }
 
     fn copy(&self, key: &str, text: String) -> impl IntoElement {
-        theme::Button::new(("markdown-copy", self.control()), self.i18n.t(key))
-            .size(theme::ControlSize::Small)
-            .variant(theme::ControlVariant::Ghost)
-            .render(self.theme, move |_, _, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                    text.clone(),
-                ));
-            })
+        theme::IconButton::new(
+            ("markdown-copy", self.control()),
+            self.i18n.t(key),
+            theme::icons::copy().size(px(13.)),
+        )
+        .size(theme::ControlSize::Small)
+        .variant(theme::ControlVariant::Ghost)
+        .render(self.theme, move |_, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                text.clone(),
+            ));
+        })
     }
 
     fn prose(&self, nodes: &[Node<'_>], body_font: &Font, color: Rgba) -> Div {
@@ -481,17 +485,7 @@ pub fn render(source: &str, theme: ResolvedTheme, i18n: &I18n) -> Div {
     } else {
         div().whitespace_normal().child(source.to_owned())
     };
-    div()
-        .flex()
-        .flex_col()
-        .min_w_0()
-        .text_sm()
-        .child(body)
-        .child(
-            div().flex().child(
-                renderer.copy("markdown.copy_source", source.to_owned()),
-            ),
-        )
+    div().flex().flex_col().min_w_0().text_sm().child(body)
 }
 
 #[cfg(test)]

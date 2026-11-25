@@ -6,9 +6,11 @@
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, Image, ImageFormat, Img,
     InspectorElementId, InteractiveElement, Interactivity, LayoutId, Pixels,
-    StyleRefinement, Styled, Svg, Window, img, px, svg,
+    StyleRefinement, Styled, Svg, TimedTransformation, Transformation, Window,
+    img, px, svg,
 };
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 /// A local SVG mask whose default color follows the surrounding text.
 ///
@@ -17,6 +19,41 @@ use std::sync::{Arc, OnceLock};
 #[must_use]
 pub struct Icon {
     svg: Svg,
+}
+
+impl Icon {
+    /// Applies a static GPU transformation to the underlying SVG without
+    /// affecting layout or hit-testing.
+    pub fn with_transformation(
+        mut self,
+        transformation: Transformation,
+    ) -> Self {
+        self.svg = self.svg.with_transformation(transformation);
+        self
+    }
+
+    /// Applies a continuous GPU timed transformation to the underlying SVG
+    /// with zero view re-renders.
+    pub fn with_timed_transformation(
+        mut self,
+        transformation: TimedTransformation,
+    ) -> Self {
+        self.svg = self.svg.with_timed_transformation(transformation);
+        self
+    }
+
+    /// Rotates the icon continuously on the GPU clock when motion is active;
+    /// stays static under [`crate::MotionPolicy::Reduced`].
+    pub fn spinning(self, policy: crate::MotionPolicy) -> Self {
+        if policy == crate::MotionPolicy::Reduced {
+            self
+        } else {
+            self.with_timed_transformation(TimedTransformation::rotation(
+                Duration::from_millis(900),
+                Transformation::default(),
+            ))
+        }
+    }
 }
 
 impl std::fmt::Debug for Icon {
@@ -115,6 +152,7 @@ macro_rules! lucide_icons {
 lucide_icons! {
     arrow_left => "arrow-left.svg",
     arrow_right => "arrow-right.svg",
+    arrow_up => "arrow-up.svg",
     arrow_up_right => "arrow-up-right.svg",
     bell => "bell.svg",
     book => "book.svg",
@@ -135,6 +173,7 @@ lucide_icons! {
     eye_off => "eye-off.svg",
     external_link => "external-link.svg",
     file_plus => "file-plus.svg",
+    file_text => "file-text.svg",
     folder => "folder.svg",
     folder_open => "folder-open.svg",
     folder_pen => "folder-pen.svg",
@@ -146,11 +185,6 @@ lucide_icons! {
     layout_grid => "layout-grid.svg",
     list => "list.svg",
     sort_desc => "sort-desc.svg",
-    image_file => "image-file.svg",
-    document_file => "document-file.svg",
-    file_fold => "file-fold.svg",
-    file_image_mark => "file-image-mark.svg",
-    file_document_mark => "file-document-mark.svg",
     globe => "globe.svg",
     app_window => "app-window.svg",
     library => "library.svg",
@@ -163,8 +197,10 @@ lucide_icons! {
     monitor => "monitor.svg",
     moon => "moon.svg",
     panel_left => "panel-left.svg",
+    panel_right => "panel-right.svg",
     pin => "pin.svg",
     play => "play.svg",
+    plug => "plug.svg",
     plus => "plus.svg",
     puzzle => "puzzle.svg",
     refresh_cw => "refresh-cw.svg",

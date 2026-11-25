@@ -98,7 +98,6 @@ impl FlowyApp {
             active_work,
             board_blockers,
             board_active,
-            in_chat,
             chief_selected,
             new_task_selected,
             chief_preview,
@@ -129,7 +128,6 @@ impl FlowyApp {
                 studio.total_active_work_count(),
                 studio.board_blocker_count(),
                 studio.board_active_count(),
-                in_chat,
                 in_chat && studio.active_project_id.is_none(),
                 self.section == Section::Studio && !in_chat,
                 default_preview,
@@ -257,7 +255,6 @@ impl FlowyApp {
             .child(brand())
             .child(self.chief_assistant_card(
                 active_work,
-                in_chat,
                 chief_selected,
                 chief_preview,
                 window,
@@ -272,7 +269,6 @@ impl FlowyApp {
     fn chief_assistant_card(
         &self,
         active_work: usize,
-        in_chat: bool,
         selected: bool,
         latest_preview: Option<String>,
         window: &mut Window,
@@ -420,33 +416,6 @@ impl FlowyApp {
                     )
                     .child(subtitle),
             )
-            .when(in_chat, |card| {
-                let fold_label = self.t("dock.fold_desk");
-                let on_fold = cx.listener(|app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    app.user_menu = false;
-                    app.studio.update(cx, flowy_studio::StudioPanel::fold_desk);
-                    cx.notify();
-                });
-                card.child(theme::tooltip_trigger(
-                    "dock-fold-desk-tip",
-                    dock_icon_button(
-                        "dock-fold-desk-hit",
-                        theme::IconButton::new(
-                            "dock-fold-desk",
-                            fold_label.clone(),
-                            theme::icons::minus(),
-                        ),
-                        &self.theme,
-                        on_fold,
-                    ),
-                    fold_label,
-                    &self.ui,
-                    window,
-                    cx,
-                    self.i18n.locale().is_rtl(),
-                ))
-            })
     }
 
     fn quiet_nav_item(
