@@ -526,6 +526,9 @@ impl FlowyApp {
                 follow_armed: std::cell::Cell::new(false),
                 empty_follows: 0,
                 follow_mark: 0,
+                installed: Vec::new(),
+                install: None,
+                install_task: None,
             },
             ota: ota::OtaController::new(),
             settings: SettingsState {
@@ -1598,6 +1601,10 @@ impl FlowyApp {
                 self.load_library(cx);
                 cx.notify();
             }
+            StudioEvent::SkillsChanged => {
+                self.skills.installed = self.studio.read(cx).skill_catalog();
+                cx.notify();
+            }
             StudioEvent::Rated { stars } => {
                 if let Some(telemetry) = crate::telemetry() {
                     let mut props = serde_json::Map::new();
@@ -1905,6 +1912,9 @@ impl Render for FlowyApp {
                 }
                 root
             }
+            state::ActiveDialog::SkillScriptConfirm(_) => root
+                .child(self.skill_layer(window, cx))
+                .child(self.skill_script_confirm_layer(window, cx)),
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
             state::ActiveDialog::ProjectCreate => {
                 root.child(self.projects_layer(window, cx))

@@ -20,8 +20,8 @@ use crate::session::{
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
-    ArtifactReceipt, CancelToken, ContentBlock, Message, MessageSource, Role,
-    TodoSink, ToolRunContext,
+    ArtifactReceipt, CancelToken, ContentBlock, Message, MessageSource,
+    PromptTurn, Role, TodoSink, ToolRunContext,
 };
 
 /// UI-facing turn events. All methods have no-op defaults so a caller may
@@ -394,16 +394,18 @@ impl Engine {
         session_id: &str,
         prompt: &str,
     ) -> Result<LoopOutcome, RunError> {
+        let prompt = PromptTurn::plain(prompt);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "Engine::run",
             session = %session_id,
-            chars = prompt.chars().count(),
+            chars = prompt.model.chars().count(),
             mode = "live",
             "enter"
         );
-        let prepared = self.prepare(session_id, prompt, None, true, None)?;
-        self.run_prepared(session_id, prompt, prepared, None).await
+        let prepared = self.prepare(session_id, &prompt, None, true, None)?;
+        self.run_prepared(session_id, &prompt.model, prepared, None)
+            .await
     }
 
     /// Run with an explicit stream function (scripted stream in tests).
@@ -413,15 +415,16 @@ impl Engine {
         prompt: &str,
         stream: StreamFn,
     ) -> Result<LoopOutcome, RunError> {
+        let prompt = PromptTurn::plain(prompt);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "Engine::run_with_stream",
             session = %session_id,
-            chars = prompt.chars().count(),
+            chars = prompt.model.chars().count(),
             "enter"
         );
-        let prepared = self.prepare(session_id, prompt, None, false, None)?;
-        self.run_prepared(session_id, prompt, prepared, Some(stream))
+        let prepared = self.prepare(session_id, &prompt, None, false, None)?;
+        self.run_prepared(session_id, &prompt.model, prepared, Some(stream))
             .await
     }
 
@@ -429,7 +432,7 @@ impl Engine {
     pub fn start_with_config(
         self: &Arc<Self>,
         session_id: String,
-        prompt: String,
+        prompt: PromptTurn,
         config: EngineConfig,
         stream: Option<StreamFn>,
         submission: Option<u128>,
@@ -439,7 +442,7 @@ impl Engine {
             target: "flowy.prompt",
             stage = "Engine::start_with_config",
             session = %session_id,
-            chars = prompt.chars().count(),
+            chars = prompt.model.chars().count(),
             echo = stream.is_some(),
             "enter"
         );
@@ -453,7 +456,7 @@ impl Engine {
         let engine = Arc::clone(self);
         Ok(Box::pin(async move {
             engine
-                .run_prepared(&session_id, &prompt, prepared, stream)
+                .run_prepared(&session_id, &prompt.model, prepared, stream)
                 .await
         }))
     }
@@ -461,7 +464,7 @@ impl Engine {
     fn prepare(
         &self,
         session_id: &str,
-        prompt: &str,
+        prompt: &PromptTurn,
         config: Option<EngineConfig>,
         needs_credential: bool,
         submission: Option<u128>,
@@ -470,7 +473,7 @@ impl Engine {
             target: "flowy.prompt",
             stage = "Engine::prepare",
             session = %session_id,
-            chars = prompt.chars().count(),
+            chars = prompt.model.chars().count(),
             needs_credential,
             "enter"
         );
@@ -511,8 +514,9 @@ impl Engine {
                     |id| format!("submission-{id:032x}"),
                 ),
                 role: Role::User,
-                content: vec![crate::types::ContentBlock::text(prompt)],
+                content: vec![crate::types::ContentBlock::text(&prompt.model)],
                 source: MessageSource::User,
+                display_text: prompt.display.clone(),
             });
             record.status = TurnState::Running;
             record.updated_at = now;
@@ -1847,7 +1851,15 @@ mod tests {
             Engine::open(scratch.0.clone(), config(), recorder.clone())
                 .unwrap();
         engine.create_session("s1".into(), 1).unwrap();
-        let old = engine.prepare("s1", "old", None, false, None).unwrap();
+        let old = engine
+            .prepare(
+                "s1",
+                &crate::types::PromptTurn::plain("old"),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
         let emitter = EngineEmitter {
             session: "s1".into(),
             observer: recorder.clone(),
@@ -1869,8 +1881,15 @@ mod tests {
             },
         });
         engine.cancel("s1").unwrap();
-        let replacement =
-            engine.prepare("s1", "new", None, false, None).unwrap();
+        let replacement = engine
+            .prepare(
+                "s1",
+                &crate::types::PromptTurn::plain("new"),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
         late.await;
         engine
             .run_prepared("s1", "new", replacement, Some(text_stream("fresh")))
@@ -1943,6 +1962,37 @@ mod tests {
             assert_eq!(record.messages[1].text(), "ready");
             assert_eq!(record.status, TurnState::Completed);
         }
+    }
+
+    #[tokio::test]
+    async fn prompt_turn_keeps_model_body_and_compact_display_separately() {
+        let scratch = Scratch::new("prompt-display");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let turn = engine
+            .start_with_config(
+                "s1".into(),
+                crate::types::PromptTurn::with_display(
+                    "<skill>full model body</skill>",
+                    "/skill:demo",
+                ),
+                config(),
+                Some(text_stream("done")),
+                None,
+            )
+            .unwrap();
+        assert_eq!(turn.await.unwrap(), LoopOutcome::Completed);
+        let index = crate::session::SessionIndex::load(&scratch.0).unwrap();
+        let message = &index.get("s1").unwrap().messages[0];
+        assert_eq!(message.text(), "<skill>full model body</skill>");
+        assert_eq!(message.display_text.as_deref(), Some("/skill:demo"));
     }
 
     #[test]

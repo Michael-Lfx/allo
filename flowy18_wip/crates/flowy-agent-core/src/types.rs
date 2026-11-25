@@ -162,6 +162,11 @@ pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
     pub source: MessageSource,
+    /// Optional compact text for UI projection. Model history always uses
+    /// `content`; skill invocation prompts use this to keep the chat bubble
+    /// readable while retaining the full injected body for later turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_text: Option<String>,
 }
 
 impl Message {
@@ -171,6 +176,46 @@ impl Message {
             .iter()
             .filter_map(ContentBlock::as_text)
             .collect()
+    }
+}
+
+/// One user turn with separate model-facing and display text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptTurn {
+    pub model: String,
+    pub display: Option<String>,
+}
+
+impl PromptTurn {
+    #[must_use]
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            model: text.into(),
+            display: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_display(
+        model: impl Into<String>,
+        display: impl Into<String>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            display: Some(display.into()),
+        }
+    }
+}
+
+impl From<&str> for PromptTurn {
+    fn from(value: &str) -> Self {
+        Self::plain(value)
+    }
+}
+
+impl From<String> for PromptTurn {
+    fn from(value: String) -> Self {
+        Self::plain(value)
     }
 }
 

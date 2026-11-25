@@ -464,6 +464,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text("write files")],
             source: MessageSource::User,
+            display_text: None,
         }
     }
 
@@ -480,6 +481,7 @@ mod tests {
                 provider: "test".into(),
                 model: "test".into(),
             },
+            display_text: None,
         }
     }
 
@@ -494,6 +496,7 @@ mod tests {
                 artifact: None,
             }],
             source: MessageSource::Tool { tool: tool.into() },
+            display_text: None,
         }
     }
 

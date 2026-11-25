@@ -29,6 +29,7 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{DeliveryCommit, SessionOrigin, SessionWorkspace};
+pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary};
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -193,6 +194,20 @@ mod tests {
     fn empty_prompt_is_rejected() {
         let handle = AgentHandle::new(temp_root("empty"));
         assert_eq!(handle.send("  "), Err("notice.prompt_empty"));
+    }
+
+    #[test]
+    fn official_skills_are_loaded_into_the_agent_catalog() {
+        let handle = mock_handle(&temp_root("official-skills"));
+        let catalog = handle.skill_catalog();
+        assert!(catalog.iter().any(|skill| {
+            skill.id.owner_handle == "flowy"
+                && skill.id.slug == "excel"
+                && skill.auto_invoke
+        }));
+        assert!(catalog.iter().any(|skill| {
+            skill.id.owner_handle == "flowy" && skill.id.slug == "pdf"
+        }));
     }
 
     #[test]
@@ -419,6 +434,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text("repeated question")],
             source: MessageSource::User,
+            display_text: None,
         };
         let assistant_message = |id: &str, content| Message {
             id: id.into(),
@@ -428,6 +444,7 @@ mod tests {
                 provider: "openai".into(),
                 model: "test".into(),
             },
+            display_text: None,
         };
         History {
             active: None,
@@ -592,6 +609,7 @@ mod tests {
                             "hello",
                         )],
                         source: flowy_agent_core::MessageSource::User,
+                        display_text: None,
                     },
                     flowy_agent_core::Message {
                         id: "m2".into(),
@@ -603,6 +621,7 @@ mod tests {
                             provider: "flowy".into(),
                             model: "m".into(),
                         },
+                        display_text: None,
                     },
                 ],
                 todos: Vec::new(),

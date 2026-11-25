@@ -782,3 +782,21 @@ Expected: 测试通过，clippy 无 warning。不要同时开另一个 cargo 进
 ## 执行说明
 
 实现时按 Task 1 到 Task 9 的顺序做。每任务一次提交。遇到 ClawHub 响应字段和夹具不一致时，改解析器并补一条夹具，不要放宽 `ownerHandle`、版本号和 `decision=pass && security.status=clean` 这三条。
+
+## 2026-11-24 · 运行时接入完成
+
+- `flowy-skills` 增加验签回执解析、真实版本解析、下载校验、精确文件哈希校验、staging/commit、安装记录扩展和管理 API。
+- 官方 `flowy/excel`、`flowy/pdf` 提供内置 `SKILL.md`，启动时幂等写入并保留用户开关。
+- `flowy-agent` 加载 Commit 技能快照，组装 PI 兼容 `<available_skills>`，支持 `/skill:<name>` 显式调用、技能目录只读访问和本轮脚本权限 guard。
+- `flowy-app` 接入 Install/Update 进度、收藏迁移、我的技能、自动发现与脚本权限开关、手动更新检查和卸载。
+- `Message.display_text` 让 `/skill:` 在聊天中保持紧凑展示，同时模型历史仍保留完整技能正文。
+- 自动化覆盖安装成功、版本解析、安全拒绝、官方 seed、XML 转义、显式调用、路径 allowlist 与脚本 guard。
+## 2026-11-25 · P1 加固
+
+- 安装验签与下载支持 429/503 单次重试，按 `Retry-After` 加 0–250ms 抖动等待。
+- 下载响应在 `flowy-net` 传输层按 8 MiB 流式截断，不再先完整缓冲后再检查。
+- 验签响应必须携带 `publisherHandle` 和 `slug`，缺失或与请求不一致即拒绝。
+- GitHub handoff 支持 `github.com` archive 的 zip 与 tar.gz，只提取 `path` 子树；拒绝绝对路径、`..`、符号链接、硬链接和超限归档，并核对 `contentHash`。
+- ClawHub 下载包允许根目录 `skill-card.md`、`_meta.json` 作为包元数据，其余未列入验签回执的文件仍拒绝。
+- 自动发现技能与显式 `/skill:` 技能进入本轮 shell scope；`read_file`/`grep` 访问技能目录也会将技能标记为 active，脚本未授权时阻断 shell。
+- 官方技能新记录默认允许脚本；社区技能仍默认 `auto_invoke=false`、`scripts_enabled=false`，用户显式开关在 seed 时保留。
