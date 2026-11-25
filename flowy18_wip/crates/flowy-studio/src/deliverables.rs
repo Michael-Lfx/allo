@@ -75,7 +75,9 @@ pub fn load_preview(path: &str) -> PreviewBody {
     let Ok(meta) = file.metadata() else {
         return PreviewBody::Notice("chat.preview_missing");
     };
-    if !meta.is_file() || flowy_agent::is_windows_reparse_point(&meta) {
+    if !meta.is_file()
+        || crate::ports::is_link_or_unsafe_reparse(&safe_path, &meta)
+    {
         return PreviewBody::Notice("chat.preview_missing");
     }
     if meta.len() > MAX_PREVIEW_BYTES {
