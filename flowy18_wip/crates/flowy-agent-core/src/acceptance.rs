@@ -69,6 +69,11 @@ pub struct AcceptedMessage {
     /// Terminal: cancelled explicitly by user/host intent; never claimed again.
     #[serde(default)]
     pub cancelled: bool,
+    /// Quarantined because interior journal corruption occurred after this
+    /// receipt was already taken, so its terminal outcome is uncertain and it
+    /// must not be silently re-dispatched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quarantined: bool,
     /// Last attempt id that claimed this receipt, kept even after lease expiry
     /// so crash recovery can reconcile against committed engine history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,6 +95,7 @@ pub enum ReceiptState {
     Retrying,
     Completed,
     Cancelled,
+    Quarantined,
     Dead,
 }
 
@@ -105,6 +111,7 @@ impl AcceptedMessage {
     fn is_claimable(&self, now_ms: u64) -> bool {
         !self.dead
             && !self.cancelled
+            && !self.quarantined
             && self.completed_at_ms.is_none()
             && self
                 .available_at_ms
@@ -123,6 +130,8 @@ impl AcceptedMessage {
             ReceiptState::Cancelled
         } else if self.dead {
             ReceiptState::Dead
+        } else if self.quarantined {
+            ReceiptState::Quarantined
         } else if self
             .lease
             .as_ref()
@@ -219,29 +228,46 @@ impl AcceptanceQueue {
 
     /// Replay the journal into the current set of receipts, oldest first.
     ///
-    /// A torn final line is tolerated: an append that was interrupted by a crash
-    /// leaves a partial record, and dropping it is better than refusing to start.
-    /// Every malformed line is skipped, so a torn record in the middle cannot
-    /// hide the receipts appended after it.
+    /// A torn final line is tolerated: an append interrupted by a crash leaves
+    /// a partial tail record that is dropped safely. An unparseable **interior**
+    /// line (followed by newer valid lines) is treated as sealed-segment
+    /// corruption: unsettled receipts that were already taken before the
+    /// corrupt line are quarantined instead of being silently re-dispatched,
+    /// while receipts never taken or appended afterwards remain usable.
     pub fn replay(&self) -> io::Result<Vec<AcceptedMessage>> {
+        Ok(self.replay_detailed()?.0)
+    }
+
+    /// Whether the journal contains any corrupt interior (non-tail) lines.
+    pub fn has_interior_corruption(&self) -> io::Result<bool> {
+        Ok(self.replay_detailed()?.1 > 0)
+    }
+
+    fn replay_detailed(&self) -> io::Result<(Vec<AcceptedMessage>, usize)> {
         let path = Self::path(&self.root);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), 0));
             }
             Err(error) => return Err(error),
         };
         let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
         let mut receipts: Vec<AcceptedMessage> = Vec::new();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // A torn record from a crash: skip it instead of dropping every
-            // record that follows it.
+        let mut last_taken_line: HashMap<String, usize> = HashMap::new();
+        let mut corrupt_interior = 0_usize;
+        let mut last_interior_corrupt_line: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate() {
             let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+                if idx + 1 < lines.len() {
+                    corrupt_interior = corrupt_interior.saturating_add(1);
+                    last_interior_corrupt_line = Some(idx);
+                }
                 continue;
             };
             match entry {
@@ -262,6 +288,7 @@ impl AcceptanceQueue {
                     attempts: 0,
                     dead: false,
                     cancelled: false,
+                    quarantined: false,
                     last_attempt_id: None,
                     target_session_id: None,
                     submission_id: None,
@@ -275,6 +302,7 @@ impl AcceptanceQueue {
                     if let Some(receipt) =
                         receipts.iter_mut().find(|receipt| receipt.id == id)
                     {
+                        last_taken_line.insert(id, idx);
                         receipt.taken_at_ms.get_or_insert(at_ms);
                         receipt.available_at_ms = None;
                         receipt.attempts = receipt.attempts.saturating_add(1);
@@ -370,7 +398,27 @@ impl AcceptanceQueue {
                 }
             }
         }
-        Ok(receipts)
+        if let Some(corrupt_idx) = last_interior_corrupt_line {
+            tracing::error!(
+                target: "flowy.acceptance",
+                path = %path.display(),
+                corrupt_interior,
+                "interior journal corruption detected; quarantining pre-corruption in-flight receipts"
+            );
+            for receipt in &mut receipts {
+                if receipt.completed_at_ms.is_none()
+                    && !receipt.dead
+                    && !receipt.cancelled
+                    && last_taken_line
+                        .get(&receipt.id)
+                        .is_some_and(|&taken_idx| taken_idx < corrupt_idx)
+                {
+                    receipt.quarantined = true;
+                    receipt.lease = None;
+                }
+            }
+        }
+        Ok((receipts, corrupt_interior))
     }
 
     /// Every receipt ever accepted, oldest first, claimed or not.
@@ -414,6 +462,7 @@ impl AcceptanceQueue {
             attempts: 0,
             dead: false,
             cancelled: false,
+            quarantined: false,
             last_attempt_id: None,
             target_session_id: None,
             submission_id: None,
@@ -498,6 +547,7 @@ impl AcceptanceQueue {
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
+            || receipt.quarantined
             || receipt.lease.as_ref().map(|l| l.attempt_id.as_str())
                 != Some(attempt_id)
         {
@@ -532,6 +582,7 @@ impl AcceptanceQueue {
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
+            || receipt.quarantined
             || receipt.lease.as_ref().map(|l| l.attempt_id.as_str())
                 != Some(attempt_id)
         {
@@ -587,6 +638,7 @@ impl AcceptanceQueue {
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
+            || receipt.quarantined
             || receipt.last_attempt_id.as_deref() != Some(attempt_id)
         {
             return Ok(false);
@@ -651,6 +703,7 @@ impl AcceptanceQueue {
         if receipt.completed_at_ms.is_some()
             || receipt.dead
             || receipt.cancelled
+            || receipt.quarantined
         {
             return Ok(false);
         }
@@ -714,7 +767,8 @@ impl AcceptanceQueue {
             .append(true)
             .open(&path)?;
         handle.write_all(&line)?;
-        handle.flush()
+        handle.flush()?;
+        handle.sync_all()
     }
 }
 
@@ -758,7 +812,8 @@ fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
     }
     let mut handle = fs::OpenOptions::new().append(true).open(path)?;
     handle.write_all(b"\n")?;
-    handle.flush()
+    handle.flush()?;
+    handle.sync_all()
 }
 
 #[cfg(test)]
@@ -1303,6 +1358,67 @@ mod tests {
                 .expect("found")
                 .state_at(2_030),
             ReceiptState::Completed
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn kernel_review_corrupt_middle_terminal_event_never_reclaims_completed_receipt()
+     {
+        let root = temp_root("corrupt-middle-terminal");
+        let queue = AcceptanceQueue::new(&root);
+        let first = queue.accept(None, "first work", 1_000).expect("accept a");
+        assert!(
+            queue
+                .take(&first.id, "attempt-1", 1_010, 100)
+                .expect("take a")
+                .is_some()
+        );
+        assert!(
+            queue
+                .complete(&first.id, "attempt-1", 1_020)
+                .expect("complete a")
+        );
+        let second =
+            queue.accept(None, "second work", 2_000).expect("accept b");
+
+        // Corrupt the interior `completed` line for `first` while keeping the
+        // subsequent valid `accepted` line for `second`.
+        let path = AcceptanceQueue::path(&root);
+        let raw = fs::read_to_string(&path).expect("read journal");
+        let mut mutated: Vec<String> = raw.lines().map(str::to_owned).collect();
+        let completed_idx = mutated
+            .iter()
+            .position(|line| line.contains("\"completed\""))
+            .expect("completed line");
+        mutated[completed_idx] = r#"{"event":"completed","corrupt"#.to_owned();
+        fs::write(&path, format!("{}\n", mutated.join("\n")))
+            .expect("rewrite journal");
+
+        assert!(
+            queue.has_interior_corruption().expect("corruption flag"),
+            "interior corrupt line must be flagged"
+        );
+        let first_after = queue.get(&first.id).expect("get a").expect("found");
+        assert!(first_after.quarantined);
+        assert_eq!(first_after.state_at(9_999), ReceiptState::Quarantined);
+        assert!(
+            queue
+                .take(&first.id, "attempt-2", 9_999, 1_000)
+                .expect("take a after corruption")
+                .is_none(),
+            "corrupted terminal line must never allow silent re-claim"
+        );
+        // Subsequent valid receipts remain claimable and completable.
+        let pending = queue.pending_at(9_999).expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, second.id);
+        assert!(
+            queue
+                .take(&second.id, "attempt-b", 9_999, 1_000)
+                .expect("take b")
+                .is_some()
         );
 
         fs::remove_dir_all(&root).expect("cleanup");

@@ -272,29 +272,7 @@ pub fn prepare_conversation_artifacts_gated(
     };
     let mut commits = Vec::new();
     for (identity, (resolved, tool_call_id)) in latest {
-        if let Some(gate) = gate {
-            let full_path = resolved.source_root.join(&resolved.identity);
-            match gate.check(&full_path) {
-                Ok(None) => {}
-                Ok(Some(reason)) => {
-                    tracing::info!(
-                        target: "flowy.delivery",
-                        session_id = %session.id,
-                        root_session_id = %session.id,
-                        path = %full_path.display(),
-                        code = reason.code(),
-                        "conversation artifact import skipped by delivery gate"
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    store.record_import_diagnostic(format!(
-                        "Skipped conversation file {identity} after gate read error: {error}"
-                    ));
-                    continue;
-                }
-            }
-        }
+        let full_path = resolved.source_root.join(&resolved.identity);
         let submission_id = match submission_id() {
             Ok(id) => id,
             Err(error) => {
@@ -304,7 +282,7 @@ pub fn prepare_conversation_artifacts_gated(
                 continue;
             }
         };
-        let receipt = match store.prepare(PrepareArtifact {
+        let prepare_args = PrepareArtifact {
             source_root: resolved.source_root,
             relative_path: identity.clone(),
             source_relative_path: identity.clone(),
@@ -315,13 +293,87 @@ pub fn prepare_conversation_artifacts_gated(
             delivery_key: identity.clone(),
             display_name: None,
             origin: session.origin.clone(),
-        }) {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                store.record_import_diagnostic(format!(
-                    "Skipped conversation file {identity}: {error}"
-                ));
+        };
+        let receipt = if let Some(gate) = gate {
+            let file_hash = match fs::read(&full_path) {
+                Ok(bytes) => crate::delivery::hash_bytes(&bytes),
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity} after read error: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if store
+                .is_source_already_committed(
+                    &session.id,
+                    &session.origin,
+                    &identity,
+                    &file_hash,
+                )
+                .unwrap_or(false)
+            {
                 continue;
+            }
+            match gate.stage_with(
+                &full_path,
+                false,
+                now_ms(),
+                |checked_bytes| {
+                    let expected_hash =
+                        crate::delivery::hash_bytes(checked_bytes);
+                    let receipt = store.prepare(prepare_args)?;
+                    if receipt.sha256 != expected_hash {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "DELIVERY_ARTIFACT_CHANGED",
+                        ));
+                    }
+                    Ok(receipt)
+                },
+            ) {
+                Ok(result) => {
+                    if let Some(reason) = result.outcome.blocked {
+                        tracing::info!(
+                            target: "flowy.delivery",
+                            session_id = %session.id,
+                            root_session_id = %session.id,
+                            path = %full_path.display(),
+                            code = reason.code(),
+                            "conversation artifact import skipped by delivery gate"
+                        );
+                        continue;
+                    }
+                    let Some(receipt) = result.value else {
+                        continue;
+                    };
+                    if committed.contains(&receipt.artifact_id) {
+                        let _ = gate.confirm_delivered(
+                            &result.outcome.delivery_id,
+                            &full_path.display().to_string(),
+                            &receipt.sha256,
+                            now_ms(),
+                        );
+                        continue;
+                    }
+                    receipt
+                }
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity}: {error}"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            match store.prepare(prepare_args) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    store.record_import_diagnostic(format!(
+                        "Skipped conversation file {identity}: {error}"
+                    ));
+                    continue;
+                }
             }
         };
         if committed.contains(&receipt.artifact_id) {

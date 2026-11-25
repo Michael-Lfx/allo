@@ -57,6 +57,8 @@ struct ProviderFixture {
 enum ProviderMode {
     Delivery,
     ProjectWrite { path: String, content: String },
+    ProjectWriteThenFail { path: String, content: String },
+    StageThenFail,
     DelayedText { delay_ms: u64, reply: String },
 }
 
@@ -70,6 +72,17 @@ impl ProviderFixture {
             path: path.into(),
             content: content.into(),
         })
+    }
+
+    fn start_project_write_then_fail(path: &str, content: &str) -> Self {
+        Self::start_with(ProviderMode::ProjectWriteThenFail {
+            path: path.into(),
+            content: content.into(),
+        })
+    }
+
+    fn start_stage_then_fail() -> Self {
+        Self::start_with(ProviderMode::StageThenFail)
     }
 
     fn start_delayed_text(delay_ms: u64, reply: &str) -> Self {
@@ -172,6 +185,50 @@ impl ProviderFixture {
                                         )
                                     }
                                 }
+                                ProviderMode::ProjectWriteThenFail {
+                                    path,
+                                    content,
+                                } => {
+                                    if index == 0 {
+                                        tool_delta(
+                                            "fixture-project-write-fail",
+                                            "write_file",
+                                            json!({ "path": path, "content": content }),
+                                        )
+                                    } else {
+                                        let _ = write_http_error(&mut socket);
+                                        continue;
+                                    }
+                                }
+                                ProviderMode::StageThenFail => {
+                                    let root =
+                                        state.2.lock().unwrap().clone().expect(
+                                            "host assigned output root",
+                                        );
+                                    match index {
+                                        0 => tool_delta(
+                                            "fixture-stage-write-csv",
+                                            "write_file",
+                                            json!({
+                                                "path": root.join("sales.csv").display().to_string(),
+                                                "content": CSV
+                                            }),
+                                        ),
+                                        1 => tool_delta(
+                                            "fixture-stage-publish-csv",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sales.csv",
+                                                "delivery_key": "sales"
+                                            }),
+                                        ),
+                                        _ => {
+                                            let _ =
+                                                write_http_error(&mut socket);
+                                            continue;
+                                        }
+                                    }
+                                }
                                 ProviderMode::DelayedText {
                                     delay_ms,
                                     reply,
@@ -235,6 +292,17 @@ impl Drop for ProviderFixture {
             thread.join().unwrap();
         }
     }
+}
+
+fn write_http_error(socket: &mut TcpStream) -> std::io::Result<()> {
+    let body = r#"{"error":{"message":"simulated provider failure"}}"#;
+    write!(
+        socket,
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )?;
+    socket.flush()
 }
 
 fn tool_delta(
@@ -1024,4 +1092,321 @@ fn kernel_review_missing_required_deck_marks_work_partial_until_completed() {
     assert_eq!(completed.outcome, Some(SubmissionOutcome::Completed));
     assert_eq!(completed.missing_items, Vec::<String>::new());
     assert_eq!(completed.delivered_artifact_ids.len(), 3);
+}
+
+#[test]
+fn kernel_review_prepare_before_commit_writes_intent_only_not_deliver() {
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start_stage_then_fail();
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session = handle.create_home_session().unwrap();
+    let sub_id = format!("submission-{SUBMISSION:032x}");
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let output = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .join("outputs")
+        .join(&sub_id);
+    fs::create_dir_all(&output).unwrap();
+    *provider.output_root.lock().unwrap() = Some(output);
+
+    handle
+        .submit_chat(SUBMISSION, "Write and publish sales.csv then fail.")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if matches!(handle.turn_status(), TurnStatus::Error { .. }) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert!(
+        matches!(handle.turn_status(), TurnStatus::Error { .. }),
+        "turn must settle in Error, got {:?}",
+        handle.turn_status()
+    );
+
+    // File was staged by publish_file, but turn failed before Library commit:
+    // audit MUST contain deliver_intent only, 0 deliver events, 1 in_doubt,
+    // 0 visible artifacts, and 0 delivery markers.
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let events = fs::read_to_string(scratch.0.join("delivery/events.jsonl"))
+        .expect("delivery audit log");
+    assert!(events.contains("deliver_intent"));
+    assert!(
+        !events.contains("\"deliver\""),
+        "staging without Library commit must never record final deliver: {events}"
+    );
+    assert_eq!(gate.in_doubt_deliveries().unwrap().len(), 1);
+    assert_eq!(handle.artifacts().unwrap().len(), 0);
+    let markers = fs::read_dir(scratch.0.join("artifacts/deliveries"))
+        .unwrap()
+        .count();
+    assert_eq!(markers, 0);
+}
+
+#[test]
+fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_without_rerunning()
+ {
+    use flowy_agent_core::{
+        AcceptanceQueue, ContentBlock, DeliveryCommit, Message, MessageSource,
+        ReceiptState, Role, SessionIndex, SessionRecord, SessionWorkspace,
+        SubmissionOutcome, TurnState,
+    };
+
+    let scratch = Scratch::new();
+    let session_id = "s-bp3".to_owned();
+    let sub_id = format!("submission-{:032x}", 0xB303_u128);
+    let workspace_root = scratch.0.join("sessions").join(&session_id);
+    let output_dir = workspace_root.join("outputs").join(&sub_id);
+    fs::create_dir_all(&output_dir).unwrap();
+    let csv_path = output_dir.join("sales.csv");
+    fs::write(&csv_path, CSV).unwrap();
+
+    // Stage artifact through the two-phase gate (writes deliver_intent only,
+    // creates staging snapshot, NO Library marker yet).
+    let store =
+        crate::artifact_store::ArtifactStore::open(scratch.0.join("artifacts"))
+            .unwrap();
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let staged = gate
+        .stage_with(&csv_path, false, 1_000, |checked| {
+            let expected = crate::delivery::hash_bytes(checked);
+            let receipt =
+                store.prepare(crate::artifact_store::PrepareArtifact {
+                    source_root: output_dir.clone(),
+                    relative_path: "sales.csv".into(),
+                    source_relative_path: format!("outputs/{sub_id}/sales.csv"),
+                    conversation_import: false,
+                    session_id: session_id.clone(),
+                    submission_id: sub_id.clone(),
+                    tool_call_id: "call-bp3".into(),
+                    delivery_key: "sales".into(),
+                    display_name: Some("sales.csv".into()),
+                    origin: SessionOrigin::Home,
+                })?;
+            assert_eq!(receipt.sha256, expected);
+            Ok(receipt)
+        })
+        .unwrap();
+    let receipt = staged.value.expect("staged receipt");
+    assert_eq!(store.list().unwrap().len(), 0);
+    assert_eq!(gate.in_doubt_deliveries().unwrap().len(), 1);
+    drop(store);
+
+    // Persist durable history commit + Completed outcome WITHOUT Library marker
+    // and WITHOUT Completed in acceptance journal (simulated crash right after
+    // history.json save).
+    let mut record = SessionRecord {
+        id: session_id.clone(),
+        title: "Breakpoint 3".into(),
+        status: TurnState::Completed,
+        origin: SessionOrigin::Home,
+        workspace: Some(SessionWorkspace {
+            root: workspace_root,
+        }),
+        messages: vec![
+            Message {
+                id: sub_id.clone(),
+                role: Role::User,
+                content: vec![ContentBlock::text("deliver sales.csv")],
+                source: MessageSource::User,
+            },
+            Message {
+                id: "assistant-bp3".into(),
+                role: Role::Assistant,
+                content: vec![ContentBlock::text("Done.")],
+                source: MessageSource::Model {
+                    provider: "openai".into(),
+                    model: "fixture".into(),
+                },
+            },
+        ],
+        delivery_commits: vec![DeliveryCommit {
+            session_id: session_id.clone(),
+            submission_id: sub_id.clone(),
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: 1_050,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Breakpoint 3".into(),
+        }],
+        ..SessionRecord::default()
+    };
+    record
+        .submission_outcomes
+        .insert(sub_id.clone(), SubmissionOutcome::Completed);
+    let mut index = SessionIndex {
+        active: Some(session_id.clone()),
+        ..SessionIndex::default()
+    };
+    index.upsert(record);
+    index.save(&scratch.0).unwrap();
+
+    let queue = AcceptanceQueue::new(&scratch.0);
+    let accepted = queue
+        .accept(Some(&session_id), "deliver sales.csv", 1_000)
+        .unwrap();
+    queue
+        .take(&accepted.id, "attempt-bp3", 1_010, 50)
+        .unwrap()
+        .unwrap();
+    assert!(
+        queue
+            .bind(&accepted.id, "attempt-bp3", &session_id, &sub_id, 1_020)
+            .unwrap()
+    );
+
+    // Restart with a live provider fixture and verify recovery writes ONLY the
+    // marker + confirms audit + reconciles receipt, with ZERO LLM calls.
+    let provider = ProviderFixture::start();
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let items = reopened.artifacts().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].manifest.receipt.artifact_id, receipt.artifact_id);
+    assert_eq!(
+        reopened.read_artifact(&receipt.artifact_id).unwrap(),
+        CSV.as_bytes()
+    );
+    assert_eq!(
+        reopened.receipt_state(&accepted.id),
+        Some(ReceiptState::Completed)
+    );
+    assert!(reopened.run_accepted_once().unwrap().is_none());
+    assert!(
+        provider.requests.lock().unwrap().is_empty(),
+        "marker-only recovery must not invoke the model"
+    );
+    assert_eq!(gate.in_doubt_deliveries().unwrap().as_slice(), []);
+    let events_first =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events_first.matches("\"deliver\"").count(), 1);
+
+    // A second restart must be 100% idempotent (no duplicate deliver events).
+    drop(reopened);
+    let reopened_again =
+        AgentHandle::with_config(scratch.0.clone(), provider.config());
+    assert_eq!(reopened_again.artifacts().unwrap().len(), 1);
+    let events_second =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events_second.matches("\"deliver\"").count(), 1);
+}
+
+#[test]
+fn failed_turn_never_auto_imports_written_markdown_even_across_restart() {
+    let scratch = Scratch::new();
+    let project_root = scratch.0.join("project");
+    fs::create_dir_all(&project_root).unwrap();
+    let provider = ProviderFixture::start_project_write_then_fail(
+        "draft.md",
+        "# incomplete draft\n",
+    );
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    handle.set_workspace_for_new_sessions(Some(AgentWorkspace {
+        project_id: "proj-fail".into(),
+        root: project_root.clone(),
+    }));
+    handle.set_origin_for_new_sessions(SessionOrigin::Project {
+        project_id: Some("proj-fail".into()),
+    });
+    let _session = handle.create_session().unwrap();
+
+    handle
+        .submit_chat(SUBMISSION, "Write draft.md and fail")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if matches!(handle.turn_status(), TurnStatus::Error { .. }) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    assert!(matches!(handle.turn_status(), TurnStatus::Error { .. }));
+    assert!(project_root.join("draft.md").exists());
+    assert_eq!(
+        handle.artifacts().unwrap().len(),
+        0,
+        "failed turn must not auto-import written files into Library"
+    );
+
+    drop(handle);
+    drop(provider);
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    assert_eq!(
+        reopened.artifacts().unwrap().len(),
+        0,
+        "startup backfill must not auto-import files from a failed turn"
+    );
+}
+
+#[test]
+fn duplicate_override_deliver_artifact_is_idempotent_without_duplicate_audit() {
+    let scratch = Scratch::new();
+    let handle =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let session = handle.create_home_session().unwrap();
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let workspace_root = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .clone();
+    let output = workspace_root.join("outputs").join("submission-dup");
+    fs::create_dir_all(&output).unwrap();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    let deck = output.join("sample.pptx");
+    fs::copy(fixtures.join("sample.pptx"), &deck).unwrap();
+
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let report = gate
+        .record_report(
+            &deck,
+            vec![crate::delivery::Issue {
+                code: "STRUCTURE".into(),
+                field: "slides".into(),
+            }],
+            100,
+        )
+        .unwrap();
+
+    // Empty report_id must be rejected.
+    assert_eq!(
+        handle.override_deliver_artifact(
+            &session,
+            "",
+            &deck.display().to_string(),
+        ),
+        Err("chat.publish.not_verified")
+    );
+
+    let first_id = handle
+        .override_deliver_artifact(
+            &session,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("first override");
+    let second_id = handle
+        .override_deliver_artifact(
+            &session,
+            &report.id,
+            &deck.display().to_string(),
+        )
+        .expect("second duplicate override");
+    assert_eq!(first_id, second_id);
+    assert_eq!(handle.artifacts().unwrap().len(), 1);
+    let events =
+        fs::read_to_string(scratch.0.join("delivery/events.jsonl")).unwrap();
+    assert_eq!(events.matches("\"deliver_override\"").count(), 1);
+    assert_eq!(events.matches("\"deliver\"").count(), 1);
 }

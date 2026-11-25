@@ -158,7 +158,7 @@ pub fn definition(
                     };
                     let receipt = if let Some(gate) = &gate {
                         let artifact = output_root.join(&normalized_path);
-                        match gate.deliver_with(
+                        match gate.stage_with(
                             &artifact,
                             false,
                             now_ms(),
@@ -406,7 +406,10 @@ mod tests {
         assert!(events.contains("deliver_exempt"));
         assert!(events.contains(crate::delivery::EXEMPT_NO_VERIFIER_V0));
         assert!(events.contains("deliver_intent"));
-        assert!(events.contains("\"deliver\""));
+        assert!(
+            !events.contains("\"deliver\""),
+            "staging alone must not record final deliver before Library commit"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

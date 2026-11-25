@@ -5,9 +5,11 @@
 //! trail (`verify` / `deliver_blocked` / `deliver_override` / `deliver`).
 //! A blocked delivery never calls the sender.
 
-use std::io::{self, Write};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -36,6 +38,10 @@ pub struct Report {
     /// Work-contract revision verified by this report, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_revision: Option<u32>,
+    /// Cached canonical lookup key for `artifact_path`, avoiding repeated
+    /// filesystem canonicalization when scanning `reports.jsonl`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artifact_key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,16 +173,28 @@ impl DeliveryStore {
     }
 
     fn append_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+        let lock = store_lock(path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::append_json_locked(path, value)
+    }
+
+    fn append_json_locked<T: Serialize>(
+        path: &Path,
+        value: &T,
+    ) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        ensure_trailing_newline(path)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
         let line = serde_json::to_string(value)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        writeln!(file, "{line}")
+        writeln!(file, "{line}")?;
+        file.flush()?;
+        file.sync_all()
     }
 
     /// Persist a verification report for already-parsed `bytes`, binding the
@@ -213,6 +231,7 @@ impl DeliveryStore {
             issues,
             at_ms: now_ms,
             contract_revision,
+            artifact_key: artifact_key(artifact),
         };
         Self::append_json(&self.reports_path(), &report)?;
         Self::append_json(
@@ -242,9 +261,14 @@ impl DeliveryStore {
     }
 
     /// Latest persisted report for `artifact`, if any.
+    ///
+    /// A truncated final line is tolerated, while an unparseable **interior**
+    /// line invalidates any earlier report for `artifact` so corrupted failure
+    /// records can never fall back to a prior passing report (fail-closed).
     pub fn latest_report(&self, artifact: &Path) -> io::Result<Option<Report>> {
         let key = artifact_key(artifact);
-        let bytes = match std::fs::read(self.reports_path()) {
+        let path = self.reports_path();
+        let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(None);
@@ -252,12 +276,31 @@ impl DeliveryStore {
             Err(error) => return Err(error),
         };
         let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
         let mut latest = None;
-        for line in text.lines() {
+        for (idx, line) in lines.iter().enumerate() {
             let Ok(report) = serde_json::from_str::<Report>(line) else {
+                if idx + 1 < lines.len() {
+                    tracing::error!(
+                        target: "flowy.delivery",
+                        path = %path.display(),
+                        line = idx + 1,
+                        "interior corruption in reports.jsonl; invalidating prior reports"
+                    );
+                    latest = None;
+                }
                 continue;
             };
-            if artifact_key(Path::new(&report.artifact_path)) == key {
+            let matches_key = if report.artifact_key.is_empty() {
+                artifact_key(Path::new(&report.artifact_path)) == key
+            } else {
+                report.artifact_key == key
+            };
+            if matches_key {
                 latest = Some(report);
             }
         }
@@ -265,7 +308,11 @@ impl DeliveryStore {
     }
 
     fn read_events(&self) -> io::Result<Vec<AuditEvent>> {
-        let bytes = match std::fs::read(self.events_path()) {
+        Self::read_events_from(&self.events_path())
+    }
+
+    fn read_events_from(path: &Path) -> io::Result<Vec<AuditEvent>> {
+        let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Vec::new());
@@ -282,8 +329,7 @@ impl DeliveryStore {
     /// Return all deliveries currently stuck in doubt (`deliver_intent`
     /// persisted with no subsequent `deliver`), ordered chronologically.
     pub fn in_doubt_deliveries(&self) -> io::Result<Vec<InDoubtDelivery>> {
-        let mut pending: std::collections::BTreeMap<String, InDoubtDelivery> =
-            std::collections::BTreeMap::new();
+        let mut pending: BTreeMap<String, InDoubtDelivery> = BTreeMap::new();
         for event in self.read_events()? {
             match event {
                 AuditEvent::DeliverIntent {
@@ -315,18 +361,16 @@ impl DeliveryStore {
 
     /// All content hashes delivered through an explicit user override
     /// (`deliver_override` + `deliver`), read in a single pass over the audit log.
-    pub fn overridden_artifact_hashes(
-        &self,
-    ) -> io::Result<std::collections::BTreeSet<String>> {
+    pub fn overridden_artifact_hashes(&self) -> io::Result<BTreeSet<String>> {
         let events = self.read_events()?;
-        let mut overridden_ids = std::collections::BTreeSet::new();
+        let mut overridden_ids = BTreeSet::new();
         for event in &events {
             if let AuditEvent::DeliverOverride { delivery_id, .. } = event {
                 overridden_ids.insert(delivery_id.as_str());
             }
         }
         if overridden_ids.is_empty() {
-            return Ok(std::collections::BTreeSet::new());
+            return Ok(BTreeSet::new());
         }
         Ok(events
             .iter()
@@ -352,6 +396,95 @@ impl DeliveryStore {
         Ok(self.overridden_artifact_hashes()?.contains(artifact_hash))
     }
 
+    /// Confirm a previously staged `deliver_intent` once the artifact has a
+    /// visible Library marker. Idempotent per `delivery_id`.
+    pub fn confirm_delivered(
+        &self,
+        delivery_id: &str,
+        artifact_path: &str,
+        artifact_hash: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        let path = self.events_path();
+        let lock = store_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let events = Self::read_events_from(&path)?;
+        if events.iter().any(|event| {
+            matches!(event, AuditEvent::Deliver { delivery_id: existing, .. } if existing == delivery_id)
+        }) {
+            return Ok(false);
+        }
+        Self::append_json_locked(
+            &path,
+            &AuditEvent::Deliver {
+                delivery_id: delivery_id.to_owned(),
+                artifact_path: artifact_path.to_owned(),
+                artifact_hash: artifact_hash.to_owned(),
+                at_ms: now_ms,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Confirm every unresolved `deliver_intent` matching `artifact_hash` once
+    /// the corresponding Library marker is durable. Idempotent across restarts.
+    pub fn confirm_delivered_by_hash(
+        &self,
+        artifact_hash: &str,
+        now_ms: u64,
+    ) -> io::Result<usize> {
+        if artifact_hash.is_empty() {
+            return Ok(0);
+        }
+        let path = self.events_path();
+        let lock = store_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending: BTreeMap<String, InDoubtDelivery> = BTreeMap::new();
+        for event in Self::read_events_from(&path)? {
+            match event {
+                AuditEvent::DeliverIntent {
+                    delivery_id,
+                    artifact_path,
+                    artifact_hash: hash,
+                    at_ms,
+                } => {
+                    pending.insert(
+                        delivery_id.clone(),
+                        InDoubtDelivery {
+                            delivery_id,
+                            artifact_path,
+                            artifact_hash: hash,
+                            at_ms,
+                        },
+                    );
+                }
+                AuditEvent::Deliver { delivery_id, .. } => {
+                    pending.remove(&delivery_id);
+                }
+                _ => {}
+            }
+        }
+        let mut matching: Vec<InDoubtDelivery> = pending
+            .into_values()
+            .filter(|item| item.artifact_hash == artifact_hash)
+            .collect();
+        matching.sort_by_key(|item| item.at_ms);
+        let mut confirmed = 0_usize;
+        for item in matching {
+            Self::append_json_locked(
+                &path,
+                &AuditEvent::Deliver {
+                    delivery_id: item.delivery_id,
+                    artifact_path: item.artifact_path,
+                    artifact_hash: item.artifact_hash,
+                    at_ms: now_ms,
+                },
+            )?;
+            confirmed = confirmed.saturating_add(1);
+        }
+        Ok(confirmed)
+    }
+
     /// Check a report without sending anything. `None` means the artifact is
     /// clear to leave; `Some(reason)` must block it.
     pub fn check(&self, artifact: &Path) -> io::Result<Option<BlockReason>> {
@@ -368,16 +501,31 @@ impl DeliveryStore {
         })
     }
 
-    /// Deliver `artifact` through `send`, after checking the report, hash, or
-    /// explicit exemption table, recording `deliver_intent` before `send` and
-    /// `deliver` after `send` succeeds.
-    pub fn deliver_with<T, F>(
+    /// Phase-1 staging gate: verify report/hash/exemption, persist
+    /// `deliver_intent` before calling `stage`, and leave `deliver` unconfirmed
+    /// until the Library delivery marker is durably written.
+    pub fn stage_with<T, F>(
         &self,
         artifact: &Path,
         allow_override: bool,
         now_ms: u64,
-        send: F,
+        stage: F,
     ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        Ok(self
+            .stage_with_hash(artifact, allow_override, now_ms, stage)?
+            .0)
+    }
+
+    fn stage_with_hash<T, F>(
+        &self,
+        artifact: &Path,
+        allow_override: bool,
+        now_ms: u64,
+        stage: F,
+    ) -> io::Result<(DeliveryResult<T>, String)>
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
@@ -425,17 +573,20 @@ impl DeliveryStore {
                     code = reason.code(),
                     "delivery blocked"
                 );
-                return Ok(DeliveryResult {
-                    outcome: DeliveryOutcome {
-                        delivery_id,
-                        delivered: false,
-                        blocked: Some(reason),
-                        report_id,
-                        override_used: false,
-                        exemption_code: None,
+                return Ok((
+                    DeliveryResult {
+                        outcome: DeliveryOutcome {
+                            delivery_id,
+                            delivered: false,
+                            blocked: Some(reason),
+                            report_id,
+                            override_used: false,
+                            exemption_code: None,
+                        },
+                        value: None,
                     },
-                    value: None,
-                });
+                    artifact_hash,
+                ));
             }
             Self::append_json(
                 &self.events_path(),
@@ -463,53 +614,96 @@ impl DeliveryStore {
             &self.events_path(),
             &AuditEvent::DeliverIntent {
                 delivery_id: delivery_id.clone(),
-                artifact_path: path_display.clone(),
-                artifact_hash: artifact_hash.clone(),
-                at_ms: now_ms,
-            },
-        )?;
-        let value = send(&bytes)?;
-        Self::append_json(
-            &self.events_path(),
-            &AuditEvent::Deliver {
-                delivery_id: delivery_id.clone(),
                 artifact_path: path_display,
                 artifact_hash: artifact_hash.clone(),
                 at_ms: now_ms,
             },
         )?;
-        tracing::info!(
-            target: "flowy.delivery",
-            delivery_id = %delivery_id,
-            artifact_hash = %artifact_hash,
-            outcome = "delivered",
-            override_used = blocked.is_some(),
-            exemption_code = exemption.unwrap_or(""),
-            "delivery sent"
-        );
-        Ok(DeliveryResult {
-            outcome: DeliveryOutcome {
-                delivery_id,
-                delivered: true,
-                blocked,
-                report_id,
-                override_used: blocked.is_some(),
-                exemption_code: exemption,
+        let value = stage(&bytes)?;
+        Ok((
+            DeliveryResult {
+                outcome: DeliveryOutcome {
+                    delivery_id,
+                    delivered: false,
+                    blocked,
+                    report_id,
+                    override_used: blocked.is_some(),
+                    exemption_code: exemption,
+                },
+                value: Some(value),
             },
-            value: Some(value),
-        })
+            artifact_hash,
+        ))
     }
 
-    /// Explicit user override bound to one verified report and its exact file
-    /// hash (§8.3). Refuses missing reports, stale `expected_report_id`, and
-    /// any file whose bytes changed since the report was recorded.
-    pub fn deliver_override_for_report<T, F>(
+    /// Deliver `artifact` through `send`, after checking the report, hash, or
+    /// explicit exemption table, recording `deliver_intent` before `send` and
+    /// `deliver` after `send` succeeds.
+    pub fn deliver_with<T, F>(
+        &self,
+        artifact: &Path,
+        allow_override: bool,
+        now_ms: u64,
+        send: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        let (mut result, artifact_hash) =
+            self.stage_with_hash(artifact, allow_override, now_ms, send)?;
+        if result.value.is_some() {
+            let path_display = artifact.display().to_string();
+            self.confirm_delivered(
+                &result.outcome.delivery_id,
+                &path_display,
+                &artifact_hash,
+                now_ms,
+            )?;
+            result.outcome.delivered = true;
+            tracing::info!(
+                target: "flowy.delivery",
+                delivery_id = %result.outcome.delivery_id,
+                artifact_hash = %artifact_hash,
+                outcome = "delivered",
+                override_used = result.outcome.override_used,
+                exemption_code = result.outcome.exemption_code.unwrap_or(""),
+                "delivery sent"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Phase-1 staging gate for an explicit user override bound to one verified
+    /// report and its exact file hash. Refuses empty or stale
+    /// `expected_report_id`, missing reports, and modified files, and leaves
+    /// `deliver` unconfirmed until the Library marker is durably written.
+    pub fn stage_override_for_report<T, F>(
         &self,
         artifact: &Path,
         expected_report_id: &str,
         now_ms: u64,
-        send: F,
+        stage: F,
     ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        Ok(self
+            .stage_override_for_report_with_hash(
+                artifact,
+                expected_report_id,
+                now_ms,
+                stage,
+            )?
+            .0)
+    }
+
+    fn stage_override_for_report_with_hash<T, F>(
+        &self,
+        artifact: &Path,
+        expected_report_id: &str,
+        now_ms: u64,
+        stage: F,
+    ) -> io::Result<(DeliveryResult<T>, String)>
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
@@ -521,8 +715,8 @@ impl DeliveryStore {
         let hard_block = match &report {
             None => Some(BlockReason::MissingReport),
             Some(report)
-                if (!expected_report_id.is_empty()
-                    && report.id != expected_report_id)
+                if expected_report_id.trim().is_empty()
+                    || report.id != expected_report_id
                     || report.artifact_hash != artifact_hash =>
             {
                 Some(BlockReason::HashMismatch)
@@ -551,19 +745,22 @@ impl DeliveryStore {
                 artifact_hash = %artifact_hash,
                 outcome = "blocked",
                 code = reason.code(),
-                "override delivery rejected: report missing or artifact changed"
+                "override delivery rejected: report missing, empty, or artifact changed"
             );
-            return Ok(DeliveryResult {
-                outcome: DeliveryOutcome {
-                    delivery_id,
-                    delivered: false,
-                    blocked: Some(reason),
-                    report_id,
-                    override_used: false,
-                    exemption_code: None,
+            return Ok((
+                DeliveryResult {
+                    outcome: DeliveryOutcome {
+                        delivery_id,
+                        delivered: false,
+                        blocked: Some(reason),
+                        report_id,
+                        override_used: false,
+                        exemption_code: None,
+                    },
+                    value: None,
                 },
-                value: None,
-            });
+                artifact_hash,
+            ));
         }
         let report = report.expect("report checked above");
         let override_used = !report.ok;
@@ -595,42 +792,104 @@ impl DeliveryStore {
             &self.events_path(),
             &AuditEvent::DeliverIntent {
                 delivery_id: delivery_id.clone(),
-                artifact_path: path_display.clone(),
-                artifact_hash: artifact_hash.clone(),
-                at_ms: now_ms,
-            },
-        )?;
-        let value = send(&bytes)?;
-        Self::append_json(
-            &self.events_path(),
-            &AuditEvent::Deliver {
-                delivery_id: delivery_id.clone(),
                 artifact_path: path_display,
                 artifact_hash: artifact_hash.clone(),
                 at_ms: now_ms,
             },
         )?;
-        tracing::info!(
-            target: "flowy.delivery",
-            delivery_id = %delivery_id,
-            artifact_hash = %artifact_hash,
-            outcome = "delivered",
-            override_used,
-            exemption_code = "",
-            "delivery sent"
-        );
-        Ok(DeliveryResult {
-            outcome: DeliveryOutcome {
-                delivery_id,
-                delivered: true,
-                blocked,
-                report_id,
-                override_used,
-                exemption_code: None,
+        let value = stage(&bytes)?;
+        Ok((
+            DeliveryResult {
+                outcome: DeliveryOutcome {
+                    delivery_id,
+                    delivered: false,
+                    blocked,
+                    report_id,
+                    override_used,
+                    exemption_code: None,
+                },
+                value: Some(value),
             },
-            value: Some(value),
-        })
+            artifact_hash,
+        ))
     }
+
+    /// Explicit user override bound to one verified report and its exact file
+    /// hash (§8.3). Refuses missing reports, empty or stale
+    /// `expected_report_id`, and any file whose bytes changed since the report
+    /// was recorded.
+    pub fn deliver_override_for_report<T, F>(
+        &self,
+        artifact: &Path,
+        expected_report_id: &str,
+        now_ms: u64,
+        send: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        let (mut result, artifact_hash) = self
+            .stage_override_for_report_with_hash(
+                artifact,
+                expected_report_id,
+                now_ms,
+                send,
+            )?;
+        if result.value.is_some() {
+            let path_display = artifact.display().to_string();
+            self.confirm_delivered(
+                &result.outcome.delivery_id,
+                &path_display,
+                &artifact_hash,
+                now_ms,
+            )?;
+            result.outcome.delivered = true;
+            tracing::info!(
+                target: "flowy.delivery",
+                delivery_id = %result.outcome.delivery_id,
+                artifact_hash = %artifact_hash,
+                outcome = "delivered",
+                override_used = result.outcome.override_used,
+                exemption_code = "",
+                "delivery sent"
+            );
+        }
+        Ok(result)
+    }
+}
+
+fn store_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    registry
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.len() == 0 {
+        return Ok(());
+    }
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0_u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    let mut handle = std::fs::OpenOptions::new().append(true).open(path)?;
+    handle.write_all(b"\n")?;
+    handle.flush()?;
+    handle.sync_all()
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -967,6 +1226,88 @@ mod tests {
         assert!(allowed.outcome.delivered);
         assert!(allowed.outcome.override_used);
         assert_eq!(ok_calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stage_with_writes_intent_only_until_confirmed_idempotently() {
+        let root = scratch("two-phase-stage");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK staged");
+        store.record_report(&path, Vec::new(), 1_000).unwrap();
+        let staged = store
+            .stage_with(&path, false, 2_000, |bytes| Ok(hash_bytes(bytes)))
+            .unwrap();
+        assert!(!staged.outcome.delivered);
+        assert!(staged.outcome.blocked.is_none());
+        let hash = staged.value.expect("staged hash");
+        let events_before =
+            std::fs::read_to_string(store.events_path()).unwrap();
+        assert!(events_before.contains("deliver_intent"));
+        assert!(!events_before.contains("\"deliver\""));
+        assert_eq!(store.in_doubt_deliveries().unwrap().len(), 1);
+
+        assert_eq!(store.confirm_delivered_by_hash(&hash, 3_000).unwrap(), 1);
+        assert_eq!(store.in_doubt_deliveries().unwrap().as_slice(), []);
+        assert_eq!(store.confirm_delivered_by_hash(&hash, 4_000).unwrap(), 0);
+        let events_after =
+            std::fs::read_to_string(store.events_path()).unwrap();
+        assert_eq!(events_after.matches("\"deliver\"").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_report_id_is_hard_blocked_on_override() {
+        let root = scratch("override-empty-id");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK empty-id");
+        store
+            .record_report_bytes(
+                &path,
+                b"PK empty-id",
+                vec![Issue {
+                    code: "STRUCTURE".to_owned(),
+                    field: "slides".to_owned(),
+                }],
+                1_000,
+            )
+            .unwrap();
+        let (calls, send) = counting_sender();
+        let rejected = store
+            .stage_override_for_report(&path, "   ", 2_000, send)
+            .unwrap();
+        assert!(!rejected.outcome.delivered);
+        assert_eq!(rejected.outcome.blocked, Some(BlockReason::HashMismatch));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn interior_corruption_in_reports_jsonl_fails_closed() {
+        let root = scratch("corrupt-reports");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let deck = artifact(&root, b"PK deck");
+        let other = root.join("other.pptx");
+        std::fs::write(&other, b"PK other").unwrap();
+
+        // Passing report for `deck`, then a corrupted interior line (simulating
+        // a damaged later failing report), then another valid report for `other`.
+        store.record_report(&deck, Vec::new(), 1_000).unwrap();
+        let mut handle = std::fs::OpenOptions::new()
+            .append(true)
+            .open(store.reports_path())
+            .unwrap();
+        writeln!(handle, r#"{{"id":"corrupt","ok":false"#).unwrap();
+        drop(handle);
+        store.record_report(&other, Vec::new(), 2_000).unwrap();
+
+        assert_eq!(store.latest_report(&deck).unwrap(), None);
+        assert_eq!(
+            store.check(&deck).unwrap(),
+            Some(BlockReason::MissingReport)
+        );
+        // A valid report recorded AFTER the corruption still succeeds.
+        assert!(store.latest_report(&other).unwrap().is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

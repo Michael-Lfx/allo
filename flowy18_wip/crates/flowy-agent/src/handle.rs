@@ -538,6 +538,9 @@ impl AgentHandle {
             for session in engine.sessions() {
                 match store.recover_commits(&session.delivery_commits) {
                     Ok(()) => {
+                        for commit in &session.delivery_commits {
+                            confirm_commit_audit(&state.root, store, commit);
+                        }
                         if let Some(live) =
                             lock(&state.live).get_mut(&session.id)
                             && matches!(live.status, TurnStatus::DeliveryFailed)
@@ -1088,6 +1091,7 @@ impl AgentHandle {
             return Err("chat.status_delivery_failed");
         }
         for commit in &record.delivery_commits {
+            confirm_commit_audit(&self.inner.state.root, &store, commit);
             apply_delivery_commit_to_live(&self.inner.state, commit);
         }
         if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
@@ -1222,6 +1226,9 @@ impl AgentHandle {
         if self.is_initializing() {
             return Err("library.loading");
         }
+        if report_id.trim().is_empty() {
+            return Err("chat.publish.not_verified");
+        }
         let state = &self.inner.state;
         let _dispatch = lock(&state.dispatch);
         let engine = lock(&self.inner.engine)
@@ -1263,16 +1270,55 @@ impl AgentHandle {
                 |_| file_name.clone(),
                 |rel| rel.to_string_lossy().replace('\\', "/"),
             );
-        let stamp = next_stamp();
-        let submission_id = format!("submission-override-{stamp:032x}");
-        let delivery_key = if report_id.is_empty() {
-            format!("override-{stamp}")
-        } else {
-            format!("override-{report_id}")
-        };
+        let delivery_key = format!("override-{report_id}");
         let gate =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"));
         let now = now_ms();
+        let current_bytes =
+            std::fs::read(&full_path).map_err(|_| "chat.publish.failed")?;
+        let current_hash = crate::delivery::hash_bytes(&current_bytes);
+        if let Ok(Some(latest)) = gate.latest_report(&full_path)
+            && latest.id == report_id
+            && latest.artifact_hash == current_hash
+            && let Ok(items) = store.list()
+            && let Some(existing) = items.into_iter().find(|item| {
+                item.manifest.receipt.session_id == session_id
+                    && item.manifest.receipt.delivery_key == delivery_key
+                    && item.manifest.receipt.sha256 == current_hash
+            })
+        {
+            let _ = gate.confirm_delivered_by_hash(&current_hash, now);
+            reconcile_partial_work_after_override(&engine, &store, session_id);
+            let existing_id = existing.manifest.receipt.artifact_id;
+            let target_key = crate::delivery::artifact_key(&full_path);
+            if let Some(live) = lock(&state.live).get_mut(session_id) {
+                for line in &mut live.projection.lines {
+                    if let ChatLine::Verification {
+                        report_id: existing_report,
+                        artifact_path: existing_path,
+                        override_used,
+                        ..
+                    } = line
+                        && (existing_report == report_id
+                            || crate::delivery::artifact_key(Path::new(
+                                existing_path,
+                            )) == target_key)
+                    {
+                        *override_used = true;
+                    }
+                }
+                if !live.projection.lines.iter().any(|line| {
+                    matches!(line, ChatLine::Artifact { artifact_id } if artifact_id == &existing_id)
+                }) {
+                    live.projection.lines.push(ChatLine::Artifact {
+                        artifact_id: existing_id.clone(),
+                    });
+                }
+            }
+            return Ok(existing_id);
+        }
+        let stamp = next_stamp();
+        let submission_id = format!("submission-override-{stamp:032x}");
         let prepare = crate::artifact_store::PrepareArtifact {
             source_root,
             relative_path: file_name,
@@ -1286,7 +1332,7 @@ impl AgentHandle {
             origin: SessionOrigin::Home,
         };
         let result = gate
-            .deliver_override_for_report(
+            .stage_override_for_report(
                 &full_path,
                 report_id,
                 now,
@@ -1305,24 +1351,12 @@ impl AgentHandle {
             )
             .map_err(|_| "chat.publish.failed")?;
         let receipt = result.value.ok_or("chat.publish.not_verified")?;
-        let root_session_id = self.root_session_id_for(session_id);
-        tracing::info!(
-            target: "flowy.delivery",
-            session_id = %session_id,
-            root_session_id = %root_session_id,
-            submission_id = %submission_id,
-            delivery_id = %result.outcome.delivery_id,
-            artifact_id = %receipt.artifact_id,
-            sha256 = %receipt.sha256,
-            override_used = result.outcome.override_used,
-            "override delivery committed by user"
-        );
         let origin_title_snapshot = lock(&state.live)
             .get(session_id)
             .map_or_else(String::new, |live| live.title.clone());
         let commit = DeliveryCommit {
             session_id: session_id.to_owned(),
-            submission_id,
+            submission_id: submission_id.clone(),
             artifact_ids: vec![receipt.artifact_id.clone()],
             completed_successfully: true,
             committed_at_ms: now,
@@ -1335,6 +1369,24 @@ impl AgentHandle {
         store
             .commit_prepared(&commit)
             .map_err(|_| "chat.publish.failed")?;
+        let _ = gate.confirm_delivered(
+            &result.outcome.delivery_id,
+            &full_path.display().to_string(),
+            &receipt.sha256,
+            now_ms(),
+        );
+        let root_session_id = self.root_session_id_for(session_id);
+        tracing::info!(
+            target: "flowy.delivery",
+            session_id = %session_id,
+            root_session_id = %root_session_id,
+            submission_id = %submission_id,
+            delivery_id = %result.outcome.delivery_id,
+            artifact_id = %receipt.artifact_id,
+            sha256 = %receipt.sha256,
+            override_used = result.outcome.override_used,
+            "override delivery committed by user"
+        );
         reconcile_partial_work_after_override(&engine, &store, session_id);
         let target_key = crate::delivery::artifact_key(&full_path);
         if let Some(live) = lock(&state.live).get_mut(session_id) {
@@ -2493,7 +2545,14 @@ impl AgentHandle {
                     );
                 }
             }
-            capture_turn_artifacts(&engine, &state, &id, completed_submission);
+            if matches!(outcome, Ok(LoopOutcome::Completed)) {
+                capture_turn_artifacts(
+                    &engine,
+                    &state,
+                    &id,
+                    completed_submission,
+                );
+            }
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {
@@ -2630,6 +2689,9 @@ impl TurnObserver for UiObserver {
     }
 
     fn delivery_committed(&self, commit: &DeliveryCommit) {
+        if let Some(store) = self.state.artifact_store.get() {
+            confirm_commit_audit(&self.state.root, store, commit);
+        }
         apply_delivery_commit_to_live(&self.state, commit);
         if persist_index(&self.state).is_err() {
             self.state.report_storage_error();
@@ -3004,9 +3066,21 @@ fn backfill_conversation_artifacts(state: &UiState, engine: &Engine) {
                 continue;
             }
         }
-        let writes = crate::conversation_artifacts::parse_successful_writes(
-            &session.messages,
-        );
+        let writes: Vec<_> =
+            crate::conversation_artifacts::parse_successful_writes(
+                &session.messages,
+            )
+            .into_iter()
+            .filter(|write| {
+                !matches!(
+                    session.submission_outcomes.get(&write.turn_id),
+                    Some(
+                        SubmissionOutcome::Failed { .. }
+                            | SubmissionOutcome::Aborted
+                    )
+                )
+            })
+            .collect();
         if writes.is_empty() {
             continue;
         }
@@ -3105,9 +3179,32 @@ fn persist_conversation_commits(
             state.report_storage_error();
             continue;
         }
+        confirm_commit_audit(&state.root, store, &commit);
         imported = true;
     }
     imported
+}
+
+/// Confirm `deliver` audit events strictly after `commit`'s Library delivery
+/// marker exists on disk. Idempotent across startup recovery and retries.
+fn confirm_commit_audit(
+    root: &Path,
+    store: &ArtifactStore,
+    commit: &DeliveryCommit,
+) {
+    if !commit.completed_successfully {
+        return;
+    }
+    let gate = crate::delivery::DeliveryStore::new(root.join("delivery"));
+    let now = now_ms();
+    for artifact_id in &commit.artifact_ids {
+        if let Ok(Some(record)) = store.get(artifact_id) {
+            let _ = gate.confirm_delivered_by_hash(
+                &record.manifest.receipt.sha256,
+                now,
+            );
+        }
+    }
 }
 
 fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {

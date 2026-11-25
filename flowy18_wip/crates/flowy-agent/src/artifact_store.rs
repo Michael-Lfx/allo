@@ -199,6 +199,65 @@ impl ArtifactStore {
         self.committed_ids_locked()
     }
 
+    /// Whether `(session_id, origin, source_relative_path, sha256)` already
+    /// matches the latest committed (or tombstoned) snapshot for that source.
+    pub(crate) fn is_source_already_committed(
+        &self,
+        session_id: &str,
+        origin: &SessionOrigin,
+        source_relative_path: &str,
+        sha256: &str,
+    ) -> io::Result<bool> {
+        if source_relative_path.is_empty() || sha256.is_empty() {
+            return Ok(false);
+        }
+        let _guard = self.lock();
+        let initial = self.scan_locked()?;
+        let committed = self.committed_ids_locked()?;
+        let mut latest_rank: Option<(u64, String)> = None;
+        for manifest in initial.manifests.iter().filter(|manifest| {
+            manifest.receipt.session_id == session_id
+                && manifest.source_relative_path == source_relative_path
+                && committed.contains(&manifest.receipt.artifact_id)
+                && matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                        | PublicationState::Deleted
+                )
+        }) {
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            if latest_rank.as_ref().is_none_or(|current| rank > *current) {
+                latest_rank = Some(rank);
+            }
+        }
+        let Some(latest_rank) = latest_rank else {
+            return Ok(false);
+        };
+        Ok(initial.manifests.iter().any(|manifest| {
+            let rank = (
+                manifest.receipt.created_at_ms,
+                manifest.receipt.artifact_id.clone(),
+            );
+            manifest.receipt.session_id == session_id
+                && &manifest.origin == origin
+                && manifest.source_relative_path == source_relative_path
+                && manifest.receipt.sha256 == sha256
+                && matches!(
+                    manifest.publication_state,
+                    PublicationState::Committed
+                        | PublicationState::DeletePending
+                        | PublicationState::Deleted
+                )
+                && !manifest.superseded
+                && committed.contains(&manifest.receipt.artifact_id)
+                && rank == latest_rank
+        }))
+    }
+
     pub fn diagnostics(&self) -> io::Result<Vec<String>> {
         let _guard = self.lock();
         let mut diagnostics =
