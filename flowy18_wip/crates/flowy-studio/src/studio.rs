@@ -281,6 +281,15 @@ impl crate::panel::StudioPanel {
             );
         }
 
+        let visible_receipts: Vec<(
+            flowy_agent::AcceptedMessage,
+            flowy_agent::ReceiptState,
+        )> = self
+            .popover_visible_receipts(&running_ids)
+            .into_iter()
+            .map(|(r, s)| (r.clone(), s))
+            .collect();
+
         for (index, session_id) in running_ids.into_iter().enumerate() {
             let preview = self.agent.session_preview(&session_id);
             let title = titles
@@ -375,9 +384,12 @@ impl crate::panel::StudioPanel {
             );
         }
 
-        for (index, receipt) in self.pending_receipts.iter().enumerate() {
+        let has_visible_receipts = !visible_receipts.is_empty();
+        for (index, (receipt, state)) in
+            visible_receipts.into_iter().enumerate()
+        {
             let preview: String = receipt.text.chars().take(40).collect();
-            let owner = self.receipt_owner(receipt);
+            let owner = self.receipt_owner(&receipt);
             let receipt_tag = self.tf(
                 "chat.pending_receipt",
                 &[("id", &short_receipt_id(&receipt.id))],
@@ -390,12 +402,8 @@ impl crate::panel::StudioPanel {
             } else {
                 preview
             };
-            let state = self
-                .agent
-                .receipt_state(&receipt.id)
-                .unwrap_or(flowy_agent::ReceiptState::Queued);
             let (state_fg, state_label, _) = self.receipt_state_visual(state);
-            let inspect_receipt = receipt.clone();
+            let inspect_receipt = receipt;
             panel = panel.child(
                 theme::interactive(
                     ("pending-receipt", index as u64),
@@ -468,7 +476,7 @@ impl crate::panel::StudioPanel {
             );
         }
 
-        if !has_running && self.pending_receipts.is_empty() {
+        if !has_running && !has_visible_receipts {
             panel = panel.child(
                 div()
                     .py(self.theme.space(12.))

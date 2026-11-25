@@ -1,9 +1,9 @@
 # Flowy Local-First UI v2 与内核 6 接口解耦架构 · 技术方案与溯源手册
 
-> **状态**：✅ 已实现并提交（分支 `feat/flowy-local-ui-v2`，已无冲突 `rebase` 至 `feat/flowy-v0-rc` @ `71cdb8e92`）  
-> **提交溯源**：`370dfdb5a`（UI v2 看板/弹窗/驾驶舱初版）→ `70cff483a`（代码审查 13 项深度收敛）→ `c5170e55a`（`flowy-agent` 新 6 接口架构重构）  
+> **状态**：✅ 已实现并提交（分支 `feat/flowy-local-ui-v2`，已无冲突 `rebase` 至 `feat/flowy-v0-rc` @ `10b99bac0`，含内核 `65772f857` 全部 6+4 接口对接）  
+> **提交溯源**：`10992fbe8`（UI v2 看板/弹窗/驾驶舱初版）→ `df62c4d98`（代码审查 13 项深度收敛）→ `1c8161bcb`（`flowy-agent` 新 6 接口架构重构）→ `6977dda51`（落盘设计文档）→ `6d81e6fd2`（模块拆解与组件去重）→ 本次收尾提交（深度审查 5 项修复 + 接入 `65772f857` 4 项只读/唤醒接口）  
 > **前序基线**：[super-agent-ui-and-motion.zh.md](super-agent-ui-and-motion.zh.md)  
-> **核心原则**：**内核自治调度，UI 降维为纯订阅展示层；以本机办公交付为主体（全局看图形 KPI，细节进居中弹窗看流程图），严守 0 冲突文件硬边界、零生产 mock、零磁盘直读、零隐式内部格式耦合、23 语言全对称。**
+> **核心原则**：**内核自治调度，UI 降维为纯订阅展示层；以本机办公交付为主体（全局看图形 KPI，细节进居中弹窗看流程图），严守 0 冲突文件硬边界、零生产 mock、零磁盘直读、零隐式内部格式耦合、外部打开扩展名白名单门禁、23 语言全对称。**
 
 ---
 
@@ -15,7 +15,7 @@ Flowy Desktop（`flowy18_wip`）定位为**本机优先（Local-First）的办�
 本轮重构围绕三个核心初衷展开：
 1. **解决窄屏响应式塌陷**：早期方案试图在三栏并排主界面中常驻横向流程图与右侧审批抽屉，在 960–1280px 常见笔记本视口下必然出现 KPI 竖排挤压、流程图裁切与文字重叠。因此确立**「主画布只做自适应图形 KPI + 按会话分层摘要卡，点击任意会话弹出宽幅居中流程图 Modal」**的信息分层。
 2. **彻底剥离 UI 侧队列调度器**：此前 `StudioPanel` 在 UI 33ms 节拍器里内嵌了 5 秒定时轮询，手动推断 `has_active_claim()` / `claimed_session_status()` 并调用 `finish_accepted()` / `run_accepted_once()`，既与内核职责倒挂，又容易在后台队列推进时干扰当前焦点会话。在内核 `feat/flowy-v0-rc`（`71cdb8e92`）导出 6 个解耦接口后，我们在未发布期果断一次性完成对接重构，消除历史债。
-3. **跨 worktree 零冲突协作**：内核侧与 UI 侧并行演进，必须通过窄投影适配器（[ports.rs](../../crates/flowy-studio/src/ports.rs)）和严格文件白名单实现硬隔离，确保双方合并 0 冲突、0 返工。
+3. **跨 worktree 零冲突协作**：内核侧与 UI 侧并行演进，必须通过窄投影适配器（[ports/mod.rs](../../crates/flowy-studio/src/ports/mod.rs)）和严格文件白名单实现硬隔离，确保双方合并 0 冲突、0 返工。
 
 ### 1.2 演进前后能力对比矩阵
 
@@ -101,9 +101,9 @@ flowchart LR
 | Crate | 文件 | 职责与关键改动 |
 | --- | --- | --- |
 | `flowy-ui` | [theme.rs](../../crates/flowy-ui/src/theme.rs)、[charts.rs](../../crates/flowy-ui/src/charts.rs)、[overlays.rs](../../crates/flowy-ui/src/overlays.rs) | 双主题 `file_kind_*` 语义 Token；基于底层 `Arc`/`Pie` + `canvas` 自绘 `donut_chart` / `progress_ring` / `flow_connector`（免全局 Theme）；免 `viewport_size()` 的 `centered_modal_sheet`。 |
-| `flowy-studio` | [ports.rs](../../crates/flowy-studio/src/ports.rs) | `BoardDataSource`、`WorkBoardSnapshot`、`WorkContractProgress`（映射 `WorkStatus`）、`LocalEnvSnapshot`、`collect_session_traces`（含 JSON/JWT 密钥脱敏与缺失项告警）、`display_path`（剥离 Windows `\\?\` 与 `\\?\UNC\`）。 |
-| `flowy-studio` | [panel.rs](../../crates/flowy-studio/src/panel.rs) | `set_autonomous_drain(true)` 生产启用与 `notify_cloud_ready` 防御性唤醒；`AgentUpdate::Receipt` 全量消费与 `failed_receipts` / `retrying_receipt` 状态管理；`cancel_task_target` 与 `apply_card_action` 统一收口。 |
-| `flowy-studio` | [overview.rs](../../crates/flowy-studio/src/overview.rs)、[deliverables.rs](../../crates/flowy-studio/src/deliverables.rs)、[studio.rs](../../crates/flowy-studio/src/studio.rs)、[composer.rs](../../crates/flowy-studio/src/composer.rs)、[feed.rs](../../crates/flowy-studio/src/feed.rs) | 看板 KPI 与会话分层卡、顶层居中流程图弹窗（含两步放行/停止/取消排队/死信重投/契约进度）、三模右侧抽屉（0 交付物时也可切 Steps/Trace）、4 筹码驾驶舱（修复 `!cloud_ready` 引导与技能挂载清空草稿）。 |
+| `flowy-studio` | `ports/`（[mod.rs](../../crates/flowy-studio/src/ports/mod.rs)、[board.rs](../../crates/flowy-studio/src/ports/board.rs)、[trace.rs](../../crates/flowy-studio/src/ports/trace.rs)、[local_env.rs](../../crates/flowy-studio/src/ports/local_env.rs)） | `BoardDataSource`、`WorkBoardSnapshot`、`WorkContractProgress`（映射 `work_status` + `session_work_status`）、`LocalEnvSnapshot`、`collect_session_traces`（含 JSON/JWT 密钥脱敏与缺失项告警）、`display_path`（剥离 Windows `\\?\` 与 `\\?\UNC\`）。 |
+| `flowy-studio` | [panel.rs](../../crates/flowy-studio/src/panel.rs)、[work_actions.rs](../../crates/flowy-studio/src/work_actions.rs)、[menus.rs](../../crates/flowy-studio/src/menus.rs) | `set_autonomous_drain(true)` 生产启用；`AgentUpdate::Receipt` 与 `visible_acceptances()` 无状态同步；`cancel_task_target` / `apply_card_action` / `prepare_for_sign_out` / 外部打开白名单门禁 `open_file_externally`；本机环境与驾驶舱弹出菜单。 |
+| `flowy-studio` | `overview/`（[mod.rs](../../crates/flowy-studio/src/overview/mod.rs)、[flow_modal.rs](../../crates/flowy-studio/src/overview/flow_modal.rs)、[trace_panel.rs](../../crates/flowy-studio/src/overview/trace_panel.rs)）、[deliverables.rs](../../crates/flowy-studio/src/deliverables.rs)、[studio.rs](../../crates/flowy-studio/src/studio.rs)、[composer.rs](../../crates/flowy-studio/src/composer.rs) | 看板 KPI 与会话分层卡、顶层居中流程图弹窗（含两步放行/停止/取消排队/死信重投/契约进度/白名单文件打开）、三模右侧抽屉（含 `session_work_status` 契约进度）、4 筹码驾驶舱。 |
 | `flowy-app` | [mod.rs](../../crates/flowy-app/src/app/mod.rs)、[dock.rs](../../crates/flowy-app/src/app/dock.rs)、[projects.rs](../../crates/flowy-app/src/app/projects.rs)、[skills.rs](../../crates/flowy-app/src/app/skills.rs) | `cx.on_app_quit` 挂接 `agent.prepare_shutdown()`；顶层 `flow_modal_overlay` 渲染槽（遮罩覆盖全窗口）；三段侧边栏待拍板优先级修复；项目菜单一键跳转筛选看板；真实技能清单同步。 |
 | `flowy-i18n` | `locales/*.json`（全 23 语种） | 对称新增 UI v2 与 6 接口状态/提示全部 key，经 `every_locale_has_the_same_keys` 与 `check-ui-contracts.mjs` 强校验。 |
 
@@ -282,15 +282,15 @@ cargo test --manifest-path flowy18_wip/Cargo.toml --no-run -p flowy-studio -p fl
 cargo build --manifest-path flowy18_wip/Cargo.toml -p flowy-desktop --bin flowy-app
 ```
 
-### 6.3 留给隔壁内核侧的 4+1 项配合需求（与后续 UI 瘦身点）
+### 6.3 隔壁内核 `65772f857` 4+1 项接口对接闭环记录
 
-> 内核侧补齐以下 4 项（~80 行向后兼容代码）后，UI 侧只需删除 `failed_receipts` 内存态与 `notify_cloud_ready` 额外唤醒即可进一步收敛为 100% 无状态订阅：
+> 隔壁内核分支 `feat/flowy-v0-rc` 已于 `65772f857` 落地全部 4+1 项接口，本分支已无冲突 `rebase` 并完成全量接入与 UI 侧临时补偿代码删除：
 
-1. **P1 · `apply_config()` 自动唤醒自治队列**：`autonomous_drain == true && self.can_run_turns()` 时自动调用 `self.kick_autonomous_drain()`。
-2. **P1 · 新增 `AgentHandle::visible_acceptances(&self) -> Vec<(AcceptedMessage, ReceiptState)>`**：返回所有未 `Completed` 且未 `Cancelled` 的回执（覆盖 `Queued` / `Running` / 退避期 `Retrying` / `Quarantined` / `Dead`），彻底消除退避期任务“消失”与跨重启死信不可见问题。
-3. **P1 · `CardAction::RetryDeadReceipt` 终结/取代旧死信**：追加新回执成功后，在 `AcceptanceQueue` 中标记旧 `receipt_id` 已取代/关闭（退出 `visible_acceptances()`，推对应 `AgentUpdate::Receipt`，且对旧 ID 重复调用保持幂等拒绝），防止重启后死信“诈尸”重复重投。
-4. **P1 · 新增 `AgentHandle::session_work_status(&self, session_id: &str) -> Option<WorkStatus>`**（或 `SessionSummary.latest_work_id: Option<String>`）：使普通直提会话跨重启也能查询契约进度，无需 UI 耦合内部 `submission-{id:032x}` 格式。
-5. **P2（可选）· `Quarantined` 事件补齐**：若对账或运行期触发隔离，顺手推送 `AgentUpdate::Receipt { id, state: ReceiptState::Quarantined }`。
+1. **✅ `apply_config()` 自动唤醒自治队列**：内核在 `config.can_run_turns() && autonomous_drain` 时自动调用 `kick_autonomous_drain()`；UI 侧 `StudioPanel::notify_cloud_ready` 已删除防御性重调 `set_autonomous_drain(true)` 的补偿代码。
+2. **✅ `AgentHandle::visible_acceptances(&self) -> Vec<(AcceptedMessage, ReceiptState)>`**：UI 已删除内存态 `failed_receipts` 与 `record_receipt_state`，统一以 `visible_receipts` 驱动工作台看板、后台任务浮层与 Trace 投影；`Retrying`（退避期）、`Quarantined` 与 `Dead` 回执跨重启持久化可见，且看板构建不再逐条重读磁盘状态。
+3. **✅ `CardAction::RetryDeadReceipt` 自动取代旧死信**：内核重投成功后自动在日志中终结旧死信并推送 `Cancelled` + 新 `Queued`；UI 侧 `retry_dead_receipt` 删除了本地 `failed_receipts.retain` 手动清理。
+4. **✅ `AgentHandle::session_work_status(&self, session_id: &str) -> Option<WorkStatus>`**：看板分支投影（`ports/board.rs`）、右侧会话检视抽屉（`deliverables.rs`）与脱敏 Trace（`ports/trace.rs`）已全面接入，直提会话无需拼装内部 `submission-*` ID 即可跨重启展示完整契约进度与缺失项告警。
+5. **✅ `Quarantined` 事件与外部打开安全门禁加固**：同步修复深度审查发现的 5 项问题——Flowchart 弹窗与交付物预览外部打开强制接入 `flowy_agent::can_open_with_default_app` + `Path::is_file()` 白名单门禁（防 `.exe`/`.ps1` 误执行）、语言切换同步刷新看板与技能清单、`sign_out` 统一 `prepare_for_sign_out` 显式取消全量在跑会话并清理 UI v2 状态、切资料库复用 `close_all_popovers()`、会话删除自动关闭过期 Modal、清理 `charts.rs` 死代码与硬编码动画 ID。
 
 ---
 

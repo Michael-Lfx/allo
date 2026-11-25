@@ -486,7 +486,8 @@ pub fn centered_modal_sheet(
     on_dismiss: impl Fn(&mut Window, &mut App) + 'static,
     body: impl IntoElement,
 ) -> AnyElement {
-    let panel = dialog(panel_id, label, theme, ui, cx)
+    let panel_elem_id: ElementId = panel_id.into();
+    let panel = dialog(panel_elem_id.clone(), label, theme, ui, cx)
         .w_full()
         .max_w(px(max_width_px))
         .max_h_full()
@@ -502,7 +503,7 @@ pub fn centered_modal_sheet(
         if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
             gpui::AnimationExt::with_animation(
                 panel,
-                "centered-modal-enter",
+                (panel_elem_id, "enter"),
                 gpui::Animation::new(crate::motion::MODERATE)
                     .with_easing(crate::motion::out_quint()),
                 |el, delta| {

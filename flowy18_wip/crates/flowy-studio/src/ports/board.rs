@@ -208,8 +208,7 @@ pub trait BoardDataSource {
     fn build_board_snapshot(
         &self,
         projects: &[Project],
-        pending_receipts: &[AcceptedMessage],
-        failed_receipts: &[(String, ReceiptState)],
+        visible_receipts: &[(AcceptedMessage, ReceiptState)],
         default_space_label: &str,
         generation: u64,
     ) -> WorkBoardSnapshot;
@@ -254,8 +253,7 @@ impl BoardDataSource for AgentHandle {
     fn build_board_snapshot(
         &self,
         projects: &[Project],
-        pending_receipts: &[AcceptedMessage],
-        failed_receipts: &[(String, ReceiptState)],
+        visible_receipts: &[(AcceptedMessage, ReceiptState)],
         default_space_label: &str,
         generation: u64,
     ) -> WorkBoardSnapshot {
@@ -268,40 +266,21 @@ impl BoardDataSource for AgentHandle {
             .map(|project| (project.id.as_str(), project))
             .collect();
 
-        // Group pending + failed/quarantined receipts by optional session owner.
+        // Group all non-terminal visible receipts (`Queued`/`Running`/`Retrying`/
+        // `Quarantined`/`Dead`) by optional session owner without re-reading disk.
         let mut receipts_by_session: HashMap<
             Option<String>,
             Vec<(AcceptedMessage, ReceiptState)>,
         > = HashMap::new();
         let mut seen_receipt_ids = HashSet::new();
-        for receipt in pending_receipts {
-            if seen_receipt_ids.insert(receipt.id.clone()) {
-                let state = self
-                    .receipt_state(&receipt.id)
-                    .unwrap_or(ReceiptState::Queued);
-                let owner = receipt
-                    .target_session_id
-                    .clone()
-                    .or_else(|| receipt.session_hint.clone());
-                receipts_by_session
-                    .entry(owner)
-                    .or_default()
-                    .push((receipt.clone(), state));
-            }
-        }
-        for (failed_id, fallback_state) in failed_receipts {
-            if !seen_receipt_ids.insert(failed_id.clone()) {
+        for (receipt, state) in visible_receipts {
+            if matches!(
+                state,
+                ReceiptState::Completed | ReceiptState::Cancelled
+            ) {
                 continue;
             }
-            if let Some(receipt) = self.receipt_by_id(failed_id) {
-                let state =
-                    self.receipt_state(failed_id).unwrap_or(*fallback_state);
-                if matches!(
-                    state,
-                    ReceiptState::Completed | ReceiptState::Cancelled
-                ) {
-                    continue;
-                }
+            if seen_receipt_ids.insert(receipt.id.clone()) {
                 let owner = receipt
                     .target_session_id
                     .clone()
@@ -309,7 +288,7 @@ impl BoardDataSource for AgentHandle {
                 receipts_by_session
                     .entry(owner)
                     .or_default()
-                    .push((receipt, state));
+                    .push((receipt.clone(), *state));
             }
         }
 
@@ -325,6 +304,9 @@ impl BoardDataSource for AgentHandle {
             let session_receipts = receipts_by_session
                 .remove(&Some(summary.id.clone()))
                 .unwrap_or_default();
+            let session_contract = self
+                .session_work_status(&summary.id)
+                .and_then(|status| WorkContractProgress::from_status(&status));
 
             let project = summary
                 .project_id
@@ -341,6 +323,7 @@ impl BoardDataSource for AgentHandle {
                 is_busy,
                 &session_receipts,
                 &overridden_hashes,
+                session_contract,
                 |work_id| self.work_status(work_id),
             );
 
@@ -498,6 +481,7 @@ fn project_session_branches<F>(
     is_busy: bool,
     queued_receipts: &[(AcceptedMessage, ReceiptState)],
     overridden_hashes: &std::collections::BTreeSet<String>,
+    session_contract: Option<WorkContractProgress>,
     work_status_fn: F,
 ) -> Vec<WorkBranchSummary>
 where
@@ -730,6 +714,27 @@ where
         });
     }
 
+    if let Some(contract) = session_contract {
+        let target_idx = branches
+            .iter()
+            .position(|b| matches!(b.phase, BranchPhase::NeedsApproval { .. }))
+            .or_else(|| {
+                branches.iter().position(|b| {
+                    matches!(b.phase, BranchPhase::Running { .. })
+                })
+            })
+            .or_else(|| {
+                branches.iter().position(|b| {
+                    !matches!(b.phase, BranchPhase::Queued { .. })
+                })
+            });
+        if let Some(idx) = target_idx
+            && branches[idx].work_progress.is_none()
+        {
+            branches[idx].work_progress = Some(contract);
+        }
+    }
+
     branches.truncate(6);
     branches
 }
@@ -803,12 +808,23 @@ mod tests {
                 override_used: false,
             },
         ];
+        let contract = WorkContractProgress {
+            work_id: "sub-01".into(),
+            contract_revision: Some(1),
+            required_labels: vec!["Q3.xlsx".into(), "Deck.pptx".into()],
+            delivered_count: 1,
+            missing_items: vec!["Q3.xlsx".into()],
+            outcome: Some(SubmissionOutcome::Partial {
+                missing: vec!["Q3.xlsx".into()],
+            }),
+        };
         let branches = project_session_branches(
             &summary,
             &lines,
             false,
             &[],
             &std::collections::BTreeSet::new(),
+            Some(contract.clone()),
             |_| None,
         );
         assert_eq!(branches.len(), 2);
@@ -825,6 +841,7 @@ mod tests {
             .find(|b| matches!(b.phase, BranchPhase::NeedsApproval { .. }))
             .unwrap();
         assert!(!blocker.detail.contains(r"\\?\"));
+        assert_eq!(blocker.work_progress, Some(contract));
     }
 
     #[test]

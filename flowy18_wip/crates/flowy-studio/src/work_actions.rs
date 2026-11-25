@@ -10,6 +10,73 @@ use gpui::Context;
 use crate::panel::{StudioPanel, StudioSurface};
 
 impl StudioPanel {
+    /// Synchronizes both claimable pending receipts (for legacy tests/counts)
+    /// and all non-terminal visible receipts (`Queued`/`Running`/`Retrying`/
+    /// `Quarantined`/`Dead`) from the kernel's durable journal.
+    pub(crate) fn sync_receipts(&mut self) {
+        self.pending_receipts = self.agent.pending_acceptances();
+        self.visible_receipts = self.agent.visible_acceptances();
+    }
+
+    /// Whether `path` is an existing regular file allowed to launch in the OS
+    /// default application (blocks executables/scripts like `.exe`/`.ps1`).
+    #[must_use]
+    pub(crate) fn can_open_file_externally(path: &str) -> bool {
+        flowy_agent::can_open_with_default_app(path)
+            && std::path::Path::new(path).is_file()
+    }
+
+    /// Opens `path` in the OS default application after verifying both the
+    /// safe-extension allowlist and that `path` points to a regular file.
+    pub(crate) fn open_file_externally(
+        &mut self,
+        path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !Self::can_open_file_externally(path) || open::that(path).is_err() {
+            self.emit_notice(Some("library.error.open"), cx);
+        }
+    }
+
+    /// Clears cloud credentials, cancels any in-flight turns across all
+    /// sessions via `TaskTarget::Session`, applies the disconnected config,
+    /// and resets UI v2 overlays, filters, and retry state on sign-out.
+    pub fn prepare_for_sign_out(
+        &mut self,
+        disconnected: flowy_agent::LlmConfig,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.cloud_ready = false;
+        self.catalog_loading = false;
+        self.catalog = flowy_agent::ProviderCatalog::new();
+        self.tiers.clear();
+        self.plan = flowy_agent::Plan::Free;
+        self.credits = crate::CreditsViewState::Unavailable;
+        self.selected_skill = None;
+        self.board_project_filter = None;
+        self.retrying_receipt = None;
+        self.retrying_delivery = None;
+        self.close_all_popovers();
+        self.flow_modal_session = None;
+        self.flow_modal_branch = None;
+        self.flow_modal_override_ack = false;
+        self.clear_right_sheet();
+        let mut busy = self.agent.busy_session_ids();
+        if busy.is_empty()
+            && let Some(active) = self.agent.active_session_id()
+        {
+            busy.push(active);
+        }
+        for session_id in busy {
+            let _ = self.agent.cancel_task(TaskTarget::Session(session_id));
+        }
+        let _ = self.agent.apply_config(disconnected);
+        self.sync_receipts();
+        self.refresh_local_env();
+        self.refresh_board_snapshot();
+        cx.notify();
+    }
+
     /// Closes all mutually exclusive transient popovers in one place so new
     /// cockpit menus cannot be missed by navigation or dialog transitions.
     pub fn close_all_popovers(&mut self) {
@@ -43,8 +110,7 @@ impl StudioPanel {
                         CancelOutcome::Cancelled
                         | CancelOutcome::AlreadySettled,
                     ) => {
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
+                        panel.sync_receipts();
                         panel.refresh_chat(cx);
                         panel.refresh_board_snapshot();
                     }
@@ -81,7 +147,7 @@ impl StudioPanel {
     }
 
     /// Requeues a `Dead` receipt through the kernel's unified card-action
-    /// gateway and clears the old dead entry on success so it cannot linger.
+    /// gateway; the kernel supersedes the old dead receipt automatically.
     pub(crate) fn retry_dead_receipt(
         &mut self,
         receipt_id: &str,
@@ -113,17 +179,12 @@ impl StudioPanel {
                 panel.process_agent_updates(updates, cx);
                 match result {
                     Ok(CardActionOutcome::ReceiptRequeued { .. }) => {
-                        panel
-                            .failed_receipts
-                            .retain(|(rid, _)| rid != &target_id);
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
+                        panel.sync_receipts();
                         panel.refresh_board_snapshot();
                         panel.emit_notice(None, cx);
                     }
                     Ok(_) => {
-                        panel.pending_receipts =
-                            panel.agent.pending_acceptances();
+                        panel.sync_receipts();
                         panel.refresh_board_snapshot();
                     }
                     Err(error) => panel.emit_notice(Some(error), cx),
@@ -143,11 +204,21 @@ impl StudioPanel {
         let default_label = self.t("studio.space_default_sub");
         self.board_snapshot = self.agent.build_board_snapshot(
             &self.projects,
-            &self.pending_receipts,
-            &self.failed_receipts,
+            &self.visible_receipts,
             &default_label,
             self.board_generation,
         );
+        if let Some(open_sid) = self.flow_modal_session.as_deref()
+            && !self
+                .board_snapshot
+                .sessions
+                .iter()
+                .any(|group| group.session_id == open_sid)
+        {
+            self.flow_modal_session = None;
+            self.flow_modal_branch = None;
+            self.flow_modal_override_ack = false;
+        }
         self.last_board_refresh = Some(std::time::Instant::now());
     }
 

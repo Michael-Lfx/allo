@@ -89,8 +89,9 @@ pub fn donut_chart(
     )
     .size_full();
 
+    let elem_id: ElementId = id.into();
     let shell = div()
-        .id(id)
+        .id(elem_id.clone())
         .relative()
         .size(px(size_px))
         .flex_none()
@@ -111,7 +112,7 @@ pub fn donut_chart(
     if motion::travel_scale(theme.motion_policy()) > 0.0 {
         shell
             .with_animation(
-                "donut-enter",
+                (elem_id, "donut"),
                 Animation::new(motion::MODERATE)
                     .with_easing(motion::out_quint()),
                 |el, delta| el.opacity(0.35_f32.mul_add(delta, 0.65)),
@@ -137,42 +138,25 @@ pub fn progress_ring(
     let thickness = (size_px * 0.14).clamp(2.2, 4.0);
     let policy = theme.motion_policy();
 
-    let draw = move |phase: f32| {
-        canvas(
-            move |bounds: Bounds<Pixels>, _window: &mut Window, _cx| bounds,
-            move |bounds, _, window, _cx| {
-                let side = f32::from(bounds.size.width)
-                    .min(f32::from(bounds.size.height));
-                let outer = side.mul_add(0.5, -0.5).max(2.0);
-                let inner = (outer - thickness).max(1.0);
-                let arc = Arc::new().inner_radius(inner).outer_radius(outer);
+    let ring_canvas = canvas(
+        move |bounds: Bounds<Pixels>, _window: &mut Window, _cx| bounds,
+        move |bounds, _, window, _cx| {
+            let side =
+                f32::from(bounds.size.width).min(f32::from(bounds.size.height));
+            let outer = side.mul_add(0.5, -0.5).max(2.0);
+            let inner = (outer - thickness).max(1.0);
+            let arc = Arc::new().inner_radius(inner).outer_radius(outer);
 
-                let track_slice = ArcData::new(&(), 0, 1.0, 0.0, TAU - 0.002);
-                arc.paint(&track_slice, track, &bounds, window);
+            let track_slice = ArcData::new(&(), 0, 1.0, 0.0, TAU - 0.002);
+            arc.paint(&track_slice, track, &bounds, window);
 
-                let sweep = ((clamped / 100.0) * (TAU - 0.004)).max(0.22);
-                let start = if running { phase * TAU } else { 0.0 };
-                let end = start + sweep;
-                if end <= TAU {
-                    let slice = ArcData::new(&(), 0, clamped, start, end);
-                    arc.paint(&slice, stroke, &bounds, window);
-                } else {
-                    let first = ArcData::new(&(), 0, clamped, start, TAU);
-                    let second = ArcData::new(
-                        &(),
-                        1,
-                        clamped,
-                        0.0,
-                        (end - TAU).min(TAU - 0.002),
-                    );
-                    arc.paint(&first, stroke, &bounds, window);
-                    arc.paint(&second, stroke, &bounds, window);
-                }
-            },
-        )
-        .size(px(size_px))
-        .flex_none()
-    };
+            let sweep = ((clamped / 100.0) * (TAU - 0.004)).max(0.22);
+            let slice = ArcData::new(&(), 0, clamped, 0.0, sweep);
+            arc.paint(&slice, stroke, &bounds, window);
+        },
+    )
+    .size(px(size_px))
+    .flex_none();
 
     let elem_id: ElementId = id.into();
     if running && motion::travel_scale(policy) > 0.0 {
@@ -180,7 +164,7 @@ pub fn progress_ring(
             .id(elem_id.clone())
             .size(px(size_px))
             .flex_none()
-            .child(draw(0.0))
+            .child(ring_canvas)
             .with_animation(
                 (elem_id, "ring"),
                 Animation::new(Duration::from_millis(1600))
@@ -194,7 +178,7 @@ pub fn progress_ring(
             .id(elem_id)
             .size(px(size_px))
             .flex_none()
-            .child(draw(0.0))
+            .child(ring_canvas)
             .into_any_element()
     }
 }

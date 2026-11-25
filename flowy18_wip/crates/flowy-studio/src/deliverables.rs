@@ -401,6 +401,10 @@ impl StudioPanel {
         let is_running = self.agent.busy_session_ids().iter().any(|s| s == id);
         let needs_attention = self.agent.session_needs_attention(id);
         let steps = self.session_steps(id);
+        let work_progress = self
+            .agent
+            .session_work_status(id)
+            .and_then(|s| crate::ports::WorkContractProgress::from_status(&s));
         let open_id = id.to_owned();
         let stop_id = id.to_owned();
 
@@ -524,6 +528,9 @@ impl StudioPanel {
                             )
                             .child(status_badge),
                     )
+                    .when_some(work_progress, |card, progress| {
+                        card.child(self.contract_progress_block(&progress))
+                    })
                     .child(
                         div()
                             .flex()
@@ -947,24 +954,27 @@ impl StudioPanel {
                             }),
                         ),
                     )
-                    .child(
-                        theme::Button::new(
-                            "preview-open-external",
-                            self.t("deliverables.open_external"),
-                        )
-                        .variant(theme::ControlVariant::Ghost)
-                        .size(theme::ControlSize::Small)
-                        .render(
-                            &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                if open::that(&external_path).is_err() {
-                                    panel.emit_notice(
-                                        Some("library.error.open"),
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
+                    .when(
+                        flowy_agent::can_open_with_default_app(&external_path),
+                        |row| {
+                            row.child(
+                                theme::Button::new(
+                                    "preview-open-external",
+                                    self.t("deliverables.open_external"),
+                                )
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.open_file_externally(
+                                            &external_path,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            )
+                        },
                     ),
             )
             .child(body)
@@ -974,6 +984,7 @@ impl StudioPanel {
 #[cfg(test)]
 mod tests {
     use super::{MAX_PREVIEW_BYTES, PreviewBody, load_preview};
+    use crate::panel::StudioPanel;
 
     fn scratch(name: &str) -> std::path::PathBuf {
         std::env::temp_dir()
@@ -1021,5 +1032,26 @@ mod tests {
             PreviewBody::Notice("chat.preview_too_large")
         ));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn external_open_gate_blocks_executables_and_missing_files() {
+        let safe = scratch("report.pdf");
+        let script = scratch("payload.ps1");
+        std::fs::write(&safe, b"%PDF-1.4").expect("write safe");
+        std::fs::write(&script, b"Write-Host boom").expect("write script");
+
+        assert!(StudioPanel::can_open_file_externally(
+            safe.to_str().expect("utf8")
+        ));
+        assert!(!StudioPanel::can_open_file_externally(
+            script.to_str().expect("utf8")
+        ));
+        assert!(!StudioPanel::can_open_file_externally(
+            "flowy-nonexistent-doc.pdf"
+        ));
+
+        let _ = std::fs::remove_file(safe);
+        let _ = std::fs::remove_file(script);
     }
 }

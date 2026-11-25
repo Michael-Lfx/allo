@@ -1400,16 +1400,7 @@ impl FlowyApp {
         self.credits_generation = self.credits_generation.wrapping_add(1);
         self.credits_task = None;
         self.studio.update(cx, |panel, cx| {
-            panel.cloud_ready = false;
-            panel.catalog_loading = false;
-            panel.catalog = flowy_agent::ProviderCatalog::new();
-            panel.tiers.clear();
-            panel.plan = flowy_agent::Plan::Free;
-            panel.credits = flowy_studio::CreditsViewState::Unavailable;
-            panel.agent.stop();
-            let _ = panel.agent.apply_config(Self::disconnected_config());
-            panel.refresh_env_status(cx);
-            cx.notify();
+            panel.prepare_for_sign_out(Self::disconnected_config(), cx);
         });
         self.store.clear();
         self.set_input_text(&self.auth.email, "", cx);
@@ -1552,13 +1543,8 @@ impl FlowyApp {
             }
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
-                    panel.model_menu_open = false;
-                    panel.model_info_open = false;
-                    panel.workspace_menu_open = false;
-                    panel.skill_menu_open = false;
-                    panel.env_popover_open = false;
+                    panel.close_all_popovers();
                     panel.close_flow_modal(cx);
-                    panel.credits_hover = false;
                     panel.set_notice(notice, cx);
                 });
             }

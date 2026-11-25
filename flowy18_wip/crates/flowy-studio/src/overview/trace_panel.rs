@@ -165,8 +165,7 @@ impl StudioPanel {
         let entries = collect_session_traces(
             &self.agent,
             session_id,
-            &self.pending_receipts,
-            &self.failed_receipts,
+            &self.visible_receipts,
         );
         let filtered: Vec<_> = entries
             .iter()

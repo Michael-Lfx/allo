@@ -774,6 +774,7 @@ impl StudioPanel {
                     ),
             )
             .when_some(file_path, |card, path| {
+                let can_open = flowy_agent::can_open_with_default_app(&path);
                 let open_path = path.clone();
                 let reveal_path = path;
                 card.child(
@@ -781,25 +782,24 @@ impl StudioPanel {
                         .flex()
                         .items_center()
                         .gap(self.theme.space(8.))
-                        .child(
-                            theme::Button::new(
-                                "fm-open-file",
-                                self.t("deliverables.open_external"),
-                            )
-                            .variant(theme::ControlVariant::Secondary)
-                            .size(theme::ControlSize::Small)
-                            .render(
-                                &self.theme,
-                                cx.listener(move |panel, _, _, cx| {
-                                    if open::that(&open_path).is_err() {
-                                        panel.emit_notice(
-                                            Some("library.error.open"),
-                                            cx,
+                        .when(can_open, |row| {
+                            row.child(
+                                theme::Button::new(
+                                    "fm-open-file",
+                                    self.t("deliverables.open_external"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.open_file_externally(
+                                            &open_path, cx,
                                         );
-                                    }
-                                }),
-                            ),
-                        )
+                                    }),
+                                ),
+                            )
+                        })
                         .child(
                             theme::Button::new(
                                 "fm-reveal-folder",

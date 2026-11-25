@@ -30,11 +30,11 @@ pub struct RedactedTraceEntry {
 pub fn collect_session_traces(
     agent: &AgentHandle,
     session_id: &str,
-    pending_receipts: &[AcceptedMessage],
-    failed_receipts: &[(String, ReceiptState)],
+    visible_receipts: &[(AcceptedMessage, ReceiptState)],
 ) -> Vec<RedactedTraceEntry> {
     let lines = agent.session_lines(session_id);
     let mut entries = Vec::new();
+    let mut seen_work_ids = std::collections::HashSet::new();
     let mut push = |level: TraceLevel, event: &'static str, raw: String| {
         let seq = entries.len() + 1;
         entries.push(RedactedTraceEntry {
@@ -117,14 +117,11 @@ pub fn collect_session_traces(
         }
     }
 
-    for receipt in pending_receipts.iter().filter(|r| {
+    for (receipt, state) in visible_receipts.iter().filter(|(r, _)| {
         r.target_session_id.as_deref() == Some(session_id)
             || r.session_hint.as_deref() == Some(session_id)
     }) {
-        let state = agent
-            .receipt_state(&receipt.id)
-            .unwrap_or(ReceiptState::Queued);
-        let (level, event) = match state {
+        let (level, event) = match *state {
             ReceiptState::Retrying => (TraceLevel::Warn, "receipt_retrying"),
             ReceiptState::Running => (TraceLevel::Info, "receipt_running"),
             ReceiptState::Dead => (TraceLevel::Error, "receipt_dead"),
@@ -145,6 +142,7 @@ pub fn collect_session_traces(
         );
         if let Some(ws) = agent.work_status(&receipt.id)
             && !ws.missing_items.is_empty()
+            && seen_work_ids.insert(ws.work_id.clone())
         {
             push(
                 TraceLevel::Warn,
@@ -159,28 +157,20 @@ pub fn collect_session_traces(
         }
     }
 
-    for (failed_id, fallback_state) in failed_receipts {
-        if let Some(receipt) = agent.receipt_by_id(failed_id)
-            && (receipt.target_session_id.as_deref() == Some(session_id)
-                || receipt.session_hint.as_deref() == Some(session_id))
-        {
-            let state =
-                agent.receipt_state(failed_id).unwrap_or(*fallback_state);
-            push(
-                TraceLevel::Error,
-                if state == ReceiptState::Quarantined {
-                    "receipt_quarantined"
-                } else {
-                    "receipt_dead"
-                },
-                format!(
-                    "id={} state={state:?} attempts={} text={}",
-                    receipt.id,
-                    receipt.attempts,
-                    clip_label(&receipt.text, 80)
-                ),
-            );
-        }
+    if let Some(ws) = agent.session_work_status(session_id)
+        && !ws.missing_items.is_empty()
+        && seen_work_ids.insert(ws.work_id.clone())
+    {
+        push(
+            TraceLevel::Warn,
+            "work_contract_missing",
+            format!(
+                "work_id={} delivered={} missing={}",
+                ws.work_id,
+                ws.delivered_artifact_ids.len(),
+                ws.missing_items.join(", ")
+            ),
+        );
     }
 
     // Keep ring-bounded tail (most recent 256 events).
