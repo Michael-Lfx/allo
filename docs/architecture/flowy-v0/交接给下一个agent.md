@@ -393,11 +393,11 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 
 ---
 
-## 15. 2026-11-25 现役总账：现状、不可回退口径与实施路线图
+## 15. 2026-11-25 现役总账：Phase 1–4 全部收口，停在 V6 外发单向门
 
 > **本节是唯一现役真相，覆盖 §1–§14 的历史状态**；旧节保留作踩坑实录。
 > - **注意工作树位置**：根工作区 `d:/workSpace/git_clone_test/allo` 在 `main`，不含本目录；全部代码与文档均在独立 worktree **`.agents/worktrees/feat-flowy-local-receipt`**（分支 `feat-flowy-local-receipt`）。
-> - **Git 基线**：`HEAD` 为 `03a69348f`，相对 `origin/main` 领先 34 个提交、落后 0，**只本地、未推送**；业务代码干净，本轮仅同步整理 `docs/architecture/flowy-v0/` 文档体系。
+> - **Git 状态**：V0–V5 及 Phase 1–4（任务 14–18）代码与文档已全部在本地分支提交（**只本地、未推送**）；现停在 **V6 外发通道**（`BLOCKED.md` §5 单向门）等待需求方拍板。
 > - 旧段落若残留 rebase 前哈希，一律以本节表格为准。
 
 ### 15.1 已完成切片账本（rebase 后现役哈希）
@@ -410,40 +410,27 @@ cd flowy18_wip && (./target/debug/flowy-app.exe >/tmp/flowy.log 2>&1 &)
 | V3 ExecInput 执行与重放 | `679fb1acb` | `exec_input.rs`、`engine.rs`、`handle.rs` | prompt 唯一来自 `ExecInput`；同一输入重放得相同归一化回调序列与历史形状 |
 | V4 环境感知产物 | `94caeb511` | `flowy-agent/src/pptx.rs` | `create_deck` 生成并读回校验页数；`FLOWY_PPTX=missing` 返回 `status:"missing"` 不失败 |
 | V5 锚核验 | `c693b0ab1` | `flowy-agent/src/verify.rs` | 先 L1 页数后形状名核验 + 四码聚合去重；`verify_deck` 工具落报告 |
-| 交付硬门初版 | `4e35a1580` | `flowy-agent/src/delivery.rs`、`publish_tool.rs` | `DeliveryStore` 报告/哈希三拒绝与事件留痕；`publish_file` 拦 `.pptx` 入库 |
-| 交付门记录 | `03a69348f` | `PROGRESS.md`、`证据.md`、本文档 §14 | 记录任务 13 与 `证据.md` §11.25 |
+| 交付硬门初版 | `4e35a1580` / `03a69348f` | `flowy-agent/src/delivery.rs`、`publish_tool.rs` | `DeliveryStore` 报告/哈希三拒绝与事件留痕；`publish_file` 拦 `.pptx` 入库 |
+| 巡检与计划对齐 | `d1632af92` | `V0-执行计划.md`、`证据.md` §11.26、`BLOCKED.md` | 真机巡检定位三大 P0 断层，对齐四阶段执行计划与方案 A 拍板结论 |
+| **Phase 1 + Phase 2 收口** | **`5e96fb681`** | `handle.rs`、`panel.rs`、`pptx.rs`、`verify.rs`、`delivery.rs`、`publish_tool.rs` | 消除启动误排 `mock`、跨会话结案隔离、三工具 `output_root`+`path_guard` 统一、全类型硬门+方案 A 豁免表、`deliver_intent` 崩溃检测、`INFO` 业务 Trace |
+| **Phase 3 + Phase 4 收口** | **`599b82c35`** | `semantic_verify.rs`、`projection.rs`、`feed.rs`、`library/*`、`flowy-app`、23 `locales/*.json` | §8.3 核验结论卡、未勾选禁点 Override、聊天与资料库永久徽标、L3 字面简报提示层与默认 `INFO` 落盘脱敏终验 |
 
-**亲手复跑验证基线（2026-11-25）**：`flowy-agent-core` **73** passed（2 ignored）/ `flowy-agent` **124** passed（1 ignored）/ `flowy-studio` **82** passed / `flowy-i18n` **8** passed；`accept.sh` **3/3**；`bun flowy18_wip/scripts/check-ui-contracts.mjs` 通过；`cargo clippy -p flowy-agent --lib -- -D warnings` **0 警告**（**实测发现新债**：跑 CI 真门禁 `--all-targets` 时，`verify.rs:296` 因 `assert!(report.issues.is_empty())` 触发 `clippy::assert_is_empty` 退出 101，已在任务 14 列入一并清零）。
+**亲手复跑终验基线（2026-11-25，详见 [`证据.md` §11.27](证据.md)）**：`flowy-agent-core` **74** passed（2 ignored）/ `flowy-agent` **137** passed（1 ignored）/ `flowy-studio` **86** passed / `flowy-app` **50** passed / `flowy-i18n` **8** passed；`WITH_APP=1 accept.sh` **4/4**；`bun flowy18_wip/scripts/check-ui-contracts.mjs` 通过；`cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets -- -D warnings` **0 警告**。
 
 ### 15.2 六条不可回退的口径
 
-1. **路由 A**：跟随提交时所在会话；忙则排队等待本会话，绝不擅自另开空会话。
+1. **路由 A 与启动门控**：跟随提交时所在会话；忙或云端模型目录未就绪时入队等待，绝不擅自另开空会话，也绝不在 `cloud_ready=false` 时把队列排进 `mock/echo`。
 2. **重放口径**：比对归一化 `TurnObserver` 回调序列 + 落盘历史 `(role, content)` 形状；不比时间戳、随机 id、工具产物字节。
-3. **工具按环境**：缺能力（如 `FLOWY_PPTX=missing`）返回 `status:"missing"`，是成功结果而不是工具错误，不把整轮打成失败。
-4. **核验四码**：`ANCHOR_MISSING` / `ANCHOR_DUPLICATE` / `ANCHOR_INVALID` / `VALUE_MISMATCH`（外加 L1 页数 `STRUCTURE`）；先跑 L1 结构再跑 L2 字段，空占位符不算锚。
-5. **交付门语义**：门自己按产物路径读最新报告、自己重算 sha256；无报告（`DELIVERY_NOT_VERIFIED`）/ `ok=false`（`DELIVERY_VERIFICATION_FAILED`）/ 哈希不符（`DELIVERY_ARTIFACT_CHANGED`）三拒绝；被拒时发送器/入库调用 0 次；override 必须显式传入并留痕。
-6. **诚实边界（严禁虚报已完成）**：当前 `publish_file` 只拦 `.pptx` 且只调只读 `gate.check()`（尚未把普通入口的 `deliver_blocked` / `deliver` 写进 `events.jsonl`）；全类型硬门与普通入口审计落盘在任务 14 完成后才能宣称达成。
+3. **工具按环境与同源路径**：缺能力（`FLOWY_PPTX=missing`）返回 `status:"missing"` 成功结果；`create_deck` / `verify_deck` / `publish_file` 统一优先按 `output_root` 解析并受 `path_guard` 约束。
+4. **核验四码与 L3 边界**：`ANCHOR_MISSING` / `ANCHOR_DUPLICATE` / `ANCHOR_INVALID` / `VALUE_MISMATCH`（外加 L1 `STRUCTURE`）；L3 语义复核严格遵守字面简报规则与 `Value::Bool` 校验，**只出卡片提示、绝不阻断硬门**。
+5. **全类型交付硬门语义**：所有 `publish_file` 必经 `DeliveryStore::deliver_with`；无报告（`DELIVERY_NOT_VERIFIED`）/ `ok=false`（`DELIVERY_VERIFICATION_FAILED`）/ 哈希不符（`DELIVERY_ARTIFACT_CHANGED`）三拒绝（入库 0 次并写 `deliver_blocked`）；已知无核验器类型按方案 A 写 `deliver_exempt`（`EXEMPT_NO_VERIFIER_V0`）；入库前落 `deliver_intent` 以识别崩溃 `InDoubt`。
+6. **Override 永久留痕**：`ok=false` 隐藏默认保存/交付按钮；必须显式勾选默认未选的确认框才放行，且对话卡片与资料库列表项永久保留「未过核验强制放行」徽标。
 
-### 15.3 剩余实施路线图（按依赖顺序，与 [`V0-执行计划.md`](V0-执行计划.md) Phase 1–4 及 [`最终方案.md`](最终方案.md) §12.1 同源）
+### 15.3 当前止损点与后续路线
 
-> 2026-11-25 经真机 `agent-desktop` 实测与 `FLOWY_LOG_LEVEL=debug` 联合巡检（详见 [`证据.md` §11.26](证据.md)），发现 3 个单测未覆盖的 P0 运行态/路径断层与默认 `INFO` 零留痕问题，故将后续实施重排为 4 个阶段，**先堵真机 P0 断层再扩全类型硬门与卡片层**：
-
-1. **Phase 1（任务 14A · 真机三大 P0 断层清零 ＋ `INFO` 业务 Trace 底座）**（下一单立即执行）：
-   - **P0-1 启动竞态吞队列修复**：已登录但云端模型目录未就绪（`!cloud_ready` / `catalog_loading`）时挂起 `refresh_pending_receipts` 排水，严禁把持久化回执排进 `mock/echo` 假回显模型；云端未就绪时手动发送改为落 `accept_deferred`；
-   - **P0-2 会话归属隔离**：`AcceptedClaim` 绑定 `session_id`，按被领会话自身终态调用 `finish_accepted`；`StudioSurface::Home` 下后台排空不篡改首页当前激活会话；
-   - **P0-3 工具路径统一与沙箱守卫**：`create_deck` / `verify_deck` 对齐 `context.output_root`（回退 `cwd`）并纳入 `path_guard`（防 `..` 越界），`delivery.rs` 规范化 `artifact_path` 查询键，Home 系统提示词补明 `.pptx` 走 `create_deck → verify_deck → publish_file`，顺手修复 `verify.rs:296` 的 `clippy::assert_is_empty`；
-   - **观测底座**：在 `flowy-obs` 下补齐 `INFO target="flowy.acceptance" | "flowy.verify"` 结构化日志（含 `root_session_id`、`session_id`、`receipt_id`、`attempt_id`、`submission_id`，零密钥泄漏）。
-2. **Phase 2（任务 14B + 任务 17 · 全类型交付硬门 ＋ 方案 A 显式豁免表 ＋ 崩溃窗口收口）**：
-   - `publish_tool.rs` 去掉 `.pptx` 特判，所有 `publish_file` 统一经 `DeliveryStore` 门函数包裹 `ArtifactStore::prepare`；
-   - 无核验器的已知类型按方案 A 显式豁免表（`BLOCKED.md` §4：`csv/pdf/md/txt/json/html` 记 `EXEMPT_NO_VERIFIER_V0`）留痕放行，未知类型或未核验 `.pptx` 一律阻断；
-   - 执行入库/发送前先落 `deliver_intent`，完成后落 `deliver`，被拒落 `deliver_blocked`（补齐普通入口不写 `events.jsonl` 的断层），崩溃恢复可识别 `in_doubt` 状态，并输出 `INFO target="flowy.delivery"`。
-3. **Phase 3（任务 15 + 任务 16 · Studio 核验结论卡 §8.3 ＋ Override 二次确认与永久标记 UI）**：
-   - 将 `reports.jsonl` 的逐项四码结果与产物 sha256 短指纹渲染为 Studio 核验结论卡；`ok=false` 时隐藏常规「保存/交付」主按钮；
-   - 提供默认**不勾选**的「我知道核验没过」复选框，勾选后触发 `allow_override=true` 落 `deliver_override` 事件，并在已交付记录/卡片上展示重启不消失的永久标记（23 locale）。
-4. **Phase 4（任务 18 ＋ 真机与日志终验 · L3 语义核验提示层 §6.7）**：
-   - 独立探针（只看简报字面要求、严格布尔类型校验、fail-closed），结果**只附卡片提示、绝不阻断硬门**，写入 `INFO target="flowy.verify"` 负载供 50 次灰度统计；
-   - 重编 `flowy-app.exe`，通过 `agent-desktop` + 四份落盘文件（`*.flowy.log`、`journal.jsonl`、`reports.jsonl`、`events.jsonl`）完成端到端实机闭环验收。
-5. **V6 · 外发通道**：**🔴 停**，见 `BLOCKED.md` §5，未获需求方拍板前绝不动工。
+1. **Phase 1–Phase 4（任务 14–18）**：✅ **已全部完成并验收**（`5e96fb681`、`599b82c35`）。
+2. **V6 · 外部通道发送（SMTP / Webhook / 企业微信 / 飞书 / Discord）**：**🔴 停等需求方拍板**（见 [`BLOCKED.md` §5](BLOCKED.md)）—— 需明确外部通道类型、凭据存储方案（系统凭据库 vs 环境变量）、收件人白名单与 `submitted / failed / bounced / no_bounce` 四态回执接法（`最终方案.md` §8.5–§8.6）后再启动下一单。
+3. **开发提速约定（需求方 2026-11-25 指示）**：开发阶段直接批量编码、编译构建并跑最小定向测试，遇到问题当场解决；**不必每个子阶段都跑全量测试矩阵**，待全部改动收口后再统一跑一次全量门禁。
 
 ### 15.4 环境坑与仓库硬约束（7 条）
 
