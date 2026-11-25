@@ -995,3 +995,31 @@ clippy (core + agent lib & agent --all-targets, -D warnings) : 0 warning
 cargo check -p flowy-app : 0 error (0 UI files touched)
 ```
 跨平台 macOS / Linux 预留蓝图已落盘 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md)。
+
+---
+
+## 任务 21 · Super Agent 修订 9.6（S1–S3）+ 极简私人助理 UI/SVG/动效合流（2026-11-26）
+
+### 任务 0 开工回执（总管协调）
+- **基线核验**：`origin/main@d7cfd81a1`（PR `#490` + `#491`），7 crate 单测 **551/551 通过**（core 97 / agent 183 / skills 66 / i18n 8 / ui 42 / studio 105 / app 50），`check-ui-contracts.mjs` 24/24 通过。
+- **目标与工位**：总管驻 `feat/flowy-v1-integration`（`.agents/worktrees/feat-flowy-local-receipt`）；并行派双子 Agent：`v1-kernel`（`feat/flowy-super-agent-kernel` 仅改内核 S1–S3）与 `v1-ui`（`feat/flowy-calm-assistant-ui` 仅改极简助理 UI / 无歧义 SVG / GPUI 动效 / ReparsePoint 修复 / 真 Skills）。
+- **推进顺序**：并行实施双轨 → 逐轨防膨胀代码审查 → 集成合并与接缝接线（`pending_card.rs`）→ 真云端回归（≤10 次）→ 全量门禁 + 双主题截图/连拍自审 → 构建预览版 `FlowyPreview\flowy-app.exe`。
+- **最大风险**：① 禁止两路并发抢 Cargo 锁与新增依赖；② UI 控件精简须保持既有测试与 `check-ui-contracts.mjs` 零退化；③ 严格人类署名、不碰根 workspace / V6 外发 / Tier B。
+
+### 闭环交付账本（`feat/flowy-v1-integration`，2026-11-26）
+- **Track A · 内核 S1–S3（`feat/flowy-super-agent-kernel` 合并入 `1b339c97d`）**：
+  - `a8e73143c`（S1）：多对象 `WorkContract`（`TrackedObject(Deliverable|Record)` + `Confirmed/PendingProposal`）、`verify/resolver.rs` 混合按需消歧、持久化 `WaitingForUser`/`PendingCard::Disambiguation`、`CardAction::ResolveCard`、`DeliveryStore` `expected_contract_revision` 强校验；
+  - `cf9b6c57f`（S2）：`TurnStatus::Stopping` + 5 要素 `StopHandoffManifest`（`RunFence` 回收后落盘）、`loop_runner` 同错零新证据熔断（完整规范化参数，终态 `Failed`）、契约变更走两阶段取消升版重派；
+  - `702c90c15`（S3）：三段式诚实 `BranchHeartbeat`、`shell_policy::Ask` 接 `before_tool_call` 持久化 `PendingCard::ToolApproval(args_hash)`（`prepare_shutdown`/`boot` 保护 `WaitingForUser`）、`flowy-shell::notify` 分级通知；
+  - `3c338b74d`（审查加固）：全数修复独立审查 12 项 `[Required]` 并发/安全问题 + 4 项防膨胀精简。
+- **Track B · 极简助理 UI / 无歧义 SVG / GPUI 动效 / 修 Bug（`feat/flowy-calm-assistant-ui` 合并入 `004673515`，56 文件净减 `-132` 行）**：
+  - `ee7662197`：修复 `ports/mod.rs` Windows 祖先目录 ReparsePoint 误拦，同时守住 UNC/设备路径、尾部斜杠叶 junction、叶 symlink 与 TOCTOU 扩展名切换拦截；
+  - `c2b7d390f`：移除 `fold-desk` 与顶栏重复模型选择、健康隐藏 `env-status-pill`、4 按钮收口为 `+` 旋转菜单（`composer_add_menu.rs` + 真实已装 ClawHub 技能 + Active-Only 胶囊）、删除每段粗体「复制 Markdown 原文」改为 hover `copy.svg→check.svg`、默认抽屉 2 标签 + `sliders-horizontal` 调试日志切换、23 语种去 AI 味重写（零 `"L3"` 泄漏）、淘汰 `file-fold.svg` 等 5 枚旧图标并补标准 Lucide 图标与 `LICENSES.md`、修复 `flowy-app` 硬编码 `cx.set_reduce_motion(true)` 并接入 GPU 旋转与叶级 `with_spring` 动效（含 `#[gpui::test]` 帧断言）。
+- **总管集成接缝（`98b95061a`）**：新增 `flowy-studio/src/pending_card.rs`，完成消歧卡 / 工具审批卡 / 停机交接摘要 / 三段式心跳与 23 语种对称接线。
+- **终验门禁与预览交付**：
+  - 8 crate 单测 **596 passed / 0 failed**（较 551 基线净增 **+45**；0 单测跳过，仅新增 1 条显式 `--ignored` 真云端测试且已真跑通过）；
+  - 真云端实测 **2/2 通过**（共 3 次云端调用 ≤10 上限）：L3 结构化核验 `675ms/881ms`、`ContractResolver` 消歧 `4.03s` 精准框出 3 份可写交付物并排除只读 `Record`；
+  - `rustfmt --edition 2024 --check`、`check-ui-contracts.mjs`（24/24 + 生产）、`cargo clippy --all-targets -- -D warnings` 全绿 0 警告；
+  - 双主题（Light/Dark）× 双语（`zh-CN`/`en`）全场景实机截图 + 33ms 物理 DPI 动效连拍 3 组套件 **38/38 全过**（`pixel_diffs` 证明 `+→×`/浮层弹簧与右侧抽屉滑入真实逐帧生效，肉眼逐张审核全图标零歧义无发虚）；
+  - 预览版同步：`C:\Users\38788\AppData\Local\FlowyPreview\flowy-app.exe`（SHA-256 `9094693C66AEFAE05A631F260F4A847CDA9712E11841D89DFD3ED73F7CABAD63`，Medium IL，`APPDATA_RESTORED`，`RUNNING_FLOWY=0`）；全程本地 commit，未 push、未碰 `main` 与根 workspace。
+- **顺延记录**：S4（目录级并发读写锁）按拍板顺延至下轮，未挤占终验与截图自审；详见 `证据.md` §11.33 与 `BLOCKED.md`。
