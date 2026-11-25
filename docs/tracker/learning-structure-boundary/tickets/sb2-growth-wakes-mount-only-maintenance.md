@@ -2,7 +2,7 @@
 id: sb2
 title: 生长完成唤醒维护回合（仅挂载）——地形清单折叠的数据源时效（ADR-0018 决定 4）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [sb1]
 part_of: map.md
@@ -130,3 +130,66 @@ part_of: map.md
   时修补臂（改结构、使全部挂载失效），须单独验证。
 - 「结构对齐」入口的可发现性。
 - 读侧 `structure_view` 与维护侧对「无挂载行」的 stale 口径相反。
+
+## Resolution
+
+**真机验证通过**（2026-11-25）。生长 → 唤醒 → 仅挂载，8 秒闭环。
+
+### 落地
+
+- **提交** 9249b0999（wave/sb2）→ 合并 a5281e369。13 文件 +1956/−8；
+  新模块 `service/growth_wake.rs`（329 行：准入纯函数、登记/取走、信号）。
+- **R-a**：`growth_body` 的 `apply_batch` 提交之后（非空手批、`trigger ∈
+  {Settlement, AutoRefill}`）调 `register_growth_wake`——只登记 + `notify_one`，
+  不在此挂载。
+- **R-b**：`run_growth_followup_mount` 只走挂载分支；`run_maintenance_tick`
+  的定时路径（含 W1 的 `last_run` 重置）逐字未动。
+- **R-c**：`GrowthWakeVerdict` 纯函数（时钟经参数注入）：`stale` /
+  `pending_over_threshold`（>8）/ `debounced`（<5 分钟）三档。
+- **R-d/R-e**：不唤醒只 `tracing::warn`（带 reason 机器名），**不写 findings**；
+  挂载失败走既有 Failed 动作簿行，不回滚生长批。
+- **R-f**：`SystemActionTrigger::GrowthFollowup`（`"growth_followup"`）；
+  前端 `systemActions.ts` 映射 + zh/en 词典对称；`i18n-keys.d.ts` 已 gen。
+- **R-g**：唤醒意图携带 `engine.user_id`。
+- **R-h**：调度循环 `select!`（`sleep_until(next_tick)` vs
+  `growth_wake_notified()`）；唤醒后逐课 `spawn` 并立返，循环不 await。
+
+### 顺带修的存量缺陷（用户裁决本票内修）
+
+`run_mount_round` 的契约门覆盖面原传**全量节点集**，而 `validate_mounts`
+的注释与语义都是**待挂集**——首轮两者相等所以从未暴露；fresh 行上的增量
+挂载会被「已挂节点没有条目」首轮打回。改为传 `pending_set`（`merge_mounts`
+的孤儿过滤仍用全量集）。**红→绿已证**：把修复临时改回，专项测试
+`structure_mount_round_incremental_mount_accepts_a_pending_only_reply`
+立即失败并复现「待挂节点「节点B」没有条目」。
+
+### 检查
+
+- 过滤测试：`growth_wake` 17、`structure_mount_round` 2、`maintenance` 6、
+  `system_action` 7、app-server `maintenance` 4 —— **36/36**。
+- 全量 `cargo test -p nomifun-learning` **1076/0**；`cargo check --workspace`
+  通过；`bun run typecheck` 通过；`bun run check:i18n` 通过（12,566 键）。
+
+### 真机读数（2026-11-25，冻结二进制 a5281e369）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 手动挂载（31 节点） | `mounted` 31/31、0 结构外、27 秒 |
+| 跳过 2 节点 → 就绪 2 | 判定 `due` |
+| `auto_refill` 生长 | 436 秒落库，1 节点，就绪 3 |
+| **唤醒登记** | `growth followup mount wake registered pending_mounts=1` |
+| **仅挂载回合** | 8 秒后 `status="mounted" pending=1 mounted=1` |
+| 动作簿 | `maintenance_mount / growth_followup / done / pending_mount=1 / actor=null`（恰 1 行） |
+| 挂载表 | 31 → **32** 条；32 课时 0 未挂载 |
+
+**地形清单折叠（用真实挂载数据算，未再跑一轮生长）**：63 块中 **27 块已
+覆盖、36 块未覆盖** → 清单展开 36 行 + 折叠行「27 块已覆盖（32 个节点）」，
+比全量 63 行少约四成。
+
+### 边界
+
+- 「从未挂载 ≡ stale」所以新课不会被自动唤醒，必须先手动对齐一次——已按
+  ADR-0018 落地并在真机复现（手动挂载时 `stale=true`）。
+- 折叠后的清单是否真的让教练少提名已覆盖块，需下一轮生长的教练输入对照；
+  本轮真机只验证了「唤醒 → 仅挂载」链路与折叠数据就位。
+- 维护定时臂的 W1 缺陷仍未修（范围外）。
