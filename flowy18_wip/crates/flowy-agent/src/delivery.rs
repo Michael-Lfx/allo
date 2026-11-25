@@ -33,6 +33,9 @@ pub struct Report {
     pub ok: bool,
     pub issues: Vec<Issue>,
     pub at_ms: u64,
+    /// Work-contract revision verified by this report, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_revision: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +188,21 @@ impl DeliveryStore {
         issues: Vec<Issue>,
         now_ms: u64,
     ) -> io::Result<Report> {
+        self.record_report_bytes_with_revision(
+            artifact, bytes, issues, None, now_ms,
+        )
+    }
+
+    /// Persist a verification report for already-parsed `bytes`, optionally
+    /// tagged with the host `WorkContract` revision it was verified against.
+    pub fn record_report_bytes_with_revision(
+        &self,
+        artifact: &Path,
+        bytes: &[u8],
+        issues: Vec<Issue>,
+        contract_revision: Option<u32>,
+        now_ms: u64,
+    ) -> io::Result<Report> {
         let artifact_hash = hash_bytes(bytes);
         let report_id = format!("report-{}-{}", now_ms, next_id());
         let report = Report {
@@ -194,6 +212,7 @@ impl DeliveryStore {
             ok: issues.is_empty(),
             issues,
             at_ms: now_ms,
+            contract_revision,
         };
         Self::append_json(&self.reports_path(), &report)?;
         Self::append_json(

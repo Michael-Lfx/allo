@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, ReceiptState, RunError, SessionOrigin,
-    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnObserver,
-    TurnState, complete_text, echo_stream_fn, log_preview,
+    LoopOutcome, ModelRoute, ReceiptState, RequiredDeliverable, RunError,
+    SessionOrigin, SessionRecord, SessionWorkspace, SubmissionOutcome,
+    TurnObserver, TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -98,6 +98,21 @@ pub struct AcceptedRun {
     pub attempt_id: String,
     pub session_id: String,
     pub submission: u128,
+}
+
+/// Unified host status for one work item (queried by `receipt_id` or
+/// `submission_id`), reconciling requirements, outcome, and visible artifacts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkStatus {
+    pub work_id: String,
+    pub session_id: Option<String>,
+    pub submission_id: Option<String>,
+    pub contract_revision: Option<u32>,
+    pub receipt_state: Option<ReceiptState>,
+    pub outcome: Option<SubmissionOutcome>,
+    pub required_items: Vec<RequiredDeliverable>,
+    pub delivered_artifact_ids: Vec<String>,
+    pub missing_items: Vec<String>,
 }
 
 struct Live {
@@ -1320,6 +1335,7 @@ impl AgentHandle {
         store
             .commit_prepared(&commit)
             .map_err(|_| "chat.publish.failed")?;
+        reconcile_partial_work_after_override(&engine, &store, session_id);
         let target_key = crate::delivery::artifact_key(&full_path);
         if let Some(live) = lock(&state.live).get_mut(session_id) {
             for line in &mut live.projection.lines {
@@ -1693,6 +1709,133 @@ impl AgentHandle {
     pub fn receipt_state(&self, id: &str) -> Option<ReceiptState> {
         self.receipt_by_id(id)
             .map(|receipt| receipt.state_at(now_ms()))
+    }
+
+    /// Unified host view of a work item identified by either its `receipt_id`
+    /// or its `submission_id`, combining persisted contract revision, terminal
+    /// outcome, missing deliverables, and currently visible committed files.
+    #[must_use]
+    pub fn work_status(&self, work_id: &str) -> Option<WorkStatus> {
+        let receipt = self.receipt_by_id(work_id);
+        let receipt_state =
+            receipt.as_ref().map(|item| item.state_at(now_ms()));
+        let mut session_id = receipt
+            .as_ref()
+            .and_then(|item| item.target_session_id.clone());
+        let mut submission_id =
+            receipt.as_ref().and_then(|item| item.submission_id.clone());
+        let engine = lock(&self.inner.engine).clone();
+        let record = engine.as_ref().and_then(|engine| {
+            if let Some(sid) = session_id.as_deref() {
+                engine.session(sid)
+            } else {
+                engine.sessions().into_iter().find(|rec| {
+                    rec.submission_outcomes.contains_key(work_id)
+                        || rec.submission_revisions.contains_key(work_id)
+                        || rec
+                            .delivery_commits
+                            .iter()
+                            .any(|c| c.submission_id == work_id)
+                        || rec.messages.iter().any(|m| m.id == work_id)
+                })
+            }
+        });
+        if receipt.is_none() && record.is_none() {
+            return None;
+        }
+        if let Some(rec) = &record {
+            if session_id.is_none() {
+                session_id = Some(rec.id.clone());
+            }
+            if submission_id.is_none() && receipt.is_none() {
+                submission_id = Some(work_id.to_owned());
+            }
+        }
+        let store = self.inner.state.artifact_store.get();
+        let committed_ids = store
+            .and_then(|s| s.committed_ids().ok())
+            .unwrap_or_default();
+        let mut delivered_artifact_ids = Vec::new();
+        let mut contract_revision = None;
+        let mut required_items = Vec::new();
+        let mut outcome = None;
+        let mut missing_items = Vec::new();
+        if let Some(rec) = &record {
+            contract_revision = submission_id
+                .as_deref()
+                .and_then(|sub| rec.submission_revisions.get(sub).copied())
+                .or_else(|| rec.work_contract.as_ref().map(|c| c.revision));
+            required_items = rec
+                .work_contract
+                .as_ref()
+                .map_or_default(|c| c.required_items.clone());
+            outcome = submission_id
+                .as_deref()
+                .and_then(|sub| rec.submission_outcomes.get(sub).cloned());
+            for commit in &rec.delivery_commits {
+                let belongs = match submission_id.as_deref() {
+                    Some(sub) => {
+                        commit.submission_id == sub
+                            || commit
+                                .submission_id
+                                .starts_with("submission-override-")
+                            || contract_revision.is_some_and(|rev| {
+                                rec.submission_revisions
+                                    .get(&commit.submission_id)
+                                    .copied()
+                                    == Some(rev)
+                            })
+                    }
+                    None => true,
+                };
+                if belongs {
+                    for artifact_id in &commit.artifact_ids {
+                        if committed_ids.contains(artifact_id)
+                            && !delivered_artifact_ids.contains(artifact_id)
+                        {
+                            delivered_artifact_ids.push(artifact_id.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(SubmissionOutcome::Partial { missing }) = &outcome {
+                missing_items.clone_from(missing);
+            } else if !matches!(outcome, Some(SubmissionOutcome::Completed))
+                && let Some(contract) = &rec.work_contract
+                && !contract.required_items.is_empty()
+            {
+                let delivered_meta: Vec<(String, String)> =
+                    delivered_artifact_ids
+                        .iter()
+                        .filter_map(|id| {
+                            store.and_then(|s| s.get(id).ok()).flatten().map(
+                                |item| {
+                                    (
+                                        item.manifest.receipt.display_name,
+                                        item.manifest.receipt.delivery_key,
+                                    )
+                                },
+                            )
+                        })
+                        .collect();
+                let pairs: Vec<(&str, &str)> = delivered_meta
+                    .iter()
+                    .map(|(n, k)| (n.as_str(), k.as_str()))
+                    .collect();
+                missing_items = contract.missing_deliverables(&pairs);
+            }
+        }
+        Some(WorkStatus {
+            work_id: work_id.to_owned(),
+            session_id,
+            submission_id,
+            contract_revision,
+            receipt_state,
+            outcome,
+            required_items,
+            delivered_artifact_ids,
+            missing_items,
+        })
     }
 
     /// Host disclosure switch controlling whether `verify_deck` may send
@@ -2181,7 +2324,24 @@ impl AgentHandle {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
-            let contract = crate::verify::BriefContract::from_brief(&prompt);
+            let contract = crate::verify::BriefContract::evolve(
+                core_session.work_contract.as_ref(),
+                &prompt,
+            );
+            if (core_session.work_contract.is_some() || !contract.is_empty())
+                && let Err(error) = engine.set_session_work_contract(
+                    &id,
+                    contract.to_work_contract(),
+                    Some(&submission_id),
+                )
+            {
+                log_storage_io_error(
+                    "persist work contract",
+                    &flowy_agent_core::SessionIndex::path(&state.root),
+                    &error,
+                );
+                state.report_storage_error();
+            }
             let semantic = state
                 .semantic_verify_enabled
                 .load(Ordering::Acquire)
@@ -2195,19 +2355,24 @@ impl AgentHandle {
                     })
                 })
                 .flatten();
+            let failures: crate::verify::VerifyFailureTracker =
+                Arc::new(Mutex::new(HashMap::new()));
             run_config.registry.register(
-                crate::verify::definition_with_semantic_and_contract(
+                crate::verify::definition_with_options(
                     Some(delivery.clone()),
-                    semantic,
+                    semantic.clone(),
                     Some(contract.clone()),
+                    Some(Arc::clone(&failures)),
                 ),
             );
-            run_config
-                .registry
-                .register(crate::verify::artifact_definition(
+            run_config.registry.register(
+                crate::verify::artifact_definition_with_options(
                     Some(delivery.clone()),
+                    semantic,
                     Some(contract),
-                ));
+                    Some(failures),
+                ),
+            );
             run_config
                 .registry
                 .register(crate::publish_tool::definition(
@@ -3890,6 +4055,23 @@ fn submission_committed_in_session(
     submission_id: &str,
     committed_artifacts: &BTreeSet<String>,
 ) -> bool {
+    let commit_visible = |sub_id: &str| {
+        record
+            .delivery_commits
+            .iter()
+            .find(|commit| commit.submission_id == sub_id)
+            .is_none_or(|commit| {
+                commit.completed_successfully
+                    && commit
+                        .artifact_ids
+                        .iter()
+                        .all(|id| committed_artifacts.contains(id))
+            })
+    };
+    if let Some(outcome) = record.submission_outcomes.get(submission_id) {
+        return matches!(outcome, SubmissionOutcome::Completed)
+            && commit_visible(submission_id);
+    }
     if let Some(commit) = record
         .delivery_commits
         .iter()
@@ -3900,9 +4082,6 @@ fn submission_committed_in_session(
                 .artifact_ids
                 .iter()
                 .all(|id| committed_artifacts.contains(id));
-    }
-    if let Some(outcome) = record.submission_outcomes.get(submission_id) {
-        return matches!(outcome, SubmissionOutcome::Completed);
     }
     // Legacy fallback for sessions written before `submission_outcomes`
     // existed: only an explicitly Completed session with post-prompt output
@@ -3924,6 +4103,63 @@ fn submission_committed_in_session(
             msg.role == Role::Assistant
                 || matches!(msg.source, MessageSource::Tool { .. })
         })
+}
+
+/// Re-evaluate any `Partial` submissions on `session_id` after a user override
+/// delivers a previously missing required file.
+fn reconcile_partial_work_after_override(
+    engine: &Engine,
+    store: &ArtifactStore,
+    session_id: &str,
+) {
+    let Some(record) = engine.session(session_id) else {
+        return;
+    };
+    let Some(contract) = record.work_contract.as_ref() else {
+        return;
+    };
+    if contract.required_items.is_empty() {
+        return;
+    }
+    let Ok(committed_ids) = store.committed_ids() else {
+        return;
+    };
+    let mut delivered: Vec<(String, String)> = Vec::new();
+    for commit in &record.delivery_commits {
+        for artifact_id in &commit.artifact_ids {
+            if committed_ids.contains(artifact_id)
+                && let Ok(Some(item)) = store.get(artifact_id)
+            {
+                delivered.push((
+                    item.manifest.receipt.display_name,
+                    item.manifest.receipt.delivery_key,
+                ));
+            }
+        }
+    }
+    let pairs: Vec<(&str, &str)> = delivered
+        .iter()
+        .map(|(n, k)| (n.as_str(), k.as_str()))
+        .collect();
+    let missing = contract.missing_deliverables(&pairs);
+    let partial_subs: Vec<String> = record
+        .submission_outcomes
+        .iter()
+        .filter(|&(_, outcome)| {
+            matches!(outcome, SubmissionOutcome::Partial { .. })
+        })
+        .map(|(sub_id, _)| sub_id.clone())
+        .collect();
+    for sub_id in partial_subs {
+        let next = if missing.is_empty() {
+            SubmissionOutcome::Completed
+        } else {
+            SubmissionOutcome::Partial {
+                missing: missing.clone(),
+            }
+        };
+        let _ = engine.set_submission_outcome(session_id, &sub_id, next);
+    }
 }
 
 /// Reconcile any previously bound receipt whose engine turn already committed

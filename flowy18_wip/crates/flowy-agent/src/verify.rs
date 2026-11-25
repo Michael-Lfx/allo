@@ -5,14 +5,17 @@
 //! `VALUE_MISMATCH`, plus L1 `STRUCTURE`), host-owned [`BriefContract`] checks,
 //! and one persistence/telemetry path into [`DeliveryStore`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::tools::ToolDefinition;
-use flowy_agent_core::{ToolCallArgs, ToolExecutionResult, ToolRunContext};
+use flowy_agent_core::{
+    RequiredDeliverable, ToolCallArgs, ToolExecutionResult, ToolRunContext,
+    WorkContract,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -21,6 +24,9 @@ use crate::pptx::resolve_turn_path;
 use crate::semantic_verify::{
     SemanticContext, SemanticOutcome, probe_deck_semantics,
 };
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) type VerifyFailureTracker = Arc<Mutex<HashMap<String, u32>>>;
 
 pub const ANCHOR_MISSING: &str = "ANCHOR_MISSING";
 pub const ANCHOR_DUPLICATE: &str = "ANCHOR_DUPLICATE";
@@ -52,6 +58,8 @@ impl VerifyReport {
         summary: &str,
         report_id: &str,
         artifact_hash: &str,
+        next_action: &str,
+        contract_revision: Option<u32>,
         semantic_hint: Option<&str>,
     ) -> Value {
         json!({
@@ -59,9 +67,10 @@ impl VerifyReport {
             "report_id": report_id,
             "artifact": self.artifact,
             "artifact_hash": artifact_hash,
+            "contract_revision": contract_revision,
             "anchor": self.anchor,
             "ok": self.ok,
-            "next_action": next_action_for(self),
+            "next_action": next_action,
             "semantic_hint": semantic_hint,
             "issues": self.issues.iter().map(|issue| json!({
                 "code": issue.code,
@@ -98,19 +107,103 @@ struct SlideL1Stats {
     non_empty_shapes: usize,
 }
 
-/// Host-owned literal constraints extracted from the user brief (§6.6 & §6.7).
+/// Host-owned literal constraints extracted from user briefs and evolved
+/// across follow-up revisions (§6.6, §6.7 & kernel review §2.4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BriefContract {
-    min_slides: Option<usize>,
-    expected_filenames: Vec<String>,
+    pub revision: u32,
+    pub min_slides: Option<usize>,
+    pub expected_filenames: Vec<String>,
+    pub required_items: Vec<RequiredDeliverable>,
+    pub pinned_facts: BTreeMap<String, String>,
 }
 
 impl BriefContract {
     #[must_use]
     pub fn from_brief(brief: &str) -> Self {
+        let min_slides = extract_explicit_slide_count(brief);
+        let expected_filenames = extract_explicit_filenames(brief);
+        let required_items =
+            extract_required_items(brief, &expected_filenames, min_slides);
+        let pinned_facts = extract_pinned_facts(brief);
         Self {
-            min_slides: extract_explicit_slide_count(brief),
-            expected_filenames: extract_explicit_filenames(brief),
+            revision: 1,
+            min_slides,
+            expected_filenames,
+            required_items,
+            pinned_facts,
+        }
+    }
+
+    /// Evolve a prior persisted [`WorkContract`] with a follow-up prompt.
+    ///
+    /// Unrevoked slide counts, required deliverables, and pinned facts (such
+    /// as quote amount) survive narrow follow-ups like "only change the date",
+    /// while newly mentioned values update their corresponding constraint and
+    /// bump `revision`.
+    #[must_use]
+    pub fn evolve(previous: Option<&WorkContract>, prompt: &str) -> Self {
+        let delta = Self::from_brief(prompt);
+        let Some(prev) = previous else {
+            return delta;
+        };
+        let mut required_items = prev.required_items.clone();
+        for item in delta.required_items {
+            let duplicate = required_items.iter().any(|existing| {
+                existing.extension.eq_ignore_ascii_case(&item.extension)
+                    && match (&existing.filename, &item.filename) {
+                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            });
+            if !duplicate {
+                // If an explicit filename is introduced for an extension that
+                // previously only had a generic role placeholder, upgrade it.
+                if item.filename.is_some()
+                    && let Some(slot) = required_items.iter_mut().find(|e| {
+                        e.filename.is_none()
+                            && e.extension.eq_ignore_ascii_case(&item.extension)
+                    })
+                {
+                    *slot = item;
+                } else {
+                    required_items.push(item);
+                }
+            }
+        }
+        let expected_filenames: Vec<String> = required_items
+            .iter()
+            .filter_map(|item| item.filename.clone())
+            .collect();
+        let mut pinned_facts = prev.pinned_facts.clone();
+        for (key, value) in delta.pinned_facts {
+            pinned_facts.insert(key, value);
+        }
+        Self {
+            revision: prev.revision.saturating_add(1).max(1),
+            min_slides: delta.min_slides.or(prev.min_slides),
+            expected_filenames,
+            required_items,
+            pinned_facts,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.min_slides.is_none()
+            && self.expected_filenames.is_empty()
+            && self.required_items.is_empty()
+            && self.pinned_facts.is_empty()
+    }
+
+    #[must_use]
+    pub fn to_work_contract(&self) -> WorkContract {
+        WorkContract {
+            revision: self.revision.max(1),
+            required_items: self.required_items.clone(),
+            min_slides: self.min_slides,
+            pinned_facts: self.pinned_facts.clone(),
         }
     }
 
@@ -136,6 +229,46 @@ impl BriefContract {
             .unwrap_or("");
         if !actual.eq_ignore_ascii_case(matches[0]) {
             push_unique(issues, STRUCTURE, "brief_filename");
+        }
+    }
+
+    fn check_pinned_facts(
+        &self,
+        observed_text: &str,
+        issues: &mut Vec<VerifyIssue>,
+    ) {
+        if self.pinned_facts.is_empty() {
+            return;
+        }
+        let normalized_doc = compact_text(observed_text);
+        let single_deliverable = self.required_items.len() <= 1;
+        if let Some(expected_quote) = self.pinned_facts.get("quote") {
+            let mentions_price = normalized_doc.contains("报价")
+                || normalized_doc.contains("总价")
+                || normalized_doc.contains("预算")
+                || normalized_doc.contains("万")
+                || normalized_doc.contains("元")
+                || normalized_doc.contains('¥')
+                || normalized_doc.contains('$')
+                || normalized_doc.contains("price")
+                || normalized_doc.contains("quote");
+            if (single_deliverable || mentions_price)
+                && !quote_matches(&normalized_doc, expected_quote)
+            {
+                push_unique(issues, VALUE_MISMATCH, "brief_quote");
+            }
+        }
+        if let Some(expected_date) = self.pinned_facts.get("date") {
+            let mentions_date = normalized_doc.contains("日期")
+                || normalized_doc.contains("202")
+                || normalized_doc.contains('年')
+                || normalized_doc.contains('月')
+                || normalized_doc.contains("date");
+            if (single_deliverable || mentions_date)
+                && !date_matches(&normalized_doc, expected_date)
+            {
+                push_unique(issues, VALUE_MISMATCH, "brief_date");
+            }
         }
     }
 
@@ -203,9 +336,18 @@ fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
     let chars: Vec<(usize, char)> = brief.char_indices().collect();
     let mut best: Option<usize> = None;
     for idx in 0..chars.len() {
-        // Skip ordinals ("第1页"/"第3页") so references to a specific slide are
-        // never mistaken for a total slide count.
+        // Skip ordinals ("第1页"/"第3页") and reference-document counts
+        // ("参考那份20页的旧报告") so they never override the requested target.
         if idx > 0 && chars[idx - 1].1 == '第' {
+            continue;
+        }
+        let prefix_start = idx.saturating_sub(6);
+        let prefix_slice: String =
+            chars[prefix_start..idx].iter().map(|(_, c)| *c).collect();
+        if ["参考", "旧", "原", "对比", "已有", "那份", "这份"]
+            .iter()
+            .any(|marker| prefix_slice.contains(marker))
+        {
             continue;
         }
         let (byte_pos, ch) = chars[idx];
@@ -279,7 +421,7 @@ fn extract_explicit_filenames(brief: &str) -> Vec<String> {
     }) {
         let candidate = token.trim_matches('.');
         let lower = candidate.to_ascii_lowercase();
-        let is_target = [".pptx", ".docx", ".xlsx"]
+        let is_target = [".pptx", ".docx", ".xlsx", ".pdf", ".csv"]
             .iter()
             .any(|ext| lower.ends_with(ext) && lower.len() > ext.len());
         if is_target
@@ -291,6 +433,251 @@ fn extract_explicit_filenames(brief: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn extract_required_items(
+    brief: &str,
+    explicit_filenames: &[String],
+    min_slides: Option<usize>,
+) -> Vec<RequiredDeliverable> {
+    let mut items: Vec<RequiredDeliverable> = explicit_filenames
+        .iter()
+        .filter_map(|name| {
+            let ext = Path::new(name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase)?;
+            Some(RequiredDeliverable {
+                filename: Some(name.clone()),
+                extension: ext,
+            })
+        })
+        .collect();
+    let lower = brief.to_ascii_lowercase();
+    let has_ext = |ext: &str, list: &[RequiredDeliverable]| {
+        list.iter()
+            .any(|item| item.extension.eq_ignore_ascii_case(ext))
+    };
+    let has_production_intent = [
+        "做", "生成", "写", "交", "输出", "给", "制作", "整理", "create",
+        "build", "deliver", "make", "generate", "publish",
+    ]
+    .iter()
+    .any(|verb| lower.contains(verb));
+    if !has_ext("xlsx", &items)
+        && !has_ext("csv", &items)
+        && (brief.contains("报价表")
+            || (has_production_intent
+                && (lower.contains("excel") || lower.contains(".xlsx"))))
+    {
+        items.push(RequiredDeliverable {
+            filename: None,
+            extension: "xlsx".to_owned(),
+        });
+    }
+    if !has_ext("pptx", &items)
+        && (min_slides.is_some()
+            || (has_production_intent
+                && (brief.contains("汇报")
+                    || brief.contains("幻灯片")
+                    || lower.contains("ppt")
+                    || lower.contains("deck")
+                    || lower.contains("slides"))))
+    {
+        items.push(RequiredDeliverable {
+            filename: None,
+            extension: "pptx".to_owned(),
+        });
+    }
+    if !has_ext("docx", &items)
+        && has_production_intent
+        && (lower.contains("word") || lower.contains(".docx"))
+    {
+        items.push(RequiredDeliverable {
+            filename: None,
+            extension: "docx".to_owned(),
+        });
+    }
+    items
+}
+
+fn extract_pinned_facts(brief: &str) -> BTreeMap<String, String> {
+    let mut facts = BTreeMap::new();
+    if let Some(quote) = extract_quote_fact(brief) {
+        facts.insert("quote".to_owned(), quote);
+    }
+    if let Some(date) = extract_date_fact(brief) {
+        facts.insert("date".to_owned(), date);
+    }
+    facts
+}
+
+fn extract_quote_fact(brief: &str) -> Option<String> {
+    let lower = brief.to_ascii_lowercase();
+    for keyword in ["报价", "总价", "预算", "quote", "price"] {
+        for (pos, _) in lower.match_indices(keyword) {
+            let after = &brief[pos + keyword.len()..];
+            // Skip document nouns such as "报价表" / "报价单".
+            if after.starts_with('表') || after.starts_with('单') {
+                continue;
+            }
+            let window: String = after.chars().take(24).collect();
+            let chars: Vec<(usize, char)> = window.char_indices().collect();
+            let Some(start_idx) =
+                chars.iter().position(|(_, c)| c.is_ascii_digit())
+            else {
+                continue;
+            };
+            let prefix_ok = chars[..start_idx].iter().all(|(_, c)| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        ':' | '：'
+                            | '='
+                            | '为'
+                            | '是'
+                            | '约'
+                            | '共'
+                            | '¥'
+                            | '￥'
+                            | '$'
+                            | '('
+                            | '（'
+                    )
+            });
+            if !prefix_ok {
+                continue;
+            }
+            let mut end_idx = start_idx;
+            while end_idx < chars.len()
+                && (chars[end_idx].1.is_ascii_digit()
+                    || matches!(chars[end_idx].1, '.' | ','))
+            {
+                end_idx += 1;
+            }
+            let start_byte = chars[start_idx].0;
+            let end_byte = chars.get(end_idx).map_or(window.len(), |(p, _)| *p);
+            let number = window[start_byte..end_byte].replace(',', "");
+            if number.is_empty() {
+                continue;
+            }
+            let tail = window[end_byte..].trim_start();
+            if tail.starts_with('页')
+                || tail.starts_with('张')
+                || tail.to_ascii_lowercase().starts_with("slide")
+            {
+                continue;
+            }
+            let unit = if tail.starts_with("万元") || tail.starts_with('万')
+            {
+                "万"
+            } else if tail.starts_with("亿元") || tail.starts_with('亿') {
+                "亿"
+            } else if tail.starts_with('元') {
+                "元"
+            } else {
+                ""
+            };
+            return Some(format!("{number}{unit}"));
+        }
+    }
+    None
+}
+
+fn extract_date_fact(brief: &str) -> Option<String> {
+    let bytes = brief.as_bytes();
+    // 1. YYYY-MM-DD or YYYY/MM/DD
+    for i in 0..bytes.len().saturating_sub(7) {
+        if bytes[i..].starts_with(b"20")
+            && bytes.get(i + 2).is_some_and(u8::is_ascii_digit)
+            && bytes.get(i + 3).is_some_and(u8::is_ascii_digit)
+            && let Some(sep @ (b'-' | b'/')) = bytes.get(i + 4).copied()
+        {
+            let rest = &brief[i + 5..];
+            let mut parts = rest.split(char::from(sep));
+            if let (Some(m_str), Some(d_tail)) = (parts.next(), parts.next()) {
+                let d_digits: String =
+                    d_tail.chars().take_while(char::is_ascii_digit).collect();
+                if let (Ok(m), Ok(d)) =
+                    (m_str.parse::<u32>(), d_digits.parse::<u32>())
+                    && (1..=12).contains(&m)
+                    && (1..=31).contains(&d)
+                {
+                    let year = &brief[i..i + 4];
+                    return Some(format!("{year}-{m:02}-{d:02}"));
+                }
+            }
+        }
+    }
+    // 2. YYYY年M月D日
+    let chars: Vec<(usize, char)> = brief.char_indices().collect();
+    for i in 0..chars.len() {
+        if chars[i].1 == '年' && i >= 4 {
+            let y: String = chars[i - 4..i].iter().map(|(_, c)| *c).collect();
+            if y.starts_with("20") && y.chars().all(|c| c.is_ascii_digit()) {
+                let after_y = &brief[chars[i].0 + '年'.len_utf8()..];
+                if let Some((m_str, after_m)) = after_y.split_once('月') {
+                    let d_digits: String = after_m
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    if let (Ok(m), Ok(d)) =
+                        (m_str.trim().parse::<u32>(), d_digits.parse::<u32>())
+                        && (1..=12).contains(&m)
+                        && (1..=31).contains(&d)
+                    {
+                        return Some(format!("{y}-{m:02}-{d:02}"));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn compact_text(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && *ch != ',')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn quote_matches(normalized_doc: &str, expected_quote: &str) -> bool {
+    let target = compact_text(expected_quote);
+    if normalized_doc.contains(&target) {
+        return true;
+    }
+    if let Some(wan) = target.strip_suffix('万')
+        && let Ok(val) = wan.parse::<f64>()
+    {
+        let expanded = format!("{}", (val * 10_000.0).round() as u64);
+        if normalized_doc.contains(&expanded) {
+            return true;
+        }
+    }
+    false
+}
+
+fn date_matches(normalized_doc: &str, expected_date: &str) -> bool {
+    let target = compact_text(expected_date);
+    if normalized_doc.contains(&target) {
+        return true;
+    }
+    let parts: Vec<&str> = expected_date.split('-').collect();
+    if let [y, m, d] = parts.as_slice()
+        && let (Ok(m_num), Ok(d_num)) = (m.parse::<u32>(), d.parse::<u32>())
+    {
+        let slash = format!("{y}/{m}/{d}");
+        let slash_short = format!("{y}/{m_num}/{d_num}");
+        let dash_short = format!("{y}-{m_num}-{d_num}");
+        let cn = format!("{y}年{m_num}月{d_num}日");
+        let cn_pad = format!("{y}年{m}月{d}日");
+        return [slash, slash_short, dash_short, cn, cn_pad]
+            .iter()
+            .any(|variant| normalized_doc.contains(variant));
+    }
+    false
 }
 
 fn push_unique(issues: &mut Vec<VerifyIssue>, code: &'static str, field: &str) {
@@ -408,7 +795,8 @@ fn verify_deck_file_with_shapes(
         expected,
     );
     let default_contract = BriefContract::default();
-    contract.unwrap_or(&default_contract).check_deck(
+    let active_contract = contract.unwrap_or(&default_contract);
+    active_contract.check_deck(
         path,
         slides.len(),
         expected_slides,
@@ -416,12 +804,24 @@ fn verify_deck_file_with_shapes(
         expected.len(),
         &mut report.issues,
     );
+    let combined_text: String = deck
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    active_contract.check_pinned_facts(&combined_text, &mut report.issues);
     report.ok = report.issues.is_empty();
     Ok(VerifiedDeck {
         report,
         bytes,
         shapes: deck,
     })
+}
+
+struct VerifiedArtifact {
+    report: VerifyReport,
+    bytes: Vec<u8>,
+    snippets: Vec<(String, String)>,
 }
 
 fn read_zip_xml(
@@ -444,27 +844,44 @@ fn verify_docx_file(
     path: &Path,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
-) -> Result<(VerifyReport, Vec<u8>), String> {
+) -> Result<VerifiedArtifact, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
         contract.check_filename(path, "docx", &mut issues);
     }
+    if expected.is_empty() {
+        push_unique(&mut issues, STRUCTURE, "anchors");
+    }
     let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))
     else {
         push_unique(&mut issues, STRUCTURE, "docx_archive");
-        return Ok((report_for(path, "bookmark", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "bookmark", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     };
     let Some(xml) = read_zip_xml(&mut archive, "word/document.xml") else {
         push_unique(&mut issues, STRUCTURE, "docx_document");
-        return Ok((report_for(path, "bookmark", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "bookmark", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     };
     let Ok(doc) = roxmltree::Document::parse(&xml) else {
         push_unique(&mut issues, STRUCTURE, "docx_document");
-        return Ok((report_for(path, "bookmark", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "bookmark", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     };
     let mut non_empty_paragraphs = 0_usize;
     let mut bookmarks: Vec<(String, String)> = Vec::new();
+    let mut snippets: Vec<(String, String)> = Vec::new();
+    let mut all_text = String::new();
     for para in doc
         .descendants()
         .filter(|node| node.is_element() && node.tag_name().name() == "p")
@@ -485,6 +902,10 @@ fn verify_docx_file(
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             non_empty_paragraphs += 1;
+            all_text.push_str(trimmed);
+            all_text.push('\n');
+            snippets
+                .push((format!("P{non_empty_paragraphs}"), trimmed.to_owned()));
         }
         for bm in para.descendants().filter(|node| {
             node.is_element() && node.tag_name().name() == "bookmarkStart"
@@ -506,32 +927,59 @@ fn verify_docx_file(
     if !expected.is_empty() {
         evaluate_pairs(&bookmarks, expected, false, &mut issues);
     }
-    Ok((report_for(path, "bookmark", issues), bytes))
+    if let Some(contract) = contract {
+        contract.check_pinned_facts(&all_text, &mut issues);
+    }
+    Ok(VerifiedArtifact {
+        report: report_for(path, "bookmark", issues),
+        bytes,
+        snippets,
+    })
 }
 
 fn verify_xlsx_file(
     path: &Path,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
-) -> Result<(VerifyReport, Vec<u8>), String> {
+) -> Result<VerifiedArtifact, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
         contract.check_filename(path, "xlsx", &mut issues);
     }
+    if expected.is_empty() {
+        push_unique(&mut issues, STRUCTURE, "anchors");
+    }
     let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))
     else {
         push_unique(&mut issues, STRUCTURE, "xlsx_archive");
-        return Ok((report_for(path, "row_key", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "row_key", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     };
     let Some(wb_xml) = read_zip_xml(&mut archive, "xl/workbook.xml") else {
         push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok((report_for(path, "row_key", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "row_key", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     };
-    if roxmltree::Document::parse(&wb_xml).is_err() {
+    let Ok(wb_doc) = roxmltree::Document::parse(&wb_xml) else {
         push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok((report_for(path, "row_key", issues), bytes));
-    }
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "row_key", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
+    };
+    let sheet_titles: Vec<String> = wb_doc
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "sheet")
+        .filter_map(|node| node.attribute("name").map(str::to_owned))
+        .collect();
     let shared_strings: Vec<String> =
         read_zip_xml(&mut archive, "xl/sharedStrings.xml")
             .and_then(|xml| {
@@ -568,16 +1016,29 @@ fn verify_xlsx_file(
     sheet_names.sort();
     if sheet_names.is_empty() {
         push_unique(&mut issues, STRUCTURE, "xlsx_sheets");
-        return Ok((report_for(path, "row_key", issues), bytes));
+        return Ok(VerifiedArtifact {
+            report: report_for(path, "row_key", issues),
+            bytes,
+            snippets: Vec::new(),
+        });
     }
 
     let mut non_empty_rows = 0_usize;
     let mut cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut qualified_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut row_summaries: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut row_col_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut qualified_row_col: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut snippets: Vec<(String, String)> = Vec::new();
+    let mut all_text = String::new();
 
-    for sheet_name in sheet_names {
-        let Some(sheet_xml) = read_zip_xml(&mut archive, &sheet_name) else {
+    for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
+        let sheet_title = sheet_titles
+            .get(sheet_idx)
+            .cloned()
+            .unwrap_or_else(|| format!("Sheet{}", sheet_idx + 1));
+        let sheet_key = sheet_title.to_ascii_lowercase();
+        let Some(sheet_xml) = read_zip_xml(&mut archive, sheet_name) else {
             push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
             continue;
         };
@@ -585,6 +1046,7 @@ fn verify_xlsx_file(
             push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
             continue;
         };
+        // Isolate column headers per sheet so Sheet 2 never inherits Sheet 1 headers.
         let mut headers: BTreeMap<String, String> = BTreeMap::new();
         for (row_idx, row) in doc
             .descendants()
@@ -623,12 +1085,30 @@ fn verify_xlsx_file(
                         })
                         .filter_map(|n| n.text())
                         .collect::<String>(),
-                    _ => cell
-                        .children()
-                        .find(|n| n.is_element() && n.tag_name().name() == "v")
-                        .and_then(|n| n.text())
-                        .unwrap_or_default()
-                        .to_owned(),
+                    _ => {
+                        let cached = cell
+                            .children()
+                            .find(|n| {
+                                n.is_element() && n.tag_name().name() == "v"
+                            })
+                            .and_then(|n| n.text())
+                            .map_or_default(str::trim);
+                        if !cached.is_empty() {
+                            cached.to_owned()
+                        } else if let Some(formula) = cell
+                            .children()
+                            .find(|n| {
+                                n.is_element() && n.tag_name().name() == "f"
+                            })
+                            .and_then(|n| n.text())
+                            .map(str::trim)
+                            .filter(|f| !f.is_empty())
+                        {
+                            format!("={formula}")
+                        } else {
+                            String::new()
+                        }
+                    }
                 };
                 let value = raw.trim().to_owned();
                 if !value.is_empty() {
@@ -650,13 +1130,25 @@ fn verify_xlsx_file(
                 .map(|(_, _, val)| val.as_str())
                 .collect::<Vec<_>>()
                 .join(" | ");
+            all_text.push_str(&summary);
+            all_text.push('\n');
+            snippets
+                .push((format!("{sheet_title}!{row_key}"), summary.clone()));
             row_summaries
                 .entry(row_key.clone())
                 .or_default()
                 .push(summary);
             for (col, cell_ref, value) in row_cells {
+                qualified_cells
+                    .entry(format!("{sheet_key}!{cell_ref}"))
+                    .or_default()
+                    .push(value.clone());
                 cells.entry(cell_ref).or_default().push(value.clone());
                 if let Some(header) = headers.get(&col) {
+                    qualified_row_col
+                        .entry(format!("{sheet_key}!{row_key}:{header}"))
+                        .or_default()
+                        .push(value.clone());
                     row_col_values
                         .entry(format!("{row_key}:{header}"))
                         .or_default()
@@ -669,7 +1161,22 @@ fn verify_xlsx_file(
         push_unique(&mut issues, STRUCTURE, "xlsx_empty");
     }
     for anchor in expected {
-        let lookup = if anchor.anchor.contains(':') {
+        let lookup = if let Some((sheet_part, target)) =
+            anchor.anchor.split_once('!')
+        {
+            let sheet_norm = sheet_part.trim().to_ascii_lowercase();
+            let target_trimmed = target.trim();
+            if target_trimmed.contains(':') {
+                qualified_row_col.get(&format!("{sheet_norm}!{target_trimmed}"))
+            } else if is_cell_ref(target_trimmed) {
+                qualified_cells.get(&format!(
+                    "{sheet_norm}!{}",
+                    target_trimmed.to_ascii_uppercase()
+                ))
+            } else {
+                row_summaries.get(target_trimmed)
+            }
+        } else if anchor.anchor.contains(':') {
             row_col_values.get(&anchor.anchor)
         } else if is_cell_ref(&anchor.anchor) {
             cells.get(&anchor.anchor.to_ascii_uppercase())
@@ -689,7 +1196,14 @@ fn verify_xlsx_file(
             }
         }
     }
-    Ok((report_for(path, "row_key", issues), bytes))
+    if let Some(contract) = contract {
+        contract.check_pinned_facts(&all_text, &mut issues);
+    }
+    Ok(VerifiedArtifact {
+        report: report_for(path, "row_key", issues),
+        bytes,
+        snippets,
+    })
 }
 
 fn report_for(
@@ -737,14 +1251,16 @@ fn now_ms() -> u64 {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "shared verification finalizer keeps report, verified bytes, and telemetry in one path"
+    reason = "shared verification finalizer keeps report, verified bytes, revision, failure budget, and telemetry in one path"
 )]
 async fn finalize_report(
     path: &Path,
     raw_path: &str,
     report: VerifyReport,
     verified_bytes: &[u8],
-    shapes: Option<&[(String, String)]>,
+    snippets: Option<&[(String, String)]>,
+    contract_revision: Option<u32>,
+    failures: Option<&VerifyFailureTracker>,
     context: &ToolRunContext,
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
@@ -760,8 +1276,13 @@ async fn finalize_report(
                 field: issue.field.clone(),
             })
             .collect();
-        match store.record_report_bytes(path, verified_bytes, issues, now_ms())
-        {
+        match store.record_report_bytes_with_revision(
+            path,
+            verified_bytes,
+            issues,
+            contract_revision,
+            now_ms(),
+        ) {
             Ok(persisted) => {
                 report_id = persisted.id;
                 artifact_hash = persisted.artifact_hash;
@@ -776,17 +1297,37 @@ async fn finalize_report(
             }
         }
     }
+    // Hard cap on rerender_once: the second failed verification of the same
+    // artifact within one turn locks next_action to clarify_or_rebuild.
+    let mut next_action = next_action_for(&report);
+    if !report.ok
+        && let Some(tracker) = failures
+    {
+        let key = delivery::artifact_key(path);
+        let next_count = {
+            let mut map = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let next = map.get(&key).copied().unwrap_or(0).saturating_add(1);
+            map.insert(key, next);
+            next
+        };
+        if next_count >= 2 {
+            next_action = "clarify_or_rebuild";
+        }
+    }
     let artifact_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(raw_path);
     let (l3_outcome, l3_duration_ms) = if report.ok
-        && let (Some(semantic_ctx), Some(deck_shapes)) = (semantic, shapes)
+        && let (Some(semantic_ctx), Some(extracted)) = (semantic, snippets)
+        && !extracted.is_empty()
     {
         probe_deck_semantics(
             semantic_ctx,
             artifact_name,
-            deck_shapes,
+            extracted,
             &context.signal,
         )
         .await
@@ -803,8 +1344,10 @@ async fn finalize_report(
         submission_id,
         report_id = %report_id,
         artifact_hash = %artifact_hash,
+        contract_revision = contract_revision.unwrap_or(0),
         anchor = report.anchor,
         ok = report.ok,
+        next_action,
         issue_count = report.issues.len(),
         l3_status = l3_outcome.status_code(),
         l3_reason = l3_outcome.reason(),
@@ -829,6 +1372,8 @@ async fn finalize_report(
         &summary,
         &report_id,
         &artifact_hash,
+        next_action,
+        contract_revision,
         semantic_hint.as_deref(),
     );
     let content = serde_json::to_string(&value).unwrap_or(summary);
@@ -841,6 +1386,7 @@ async fn execute_deck(
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
     contract: Option<&BriefContract>,
+    failures: Option<&VerifyFailureTracker>,
 ) -> ToolExecutionResult {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -860,6 +1406,7 @@ async fn execute_deck(
         context.output_root.as_deref(),
         &args.path,
     );
+    let revision = contract.map(|c| c.revision.max(1));
     match verify_deck_file_with_shapes(
         &path,
         args.slides,
@@ -873,6 +1420,8 @@ async fn execute_deck(
                 verified.report,
                 &verified.bytes,
                 Some(&verified.shapes),
+                revision,
+                failures,
                 context,
                 store,
                 semantic,
@@ -890,7 +1439,9 @@ async fn execute_artifact(
     arguments: Value,
     context: &ToolRunContext,
     store: Option<&DeliveryStore>,
+    semantic: Option<&SemanticContext>,
     contract: Option<&BriefContract>,
+    failures: Option<&VerifyFailureTracker>,
 ) -> ToolExecutionResult {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -916,6 +1467,7 @@ async fn execute_artifact(
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
+    let revision = contract.map(|c| c.revision.max(1));
     let result = match ext.as_deref() {
         Some("pptx") => match args.slides {
             Some(slides) => verify_deck_file_with_shapes(
@@ -924,7 +1476,11 @@ async fn execute_artifact(
                 &args.anchors,
                 contract,
             )
-            .map(|verified| (verified.report, verified.bytes)),
+            .map(|verified| VerifiedArtifact {
+                report: verified.report,
+                bytes: verified.bytes,
+                snippets: verified.shapes,
+            }),
             None => Err(
                 "pptx verification requires expected slide count (`slides`)"
                     .to_owned(),
@@ -943,9 +1499,18 @@ async fn execute_artifact(
         }
     };
     match result {
-        Ok((report, bytes)) => {
+        Ok(verified) => {
             finalize_report(
-                &path, &args.path, report, &bytes, None, context, store, None,
+                &path,
+                &args.path,
+                verified.report,
+                &verified.bytes,
+                Some(&verified.snippets),
+                revision,
+                failures,
+                context,
+                store,
+                semantic,
             )
             .await
         }
@@ -957,13 +1522,24 @@ async fn execute_artifact(
 }
 
 pub fn definition(store: Option<DeliveryStore>) -> Arc<ToolDefinition> {
-    definition_with_semantic_and_contract(store, None, None)
+    definition_with_options(store, None, None, None)
 }
 
+#[cfg(test)]
 pub fn definition_with_semantic_and_contract(
     store: Option<DeliveryStore>,
     semantic: Option<SemanticContext>,
     contract: Option<BriefContract>,
+) -> Arc<ToolDefinition> {
+    definition_with_options(store, semantic, contract, None)
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn definition_with_options(
+    store: Option<DeliveryStore>,
+    semantic: Option<SemanticContext>,
+    contract: Option<BriefContract>,
+    failures: Option<VerifyFailureTracker>,
 ) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_deck",
@@ -993,6 +1569,7 @@ pub fn definition_with_semantic_and_contract(
             let store = store.clone();
             let semantic = semantic.clone();
             let contract = contract.clone();
+            let failures = failures.clone();
             Box::pin(async move {
                 execute_deck(
                     args.arguments,
@@ -1000,6 +1577,7 @@ pub fn definition_with_semantic_and_contract(
                     store.as_ref(),
                     semantic.as_ref(),
                     contract.as_ref(),
+                    failures.as_ref(),
                 )
                 .await
             })
@@ -1011,9 +1589,19 @@ pub fn artifact_definition(
     store: Option<DeliveryStore>,
     contract: Option<BriefContract>,
 ) -> Arc<ToolDefinition> {
+    artifact_definition_with_options(store, None, contract, None)
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn artifact_definition_with_options(
+    store: Option<DeliveryStore>,
+    semantic: Option<SemanticContext>,
+    contract: Option<BriefContract>,
+    failures: Option<VerifyFailureTracker>,
+) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "verify_artifact",
-        "Verify a generated .docx, .xlsx, or .pptx artifact before calling publish_file. Checks OOXML structure, non-empty content, host brief filename constraints, and optional anchors (Word bookmark names for .docx; row_key, 'row_key:ColumnHeader', or cell ref like 'B2' for .xlsx; shape names + slides for .pptx). Persists a delivery gate report; a failed report is not a tool error.",
+        "Verify a generated .docx, .xlsx, or .pptx artifact before calling publish_file. Checks OOXML structure, non-empty content, host brief constraints, and required non-empty anchors (Word bookmark names for .docx; row_key, 'row_key:ColumnHeader', 'Sheet1!B2', or cell ref like 'B2' for .xlsx; shape names + slides for .pptx). Persists a delivery gate report; a failed report is not a tool error.",
         json!({
             "type": "object",
             "properties": {
@@ -1032,18 +1620,22 @@ pub fn artifact_definition(
                     }
                 }
             },
-            "required": ["path"],
+            "required": ["path", "anchors"],
             "additionalProperties": false
         }),
         move |args: ToolCallArgs, context: ToolRunContext| {
             let store = store.clone();
+            let semantic = semantic.clone();
             let contract = contract.clone();
+            let failures = failures.clone();
             Box::pin(async move {
                 execute_artifact(
                     args.arguments,
                     &context,
                     store.as_ref(),
+                    semantic.as_ref(),
                     contract.as_ref(),
+                    failures.as_ref(),
                 )
                 .await
             })
@@ -1285,6 +1877,269 @@ mod tests {
         assert_eq!(
             store.check(&broken).unwrap(),
             Some(delivery::BlockReason::VerificationFailed)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn followup_contract_inherits_slides_and_quote_while_updating_date() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-verify-followup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store = DeliveryStore::new(root.join("delivery"));
+
+        // Reference document count ("参考那份20页的旧报告") must not override target "3页".
+        let rev1 = BriefContract::from_brief(
+            "参考那份20页的旧报告，请做报价表＋3页汇报，报价 35 万，日期 2026-11-25",
+        );
+        assert_eq!(rev1.revision, 1);
+        assert_eq!(rev1.min_slides, Some(3));
+        assert_eq!(rev1.required_items.len(), 2);
+        assert_eq!(
+            rev1.pinned_facts.get("quote").map(String::as_str),
+            Some("35万")
+        );
+        assert_eq!(
+            rev1.pinned_facts.get("date").map(String::as_str),
+            Some("2026-11-25")
+        );
+
+        // Turn 2 only edits the date: must keep min_slides=3, required_items=2, quote=35万.
+        let rev2 = BriefContract::evolve(
+            Some(&rev1.to_work_contract()),
+            "只改一下日期为 2026-12-01",
+        );
+        assert_eq!(rev2.revision, 2);
+        assert_eq!(rev2.min_slides, Some(3));
+        assert_eq!(rev2.required_items.len(), 2);
+        assert_eq!(
+            rev2.pinned_facts.get("quote").map(String::as_str),
+            Some("35万")
+        );
+        assert_eq!(
+            rev2.pinned_facts.get("date").map(String::as_str),
+            Some("2026-12-01")
+        );
+
+        let tool = definition_with_options(
+            Some(store.clone()),
+            None,
+            Some(rev2.clone()),
+            None,
+        );
+
+        // Wrong quote (38万 instead of inherited 35万) must fail VALUE_MISMATCH/brief_quote.
+        let wrong_quote = root.join("wrong-quote.pptx");
+        crate::pptx::write_deck(
+            &wrong_quote,
+            "项目汇报",
+            &[
+                "日期 2026-12-01".to_owned(),
+                "报价 38万".to_owned(),
+                "结论".to_owned(),
+            ],
+        )
+        .unwrap();
+        let ToolExecutionResult::Success { value: wq, .. } = (tool.execute)(
+            ToolCallArgs {
+                call_id: "c-wq".to_owned(),
+                name: "verify_deck".to_owned(),
+                arguments: json!({
+                    "path": "wrong-quote.pptx",
+                    "slides": 3,
+                    "anchors": [
+                        {"anchor": "S0-title", "value": "项目汇报"},
+                        {"anchor": "S0-body", "value": "日期 2026-12-01"},
+                        {"anchor": "S1-title", "value": "项目汇报 · 2"},
+                        {"anchor": "S1-body", "value": "报价 38万"},
+                        {"anchor": "S2-title", "value": "项目汇报 · 3"},
+                        {"anchor": "S2-body", "value": "结论"},
+                    ],
+                }),
+            },
+            tool_context(&root),
+        )
+        .await
+        else {
+            panic!("expected structured report");
+        };
+        assert_eq!(wq["ok"], false);
+        assert_eq!(wq["contract_revision"], 2);
+        assert!(wq["issues"].as_array().unwrap().iter().any(|i| {
+            i["code"] == VALUE_MISMATCH && i["field"] == "brief_quote"
+        }));
+
+        // Correct 3 slides + inherited 35万 + updated 2026-12-01 passes and tags rev=2.
+        let good = root.join("good-rev2.pptx");
+        crate::pptx::write_deck(
+            &good,
+            "项目汇报",
+            &[
+                "日期 2026-12-01".to_owned(),
+                "报价 35万".to_owned(),
+                "结论".to_owned(),
+            ],
+        )
+        .unwrap();
+        let ToolExecutionResult::Success { value: ok_val, .. } =
+            (tool.execute)(
+                ToolCallArgs {
+                    call_id: "c-ok".to_owned(),
+                    name: "verify_deck".to_owned(),
+                    arguments: json!({
+                        "path": "good-rev2.pptx",
+                        "slides": 3,
+                        "anchors": [
+                            {"anchor": "S0-title", "value": "项目汇报"},
+                            {"anchor": "S0-body", "value": "日期 2026-12-01"},
+                            {"anchor": "S1-title", "value": "项目汇报 · 2"},
+                            {"anchor": "S1-body", "value": "报价 35万"},
+                            {"anchor": "S2-title", "value": "项目汇报 · 3"},
+                            {"anchor": "S2-body", "value": "结论"},
+                        ],
+                    }),
+                },
+                tool_context(&root),
+            )
+            .await
+        else {
+            panic!("expected structured report");
+        };
+        assert_eq!(ok_val["ok"], true);
+        assert_eq!(ok_val["contract_revision"], 2);
+        assert_eq!(
+            store
+                .latest_report(&good)
+                .unwrap()
+                .unwrap()
+                .contract_revision,
+            Some(2)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn empty_anchors_blocked_and_multisheet_xlsx_isolates_headers_and_formulas()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-verify-multisheet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store = DeliveryStore::new(root.join("delivery"));
+
+        let multi = root.join("quote.xlsx");
+        write_zip(
+            &multi,
+            &[
+                (
+                    "xl/workbook.xml",
+                    r#"<workbook><sheets><sheet name="Summary" sheetId="1"/><sheet name="Detail" sheetId="2"/></sheets></workbook>"#,
+                ),
+                (
+                    "xl/worksheets/sheet1.xml",
+                    r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Price</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Total</t></is></c><c r="B2"><f>SUM(Detail!B2:B3)</f></c></row></sheetData></worksheet>"#,
+                ),
+                (
+                    "xl/worksheets/sheet2.xml",
+                    r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>SKU</t></is></c><c r="B1" t="inlineStr"><is><t>Cost</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>A-1</t></is></c><c r="B2"><v>350000</v></c></row></sheetData></worksheet>"#,
+                ),
+            ],
+        );
+
+        let tool = artifact_definition(Some(store.clone()), None);
+        // Empty anchors must be refused as STRUCTURE/anchors.
+        let ToolExecutionResult::Success {
+            value: empty_res, ..
+        } = (tool.execute)(
+            ToolCallArgs {
+                call_id: "c-empty".to_owned(),
+                name: "verify_artifact".to_owned(),
+                arguments: json!({
+                    "path": "quote.xlsx",
+                    "anchors": [],
+                }),
+            },
+            tool_context(&root),
+        )
+        .await
+        else {
+            panic!("expected structured failed report");
+        };
+        assert_eq!(empty_res["ok"], false);
+        assert!(
+            empty_res["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| { i["code"] == STRUCTURE && i["field"] == "anchors" })
+        );
+
+        // Sheet-qualified cells, isolated Sheet 2 headers, and formula cell without <v> all pass.
+        let ToolExecutionResult::Success { value: ok_res, .. } = (tool.execute)(
+            ToolCallArgs {
+                call_id: "c-multi".to_owned(),
+                name: "verify_artifact".to_owned(),
+                arguments: json!({
+                    "path": "quote.xlsx",
+                    "anchors": [
+                        {"anchor": "Summary!A1", "value": "Item"},
+                        {"anchor": "Detail!A1", "value": "SKU"},
+                        {"anchor": "Detail!A-1:Cost", "value": "350000"},
+                        {"anchor": "Summary!B2", "value": "=SUM(Detail!B2:B3)"},
+                    ],
+                }),
+            },
+            tool_context(&root),
+        )
+        .await
+        else {
+            panic!("expected structured report");
+        };
+        assert_eq!(ok_res["ok"], true, "got {ok_res}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn second_value_mismatch_locks_rerender_once_to_clarify_or_rebuild() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-verify-rerender-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let deck = root.join("cap.pptx");
+        crate::pptx::write_deck(&deck, "T", &["actual".to_owned()]).unwrap();
+        let failures: VerifyFailureTracker =
+            Arc::new(Mutex::new(HashMap::new()));
+        let tool = definition_with_options(None, None, None, Some(failures));
+        let call = || ToolCallArgs {
+            call_id: "c-cap".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "cap.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "expected-different"},
+                ],
+            }),
+        };
+        let ToolExecutionResult::Success { value: first, .. } =
+            (tool.execute)(call(), tool_context(&root)).await
+        else {
+            panic!("first report");
+        };
+        assert_eq!(first["ok"], false);
+        assert_eq!(first["next_action"], "rerender_once");
+
+        let ToolExecutionResult::Success { value: second, .. } =
+            (tool.execute)(call(), tool_context(&root)).await
+        else {
+            panic!("second report");
+        };
+        assert_eq!(second["ok"], false);
+        assert_eq!(
+            second["next_action"], "clarify_or_rebuild",
+            "second failure on same artifact in one turn must lock next_action"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

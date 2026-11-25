@@ -17,6 +17,7 @@ use crate::run_fence::{RunFence, RunTicket};
 use crate::session::{
     DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
     SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
+    WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -256,6 +257,51 @@ impl Engine {
         })?;
         record.origin = origin;
         record.workspace = workspace;
+        inner.index.save(&self.root)
+    }
+
+    /// Persist the active versioned work contract for a session and optionally
+    /// record its revision for a specific submission.
+    pub fn set_session_work_contract(
+        &self,
+        id: &str,
+        contract: WorkContract,
+        submission_id: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        if let Some(sub_id) = submission_id {
+            record
+                .submission_revisions
+                .insert(sub_id.to_owned(), contract.revision);
+        }
+        record.work_contract = Some(contract);
+        inner.index.save(&self.root)
+    }
+
+    /// Persist a submission outcome directly (for example after an explicit
+    /// user override completes a previously partial work revision).
+    pub fn set_submission_outcome(
+        &self,
+        id: &str,
+        submission_id: &str,
+        outcome: SubmissionOutcome,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record
+            .submission_outcomes
+            .insert(submission_id.to_owned(), outcome);
         inner.index.save(&self.root)
     }
 
@@ -698,7 +744,14 @@ impl Engine {
                     if let Some(sub_id) = submission_id.as_ref() {
                         let outcome_entry = match result.outcome {
                             LoopOutcome::Completed => {
-                                SubmissionOutcome::Completed
+                                let missing = missing_required_for_submission(
+                                    record, sub_id,
+                                );
+                                if missing.is_empty() {
+                                    SubmissionOutcome::Completed
+                                } else {
+                                    SubmissionOutcome::Partial { missing }
+                                }
                             }
                             LoopOutcome::Aborted => SubmissionOutcome::Aborted,
                             LoopOutcome::Failed => SubmissionOutcome::Failed {
@@ -844,6 +897,53 @@ fn attach_artifact_receipts(
             }
         }
     }
+}
+
+fn missing_required_for_submission(
+    record: &SessionRecord,
+    submission_id: &str,
+) -> Vec<String> {
+    let Some(contract) = record.work_contract.as_ref() else {
+        return Vec::new();
+    };
+    if contract.required_items.is_empty() {
+        return Vec::new();
+    }
+    let current_rev = record
+        .submission_revisions
+        .get(submission_id)
+        .copied()
+        .unwrap_or(contract.revision);
+    let mut delivered: Vec<(String, String)> = Vec::new();
+    for message in &record.messages {
+        for block in &message.content {
+            if let ContentBlock::ToolResult {
+                artifact: Some(receipt),
+                ..
+            } = block
+                && receipt.session_id == record.id
+            {
+                let receipt_rev = record
+                    .submission_revisions
+                    .get(&receipt.submission_id)
+                    .copied()
+                    .unwrap_or(current_rev);
+                if receipt.submission_id == submission_id
+                    || receipt_rev == current_rev
+                {
+                    delivered.push((
+                        receipt.display_name.clone(),
+                        receipt.delivery_key.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    let pairs: Vec<(&str, &str)> = delivered
+        .iter()
+        .map(|(name, key)| (name.as_str(), key.as_str()))
+        .collect();
+    contract.missing_deliverables(&pairs)
 }
 
 fn delivery_commit(

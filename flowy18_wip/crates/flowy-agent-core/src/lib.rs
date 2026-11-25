@@ -21,8 +21,9 @@ pub use loop_runner::{
 };
 pub use run_fence::{RunFence, RunTicket};
 pub use session::{
-    DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
+    DeliveryCommit, DeliveryCommitter, RequiredDeliverable, SessionIndex,
+    SessionOrigin, SessionRecord, SessionWorkspace, SubmissionOutcome,
+    TurnState, WorkContract,
 };
 pub use transport::{echo_stream_fn, openai_stream_fn};
 

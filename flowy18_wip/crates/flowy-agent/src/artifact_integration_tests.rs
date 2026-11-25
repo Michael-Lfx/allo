@@ -921,3 +921,107 @@ fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
         "acceptance journal must contain lease renewal entries: {journal}"
     );
 }
+
+#[test]
+fn kernel_review_missing_required_deck_marks_work_partial_until_completed() {
+    use flowy_agent_core::SubmissionOutcome;
+
+    let scratch = Scratch::new();
+    let provider = ProviderFixture::start();
+    let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
+    let session = handle.create_home_session().unwrap();
+    let sub_id = format!("submission-{SUBMISSION:032x}");
+    let history = flowy_agent_core::SessionIndex::load(&scratch.0).unwrap();
+    let output = history
+        .get(&session)
+        .unwrap()
+        .workspace
+        .as_ref()
+        .unwrap()
+        .root
+        .join("outputs")
+        .join(&sub_id);
+    fs::create_dir_all(&output).unwrap();
+    *provider.output_root.lock().unwrap() = Some(output.clone());
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../flowy-studio/examples/fixtures/preview");
+    for name in ["sample.pdf", "sample.pptx"] {
+        fs::copy(fixtures.join(name), output.join(name)).unwrap();
+    }
+    let gate = crate::delivery::DeliveryStore::new(scratch.0.join("delivery"));
+    let failed_report = gate
+        .record_report(
+            &output.join("sample.pptx"),
+            vec![crate::delivery::Issue {
+                code: "VALUE_MISMATCH".into(),
+                field: "price".into(),
+            }],
+            1,
+        )
+        .unwrap();
+
+    handle
+        .submit_chat(
+            SUBMISSION,
+            "Deliver all three required files sales.csv, sample.pdf and sample.pptx together.",
+        )
+        .unwrap();
+    wait_for_completion(&handle, &provider, &scratch.0, &session);
+
+    // Qualified files remain visible, blocked PPT is kept out, and work-level
+    // status MUST be Partial (NOT Completed) with exact missing item list.
+    let store = handle.artifact_store().unwrap();
+    let items = store.list().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .all(|i| i.manifest.receipt.display_name != "sample.pptx")
+    );
+    let status = handle.work_status(&sub_id).expect("work status");
+    assert_eq!(status.contract_revision, Some(1));
+    assert_eq!(status.delivered_artifact_ids.len(), 2);
+    assert_eq!(status.missing_items, vec!["sample.pptx".to_owned()]);
+    assert_eq!(
+        status.outcome,
+        Some(SubmissionOutcome::Partial {
+            missing: vec!["sample.pptx".to_owned()],
+        })
+    );
+
+    // Must survive restart with the exact same work status.
+    drop(store);
+    drop(handle);
+    drop(provider);
+    let reopened =
+        AgentHandle::with_config(scratch.0.clone(), LlmConfig::default());
+    let after_restart = reopened
+        .work_status(&sub_id)
+        .expect("work status after restart");
+    assert_eq!(after_restart.contract_revision, Some(1));
+    assert_eq!(after_restart.delivered_artifact_ids.len(), 2);
+    assert_eq!(after_restart.missing_items, vec!["sample.pptx".to_owned()]);
+    assert_eq!(
+        after_restart.outcome,
+        Some(SubmissionOutcome::Partial {
+            missing: vec!["sample.pptx".to_owned()],
+        })
+    );
+
+    // Completing the missing deck via explicit user override promotes the same
+    // work to Completed with all 3 files visible.
+    let overridden_id = reopened
+        .override_deliver_artifact(
+            &session,
+            &failed_report.id,
+            &output.join("sample.pptx").display().to_string(),
+        )
+        .expect("override missing deck");
+    assert_ne!(overridden_id, "");
+    let completed = reopened
+        .work_status(&sub_id)
+        .expect("work status after completion");
+    assert_eq!(completed.outcome, Some(SubmissionOutcome::Completed));
+    assert_eq!(completed.missing_items, Vec::<String>::new());
+    assert_eq!(completed.delivered_artifact_ids.len(), 3);
+}

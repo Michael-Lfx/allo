@@ -34,10 +34,12 @@ pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, ReceiptState,
-    SessionOrigin, SessionWorkspace, SubmissionOutcome,
+    RequiredDeliverable, SessionOrigin, SessionWorkspace, SubmissionOutcome,
+    WorkContract,
 };
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary,
+    WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{
