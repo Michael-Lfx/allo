@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Die Aufgabe schließt die Auslieferung ab und kann jetzt nicht abgebrochen werden.",
+  "notice.receipt_quarantined": "Eine wartende Aufgabe wurde zur Prüfung isoliert.",
+  "board.receipt_retrying": "Wiederholung",
+  "board.receipt_dead": "Fehlgeschlagen · Neu",
+  "board.receipt_quarantined": "Isoliert",
+  "board.receipt_cancelled": "Abgebrochen",
+  "board.cancel_receipt": "Warteschlange abbrechen",
+  "board.retry_dead_receipt": "Erneut einreihen",
+  "board.contract_progress": "Vertrag {done}/{total}",
+  "board.contract_missing": "Fehlt: {items}"
 }

@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use flowy_agent::{ChatLine, FileEntry};
+use flowy_agent::{ChatLine, FileEntry, ReceiptState};
 use flowy_ui as theme;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, Image,
@@ -591,7 +591,31 @@ impl StudioPanel {
             }
             InspectedWork::Receipt(receipt) => {
                 let owner = self.receipt_owner(receipt);
-                let hint = receipt.session_hint.clone();
+                let hint = receipt
+                    .target_session_id
+                    .clone()
+                    .or_else(|| receipt.session_hint.clone());
+                let state = self
+                    .agent
+                    .receipt_state(&receipt.id)
+                    .unwrap_or(ReceiptState::Queued);
+                let (state_fg, state_label, _) =
+                    self.receipt_state_visual(state);
+                let work_progress =
+                    self.agent.work_status(&receipt.id).and_then(|s| {
+                        crate::ports::WorkContractProgress::from_status(&s)
+                    });
+                let cancel_id = receipt.id.clone();
+                let retry_id = receipt.id.clone();
+                let can_cancel = matches!(
+                    state,
+                    ReceiptState::Queued
+                        | ReceiptState::Running
+                        | ReceiptState::Retrying
+                );
+                let is_dead = state == ReceiptState::Dead;
+                let retrying = self.retrying_receipt.as_deref()
+                    == Some(receipt.id.as_str());
                 div()
                     .w_full()
                     .p(self.theme.space(12.))
@@ -624,8 +648,8 @@ impl StudioPanel {
                                     )
                                     .child(status_pill(
                                         self.theme.soft(),
-                                        self.theme.muted(),
-                                        self.t("chat.bg_task_queued"),
+                                        state_fg,
+                                        state_label,
                                         None,
                                     )),
                             )
@@ -640,23 +664,151 @@ impl StudioPanel {
                                     .whitespace_normal()
                                     .child(receipt.text.clone()),
                             )
-                            .when_some(hint, |card, session_id| {
+                            .when_some(work_progress, |card, progress| {
+                                let total = progress.required_labels.len().max(
+                                    progress.delivered_count
+                                        + progress.missing_items.len(),
+                                );
+                                let summary = self.tf(
+                                    "board.contract_progress",
+                                    &[
+                                        (
+                                            "done",
+                                            &progress
+                                                .delivered_count
+                                                .to_string(),
+                                        ),
+                                        ("total", &total.to_string()),
+                                    ],
+                                );
                                 card.child(
-                                    theme::Button::new(
-                                        "receipt-inspector-open",
-                                        self.t("drawer.work_open_session"),
-                                    )
-                                    .variant(theme::ControlVariant::Secondary)
-                                    .size(theme::ControlSize::Small)
-                                    .render(
-                                        &self.theme,
-                                        cx.listener(move |panel, _, _, cx| {
-                                            panel.open_session(&session_id, cx);
-                                            panel.close_right_sheet(cx);
-                                        }),
-                                    ),
+                                    div()
+                                        .w_full()
+                                        .px(self.theme.space(8.))
+                                        .py(px(6.))
+                                        .rounded_lg()
+                                        .bg(self.theme.soft().opacity(0.6))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(
+                                                    FontWeight::SEMIBOLD,
+                                                )
+                                                .text_color(self.theme.ink())
+                                                .child(summary),
+                                        )
+                                        .when(
+                                            !progress.missing_items.is_empty(),
+                                            |col| {
+                                                col.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(
+                                                            self.theme
+                                                                .status_attention(
+                                                                ),
+                                                        )
+                                                        .whitespace_normal()
+                                                        .child(self.tf(
+                                                            "board.contract_missing",
+                                                            &[(
+                                                                "items",
+                                                                &progress
+                                                                    .missing_items
+                                                                    .join(", "),
+                                                            )],
+                                                        )),
+                                                )
+                                            },
+                                        ),
                                 )
-                            }),
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(self.theme.space(8.))
+                                    .when_some(hint, |row, session_id| {
+                                        row.child(
+                                            theme::Button::new(
+                                                "receipt-inspector-open",
+                                                self.t(
+                                                    "drawer.work_open_session",
+                                                ),
+                                            )
+                                            .variant(
+                                                theme::ControlVariant::Secondary,
+                                            )
+                                            .size(theme::ControlSize::Small)
+                                            .render(
+                                                &self.theme,
+                                                cx.listener(
+                                                    move |panel, _, _, cx| {
+                                                        panel.open_session(
+                                                            &session_id, cx,
+                                                        );
+                                                        panel
+                                                            .close_right_sheet(
+                                                                cx,
+                                                            );
+                                                    },
+                                                ),
+                                            ),
+                                        )
+                                    })
+                                    .when(is_dead, |row| {
+                                        row.child(
+                                            theme::Button::new(
+                                                "receipt-inspector-retry",
+                                                self.t(
+                                                    "board.retry_dead_receipt",
+                                                ),
+                                            )
+                                            .variant(
+                                                theme::ControlVariant::Primary,
+                                            )
+                                            .size(theme::ControlSize::Small)
+                                            .disabled(retrying)
+                                            .render(
+                                                &self.theme,
+                                                cx.listener(
+                                                    move |panel, _, _, cx| {
+                                                        panel
+                                                            .retry_dead_receipt(
+                                                                &retry_id, cx,
+                                                            );
+                                                    },
+                                                ),
+                                            ),
+                                        )
+                                    })
+                                    .when(can_cancel, |row| {
+                                        row.child(
+                                            theme::Button::new(
+                                                "receipt-inspector-cancel",
+                                                self.t("board.cancel_receipt"),
+                                            )
+                                            .variant(
+                                                theme::ControlVariant::Ghost,
+                                            )
+                                            .size(theme::ControlSize::Small)
+                                            .render(
+                                                &self.theme,
+                                                cx.listener(
+                                                    move |panel, _, _, cx| {
+                                                        panel.cancel_receipt(
+                                                            &cancel_id, cx,
+                                                        );
+                                                    },
+                                                ),
+                                            ),
+                                        )
+                                    }),
+                            ),
                     )
                     .into_any_element()
             }

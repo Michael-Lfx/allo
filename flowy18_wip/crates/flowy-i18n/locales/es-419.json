@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "La tarea está finalizando la entrega y no se puede cancelar ahora.",
+  "notice.receipt_quarantined": "Una tarea en cola se puso en cuarentena para inspección.",
+  "board.receipt_retrying": "Reintentando",
+  "board.receipt_dead": "Error · Reintentar",
+  "board.receipt_quarantined": "En cuarentena",
+  "board.receipt_cancelled": "Cancelada",
+  "board.cancel_receipt": "Cancelar en cola",
+  "board.retry_dead_receipt": "Volver a poner en cola",
+  "board.contract_progress": "Contrato {done}/{total}",
+  "board.contract_missing": "Faltan: {items}"
 }

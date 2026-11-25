@@ -871,5 +871,15 @@
   "board.skill_work": "작업",
   "env.state_ready": "준비됨",
   "env.state_setup": "설정 필요",
-  "project.open_board": "워크 보드에서 보기"
+  "project.open_board": "워크 보드에서 보기",
+  "notice.cancel_finalizing": "결과물 마무리 단계여서 지금은 취소할 수 없습니다.",
+  "notice.receipt_quarantined": "대기 작업이 격리되었습니다. 세부 정보를 확인하세요.",
+  "board.receipt_retrying": "재시도 대기",
+  "board.receipt_dead": "실패 · 재시도",
+  "board.receipt_quarantined": "격리됨",
+  "board.receipt_cancelled": "취소됨",
+  "board.cancel_receipt": "대기 취소",
+  "board.retry_dead_receipt": "다시 대기열에 추가",
+  "board.contract_progress": "납품 계약 {done}/{total}",
+  "board.contract_missing": "누락됨: {items}"
 }

@@ -871,5 +871,15 @@
   "board.skill_work": "任務",
   "env.state_ready": "就緒",
   "env.state_setup": "待設定",
-  "project.open_board": "在工作台看板檢視"
+  "project.open_board": "在工作台看板檢視",
+  "notice.cancel_finalizing": "任務正在交付收尾，暫時無法取消。",
+  "notice.receipt_quarantined": "一筆排隊任務已被隔離，請檢查詳情。",
+  "board.receipt_retrying": "等待重試",
+  "board.receipt_dead": "已失敗 · 待重試",
+  "board.receipt_quarantined": "已隔離",
+  "board.receipt_cancelled": "已取消",
+  "board.cancel_receipt": "取消排隊",
+  "board.retry_dead_receipt": "重新入隊執行",
+  "board.contract_progress": "交付契約 {done}/{total}",
+  "board.contract_missing": "仍缺少：{items}"
 }

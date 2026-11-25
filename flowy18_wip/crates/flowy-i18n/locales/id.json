@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Tugas sedang menyelesaikan pengiriman dan tidak dapat dibatalkan sekarang.",
+  "notice.receipt_quarantined": "Tugas dalam antrean dikarantina untuk diperiksa.",
+  "board.receipt_retrying": "Mencoba ulang",
+  "board.receipt_dead": "Gagal · Ulangi",
+  "board.receipt_quarantined": "Dikarantina",
+  "board.receipt_cancelled": "Dibatalkan",
+  "board.cancel_receipt": "Batalkan antrean",
+  "board.retry_dead_receipt": "Antrekan ulang",
+  "board.contract_progress": "Kontrak {done}/{total}",
+  "board.contract_missing": "Kurang: {items}"
 }

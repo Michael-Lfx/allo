@@ -871,5 +871,15 @@
   "board.skill_work": "任务",
   "env.state_ready": "就绪",
   "env.state_setup": "待配置",
-  "project.open_board": "在工作台看板查看"
+  "project.open_board": "在工作台看板查看",
+  "notice.cancel_finalizing": "任务正在交付收尾，暂不可取消。",
+  "notice.receipt_quarantined": "一条排队任务已被隔离，请检查详情。",
+  "board.receipt_retrying": "等待重试",
+  "board.receipt_dead": "已失败 · 待重试",
+  "board.receipt_quarantined": "已隔离",
+  "board.receipt_cancelled": "已取消",
+  "board.cancel_receipt": "取消排队",
+  "board.retry_dead_receipt": "重新入队执行",
+  "board.contract_progress": "交付契约 {done}/{total}",
+  "board.contract_missing": "仍缺少：{items}"
 }

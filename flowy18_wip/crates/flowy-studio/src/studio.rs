@@ -390,6 +390,11 @@ impl crate::panel::StudioPanel {
             } else {
                 preview
             };
+            let state = self
+                .agent
+                .receipt_state(&receipt.id)
+                .unwrap_or(flowy_agent::ReceiptState::Queued);
+            let (state_fg, state_label, _) = self.receipt_state_visual(state);
             let inspect_receipt = receipt.clone();
             panel = panel.child(
                 theme::interactive(
@@ -442,8 +447,8 @@ impl crate::panel::StudioPanel {
                         .rounded_md()
                         .bg(self.theme.soft())
                         .text_xs()
-                        .text_color(self.theme.muted())
-                        .child(self.t("chat.bg_task_queued")),
+                        .text_color(state_fg)
+                        .child(state_label),
                 )
                 .child(
                     theme::icons::chevron_right()

@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Görev teslimatı tamamlıyor ve şu anda iptal edilemez.",
+  "notice.receipt_quarantined": "Kuyruktaki bir görev inceleme için karantinaya alındı.",
+  "board.receipt_retrying": "Yeniden deneniyor",
+  "board.receipt_dead": "Başarısız · Tekrar",
+  "board.receipt_quarantined": "Karantinada",
+  "board.receipt_cancelled": "İptal edildi",
+  "board.cancel_receipt": "Kuyruktan iptal et",
+  "board.retry_dead_receipt": "Yeniden sıraya al",
+  "board.contract_progress": "Sözleşme {done}/{total}",
+  "board.contract_missing": "Eksik: {items}"
 }

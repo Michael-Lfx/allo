@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "A tarefa está a finalizar a entrega e não pode ser cancelada agora.",
+  "notice.receipt_quarantined": "Uma tarefa em fila foi colocada em quarentena para inspeção.",
+  "board.receipt_retrying": "A tentar novamente",
+  "board.receipt_dead": "Falhou · Repetir",
+  "board.receipt_quarantined": "Em quarentena",
+  "board.receipt_cancelled": "Cancelada",
+  "board.cancel_receipt": "Cancelar fila",
+  "board.retry_dead_receipt": "Voltar a colocar em fila",
+  "board.contract_progress": "Contrato {done}/{total}",
+  "board.contract_missing": "Em falta: {items}"
 }

@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Завдання завершує доставку й наразі не може бути скасоване.",
+  "notice.receipt_quarantined": "Завдання в черзі переведено в карантин для перевірки.",
+  "board.receipt_retrying": "Повторна спроба",
+  "board.receipt_dead": "Помилка · Повторити",
+  "board.receipt_quarantined": "У карантині",
+  "board.receipt_cancelled": "Скасовано",
+  "board.cancel_receipt": "Скасувати в черзі",
+  "board.retry_dead_receipt": "Поставити знову в чергу",
+  "board.contract_progress": "Контракт {done}/{total}",
+  "board.contract_missing": "Бракує: {items}"
 }

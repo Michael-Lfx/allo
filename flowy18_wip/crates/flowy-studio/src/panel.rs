@@ -6,8 +6,9 @@ use crate::feed::{
 };
 use crate::starter::catalog::Category;
 use flowy_agent::{
-    AgentHandle, AgentWorkspace, FileEntry, LlmConfig, Model, Plan,
-    ProviderCatalog, SessionOrigin,
+    AgentHandle, AgentWorkspace, CancelOutcome, CardAction, CardActionOutcome,
+    FileEntry, LlmConfig, Model, Plan, ProviderCatalog, ReceiptState,
+    SessionOrigin, TaskTarget,
 };
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
@@ -131,6 +132,12 @@ pub struct StudioPanel {
     /// Backed by the acceptance journal, not by this field: it is re-read from
     /// disk, so a restart still shows what was accepted.
     pub(crate) pending_receipts: Vec<flowy_agent::AcceptedMessage>,
+    /// Receipts that entered a terminal/blocked failure state (`Dead` or
+    /// `Quarantined`) during this run, surfaced on the board for inspection
+    /// and `CardAction::RetryDeadReceipt`.
+    pub(crate) failed_receipts: Vec<(String, ReceiptState)>,
+    /// Receipt currently being requeued via `CardAction::RetryDeadReceipt`.
+    pub(crate) retrying_receipt: Option<String>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -304,7 +311,10 @@ impl StudioPanel {
             "→ AgentHandle::with_config"
         );
         let agent = if background {
-            AgentHandle::with_config_background(store_root.clone(), llm)
+            let handle =
+                AgentHandle::with_config_background(store_root.clone(), llm);
+            handle.set_autonomous_drain(true);
+            handle
         } else {
             AgentHandle::with_config(store_root.clone(), llm)
         };
@@ -496,6 +506,8 @@ impl StudioPanel {
             feed,
             composer,
             pending_receipts,
+            failed_receipts: Vec::new(),
+            retrying_receipt: None,
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -594,19 +606,22 @@ impl StudioPanel {
                         panel.last_elapsed = elapsed;
                         panel.refresh_working(cx);
                     }
-                    // Level-triggered drain: a restart, a crashed lease, or an
-                    // expired backoff all become a run without another submit.
-                    let now = std::time::Instant::now();
-                    let due = panel.last_drain_check.is_none_or(|last| {
-                        now.duration_since(last) >= Duration::from_secs(5)
-                    });
-                    if due
-                        && panel.initialized
-                        && !panel.submission_pending
-                        && !panel.status.is_busy()
-                    {
-                        panel.last_drain_check = Some(now);
-                        panel.refresh_pending_receipts(cx);
+                    if !panel.agent.autonomous_drain() {
+                        // Legacy caller-driven drain kept only for deterministic
+                        // `StudioPanel::new` unit tests; production relies on
+                        // kernel autonomous drain + `AgentUpdate::Receipt`.
+                        let now = std::time::Instant::now();
+                        let due = panel.last_drain_check.is_none_or(|last| {
+                            now.duration_since(last) >= Duration::from_secs(5)
+                        });
+                        if due
+                            && panel.initialized
+                            && !panel.submission_pending
+                            && !panel.status.is_busy()
+                        {
+                            panel.last_drain_check = Some(now);
+                            panel.refresh_pending_receipts(cx);
+                        }
                     }
                 });
                 if ok.is_err() {
@@ -670,12 +685,39 @@ impl StudioPanel {
         {
             cx.emit(StudioEvent::ArtifactsChanged);
         }
+        let mut receipt_changed = false;
+        let mut receipt_notice: Option<&'static str> = None;
+        for update in &updates {
+            if let flowy_agent::AgentUpdate::Receipt { id, state } = update {
+                receipt_changed = true;
+                self.record_receipt_state(id, *state);
+                match state {
+                    ReceiptState::Dead => {
+                        receipt_notice = Some("notice.receipt_gave_up");
+                    }
+                    ReceiptState::Quarantined => {
+                        receipt_notice = Some("notice.receipt_quarantined");
+                    }
+                    ReceiptState::Retrying if self.agent.autonomous_drain() => {
+                        receipt_notice = Some("notice.receipt_retrying");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if receipt_changed {
+            self.pending_receipts = self.agent.pending_acceptances();
+        }
+        if let Some(key) = receipt_notice {
+            self.emit_notice(Some(key), cx);
+        }
         if updates.iter().any(|update| {
             matches!(update, flowy_agent::AgentUpdate::StorageError)
         }) {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
         let structural_update = initialized
+            || receipt_changed
             || updates.iter().any(|update| {
                 matches!(
                     update,
@@ -701,16 +743,47 @@ impl StudioPanel {
                 self.refresh_board_snapshot();
             }
         }
-        let background_claim_settled = self.agent.has_active_claim()
-            && self
-                .agent
-                .claimed_session_status()
-                .is_none_or(|status| !status.is_busy());
-        if initialized || background_claim_settled {
-            // Startup is a level, not an edge: a receipt accepted by the
-            // previous process must start without a second submit, and a
-            // claim running in a background session must settle when it ends.
-            self.refresh_pending_receipts(cx);
+        if !self.agent.autonomous_drain() {
+            let background_claim_settled = self.agent.has_active_claim()
+                && self
+                    .agent
+                    .claimed_session_status()
+                    .is_none_or(|status| !status.is_busy());
+            if initialized || background_claim_settled {
+                // Startup is a level, not an edge: a receipt accepted by the
+                // previous process must start without a second submit, and a
+                // claim running in a background session must settle when it ends.
+                self.refresh_pending_receipts(cx);
+            }
+        } else if initialized {
+            self.pending_receipts = self.agent.pending_acceptances();
+            self.refresh_board_snapshot();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn record_receipt_state(
+        &mut self,
+        id: &str,
+        state: ReceiptState,
+    ) {
+        match state {
+            ReceiptState::Dead | ReceiptState::Quarantined => {
+                if let Some(entry) =
+                    self.failed_receipts.iter_mut().find(|(rid, _)| rid == id)
+                {
+                    entry.1 = state;
+                } else {
+                    self.failed_receipts.push((id.to_owned(), state));
+                }
+            }
+            ReceiptState::Queued
+            | ReceiptState::Running
+            | ReceiptState::Retrying
+            | ReceiptState::Completed
+            | ReceiptState::Cancelled => {
+                self.failed_receipts.retain(|(rid, _)| rid != id);
+            }
         }
     }
 
@@ -726,10 +799,12 @@ impl StudioPanel {
             self.refresh_working(cx);
             cx.notify();
             if was_busy && !self.status.is_busy() {
-                // A finished turn is the moment the queue could shrink once
-                // draining exists; refreshing here keeps the strip honest
-                // without waiting for the next submission.
-                self.refresh_pending_receipts(cx);
+                if self.agent.autonomous_drain() {
+                    self.pending_receipts = self.agent.pending_acceptances();
+                } else {
+                    // Legacy caller-driven drain path for deterministic unit tests.
+                    self.refresh_pending_receipts(cx);
+                }
                 cx.emit(StudioEvent::TurnFinished);
             }
         }
@@ -1095,12 +1170,19 @@ impl StudioPanel {
         Ok(())
     }
 
-    /// Marks the cloud route ready and immediately checks if any queued
-    /// receipts were waiting for the catalog to finish loading.
+    /// Marks the cloud route ready and wakes autonomous draining (or runs the
+    /// legacy check in deterministic test mode) for any pre-ready receipts.
     pub fn notify_cloud_ready(&mut self, cx: &mut Context<'_, Self>) {
         self.cloud_ready = true;
         self.refresh_local_env();
-        if self.initialized {
+        if self.agent.autonomous_drain() {
+            // `AgentHandle::apply_config` does not auto-wake autonomous drain;
+            // re-enabling calls `kick_autonomous_drain()` once config is live.
+            self.agent.set_autonomous_drain(true);
+            self.pending_receipts = self.agent.pending_acceptances();
+            self.refresh_board_snapshot();
+            cx.notify();
+        } else if self.initialized {
             self.refresh_pending_receipts(cx);
         } else {
             cx.notify();
@@ -1267,11 +1349,11 @@ impl StudioPanel {
             self.emit_notice(Some("verify.override.missing_report"), cx);
             return;
         }
-        match self.agent.override_deliver_artifact(
-            session_id,
-            report_id,
-            artifact_path,
-        ) {
+        match self.agent.apply_card_action(CardAction::OverrideDeliver {
+            session_id: session_id.to_owned(),
+            report_id: report_id.to_owned(),
+            artifact_path: artifact_path.to_owned(),
+        }) {
             Ok(_) => {
                 if let Ok(store) = self.agent.artifact_store()
                     && let Ok(records) = store.list()
@@ -1512,7 +1594,14 @@ impl StudioPanel {
                     // The receipt is the feedback now. Saying "added to this
                     // session's task list" while no such list existed was a
                     // lie; `pending_receipts` is rendered by `workspace()`.
-                    self.refresh_pending_receipts(cx);
+                    if self.agent.autonomous_drain() {
+                        self.pending_receipts =
+                            self.agent.pending_acceptances();
+                        self.refresh_board_snapshot();
+                        cx.notify();
+                    } else {
+                        self.refresh_pending_receipts(cx);
+                    }
                 }
                 Err(error) => self.emit_notice(Some(error), cx),
             }
@@ -1550,7 +1639,8 @@ impl StudioPanel {
             let stopped = if let Ok(session_id) = &result
                 && worker_stop.load(Ordering::Acquire)
             {
-                worker_agent.stop_if_active(Some(session_id));
+                let _ = worker_agent
+                    .cancel_task(TaskTarget::Session(session_id.clone()));
                 true
             } else {
                 false
@@ -1568,7 +1658,8 @@ impl StudioPanel {
                 let session_id = session_id.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        agent.stop_if_active(Some(&session_id));
+                        let _ =
+                            agent.cancel_task(TaskTarget::Session(session_id));
                     })
                     .detach();
             }
@@ -1630,7 +1721,10 @@ impl StudioPanel {
         cx.notify();
         let job_expected = expected.clone();
         let job = cx.background_executor().spawn(async move {
-            let result = agent.retry_delivery(Some(&job_expected));
+            let result = agent.apply_card_action(CardAction::RetryDelivery {
+                session_id: job_expected,
+                submission_id: None,
+            });
             let updates = agent.drain_updates();
             (result, updates)
         });
@@ -1655,21 +1749,49 @@ impl StudioPanel {
         .detach();
     }
 
+    fn cancel_task_target(&self, target: TaskTarget, cx: &Context<'_, Self>) {
+        let agent = self.agent.clone();
+        let job = cx.background_executor().spawn(async move {
+            let outcome = agent.cancel_task(target);
+            let updates = agent.drain_updates();
+            (outcome, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (outcome, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                panel.process_agent_updates(updates, cx);
+                match outcome {
+                    Ok(
+                        CancelOutcome::Cancelled
+                        | CancelOutcome::AlreadySettled,
+                    ) => {
+                        panel.pending_receipts =
+                            panel.agent.pending_acceptances();
+                        panel.refresh_chat(cx);
+                        panel.refresh_board_snapshot();
+                    }
+                    Ok(CancelOutcome::FinalizingNotCancellable) => {
+                        panel.emit_notice(Some("notice.cancel_finalizing"), cx);
+                    }
+                    Err(error) => {
+                        panel.emit_notice(Some(error), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {
         if self.submission_pending {
             if let Some(stop) = &self.submission_stop {
                 stop.store(true, Ordering::Release);
             }
-        } else {
-            let agent = self.agent.clone();
-            let expected = agent.active_session_id();
-            cx.background_executor()
-                .spawn(async move {
-                    agent.stop_if_active(expected.as_deref());
-                })
-                .detach();
+            cx.notify();
+        } else if let Some(session_id) = self.agent.active_session_id() {
+            self.cancel_task_target(TaskTarget::Session(session_id), cx);
         }
-        cx.notify();
     }
 
     pub fn fill_prompt(&mut self, text: &str, cx: &mut Context<'_, Self>) {
@@ -1838,20 +1960,77 @@ impl StudioPanel {
             .map_or(0, |files| files.len())
     }
 
-    /// Requests a graceful stop for one specific background or active session.
+    /// Requests a graceful stop for one specific background or active session
+    /// without coupling cancellation to whichever session is currently focused.
     pub(crate) fn stop_session_turn(
         &self,
         session_id: &str,
+        cx: &Context<'_, Self>,
+    ) {
+        self.cancel_task_target(TaskTarget::Session(session_id.to_owned()), cx);
+    }
+
+    /// Cancels a queued or active deferred acceptance receipt directly.
+    pub(crate) fn cancel_receipt(
+        &self,
+        receipt_id: &str,
+        cx: &Context<'_, Self>,
+    ) {
+        self.cancel_task_target(TaskTarget::Receipt(receipt_id.to_owned()), cx);
+    }
+
+    /// Requeues a `Dead` receipt through the kernel's unified card-action
+    /// gateway and clears the old dead entry on success so it cannot linger.
+    pub(crate) fn retry_dead_receipt(
+        &mut self,
+        receipt_id: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        let agent = self.agent.clone();
-        let target = session_id.to_owned();
-        cx.background_executor()
-            .spawn(async move {
-                agent.stop_if_active(Some(&target));
-            })
-            .detach();
+        if self.retrying_receipt.as_deref() == Some(receipt_id) {
+            return;
+        }
+        self.retrying_receipt = Some(receipt_id.to_owned());
         cx.notify();
+        let agent = self.agent.clone();
+        let target_id = receipt_id.to_owned();
+        let job_id = target_id.clone();
+        let job = cx.background_executor().spawn(async move {
+            let result =
+                agent.apply_card_action(CardAction::RetryDeadReceipt {
+                    receipt_id: job_id,
+                });
+            let updates = agent.drain_updates();
+            (result, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (result, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                if panel.retrying_receipt.as_deref() == Some(target_id.as_str())
+                {
+                    panel.retrying_receipt = None;
+                }
+                panel.process_agent_updates(updates, cx);
+                match result {
+                    Ok(CardActionOutcome::ReceiptRequeued { .. }) => {
+                        panel
+                            .failed_receipts
+                            .retain(|(rid, _)| rid != &target_id);
+                        panel.pending_receipts =
+                            panel.agent.pending_acceptances();
+                        panel.refresh_board_snapshot();
+                        panel.emit_notice(None, cx);
+                    }
+                    Ok(_) => {
+                        panel.pending_receipts =
+                            panel.agent.pending_acceptances();
+                        panel.refresh_board_snapshot();
+                    }
+                    Err(error) => panel.emit_notice(Some(error), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Picks a file to preview; `None` returns the drawer to the list.
@@ -2038,6 +2217,7 @@ impl StudioPanel {
         self.board_snapshot = self.agent.build_board_snapshot(
             &self.projects,
             &self.pending_receipts,
+            &self.failed_receipts,
             &default_label,
             self.board_generation,
         );
@@ -2130,6 +2310,11 @@ impl StudioPanel {
                     matches!(
                         branch.phase,
                         crate::ports::BranchPhase::NeedsApproval { .. }
+                            | crate::ports::BranchPhase::Queued {
+                                state: ReceiptState::Dead
+                                    | ReceiptState::Quarantined,
+                                ..
+                            }
                     )
                 })
                 .map(|branch| (group.session_id.clone(), branch.id.clone()))
@@ -3559,6 +3744,102 @@ mod tests {
             }));
         });
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn dead_receipt_lifecycle_tracks_and_clears_failed_receipt_state(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "dead-receipt-state");
+        panel.update(cx, |panel, cx| {
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Receipt {
+                    id: "rcpt-dead-1".into(),
+                    state: ReceiptState::Dead,
+                }],
+                cx,
+            );
+            assert_eq!(
+                panel.failed_receipts,
+                vec![("rcpt-dead-1".to_owned(), ReceiptState::Dead)]
+            );
+            assert_eq!(panel.notice, Some("notice.receipt_gave_up"));
+
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Receipt {
+                    id: "rcpt-dead-1".into(),
+                    state: ReceiptState::Cancelled,
+                }],
+                cx,
+            );
+            assert_eq!(panel.failed_receipts.len(), 0);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn autonomous_drain_notify_cloud_ready_wakes_queued_receipt(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-auto-cloud-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let panel = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: "flowy".into(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.agent.set_autonomous_drain(true);
+            let receipt = panel
+                .agent
+                .accept_deferred("wake after cloud ready")
+                .expect("accepted");
+            assert_eq!(panel.agent.pending_acceptances().len(), 1);
+            // Switch to runnable local echo config without manually calling
+            // `run_accepted_once`; `notify_cloud_ready` must wake autonomous drain.
+            panel
+                .agent
+                .apply_config(LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: String::new(),
+                    ..LlmConfig::default()
+                })
+                .expect("apply runnable config");
+            panel.notify_cloud_ready(cx);
+            assert!(panel.agent.autonomous_drain());
+            let _ = receipt;
+        });
+        drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
 }

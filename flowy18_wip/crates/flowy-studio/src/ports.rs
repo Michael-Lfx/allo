@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use flowy_agent::{
-    AcceptedMessage, AgentHandle, ChatLine, ReceiptState, SessionSummary,
+    AcceptedMessage, AgentHandle, ChatLine, ReceiptState, RequiredDeliverable,
+    SessionSummary, SubmissionOutcome, WorkStatus,
 };
 use serde::Serialize;
 
@@ -130,6 +131,42 @@ impl SkillLabel {
     }
 }
 
+/// Read-only projection of a kernel `WorkStatus` contract for one work branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkContractProgress {
+    pub work_id: String,
+    pub contract_revision: Option<u32>,
+    pub required_labels: Vec<String>,
+    pub delivered_count: usize,
+    pub missing_items: Vec<String>,
+    pub outcome: Option<SubmissionOutcome>,
+}
+
+impl WorkContractProgress {
+    #[must_use]
+    pub fn from_status(status: &WorkStatus) -> Option<Self> {
+        let has_contract = !status.required_items.is_empty()
+            || !status.missing_items.is_empty()
+            || status.outcome.is_some()
+            || !status.delivered_artifact_ids.is_empty();
+        if !has_contract {
+            return None;
+        }
+        Some(Self {
+            work_id: status.work_id.clone(),
+            contract_revision: status.contract_revision,
+            required_labels: status
+                .required_items
+                .iter()
+                .map(RequiredDeliverable::label)
+                .collect(),
+            delivered_count: status.delivered_artifact_ids.len(),
+            missing_items: status.missing_items.clone(),
+            outcome: status.outcome.clone(),
+        })
+    }
+}
+
 /// One visual flow branch inside a session swimlane / modal flowchart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkBranchSummary {
@@ -141,6 +178,7 @@ pub struct WorkBranchSummary {
     pub format: DeliverableFormat,
     pub progress_pct: f32,
     pub detail: String,
+    pub work_progress: Option<WorkContractProgress>,
 }
 
 /// Session-layered aggregation displayed on the Global Visual Board.
@@ -191,9 +229,45 @@ pub trait BoardDataSource {
         &self,
         projects: &[Project],
         pending_receipts: &[AcceptedMessage],
+        failed_receipts: &[(String, ReceiptState)],
         default_space_label: &str,
         generation: u64,
     ) -> WorkBoardSnapshot;
+}
+
+const fn receipt_progress_pct(state: ReceiptState) -> f32 {
+    match state {
+        ReceiptState::Queued => 15.0,
+        ReceiptState::Retrying => 25.0,
+        ReceiptState::Running => 45.0,
+        ReceiptState::Quarantined | ReceiptState::Dead => 10.0,
+        ReceiptState::Completed => 100.0,
+        ReceiptState::Cancelled => 0.0,
+    }
+}
+
+const fn branch_is_blocker(phase: &BranchPhase) -> bool {
+    matches!(
+        phase,
+        BranchPhase::NeedsApproval { .. }
+            | BranchPhase::Queued {
+                state: ReceiptState::Dead | ReceiptState::Quarantined,
+                ..
+            }
+    )
+}
+
+const fn branch_is_running(phase: &BranchPhase) -> bool {
+    matches!(
+        phase,
+        BranchPhase::Running { .. }
+            | BranchPhase::Queued {
+                state: ReceiptState::Queued
+                    | ReceiptState::Running
+                    | ReceiptState::Retrying,
+                ..
+            }
+    )
 }
 
 impl BoardDataSource for AgentHandle {
@@ -201,6 +275,7 @@ impl BoardDataSource for AgentHandle {
         &self,
         projects: &[Project],
         pending_receipts: &[AcceptedMessage],
+        failed_receipts: &[(String, ReceiptState)],
         default_space_label: &str,
         generation: u64,
     ) -> WorkBoardSnapshot {
@@ -213,16 +288,49 @@ impl BoardDataSource for AgentHandle {
             .map(|project| (project.id.as_str(), project))
             .collect();
 
-        // Group queued receipts by optional session_hint.
+        // Group pending + failed/quarantined receipts by optional session owner.
         let mut receipts_by_session: HashMap<
-            Option<&str>,
-            Vec<&AcceptedMessage>,
+            Option<String>,
+            Vec<(AcceptedMessage, ReceiptState)>,
         > = HashMap::new();
+        let mut seen_receipt_ids = HashSet::new();
         for receipt in pending_receipts {
-            receipts_by_session
-                .entry(receipt.session_hint.as_deref())
-                .or_default()
-                .push(receipt);
+            if seen_receipt_ids.insert(receipt.id.clone()) {
+                let state = self
+                    .receipt_state(&receipt.id)
+                    .unwrap_or(ReceiptState::Queued);
+                let owner = receipt
+                    .target_session_id
+                    .clone()
+                    .or_else(|| receipt.session_hint.clone());
+                receipts_by_session
+                    .entry(owner)
+                    .or_default()
+                    .push((receipt.clone(), state));
+            }
+        }
+        for (failed_id, fallback_state) in failed_receipts {
+            if !seen_receipt_ids.insert(failed_id.clone()) {
+                continue;
+            }
+            if let Some(receipt) = self.receipt_by_id(failed_id) {
+                let state =
+                    self.receipt_state(failed_id).unwrap_or(*fallback_state);
+                if matches!(
+                    state,
+                    ReceiptState::Completed | ReceiptState::Cancelled
+                ) {
+                    continue;
+                }
+                let owner = receipt
+                    .target_session_id
+                    .clone()
+                    .or_else(|| receipt.session_hint.clone());
+                receipts_by_session
+                    .entry(owner)
+                    .or_default()
+                    .push((receipt, state));
+            }
         }
 
         let mut groups = Vec::with_capacity(sessions.len());
@@ -235,7 +343,7 @@ impl BoardDataSource for AgentHandle {
             let lines = self.session_lines(&summary.id);
             let is_busy = busy_ids.contains(&summary.id);
             let session_receipts = receipts_by_session
-                .remove(&Some(summary.id.as_str()))
+                .remove(&Some(summary.id.clone()))
                 .unwrap_or_default();
 
             let project = summary
@@ -253,20 +361,16 @@ impl BoardDataSource for AgentHandle {
                 is_busy,
                 &session_receipts,
                 &overridden_hashes,
-                |receipt_id| self.receipt_state(receipt_id),
+                |work_id| self.work_status(work_id),
             );
 
-            let has_blocker = branches.iter().any(|branch| {
-                matches!(branch.phase, BranchPhase::NeedsApproval { .. })
-            });
+            let has_blocker = branches
+                .iter()
+                .any(|branch| branch_is_blocker(&branch.phase));
             let is_running = is_busy
-                || branches.iter().any(|branch| {
-                    matches!(
-                        branch.phase,
-                        BranchPhase::Running { .. }
-                            | BranchPhase::Queued { .. }
-                    )
-                });
+                || branches
+                    .iter()
+                    .any(|branch| branch_is_running(&branch.phase));
             let is_active = has_blocker || is_running;
             if is_active {
                 kpi.active_sessions += 1;
@@ -297,36 +401,46 @@ impl BoardDataSource for AgentHandle {
             });
         }
 
-        // Surface unassigned queued receipts (session_hint == None) as one group
-        // so nothing in AcceptanceQueue goes invisible on the board.
+        // Surface unassigned queued/failed receipts (no session owner) as one
+        // group so nothing in AcceptanceQueue goes invisible on the board.
         if let Some(unassigned) = receipts_by_session.remove(&None)
             && !unassigned.is_empty()
         {
             let branches: Vec<WorkBranchSummary> = unassigned
                 .iter()
-                .map(|receipt| {
-                    let state = self
-                        .receipt_state(&receipt.id)
-                        .unwrap_or(ReceiptState::Queued);
+                .map(|(receipt, state)| {
+                    let work_progress = self
+                        .work_status(&receipt.id)
+                        .and_then(|s| WorkContractProgress::from_status(&s));
                     WorkBranchSummary {
                         id: format!("receipt-{}", receipt.id),
                         skill_label: SkillLabel::Key("board.skill_queue"),
                         phase: BranchPhase::Queued {
                             receipt_id: receipt.id.clone(),
-                            state,
+                            state: *state,
                         },
                         deliverable_name: clip_label(&receipt.text, 28),
                         deliverable_path: None,
                         format: DeliverableFormat::Other,
-                        progress_pct: 15.0,
+                        progress_pct: receipt_progress_pct(*state),
                         detail: clip_label(&receipt.text, 96),
+                        work_progress,
                     }
                 })
                 .collect();
+            let has_blocker = branches
+                .iter()
+                .any(|branch| branch_is_blocker(&branch.phase));
+            let is_running = branches
+                .iter()
+                .any(|branch| branch_is_running(&branch.phase));
+            let is_active = has_blocker || is_running;
             for branch in &branches {
                 accumulate_kpi(&mut kpi, branch);
             }
-            kpi.active_sessions += 1;
+            if is_active {
+                kpi.active_sessions += 1;
+            }
             kpi.total_sessions += 1;
             groups.insert(
                 0,
@@ -338,11 +452,11 @@ impl BoardDataSource for AgentHandle {
                     workspace_display: default_space_label.to_owned(),
                     updated_at: unassigned
                         .first()
-                        .map_or(0, |r| r.created_at_ms / 1000),
+                        .map_or(0, |(r, _)| r.created_at_ms / 1000),
                     branches,
-                    has_blocker: false,
-                    is_running: true,
-                    is_active: true,
+                    has_blocker,
+                    is_running,
+                    is_active,
                 },
             );
         }
@@ -366,8 +480,19 @@ impl BoardDataSource for AgentHandle {
 const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
     kpi.total_branches += 1;
     match &branch.phase {
-        BranchPhase::NeedsApproval { .. } => kpi.approval_count += 1,
-        BranchPhase::Running { .. } | BranchPhase::Queued { .. } => {
+        BranchPhase::NeedsApproval { .. }
+        | BranchPhase::Queued {
+            state: ReceiptState::Dead | ReceiptState::Quarantined,
+            ..
+        } => kpi.approval_count += 1,
+        BranchPhase::Running { .. }
+        | BranchPhase::Queued {
+            state:
+                ReceiptState::Queued
+                | ReceiptState::Running
+                | ReceiptState::Retrying,
+            ..
+        } => {
             kpi.running_count += 1;
         }
         BranchPhase::Delivered { .. } => {
@@ -379,7 +504,11 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
                 DeliverableFormat::Other => kpi.other_count += 1,
             }
         }
-        BranchPhase::Idle => {}
+        BranchPhase::Queued {
+            state: ReceiptState::Completed | ReceiptState::Cancelled,
+            ..
+        }
+        | BranchPhase::Idle => {}
     }
 }
 
@@ -387,12 +516,12 @@ fn project_session_branches<F>(
     summary: &SessionSummary,
     lines: &[ChatLine],
     is_busy: bool,
-    queued_receipts: &[&AcceptedMessage],
+    queued_receipts: &[(AcceptedMessage, ReceiptState)],
     overridden_hashes: &std::collections::BTreeSet<String>,
-    receipt_state_fn: F,
+    work_status_fn: F,
 ) -> Vec<WorkBranchSummary>
 where
-    F: Fn(&str) -> Option<ReceiptState>,
+    F: Fn(&str) -> Option<WorkStatus>,
 {
     let mut branches = Vec::new();
     let mut seen_paths = HashSet::new();
@@ -454,6 +583,7 @@ where
                 format,
                 progress_pct,
                 detail,
+                work_progress: None,
             });
         }
     }
@@ -479,6 +609,7 @@ where
                         format,
                         progress_pct: 100.0,
                         detail: display_path_str(&file.path),
+                        work_progress: None,
                     });
                 }
             }
@@ -498,6 +629,7 @@ where
                     format,
                     progress_pct: 100.0,
                     detail: display_path_str(path),
+                    work_progress: None,
                 });
             }
             _ => {}
@@ -568,26 +700,28 @@ where
                 format: DeliverableFormat::Other,
                 progress_pct: pct,
                 detail,
+                work_progress: None,
             },
         );
     }
 
-    // 4. Deferred receipts hinted to this session.
-    for receipt in queued_receipts {
-        let state =
-            receipt_state_fn(&receipt.id).unwrap_or(ReceiptState::Queued);
+    // 4. Deferred / retrying / dead receipts associated with this session.
+    for (receipt, state) in queued_receipts {
+        let work_progress = work_status_fn(&receipt.id)
+            .and_then(|s| WorkContractProgress::from_status(&s));
         branches.push(WorkBranchSummary {
             id: format!("{}-q-{}", summary.id, receipt.id),
             skill_label: SkillLabel::Key("board.skill_queue"),
             phase: BranchPhase::Queued {
                 receipt_id: receipt.id.clone(),
-                state,
+                state: *state,
             },
             deliverable_name: clip_label(&receipt.text, 24),
             deliverable_path: None,
             format: DeliverableFormat::Other,
-            progress_pct: 15.0,
+            progress_pct: receipt_progress_pct(*state),
             detail: clip_label(&receipt.text, 96),
+            work_progress,
         });
     }
 
@@ -613,6 +747,7 @@ where
             format: DeliverableFormat::Other,
             progress_pct: 100.0,
             detail: preview,
+            work_progress: None,
         });
     }
 
@@ -697,6 +832,7 @@ pub fn collect_session_traces(
     agent: &AgentHandle,
     session_id: &str,
     pending_receipts: &[AcceptedMessage],
+    failed_receipts: &[(String, ReceiptState)],
 ) -> Vec<RedactedTraceEntry> {
     let lines = agent.session_lines(session_id);
     let mut entries = Vec::new();
@@ -782,20 +918,70 @@ pub fn collect_session_traces(
         }
     }
 
-    for receipt in pending_receipts
-        .iter()
-        .filter(|r| r.session_hint.as_deref() == Some(session_id))
-    {
+    for receipt in pending_receipts.iter().filter(|r| {
+        r.target_session_id.as_deref() == Some(session_id)
+            || r.session_hint.as_deref() == Some(session_id)
+    }) {
+        let state = agent
+            .receipt_state(&receipt.id)
+            .unwrap_or(ReceiptState::Queued);
+        let (level, event) = match state {
+            ReceiptState::Retrying => (TraceLevel::Warn, "receipt_retrying"),
+            ReceiptState::Running => (TraceLevel::Info, "receipt_running"),
+            ReceiptState::Dead => (TraceLevel::Error, "receipt_dead"),
+            ReceiptState::Quarantined => {
+                (TraceLevel::Error, "receipt_quarantined")
+            }
+            _ => (TraceLevel::Warn, "receipt_queued"),
+        };
         push(
-            TraceLevel::Warn,
-            "receipt_queued",
+            level,
+            event,
             format!(
-                "id={} attempts={} text={}",
+                "id={} state={state:?} attempts={} text={}",
                 receipt.id,
                 receipt.attempts,
                 clip_label(&receipt.text, 80)
             ),
         );
+        if let Some(ws) = agent.work_status(&receipt.id)
+            && !ws.missing_items.is_empty()
+        {
+            push(
+                TraceLevel::Warn,
+                "work_contract_missing",
+                format!(
+                    "work_id={} delivered={} missing={}",
+                    ws.work_id,
+                    ws.delivered_artifact_ids.len(),
+                    ws.missing_items.join(", ")
+                ),
+            );
+        }
+    }
+
+    for (failed_id, fallback_state) in failed_receipts {
+        if let Some(receipt) = agent.receipt_by_id(failed_id)
+            && (receipt.target_session_id.as_deref() == Some(session_id)
+                || receipt.session_hint.as_deref() == Some(session_id))
+        {
+            let state =
+                agent.receipt_state(failed_id).unwrap_or(*fallback_state);
+            push(
+                TraceLevel::Error,
+                if state == ReceiptState::Quarantined {
+                    "receipt_quarantined"
+                } else {
+                    "receipt_dead"
+                },
+                format!(
+                    "id={} state={state:?} attempts={} text={}",
+                    receipt.id,
+                    receipt.attempts,
+                    clip_label(&receipt.text, 80)
+                ),
+            );
+        }
     }
 
     // Keep ring-bounded tail (most recent 256 events).
@@ -1123,5 +1309,51 @@ mod tests {
             .find(|b| matches!(b.phase, BranchPhase::NeedsApproval { .. }))
             .unwrap();
         assert!(!blocker.detail.contains(r"\\?\"));
+    }
+
+    #[test]
+    fn work_contract_progress_projects_partial_missing_and_dead_receipts_as_blockers()
+     {
+        let status = WorkStatus {
+            work_id: "rcpt-42".into(),
+            session_id: Some("s1".into()),
+            submission_id: Some("sub-42".into()),
+            contract_revision: Some(2),
+            receipt_state: Some(ReceiptState::Dead),
+            outcome: Some(SubmissionOutcome::Partial {
+                missing: vec!["summary.docx".into()],
+            }),
+            required_items: vec![
+                RequiredDeliverable {
+                    filename: Some("deck.pptx".into()),
+                    extension: "pptx".into(),
+                },
+                RequiredDeliverable {
+                    filename: Some("summary.docx".into()),
+                    extension: "docx".into(),
+                },
+            ],
+            delivered_artifact_ids: vec!["art-1".into()],
+            missing_items: vec!["summary.docx".into()],
+        };
+        let progress = WorkContractProgress::from_status(&status)
+            .expect("non-empty contract produces progress");
+        assert_eq!(progress.delivered_count, 1);
+        assert_eq!(progress.required_labels, vec!["deck.pptx", "summary.docx"]);
+        assert_eq!(progress.missing_items, vec!["summary.docx"]);
+
+        let dead_phase = BranchPhase::Queued {
+            receipt_id: "rcpt-42".into(),
+            state: ReceiptState::Dead,
+        };
+        assert!(branch_is_blocker(&dead_phase));
+        assert!(!branch_is_running(&dead_phase));
+
+        let retrying_phase = BranchPhase::Queued {
+            receipt_id: "rcpt-43".into(),
+            state: ReceiptState::Retrying,
+        };
+        assert!(!branch_is_blocker(&retrying_phase));
+        assert!(branch_is_running(&retrying_phase));
     }
 }

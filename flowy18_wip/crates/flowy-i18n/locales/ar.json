@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "المهمة تُنهي التسليم ولا يمكن إلغاؤها الآن.",
+  "notice.receipt_quarantined": "تم عزل مهمة في قائمة الانتظار للفحص.",
+  "board.receipt_retrying": "إعادة المحاولة",
+  "board.receipt_dead": "فشلت · إعادة",
+  "board.receipt_quarantined": "معزولة",
+  "board.receipt_cancelled": "ملغاة",
+  "board.cancel_receipt": "إلغاء الانتظار",
+  "board.retry_dead_receipt": "إعادة للإدراج",
+  "board.contract_progress": "العقد {done}/{total}",
+  "board.contract_missing": "ينقص: {items}"
 }

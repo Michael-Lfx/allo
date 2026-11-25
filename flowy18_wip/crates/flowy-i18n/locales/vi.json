@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Tác vụ đang hoàn tất bàn giao và không thể hủy lúc này.",
+  "notice.receipt_quarantined": "Một tác vụ đang chờ đã được cách ly để kiểm tra.",
+  "board.receipt_retrying": "Đang thử lại",
+  "board.receipt_dead": "Thất bại · Thử lại",
+  "board.receipt_quarantined": "Đã cách ly",
+  "board.receipt_cancelled": "Đã hủy",
+  "board.cancel_receipt": "Hủy hàng chờ",
+  "board.retry_dead_receipt": "Đưa lại vào hàng chờ",
+  "board.contract_progress": "Cam kết {done}/{total}",
+  "board.contract_missing": "Còn thiếu: {items}"
 }

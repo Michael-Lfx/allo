@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "कार्य डिलीवरी पूरी कर रहा है और अभी रद्द नहीं किया जा सकता।",
+  "notice.receipt_quarantined": "कतार में लगा एक कार्य जांच के लिए अलग रखा गया है।",
+  "board.receipt_retrying": "पुनः प्रयास",
+  "board.receipt_dead": "विफल · पुनः प्रयास",
+  "board.receipt_quarantined": "पृथक",
+  "board.receipt_cancelled": "रद्द",
+  "board.cancel_receipt": "कतार रद्द करें",
+  "board.retry_dead_receipt": "फिर कतार में जोड़ें",
+  "board.contract_progress": "अनुबंध {done}/{total}",
+  "board.contract_missing": "शेष: {items}"
 }

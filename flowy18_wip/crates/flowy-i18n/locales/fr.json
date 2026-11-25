@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "La tâche finalise la livraison et ne peut pas être annulée maintenant.",
+  "notice.receipt_quarantined": "Une tâche en file d’attente a été mise en quarantaine.",
+  "board.receipt_retrying": "Nouvel essai",
+  "board.receipt_dead": "Échec · Réessayer",
+  "board.receipt_quarantined": "En quarantaine",
+  "board.receipt_cancelled": "Annulée",
+  "board.cancel_receipt": "Annuler l’attente",
+  "board.retry_dead_receipt": "Remettre en file",
+  "board.contract_progress": "Contrat {done}/{total}",
+  "board.contract_missing": "Manquant : {items}"
 }

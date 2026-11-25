@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "งานกำลังสรุปการส่งมอบ จึงยังไม่สามารถยกเลิกได้ในขณะนี้",
+  "notice.receipt_quarantined": "งานในคิวถูกกักกันเพื่อตรวจสอบแล้ว",
+  "board.receipt_retrying": "รอทำซ้ำ",
+  "board.receipt_dead": "ล้มเหลว · ลองใหม่",
+  "board.receipt_quarantined": "ถูกกักกัน",
+  "board.receipt_cancelled": "ยกเลิกแล้ว",
+  "board.cancel_receipt": "ยกเลิกคิว",
+  "board.retry_dead_receipt": "เข้าคิวอีกครั้ง",
+  "board.contract_progress": "สัญญา {done}/{total}",
+  "board.contract_missing": "ยังขาด: {items}"
 }

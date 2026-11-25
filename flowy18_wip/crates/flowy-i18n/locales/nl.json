@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "De taak rondt de levering af en kan nu niet worden geannuleerd.",
+  "notice.receipt_quarantined": "Een wachtende taak is in quarantaine geplaatst.",
+  "board.receipt_retrying": "Opnieuw proberen",
+  "board.receipt_dead": "Mislukt · Opnieuw",
+  "board.receipt_quarantined": "In quarantaine",
+  "board.receipt_cancelled": "Geannuleerd",
+  "board.cancel_receipt": "Wachtrij annuleren",
+  "board.retry_dead_receipt": "Opnieuw in wachtrij",
+  "board.contract_progress": "Contract {done}/{total}",
+  "board.contract_missing": "Ontbreekt: {items}"
 }

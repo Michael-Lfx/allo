@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Zadanie finalizuje dostarczenie i nie można go teraz anulować.",
+  "notice.receipt_quarantined": "Zadanie w kolejce zostało objęte kwarantanną.",
+  "board.receipt_retrying": "Ponawianie",
+  "board.receipt_dead": "Błąd · Ponów",
+  "board.receipt_quarantined": "Kwarantanna",
+  "board.receipt_cancelled": "Anulowano",
+  "board.cancel_receipt": "Anuluj w kolejce",
+  "board.retry_dead_receipt": "Dodaj ponownie do kolejki",
+  "board.contract_progress": "Kontrakt {done}/{total}",
+  "board.contract_missing": "Brakuje: {items}"
 }

@@ -9,6 +9,7 @@
 //!   `Router -> Skill ProgressRing -> Gate/Verify -> Deliverable File` plus
 //!   in-modal two-step override confirmation and redacted Trace debug logs.
 
+use flowy_agent::{ReceiptState, SubmissionOutcome};
 use flowy_ui as theme;
 use flowy_ui::charts::{
     DonutSegment, FlowEdgeStyle, donut_chart, flow_connector, progress_ring,
@@ -21,8 +22,8 @@ use gpui::{
 use crate::panel::StudioPanel;
 use crate::ports::{
     BranchPhase, DeliverableFormat, SessionBoardGroup, TraceLevel,
-    WorkBranchSummary, collect_session_traces, display_path_str,
-    format_traces_jsonl,
+    WorkBranchSummary, WorkContractProgress, collect_session_traces,
+    display_path_str, format_traces_jsonl,
 };
 
 /// Top-level session filter on the Global Visual Board.
@@ -59,6 +60,113 @@ impl StudioPanel {
             DeliverableFormat::Doc => self.theme.file_kind_doc(),
             DeliverableFormat::Other => self.theme.file_kind_other(),
         }
+    }
+
+    pub(crate) fn receipt_state_visual(
+        &self,
+        state: ReceiptState,
+    ) -> (gpui::Rgba, String, bool) {
+        match state {
+            ReceiptState::Queued => {
+                (self.theme.muted(), self.t("chat.bg_task_queued"), false)
+            }
+            ReceiptState::Running => (
+                self.theme.status_active(),
+                self.t("chat.bg_task_running"),
+                true,
+            ),
+            ReceiptState::Retrying => (
+                self.theme.status_attention(),
+                self.t("board.receipt_retrying"),
+                true,
+            ),
+            ReceiptState::Dead => {
+                (self.theme.danger(), self.t("board.receipt_dead"), false)
+            }
+            ReceiptState::Quarantined => (
+                self.theme.status_attention(),
+                self.t("board.receipt_quarantined"),
+                false,
+            ),
+            ReceiptState::Cancelled => {
+                (self.theme.muted(), self.t("board.receipt_cancelled"), false)
+            }
+            ReceiptState::Completed => (
+                self.theme.status_verified(),
+                self.t("verify.card.passed"),
+                false,
+            ),
+        }
+    }
+
+    fn contract_progress_block(
+        &self,
+        progress: &WorkContractProgress,
+    ) -> AnyElement {
+        let total = progress
+            .required_labels
+            .len()
+            .max(progress.delivered_count + progress.missing_items.len());
+        let summary = self.tf(
+            "board.contract_progress",
+            &[
+                ("done", &progress.delivered_count.to_string()),
+                ("total", &total.to_string()),
+            ],
+        );
+        let outcome_color = match &progress.outcome {
+            Some(SubmissionOutcome::Completed) => self.theme.status_verified(),
+            Some(SubmissionOutcome::Partial { .. }) => {
+                self.theme.status_attention()
+            }
+            Some(SubmissionOutcome::Failed { .. }) => self.theme.danger(),
+            Some(SubmissionOutcome::Aborted) | None => self.theme.muted(),
+        };
+        let missing_line = (!progress.missing_items.is_empty()).then(|| {
+            self.tf(
+                "board.contract_missing",
+                &[("items", &progress.missing_items.join(", "))],
+            )
+        });
+        div()
+            .w_full()
+            .p(self.theme.space(8.))
+            .rounded_lg()
+            .bg(self.theme.soft().opacity(0.6))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(self.theme.space(6.))
+                    .text_xs()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(outcome_color)
+                            .child(summary),
+                    )
+                    .when_some(progress.contract_revision, |row, rev| {
+                        row.child(
+                            div()
+                                .text_color(self.theme.muted())
+                                .child(format!("rev {rev}")),
+                        )
+                    }),
+            )
+            .when_some(missing_line, |col, text| {
+                col.child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.status_attention())
+                        .whitespace_normal()
+                        .child(text),
+                )
+            })
+            .into_any_element()
     }
 
     /// Global Visual Board surface (`StudioSurface::Board`).
@@ -819,8 +927,8 @@ impl StudioPanel {
                         true,
                     )
                 }
-                BranchPhase::Queued { .. } => {
-                    (self.theme.muted(), self.t("chat.bg_task_queued"), false)
+                BranchPhase::Queued { state, .. } => {
+                    self.receipt_state_visual(*state)
                 }
                 BranchPhase::Delivered { override_used, .. } => (
                     self.theme.status_verified(),
@@ -1080,7 +1188,15 @@ impl StudioPanel {
             .and_then(|bid| group.branches.iter().find(|b| b.id == bid))
             .or_else(|| {
                 group.branches.iter().find(|b| {
-                    matches!(b.phase, BranchPhase::NeedsApproval { .. })
+                    matches!(
+                        b.phase,
+                        BranchPhase::NeedsApproval { .. }
+                            | BranchPhase::Queued {
+                                state: ReceiptState::Dead
+                                    | ReceiptState::Quarantined,
+                                ..
+                            }
+                    )
                 })
             })
             .or_else(|| group.branches.first())?;
@@ -1347,13 +1463,25 @@ impl StudioPanel {
     ) -> AnyElement {
         let policy = self.theme.motion_policy();
         let (is_app, is_run, is_done) = match &branch.phase {
-            BranchPhase::NeedsApproval { .. } => (true, false, false),
-            BranchPhase::Running { .. } | BranchPhase::Queued { .. } => {
-                (false, true, false)
+            BranchPhase::NeedsApproval { .. }
+            | BranchPhase::Queued {
+                state: ReceiptState::Dead | ReceiptState::Quarantined,
+                ..
+            } => (true, false, false),
+            BranchPhase::Running { .. }
+            | BranchPhase::Queued {
+                state:
+                    ReceiptState::Queued
+                    | ReceiptState::Running
+                    | ReceiptState::Retrying,
+                ..
+            } => (false, true, false),
+            BranchPhase::Delivered { .. }
+            | BranchPhase::Queued {
+                state: ReceiptState::Completed | ReceiptState::Cancelled,
+                ..
             }
-            BranchPhase::Delivered { .. } | BranchPhase::Idle => {
-                (false, false, true)
-            }
+            | BranchPhase::Idle => (false, false, true),
         };
         let e1_color = if is_done {
             self.theme.status_verified()
@@ -1401,7 +1529,9 @@ impl StudioPanel {
                     step_label.clone()
                 }
             }
-            BranchPhase::Queued { .. } => self.t("chat.bg_task_queued"),
+            BranchPhase::Queued { state, .. } => {
+                self.receipt_state_visual(*state).1
+            }
             BranchPhase::Delivered { override_used, .. } => {
                 if *override_used {
                     self.t("verify.override.badge")
@@ -1833,6 +1963,178 @@ impl StudioPanel {
                     )
                     .into_any_element()
             }
+            BranchPhase::Running { .. } => {
+                let stop_sid = group.session_id.clone();
+                let can_stop = stop_sid != "unassigned-queue";
+                div()
+                    .flex_1()
+                    .min_w(px(240.))
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.ink())
+                            .child(branch.skill_label.resolve(|k| self.t(k))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(branch.detail.clone()),
+                    )
+                    .when_some(branch.work_progress.as_ref(), |card, prog| {
+                        card.child(self.contract_progress_block(prog))
+                    })
+                    .when(can_stop, |card| {
+                        card.child(
+                            div().flex().items_center().child(
+                                theme::Button::new(
+                                    "fm-stop-session",
+                                    self.t("drawer.work_stop"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.stop_session_turn(&stop_sid, cx);
+                                    }),
+                                ),
+                            ),
+                        )
+                    })
+                    .into_any_element()
+            }
+            BranchPhase::Queued { receipt_id, state } => {
+                let (state_color, state_label, _) =
+                    self.receipt_state_visual(*state);
+                let cancel_id = receipt_id.clone();
+                let retry_id = receipt_id.clone();
+                let can_cancel = matches!(
+                    state,
+                    ReceiptState::Queued
+                        | ReceiptState::Running
+                        | ReceiptState::Retrying
+                );
+                let is_dead = *state == ReceiptState::Dead;
+                let retrying = self.retrying_receipt.as_deref()
+                    == Some(receipt_id.as_str());
+                div()
+                    .flex_1()
+                    .min_w(px(240.))
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(if is_dead {
+                        self.theme.danger().opacity(0.5)
+                    } else {
+                        self.theme.line()
+                    })
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(6.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.theme.ink())
+                                    .child(
+                                        branch
+                                            .skill_label
+                                            .resolve(|k| self.t(k)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded_full()
+                                    .bg(self.theme.soft())
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(state_color)
+                                    .child(state_label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(branch.detail.clone()),
+                    )
+                    .when_some(branch.work_progress.as_ref(), |card, prog| {
+                        card.child(self.contract_progress_block(prog))
+                    })
+                    .when(can_cancel || is_dead, |card| {
+                        card.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(self.theme.space(8.))
+                                .when(is_dead, |row| {
+                                    row.child(
+                                        theme::Button::new(
+                                            "fm-retry-dead-receipt",
+                                            self.t("board.retry_dead_receipt"),
+                                        )
+                                        .variant(theme::ControlVariant::Primary)
+                                        .size(theme::ControlSize::Small)
+                                        .disabled(retrying)
+                                        .render(
+                                            &self.theme,
+                                            cx.listener(
+                                                move |panel, _, _, cx| {
+                                                    panel.retry_dead_receipt(
+                                                        &retry_id, cx,
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                    )
+                                })
+                                .when(can_cancel, |row| {
+                                    row.child(
+                                        theme::Button::new(
+                                            "fm-cancel-receipt",
+                                            self.t("board.cancel_receipt"),
+                                        )
+                                        .variant(
+                                            theme::ControlVariant::Secondary,
+                                        )
+                                        .size(theme::ControlSize::Small)
+                                        .render(
+                                            &self.theme,
+                                            cx.listener(
+                                                move |panel, _, _, cx| {
+                                                    panel.cancel_receipt(
+                                                        &cancel_id, cx,
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                    )
+                                }),
+                        )
+                    })
+                    .into_any_element()
+            }
             _ => div()
                 .flex_1()
                 .min_w(px(240.))
@@ -1858,6 +2160,9 @@ impl StudioPanel {
                         .whitespace_normal()
                         .child(branch.detail.clone()),
                 )
+                .when_some(branch.work_progress.as_ref(), |card, prog| {
+                    card.child(self.contract_progress_block(prog))
+                })
                 .into_any_element(),
         };
 
@@ -1962,6 +2267,7 @@ impl StudioPanel {
             &self.agent,
             session_id,
             &self.pending_receipts,
+            &self.failed_receipts,
         );
         let filtered: Vec<_> = entries
             .iter()

@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Úloha dokončuje doručení a nelze ji nyní zrušit.",
+  "notice.receipt_quarantined": "Úloha ve frontě byla přesunuta do karantény.",
+  "board.receipt_retrying": "Opakování",
+  "board.receipt_dead": "Selhalo · Znovu",
+  "board.receipt_quarantined": "V karanténě",
+  "board.receipt_cancelled": "Zrušeno",
+  "board.cancel_receipt": "Zrušit ve frontě",
+  "board.retry_dead_receipt": "Znovu zařadit",
+  "board.contract_progress": "Smlouva {done}/{total}",
+  "board.contract_missing": "Chybí: {items}"
 }

@@ -420,6 +420,12 @@ impl FlowyApp {
             })
         };
         let subscriptions = vec![
+            cx.on_app_quit(|app, cx| {
+                let agent = app.studio.read(cx).agent.clone();
+                cx.background_executor().spawn(async move {
+                    agent.prepare_shutdown();
+                })
+            }),
             cx.subscribe(&library, |app, _, event: &LibraryEvent, cx| {
                 app.library_event(event, cx);
             }),

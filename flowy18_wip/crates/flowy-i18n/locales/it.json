@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "L’attività sta finalizzando la consegna e non può essere annullata ora.",
+  "notice.receipt_quarantined": "Un’attività in coda è stata messa in quarantena.",
+  "board.receipt_retrying": "Nuovo tentativo",
+  "board.receipt_dead": "Fallita · Riprova",
+  "board.receipt_quarantined": "In quarantena",
+  "board.receipt_cancelled": "Annullata",
+  "board.cancel_receipt": "Annulla coda",
+  "board.retry_dead_receipt": "Rimetti in coda",
+  "board.contract_progress": "Contratto {done}/{total}",
+  "board.contract_missing": "Mancanti: {items}"
 }

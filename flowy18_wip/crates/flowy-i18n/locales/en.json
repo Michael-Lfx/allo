@@ -871,5 +871,15 @@
   "board.skill_work": "Work",
   "env.state_ready": "Ready",
   "env.state_setup": "Setup needed",
-  "project.open_board": "View in Work Board"
+  "project.open_board": "View in Work Board",
+  "notice.cancel_finalizing": "Task is finalizing delivery and cannot be cancelled right now.",
+  "notice.receipt_quarantined": "A queued task was quarantined for inspection.",
+  "board.receipt_retrying": "Retrying",
+  "board.receipt_dead": "Failed · Retry",
+  "board.receipt_quarantined": "Quarantined",
+  "board.receipt_cancelled": "Cancelled",
+  "board.cancel_receipt": "Cancel queued",
+  "board.retry_dead_receipt": "Requeue task",
+  "board.contract_progress": "Contract {done}/{total}",
+  "board.contract_missing": "Missing: {items}"
 }
