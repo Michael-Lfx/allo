@@ -667,10 +667,10 @@ impl ChatFeed {
             |m| {
                 let count = m.step_count.max(1).to_string();
                 if m.live {
-                    self.tf("chat.steps_live_summary", &[("n", &count)])
+                    self.tf("chat.steps_live_summary", &[("count", &count)])
                 } else {
-                    let base =
-                        self.tf("chat.steps_done_summary", &[("n", &count)]);
+                    let base = self
+                        .tf("chat.steps_done_summary", &[("count", &count)]);
                     if m.duration_secs > 0 {
                         let dur = self.format_duration_secs(m.duration_secs);
                         format!("{base} \u{00b7} {dur}")

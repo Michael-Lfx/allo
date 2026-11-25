@@ -763,7 +763,7 @@ impl crate::panel::StudioPanel {
         let deliverable_count = self.deliverable_count(cx);
         let deliverables_label = if deliverable_count > 0 {
             let count = deliverable_count.to_string();
-            self.tf("studio.deliverables_count", &[("n", count.as_str())])
+            self.tf("studio.deliverables_count", &[("count", count.as_str())])
         } else {
             self.t("chat.deliverables")
         };

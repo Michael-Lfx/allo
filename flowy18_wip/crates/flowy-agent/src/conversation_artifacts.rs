@@ -285,10 +285,6 @@ pub fn prepare_conversation_artifacts_gated(
                         code = reason.code(),
                         "conversation artifact import skipped by delivery gate"
                     );
-                    store.record_import_diagnostic(format!(
-                        "Skipped unverified conversation file {identity} ({})",
-                        reason.code()
-                    ));
                     continue;
                 }
                 Err(error) => {
@@ -1010,5 +1006,10 @@ mod tests {
             .map(|item| item.manifest.source_relative_path)
             .collect();
         assert_eq!(imported, vec!["notes.md".to_owned()]);
+        assert_eq!(
+            store.diagnostics().unwrap(),
+            Vec::<String>::new(),
+            "normal delivery-gate skips must not trigger the Library catalog error banner"
+        );
     }
 }
