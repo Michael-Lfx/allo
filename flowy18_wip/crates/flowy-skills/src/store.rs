@@ -1,6 +1,6 @@
 use crate::{
-    CATEGORY_TTL_SECS, Card, Category, InstallRecord, InstallStep,
-    SEARCH_TTL_SECS, parse_skill_id,
+    CATEGORY_TTL_SECS, Card, Category, InstallOrigin, InstallRecord,
+    InstallStep, SEARCH_TTL_SECS, parse_skill_id,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::fmt;
@@ -20,6 +20,8 @@ pub enum StoreError {
     InvalidInstallStep(String),
     #[error("invalid installed skill identity: {0}")]
     InvalidSkillId(String),
+    #[error("invalid install origin: {0}")]
+    InvalidInstallOrigin(String),
 }
 
 pub struct Store {
@@ -336,13 +338,20 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.connection.execute(
             "INSERT INTO install \
-             (owner_handle, slug, version, step, auto_invoke, scripts_enabled, content_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             (owner_handle, slug, version, step, auto_invoke, scripts_enabled, content_hash, \
+              origin, display_name, summary, installed_at, latest_version, checked_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
              ON CONFLICT(owner_handle, slug, version) DO UPDATE SET \
                step = excluded.step, \
                auto_invoke = excluded.auto_invoke, \
                scripts_enabled = excluded.scripts_enabled, \
-               content_hash = excluded.content_hash",
+               content_hash = excluded.content_hash, \
+               origin = excluded.origin, \
+               display_name = excluded.display_name, \
+               summary = excluded.summary, \
+               installed_at = excluded.installed_at, \
+               latest_version = excluded.latest_version, \
+               checked_at = excluded.checked_at",
             params![
                 record.id.owner_handle,
                 record.id.slug,
@@ -351,6 +360,12 @@ impl Store {
                 u8::from(record.auto_invoke),
                 u8::from(record.scripts_enabled),
                 record.content_hash,
+                record.origin.as_str(),
+                record.display_name,
+                record.summary,
+                record.installed_at,
+                record.latest_version,
+                record.checked_at,
             ],
         )?;
         Ok(())
@@ -359,7 +374,9 @@ impl Store {
     pub fn installed(&self) -> Result<Vec<InstallRecord>, StoreError> {
         let mut query = self.connection.prepare(
             "SELECT owner_handle, slug, version, step, auto_invoke, \
-             scripts_enabled, content_hash FROM install \
+             scripts_enabled, content_hash, origin, display_name, summary, \
+             installed_at, latest_version, checked_at FROM install \
+             WHERE step = 'commit' \
              ORDER BY owner_handle, slug, version",
         )?;
         let rows = query.query_map([], |row| {
@@ -371,6 +388,12 @@ impl Store {
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
             ))
         })?;
         let mut records = Vec::new();
@@ -383,6 +406,12 @@ impl Store {
                 auto_invoke,
                 scripts_enabled,
                 hash,
+                origin,
+                display_name,
+                summary,
+                installed_at,
+                latest_version,
+                checked_at,
             ) = row?;
             let step = InstallStep::parse(&step)
                 .ok_or_else(|| StoreError::InvalidInstallStep(step.clone()))?;
@@ -396,9 +425,135 @@ impl Store {
                 auto_invoke: auto_invoke != 0,
                 scripts_enabled: scripts_enabled != 0,
                 content_hash: hash,
+                origin: InstallOrigin::parse(&origin)
+                    .ok_or(StoreError::InvalidInstallOrigin(origin.clone()))?,
+                display_name,
+                summary,
+                installed_at,
+                latest_version,
+                checked_at,
             });
         }
         Ok(records)
+    }
+
+    pub fn find_install(
+        &self,
+        owner_handle: &str,
+        slug: &str,
+    ) -> Result<Option<InstallRecord>, StoreError> {
+        Ok(self
+            .installed()?
+            .into_iter()
+            .filter(|record| {
+                record.id.owner_handle == owner_handle && record.id.slug == slug
+            })
+            .max_by_key(|record| record.installed_at))
+    }
+
+    pub fn set_auto_invoke(
+        &self,
+        id: &crate::SkillId,
+        value: bool,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE install SET auto_invoke = ?1 \
+             WHERE owner_handle = ?2 AND slug = ?3 AND version = ?4",
+            params![u8::from(value), id.owner_handle, id.slug, id.version],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_scripts_enabled(
+        &self,
+        id: &crate::SkillId,
+        value: bool,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE install SET scripts_enabled = ?1 \
+             WHERE owner_handle = ?2 AND slug = ?3 AND version = ?4",
+            params![u8::from(value), id.owner_handle, id.slug, id.version],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_latest_version(
+        &self,
+        id: &crate::SkillId,
+        latest_version: Option<&str>,
+        checked_at: i64,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE install SET latest_version = ?1, checked_at = ?2 \
+             WHERE owner_handle = ?3 AND slug = ?4 AND version = ?5",
+            params![
+                latest_version,
+                checked_at,
+                id.owner_handle,
+                id.slug,
+                id.version
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_install(
+        &self,
+        id: &crate::SkillId,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "DELETE FROM install \
+             WHERE owner_handle = ?1 AND slug = ?2 AND version = ?3",
+            params![id.owner_handle, id.slug, id.version],
+        )?;
+        Ok(())
+    }
+
+    pub fn replace_install(
+        &self,
+        old: &crate::SkillId,
+        next: &InstallRecord,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM install \
+             WHERE owner_handle = ?1 AND slug = ?2 AND version = ?3",
+            params![old.owner_handle, old.slug, old.version],
+        )?;
+        transaction.execute(
+            "INSERT INTO install \
+             (owner_handle, slug, version, step, auto_invoke, scripts_enabled, content_hash, \
+              origin, display_name, summary, installed_at, latest_version, checked_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT(owner_handle, slug, version) DO UPDATE SET \
+               step = excluded.step, \
+               auto_invoke = excluded.auto_invoke, \
+               scripts_enabled = excluded.scripts_enabled, \
+               content_hash = excluded.content_hash, \
+               origin = excluded.origin, \
+               display_name = excluded.display_name, \
+               summary = excluded.summary, \
+               installed_at = excluded.installed_at, \
+               latest_version = excluded.latest_version, \
+               checked_at = excluded.checked_at",
+            params![
+                next.id.owner_handle,
+                next.id.slug,
+                next.id.version,
+                next.step.as_str(),
+                u8::from(next.auto_invoke),
+                u8::from(next.scripts_enabled),
+                next.content_hash,
+                next.origin.as_str(),
+                next.display_name,
+                next.summary,
+                next.installed_at,
+                next.latest_version,
+                next.checked_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
     fn search_row(
         &self,
@@ -484,6 +639,12 @@ impl Store {
                auto_invoke INTEGER NOT NULL,
                scripts_enabled INTEGER NOT NULL,
                content_hash TEXT NOT NULL,
+               origin TEXT NOT NULL DEFAULT 'community',
+               display_name TEXT NOT NULL DEFAULT '',
+               summary TEXT NOT NULL DEFAULT '',
+               installed_at INTEGER NOT NULL DEFAULT 0,
+               latest_version TEXT,
+               checked_at INTEGER,
                PRIMARY KEY (owner_handle, slug, version)
              );",
         )?;
@@ -517,6 +678,36 @@ impl Store {
             "shelf_meta",
             "complete",
             "ALTER TABLE shelf_meta ADD COLUMN complete INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.add_table_column(
+            "install",
+            "origin",
+            "ALTER TABLE install ADD COLUMN origin TEXT NOT NULL DEFAULT 'community'",
+        )?;
+        self.add_table_column(
+            "install",
+            "display_name",
+            "ALTER TABLE install ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+        )?;
+        self.add_table_column(
+            "install",
+            "summary",
+            "ALTER TABLE install ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+        )?;
+        self.add_table_column(
+            "install",
+            "installed_at",
+            "ALTER TABLE install ADD COLUMN installed_at INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.add_table_column(
+            "install",
+            "latest_version",
+            "ALTER TABLE install ADD COLUMN latest_version TEXT",
+        )?;
+        self.add_table_column(
+            "install",
+            "checked_at",
+            "ALTER TABLE install ADD COLUMN checked_at INTEGER",
         )?;
         Ok(())
     }
@@ -686,10 +877,65 @@ mod tests {
             auto_invoke: false,
             scripts_enabled: false,
             content_hash: "abc123".into(),
+            origin: InstallOrigin::Community,
+            display_name: "PDF".into(),
+            summary: "Fill PDF forms.".into(),
+            installed_at: 1000,
+            latest_version: Some("1.2.3".into()),
+            checked_at: Some(1000),
         };
         store.upsert_install(&record).unwrap();
         assert_eq!(store.installed().unwrap(), vec![record]);
     }
+
+    #[test]
+    fn install_toggles_and_removal_round_trip() {
+        let db = TestDb::new("install-toggle");
+        let store = Store::open(&db.path).unwrap();
+        let record = InstallRecord {
+            id: parse_skill_id("awspace", "pdf", "1.2.3").unwrap(),
+            step: InstallStep::Commit,
+            auto_invoke: true,
+            scripts_enabled: false,
+            content_hash: "abc123".into(),
+            origin: InstallOrigin::Community,
+            display_name: "PDF".into(),
+            summary: "Fill PDF forms.".into(),
+            installed_at: 1000,
+            latest_version: Some("1.3.0".into()),
+            checked_at: Some(2000),
+        };
+        store.upsert_install(&record).unwrap();
+        store.set_auto_invoke(&record.id, false).unwrap();
+        store.set_scripts_enabled(&record.id, true).unwrap();
+        let changed = store.installed().unwrap().remove(0);
+        assert!(!changed.auto_invoke);
+        assert!(changed.scripts_enabled);
+        assert_eq!(changed.latest_version.as_deref(), Some("1.3.0"));
+        store.remove_install(&record.id).unwrap();
+        assert_eq!(store.installed().unwrap(), Vec::new());
+    }
+    #[test]
+    fn replace_install_swaps_versions_without_leaving_duplicates() {
+        let db = TestDb::new("install-replace");
+        let store = Store::open(&db.path).unwrap();
+        let mut old = InstallRecord::community(
+            parse_skill_id("awspace", "pdf", "1.2.3").unwrap(),
+        );
+        old.step = InstallStep::Commit;
+        old.installed_at = 1000;
+        store.upsert_install(&old).unwrap();
+        let mut next = InstallRecord::community(
+            parse_skill_id("awspace", "pdf", "1.3.0").unwrap(),
+        );
+        next.step = InstallStep::Commit;
+        next.auto_invoke = old.auto_invoke;
+        next.installed_at = 2000;
+        store.upsert_install(&next).unwrap();
+        store.replace_install(&old.id, &next).unwrap();
+        assert_eq!(store.installed().unwrap(), vec![next]);
+    }
+
     #[test]
     fn categories_are_fresh_only_inside_ttl_and_keep_order() {
         let db = TestDb::new("categories");

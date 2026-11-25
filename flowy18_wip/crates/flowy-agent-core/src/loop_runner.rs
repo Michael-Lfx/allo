@@ -470,6 +470,7 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                     role: Role::User,
                     content: vec![ContentBlock::text(user_text(&user.content))],
                     source: MessageSource::User,
+                    display_text: None,
                 });
             }
             AgentMessage::Assistant(assistant) => {
@@ -503,6 +504,7 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                         provider: assistant.provider.clone(),
                         model: assistant.model.clone(),
                     },
+                    display_text: None,
                 });
             }
             AgentMessage::ToolResult(result) => {
@@ -533,6 +535,7 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                     source: MessageSource::Tool {
                         tool: result.tool_name.clone(),
                     },
+                    display_text: None,
                 });
             }
             AgentMessage::Custom(_) => {}
@@ -624,12 +627,14 @@ mod tests {
                 provider: "flowy".into(),
                 model: "m".into(),
             },
+            display_text: None,
         };
         let user = Message {
             id: "u1".into(),
             role: Role::User,
             content: vec![ContentBlock::text("next")],
             source: MessageSource::User,
+            display_text: None,
         };
         let mut history: Vec<AgentMessage> = Vec::new();
         for message in [&assistant, &user] {
@@ -659,6 +664,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
             source: MessageSource::User,
+            display_text: None,
         };
         history.push(to_agent_message(&user).unwrap().unwrap());
         history.push(AgentMessage::ToolResult(Box::new(
@@ -693,6 +699,7 @@ mod tests {
                 provider: "flowy".into(),
                 model: "m".into(),
             },
+            display_text: None,
         };
         let converted = to_agent_message(&assistant).unwrap().unwrap();
         let AgentMessage::Assistant(assistant) = converted else {
@@ -717,6 +724,7 @@ mod tests {
                 artifact: None,
             }],
             source: MessageSource::User,
+            display_text: None,
         };
         assert!(to_agent_message(&message).unwrap().is_none());
     }
@@ -729,6 +737,7 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentBlock::text("read it")],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "a1".into(),
@@ -742,6 +751,7 @@ mod tests {
                     provider: "flowy".into(),
                     model: "m".into(),
                 },
+                display_text: None,
             },
             Message {
                 id: "t1".into(),
@@ -755,6 +765,7 @@ mod tests {
                 source: MessageSource::Tool {
                     tool: "read_file".into(),
                 },
+                display_text: None,
             },
         ];
         for message in &history {
@@ -875,6 +886,7 @@ mod tests {
                 provider: "flowy".into(),
                 model: "m".into(),
             },
+            display_text: None,
         };
         // Legacy row without MessageSource::Tool: converted to None, so the
         // assistant tool call would otherwise reach the provider unanswered.
@@ -888,6 +900,7 @@ mod tests {
                 artifact: None,
             }],
             source: MessageSource::User,
+            display_text: None,
         };
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (emitter, _events) = CollectorEmitter::new();

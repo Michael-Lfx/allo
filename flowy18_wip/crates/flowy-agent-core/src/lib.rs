@@ -26,6 +26,6 @@ pub use transport::{echo_stream_fn, openai_stream_fn};
 
 pub use types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageId,
-    MessageSource, Role, TodoItem, TodoSink, TodoStatus, ToolCallArgs,
-    ToolExecutionResult, ToolRunContext, ToolSchema,
+    MessageSource, PromptTurn, Role, TodoItem, TodoSink, TodoStatus,
+    ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema,
 };

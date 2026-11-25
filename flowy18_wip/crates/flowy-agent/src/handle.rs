@@ -4,22 +4,26 @@
 //! rows are projected from loop events and persisted next to the structured
 //! history, so the UI keeps its snapshot semantics.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    DeliveryCommit, Engine, EngineConfig, LoopOutcome, ModelRoute, RunError,
-    SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver, TurnState,
-    complete_text, echo_stream_fn, log_preview,
+    DeliveryCommit, Engine, EngineConfig, LoopOutcome, ModelRoute, PromptTurn,
+    RunError, SessionOrigin, SessionRecord, SessionWorkspace, TurnObserver,
+    TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
     types::{
         CancelToken, ContentBlock, Message, MessageSource, Role, ToolCallArgs,
     },
+};
+use flowy_skills::{
+    InstalledSkill, SkillId, cleanup_staging, format_available_skills,
+    format_skill_invocation, load_installed, seed_official,
 };
 
 use crate::artifact_store::{
@@ -45,6 +49,7 @@ pub struct SessionSummary {
 pub enum AgentUpdate {
     Initialized,
     Sessions,
+    Skills,
     Artifacts,
     Session {
         id: String,
@@ -139,6 +144,7 @@ struct Harness {
     state: Arc<UiState>,
     engine: Mutex<Option<Arc<Engine>>>,
     config: Mutex<LlmConfig>,
+    skills: Mutex<Vec<InstalledSkill>>,
 }
 
 struct SubmissionSelection<'a> {
@@ -224,11 +230,13 @@ impl AgentHandle {
                 state: Arc::clone(&state),
                 engine: Mutex::new(None),
                 config: Mutex::new(config),
+                skills: Mutex::new(Vec::new()),
             }),
         }
     }
 
     fn initialize(&self) {
+        self.reload_skills();
         let artifact_root = self.inner.state.root.join("artifacts");
         match ArtifactStore::open(artifact_root.clone()) {
             Ok(store) => {
@@ -264,12 +272,55 @@ impl AgentHandle {
         }
         self.inner.state.push_update(AgentUpdate::Initialized);
         self.inner.state.push_update(AgentUpdate::Sessions);
+        self.inner.state.push_update(AgentUpdate::Skills);
         self.inner.state.push_update(AgentUpdate::Artifacts);
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
             "done"
         );
+    }
+
+    fn reload_skills(&self) {
+        let root = &self.inner.state.root;
+        cleanup_staging(root);
+        if let Err(error) = seed_official(root) {
+            tracing::warn!(
+                target: "flowy.skills",
+                error = %error,
+                "official skill seed failed"
+            );
+        }
+        match load_installed(root) {
+            Ok(catalog) => {
+                for failure in &catalog.failures {
+                    tracing::warn!(
+                        target: "flowy.skills",
+                        error = %failure,
+                        "installed skill could not be loaded"
+                    );
+                }
+                *lock(&self.inner.skills) = catalog.skills;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "flowy.skills",
+                    error = %error,
+                    "installed skill catalog load failed"
+                );
+                lock(&self.inner.skills).clear();
+            }
+        }
+    }
+
+    pub fn replace_skill_catalog(&self, skills: Vec<InstalledSkill>) {
+        *lock(&self.inner.skills) = skills;
+        self.inner.state.push_update(AgentUpdate::Skills);
+    }
+
+    #[must_use]
+    pub fn skill_catalog(&self) -> Vec<InstalledSkill> {
+        lock(&self.inner.skills).clone()
     }
 
     fn boot(&self, config: LlmConfig) {
@@ -1266,11 +1317,13 @@ impl AgentHandle {
             state.report_storage_error();
         }
         let config = lock(&self.inner.config).clone();
-        let prompt = text.to_owned();
+        let skills = self.skill_catalog();
+        let (prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let title_prompt = text.to_owned();
         let stream = config
             .api_key
             .is_none()
-            .then(|| echo_stream_fn(prompt.clone()));
+            .then(|| echo_stream_fn(text.to_owned()));
         let workspace = lock(&state.live)
             .get(&id)
             .and_then(|session| session.workspace.clone());
@@ -1284,7 +1337,7 @@ impl AgentHandle {
             |workspace| workspace.root.clone(),
         );
         run_config.cwd = Some(cwd.display().to_string());
-        run_config.registry = tool_registry(&cwd);
+        run_config.registry = tool_registry(&cwd, &skills, active_skills);
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -1310,6 +1363,7 @@ impl AgentHandle {
                 output_root.display()
             );
         }
+        run_config.system = append_skill_listing(&run_config.system, &skills);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -1399,7 +1453,7 @@ impl AgentHandle {
                         session = %id,
                         ok = false,
                         ?loop_outcome,
-                        prompt_preview = %log_preview(&prompt, 200),
+                        prompt_preview = %log_preview(&prompt.model, 200),
                         "turn finished"
                     );
                 }
@@ -1410,7 +1464,7 @@ impl AgentHandle {
                         session = %id,
                         ok = false,
                         error = %error,
-                        prompt_preview = %log_preview(&prompt, 200),
+                        prompt_preview = %log_preview(&prompt.model, 200),
                         "turn finished"
                     );
                 }
@@ -1425,7 +1479,8 @@ impl AgentHandle {
                     session = %id,
                     "sidecar LLM"
                 );
-                generate_title(engine, state, config, signal, id, prompt).await;
+                generate_title(engine, state, config, signal, id, title_prompt)
+                    .await;
             }
         });
         Ok(receipt)
@@ -2215,8 +2270,12 @@ fn restore_existing_history(
                 && matches!(message.source, MessageSource::User)
         })
     {
+        let display = message
+            .display_text
+            .clone()
+            .unwrap_or_else(|| message.text());
         match visible.next() {
-            Some((row, text)) if *text == message.text() => {
+            Some((row, text)) if *text == display => {
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
@@ -2296,7 +2355,10 @@ fn lines_from_messages(
                         lines.push(ChatLine::Artifact { artifact_id });
                     }
                 }
-                let text = message.text();
+                let text = message
+                    .display_text
+                    .clone()
+                    .unwrap_or_else(|| message.text());
                 if !text.is_empty() {
                     lines.push(ChatLine::User { text });
                 }
@@ -2481,6 +2543,7 @@ fn messages_from_lines(lines: &[ChatLine], config: &LlmConfig) -> Vec<Message> {
                     role: Role::User,
                     content: vec![ContentBlock::text(text.clone())],
                     source: MessageSource::User,
+                    display_text: None,
                 });
             }
             ChatLine::Assistant { text } => messages.push(Message {
@@ -2491,6 +2554,7 @@ fn messages_from_lines(lines: &[ChatLine], config: &LlmConfig) -> Vec<Message> {
                     provider: config.provider.clone(),
                     model: config.model.clone(),
                 },
+                display_text: None,
             }),
             _ => {}
         }
@@ -2516,12 +2580,57 @@ fn model_route(config: &LlmConfig) -> ModelRoute {
     }
 }
 
+fn prepare_skill_prompt(
+    text: &str,
+    skills: &[InstalledSkill],
+) -> Result<(PromptTurn, Vec<SkillId>), &'static str> {
+    let Some(command) = text.strip_prefix("/skill:") else {
+        return Ok((PromptTurn::plain(text), Vec::new()));
+    };
+    let (name, args) = command
+        .split_once(' ')
+        .map_or((command, ""), |(name, args)| (name, args.trim()));
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("notice.skill_not_found");
+    }
+    let mut matches: Vec<&InstalledSkill> = skills
+        .iter()
+        .filter(|skill| {
+            skill.name == name
+                || format!("{}/{}", skill.id.owner_handle, skill.id.slug)
+                    == name
+        })
+        .collect();
+    let skill = match matches.len() {
+        0 => return Err("notice.skill_not_found"),
+        1 => matches.remove(0),
+        _ => return Err("notice.skill_ambiguous"),
+    };
+    let model =
+        format_skill_invocation(skill, (!args.is_empty()).then_some(args));
+    Ok((
+        PromptTurn::with_display(model, text),
+        vec![skill.id.clone()],
+    ))
+}
+
+fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
+    let listing = format_available_skills(skills);
+    match (base.trim().is_empty(), listing.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => base.to_owned(),
+        (true, false) => listing,
+        (false, false) => format!("{base}\n\n{listing}"),
+    }
+}
+
 fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
     EngineConfig {
         route: model_route(config),
         api_key: config.api_key.clone(),
         system: String::new(),
-        registry: tool_registry(cwd),
+        registry: tool_registry(cwd, &[], Vec::new()),
         cwd: Some(cwd.display().to_string()),
         todos: None,
         delivery_committer: None,
@@ -2578,7 +2687,11 @@ fn recover_corrupt_index(root: &Path) -> std::io::Result<()> {
     std::fs::rename(path, backup)
 }
 
-fn tool_registry(cwd: &Path) -> ToolRegistry {
+fn tool_registry(
+    cwd: &Path,
+    skills: &[InstalledSkill],
+    active_skills: Vec<SkillId>,
+) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(pi_shell_definition(cwd));
@@ -2586,15 +2699,29 @@ fn tool_registry(cwd: &Path) -> ToolRegistry {
     // host can satisfy instead of advertising one that always fails.
     registry.unregister("todo_write");
     let root = cwd.to_path_buf();
-    let guard: ToolGuard =
-        Arc::new(move |args: &ToolCallArgs| path_guard(&root, args));
+    let active = Arc::new(Mutex::new(skill_scope(skills, active_skills)));
+    let skills_for_paths = skills.to_vec();
+    let path_active = Arc::clone(&active);
+    let guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        path_guard(&root, &skills_for_paths, &path_active, args)
+    });
     registry.add_guard(guard);
+    let skills_for_shell = skills.to_vec();
+    let shell_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        shell_guard(&skills_for_shell, &active, args)
+    });
+    registry.add_guard(shell_guard);
     registry
 }
 
-/// Host policy for file tools. The platform shell is intentionally exempt: it
-/// executes commands, not host file paths, and the host has no OS sandbox for it.
-fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
+/// Host policy for file tools. The platform shell is handled by a separate
+/// guard because it executes commands rather than host file paths.
+fn path_guard(
+    root: &Path,
+    skills: &[InstalledSkill],
+    active: &Arc<Mutex<HashSet<SkillId>>>,
+    args: &ToolCallArgs,
+) -> Option<String> {
     let key = match args.name.as_str() {
         "read_file" | "write_file" | "edit_file" | "glob" | "grep" => "path",
         _ => return None,
@@ -2603,8 +2730,62 @@ fn path_guard(root: &Path, args: &ToolCallArgs) -> Option<String> {
     if raw.trim().is_empty() {
         return None;
     }
-    (!confined_to(root, raw))
-        .then(|| format!("path escapes the working directory: {raw}"))
+    let writable = matches!(args.name.as_str(), "write_file" | "edit_file");
+    if confined_to(root, raw) {
+        return None;
+    }
+    if writable {
+        return Some(format!("path escapes the working directory: {raw}"));
+    }
+    let path = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        root.join(raw)
+    };
+    let Some(skill) = skills
+        .iter()
+        .find(|skill| confined_to(&skill.root, &path.to_string_lossy()))
+    else {
+        return Some(format!("path escapes the working directory: {raw}"));
+    };
+    if matches!(args.name.as_str(), "read_file" | "grep") {
+        lock(active).insert(skill.id.clone());
+    }
+    None
+}
+
+fn skill_scope(
+    skills: &[InstalledSkill],
+    explicit: Vec<SkillId>,
+) -> HashSet<SkillId> {
+    let mut active = explicit.into_iter().collect::<HashSet<_>>();
+    active.extend(
+        skills
+            .iter()
+            .filter(|skill| skill.auto_invoke)
+            .map(|skill| skill.id.clone()),
+    );
+    active
+}
+
+fn shell_guard(
+    skills: &[InstalledSkill],
+    active: &Arc<Mutex<HashSet<SkillId>>>,
+    args: &ToolCallArgs,
+) -> Option<String> {
+    if !matches!(args.name.as_str(), "bash" | "powershell") {
+        return None;
+    }
+    let active = lock(active);
+    let blocked = skills
+        .iter()
+        .find(|skill| active.contains(&skill.id) && !skill.scripts_enabled);
+    blocked.map(|skill| {
+        format!(
+            "skill \"{}\" does not have script permission; enable it in My Skills before using a shell",
+            skill.name
+        )
+    })
 }
 
 fn confined_to(root: &Path, raw: &str) -> bool {
@@ -3170,16 +3351,18 @@ mod background_init_tests {
 #[cfg(test)]
 mod guard_tests {
     use super::{
-        AgentWorkspace, confined_to, path_guard, session_working_directory,
-        take_file_change, tool_arg_key, tool_registry,
+        AgentWorkspace, append_skill_listing, confined_to, path_guard,
+        prepare_skill_prompt, session_working_directory, shell_guard,
+        skill_scope, take_file_change, tool_arg_key, tool_registry,
         tool_result_display_text,
     };
     use crate::projection::FileChangeKind;
     use flowy_agent_core::types::ToolCallArgs;
+    use flowy_skills::{InstallOrigin, InstalledSkill, parse_skill_id};
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     fn args(name: &str, arguments: serde_json::Value) -> ToolCallArgs {
         ToolCallArgs {
@@ -3205,23 +3388,131 @@ mod guard_tests {
     #[test]
     fn shell_is_not_treated_as_a_file_path() {
         let root = Path::new("/work");
+        let active = Arc::new(Mutex::new(HashSet::new()));
         for name in ["bash", "powershell"] {
             let shell = args(name, json!({ "command": "cd .. && pwd" }));
-            assert_eq!(path_guard(root, &shell), None);
+            assert_eq!(path_guard(root, &[], &active, &shell), None);
         }
         let read = args("read_file", json!({ "path": "../outside" }));
-        assert!(path_guard(root, &read).is_some());
+        assert!(path_guard(root, &[], &active, &read).is_some());
     }
 
     #[test]
     fn production_registry_exposes_file_and_shell_tools_without_todos() {
-        let registry = tool_registry(Path::new("/work"));
+        let registry = tool_registry(Path::new("/work"), &[], Vec::new());
         let names = registry.list();
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == shell_name()));
         let other = if cfg!(windows) { "bash" } else { "powershell" };
         assert!(!names.iter().any(|name| name == other));
         assert!(!names.iter().any(|name| name == "todo_write"));
+    }
+
+    fn installed_skill(scripts_enabled: bool) -> InstalledSkill {
+        InstalledSkill {
+            id: parse_skill_id("owner", "demo", "1.0.0").unwrap(),
+            name: "demo".into(),
+            description: "Demo <skill> & helpers".into(),
+            root: Path::new("/work/skills/demo").to_path_buf(),
+            skill_path: Path::new("/work/skills/demo/SKILL.md").to_path_buf(),
+            content: "---\nname: demo\n---\nUse the demo.".into(),
+            auto_invoke: true,
+            scripts_enabled,
+            origin: InstallOrigin::Community,
+            latest_version: Some("1.0.0".into()),
+        }
+    }
+
+    #[test]
+    fn slash_skill_injects_full_body_and_keeps_display_text() {
+        let skill = installed_skill(false);
+        let (prompt, active) =
+            prepare_skill_prompt("/skill:demo summarize this", &[skill])
+                .unwrap();
+        assert!(prompt.model.contains("<skill name=\"demo\""));
+        assert!(prompt.model.contains("Use the demo."));
+        assert_eq!(
+            prompt.display.as_deref(),
+            Some("/skill:demo summarize this")
+        );
+        assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn available_skill_listing_is_xml_escaped() {
+        let listing = append_skill_listing("base", &[installed_skill(false)]);
+        assert!(listing.starts_with("base\n\n"));
+        assert!(listing.contains("<available_skills>"));
+        assert!(listing.contains("Demo &lt;skill&gt; &amp; helpers"));
+        assert!(listing.contains("/work/skills/demo/SKILL.md"));
+    }
+
+    #[test]
+    fn shell_is_blocked_until_active_skill_scripts_are_enabled() {
+        let skill = installed_skill(false);
+        let active = Arc::new(Mutex::new(HashSet::from([skill.id.clone()])));
+        let shell = args(shell_name(), json!({ "command": "echo hi" }));
+        assert!(
+            shell_guard(std::slice::from_ref(&skill), &active, &shell)
+                .is_some()
+        );
+        let mut enabled = skill;
+        enabled.scripts_enabled = true;
+        assert!(shell_guard(&[enabled], &active, &shell).is_none());
+    }
+
+    #[test]
+    fn auto_listed_skills_are_in_shell_scope() {
+        let skill = installed_skill(false);
+        let active = Arc::new(Mutex::new(skill_scope(
+            std::slice::from_ref(&skill),
+            Vec::new(),
+        )));
+        let shell = args(shell_name(), json!({ "command": "echo hi" }));
+        assert!(active.lock().unwrap().contains(&skill.id));
+        assert!(shell_guard(&[skill], &active, &shell).is_some());
+    }
+
+    #[test]
+    fn reading_or_grepping_a_skill_marks_it_active_and_allows_its_root() {
+        let base = std::env::temp_dir().join(format!(
+            "flowy-agent-skill-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let cwd = base.join("cwd");
+        let skill_root = base.join("skill");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&skill_root).unwrap();
+        std::fs::write(skill_root.join("SKILL.md"), "body").unwrap();
+        let mut skill = installed_skill(false);
+        skill.root = skill_root.clone();
+        skill.skill_path = skill_root.join("SKILL.md");
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let read = args(
+            "read_file",
+            json!({ "path": skill.skill_path.display().to_string() }),
+        );
+        assert_eq!(path_guard(&cwd, &[skill.clone()], &active, &read), None);
+        assert!(active.lock().unwrap().contains(&skill.id));
+
+        let grep_active = Arc::new(Mutex::new(HashSet::new()));
+        let grep = args(
+            "grep",
+            json!({
+                "path": skill_root.display().to_string(),
+                "pattern": "body"
+            }),
+        );
+        assert_eq!(
+            path_guard(&cwd, &[skill.clone()], &grep_active, &grep),
+            None
+        );
+        assert!(grep_active.lock().unwrap().contains(&skill.id));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

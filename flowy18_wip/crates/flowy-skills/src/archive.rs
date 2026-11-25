@@ -1,9 +1,12 @@
 use crate::MAX_PACKAGE_BYTES;
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use tar::Archive as TarArchive;
 use thiserror::Error;
 use zip::ZipArchive;
 
@@ -132,6 +135,241 @@ pub fn extract_skill_zip(
     result
 }
 
+pub fn extract_github_skill(
+    bytes: &[u8],
+    skill_path: &str,
+    dest: &Path,
+) -> Result<(), ArchiveError> {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PACKAGE_BYTES {
+        return Err(ArchiveError::TooLarge);
+    }
+    if dest.exists() {
+        return Err(ArchiveError::DestinationExists);
+    }
+    let skill_path = handoff_skill_path(skill_path)?;
+    fs::create_dir_all(dest)?;
+    let result = if bytes.starts_with(&[0x1f, 0x8b]) {
+        extract_github_tar(bytes, skill_path.as_deref(), dest)
+    } else if bytes.starts_with(b"PK") {
+        extract_github_zip(bytes, skill_path.as_deref(), dest)
+    } else {
+        Err(ArchiveError::UnsupportedContentType)
+    };
+    if result.is_err() {
+        let _ = fs::remove_dir_all(dest);
+    }
+    result
+}
+
+/// `ClawHub` GitHub handoffs carry a SHA-256 content hash. Accept either the
+/// archive digest or a deterministic digest over the extracted skill files.
+pub fn content_hash_matches(
+    expected: &str,
+    archive: &[u8],
+    root: &Path,
+) -> Result<bool, ArchiveError> {
+    let expected = expected
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or_else(|| expected.trim())
+        .to_ascii_lowercase();
+    if expected.len() != 64
+        || !expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(ArchiveError::RejectedHandoff);
+    }
+    if sha256_hex(archive) == expected {
+        return Ok(true);
+    }
+    Ok(tree_manifest_hash(root)? == expected)
+}
+
+pub fn collect_tree_hashes(
+    root: &Path,
+) -> Result<BTreeMap<String, String>, ArchiveError> {
+    let mut files = BTreeMap::new();
+    collect_tree_files(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn collect_tree_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut BTreeMap<String, String>,
+) -> Result<(), ArchiveError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(ArchiveError::Symlink);
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_tree_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| ArchiveError::PathEscape)?;
+            let relative = normalize_relative(&relative.to_string_lossy());
+            let bytes = fs::read(&path)?;
+            files.insert(relative, sha256_hex(&bytes));
+        }
+    }
+    Ok(())
+}
+
+fn tree_manifest_hash(root: &Path) -> Result<String, ArchiveError> {
+    let files = collect_tree_hashes(root)?;
+    let mut digest = Sha256::new();
+    for (path, hash) in files {
+        if path == "skill-card.md" || path == "_meta.json" {
+            continue;
+        }
+        digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(hash.as_bytes());
+        digest.update(b"\n");
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn handoff_skill_path(path: &str) -> Result<Option<String>, ArchiveError> {
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with('/') {
+        return Err(ArchiveError::PathEscape);
+    }
+    let trimmed = normalized.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        return Ok(None);
+    }
+    let relative = safe_relative_path(trimmed)?;
+    Ok(Some(relative.to_string_lossy().replace('\\', "/")))
+}
+
+fn archive_relative_entry(
+    name: &str,
+    skill_path: Option<&str>,
+) -> Result<Option<PathBuf>, ArchiveError> {
+    let normalized = name.replace('\\', "/");
+    let relative = if let Some(skill_path) = skill_path {
+        let marker = format!("/{skill_path}/");
+        let Some(index) = normalized.find(&marker) else {
+            return Ok(None);
+        };
+        &normalized[index + marker.len()..]
+    } else {
+        let Some((_, relative)) = normalized.split_once('/') else {
+            return Ok(None);
+        };
+        relative
+    };
+    if relative.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(safe_relative_path(relative)?))
+}
+
+fn extract_github_zip(
+    bytes: &[u8],
+    skill_path: Option<&str>,
+    dest: &Path,
+) -> Result<(), ArchiveError> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let mut files = 0_usize;
+    let mut written_total = 0_u64;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170_000 == 0o120_000)
+        {
+            return Err(ArchiveError::Symlink);
+        }
+        let Some(relative) = archive_relative_entry(entry.name(), skill_path)?
+        else {
+            continue;
+        };
+        let output = dest.join(&relative);
+        if !output.starts_with(dest) {
+            return Err(ArchiveError::PathEscape);
+        }
+        if entry.is_dir() || entry.name().ends_with(['/', '\\']) {
+            fs::create_dir_all(&output)?;
+            continue;
+        }
+        files += 1;
+        if files > MAX_ZIP_FILES {
+            return Err(ArchiveError::TooManyFiles);
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = File::create(&output)?;
+        let remaining = MAX_PACKAGE_BYTES.saturating_sub(written_total);
+        let mut limited = Read::take(entry, remaining.saturating_add(1));
+        let written = io::copy(&mut limited, &mut output)?;
+        if written > remaining {
+            return Err(ArchiveError::TooLarge);
+        }
+        written_total = written_total.saturating_add(written);
+    }
+    Ok(())
+}
+
+fn extract_github_tar(
+    bytes: &[u8],
+    skill_path: Option<&str>,
+    dest: &Path,
+) -> Result<(), ArchiveError> {
+    let decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut archive = TarArchive::new(decoder);
+    let mut files = 0_usize;
+    let mut written_total = 0_u64;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(ArchiveError::Symlink);
+        }
+        if !entry_type.is_file() && !entry_type.is_dir() {
+            continue;
+        }
+        let path = entry.path()?;
+        let path = path.to_string_lossy();
+        let Some(relative) = archive_relative_entry(&path, skill_path)? else {
+            continue;
+        };
+        let output = dest.join(&relative);
+        if !output.starts_with(dest) {
+            return Err(ArchiveError::PathEscape);
+        }
+        if entry_type.is_dir() {
+            fs::create_dir_all(&output)?;
+            continue;
+        }
+        files += 1;
+        if files > MAX_ZIP_FILES {
+            return Err(ArchiveError::TooManyFiles);
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = File::create(&output)?;
+        let remaining = MAX_PACKAGE_BYTES.saturating_sub(written_total);
+        let mut limited = Read::take(&mut entry, remaining.saturating_add(1));
+        let written = io::copy(&mut limited, &mut output)?;
+        if written > remaining {
+            return Err(ArchiveError::TooLarge);
+        }
+        written_total = written_total.saturating_add(written);
+    }
+    Ok(())
+}
+
+pub fn normalize_relative(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_owned()
+}
+
 fn extract_zip_inner(bytes: &[u8], dest: &Path) -> Result<(), ArchiveError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
     let mut files = 0_usize;
@@ -221,9 +459,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tar::{Builder, Header};
     use zip::write::SimpleFileOptions;
 
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -297,6 +538,56 @@ mod tests {
             classify_download("application/json", bad_host.as_bytes()),
             Err(ArchiveError::RejectedHandoff)
         ));
+    }
+
+    #[test]
+    fn extracts_github_tar_skill_subtree_and_checks_content_hash() {
+        let dir = TestDir::new("github-tar");
+        let skill = b"# GitHub skill";
+        let mut builder = Builder::new(Vec::new());
+        let mut header = Header::new_gnu();
+        header.set_size(u64::try_from(skill.len()).unwrap());
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "repo-abc/skills/demo/SKILL.md",
+                &skill[..],
+            )
+            .unwrap();
+        let mut header = Header::new_gnu();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "repo-abc/outside.txt", &b"nope!"[..])
+            .unwrap();
+        let tar = builder.into_inner().unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).unwrap();
+        let archive = encoder.finish().unwrap();
+
+        let bad_output = dir.path.join("bad");
+        assert!(matches!(
+            extract_github_skill(&archive, "/skills/demo", &bad_output),
+            Err(ArchiveError::PathEscape)
+        ));
+        let output = dir.path.join("skill");
+        extract_github_skill(&archive, "skills/demo", &output).unwrap();
+        assert_eq!(fs::read(output.join("SKILL.md")).unwrap(), skill);
+        assert!(!output.join("outside.txt").exists());
+        assert!(
+            content_hash_matches(
+                &format!("sha256:{}", sha256_hex(&archive)),
+                &archive,
+                &output
+            )
+            .unwrap()
+        );
+        assert!(
+            !content_hash_matches(&"0".repeat(64), &archive, &output).unwrap()
+        );
     }
 
     #[test]

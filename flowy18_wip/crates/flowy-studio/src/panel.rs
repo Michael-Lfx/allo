@@ -73,6 +73,7 @@ pub enum StudioEvent {
     RefreshModels,
     OpenIdeas,
     SessionsChanged,
+    SkillsChanged,
     /// A turn reached a terminal state; credit balance may have changed.
     TurnFinished,
     ArtifactsChanged,
@@ -544,6 +545,12 @@ impl StudioPanel {
         {
             cx.emit(StudioEvent::ArtifactsChanged);
         }
+        if updates
+            .iter()
+            .any(|update| matches!(update, flowy_agent::AgentUpdate::Skills))
+        {
+            cx.emit(StudioEvent::SkillsChanged);
+        }
         if updates.iter().any(|update| {
             matches!(update, flowy_agent::AgentUpdate::StorageError)
         }) {
@@ -567,6 +574,20 @@ impl StudioPanel {
                 cx.emit(StudioEvent::TurnFinished);
             }
         }
+    }
+
+    pub fn skill_catalog(&self) -> Vec<flowy_agent::InstalledSkill> {
+        self.agent.skill_catalog()
+    }
+
+    pub fn set_skill_catalog(
+        &mut self,
+        skills: Vec<flowy_agent::InstalledSkill>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.agent.replace_skill_catalog(skills);
+        cx.emit(StudioEvent::SkillsChanged);
+        cx.notify();
     }
 
     fn refresh_working(&self, cx: &mut Context<'_, Self>) {

@@ -265,6 +265,7 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentBlock::text("read the config")],
                 source: MessageSource::User,
+                display_text: None,
             },
             Message {
                 id: "a1".into(),
@@ -283,6 +284,7 @@ mod tests {
                     provider: "flowy".into(),
                     model: "AIPC-deepseek-v4-flash".into(),
                 },
+                display_text: None,
             },
             Message {
                 id: "t1".into(),
@@ -296,6 +298,7 @@ mod tests {
                 source: MessageSource::Tool {
                     tool: "read_file".into(),
                 },
+                display_text: None,
             },
             Message {
                 id: "a2".into(),
@@ -305,6 +308,7 @@ mod tests {
                     provider: "flowy".into(),
                     model: "AIPC-deepseek-v4-flash".into(),
                 },
+                display_text: None,
             },
         ]
     }
