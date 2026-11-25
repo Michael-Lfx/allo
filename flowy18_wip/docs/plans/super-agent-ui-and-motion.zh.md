@@ -11,7 +11,7 @@
 
 `flowy18_wip` 正在从传统的「单轮问答聊天界面」演进为基于 `pi-rust` 内核的 **Super Agent 交付型工作台**：用户面对的不是一次性聊天框，而是能够**全双工接待、后台并行推进多项任务（Works）、自动执行三层锚点核验并对交付文件背书**的常驻私人幕僚。
 
-在底层能力（本地追加日志受理 `AcceptanceQueue`、`ExecInput` 重放、`create_deck` / `verify_deck` 四码核验、全类型交付硬门 `DeliveryStore`）逐步完备后，现有 `flowy-studio` 与 `flowy-app/dock` 的界面形态仍停留在早期 Chatbot 阶段，亟需一次符合人类直觉、极简克制且具备原生丝滑动效的体验升级。
+在底层能力（本地追加日志受理 `AcceptanceQueue`、`create_deck` / `verify_deck` / `verify_artifact` 四码核验、全类型交付硬门 `DeliveryStore`）逐步完备后，现有 `flowy-studio` 与 `flowy-app/dock` 的界面形态仍停留在早期 Chatbot 阶段，亟需一次符合人类直觉、极简克制且具备原生丝滑动效的体验升级。
 
 ### 1.2 现状与四大痛点
 

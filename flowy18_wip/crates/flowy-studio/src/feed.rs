@@ -1497,6 +1497,32 @@ impl ChatFeed {
                 .flex_col()
                 .child(toggle);
 
+            if let Some(hint) = semantic_hint
+                && !hint.trim().is_empty()
+            {
+                let hint_label =
+                    self.tf("verify.semantic.hint", &[("hint", hint)]);
+                card = card.child(
+                    div()
+                        .id(("verify-semantic-hint", row_id))
+                        .debug_selector(|| {
+                            "chat-verify-semantic-hint".to_owned()
+                        })
+                        .role(gpui::Role::Status)
+                        .aria_label(hint_label.clone())
+                        .w_full()
+                        .px(self.theme.space(10.))
+                        .py(self.theme.space(6.))
+                        .border_t_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.status_attention_bg())
+                        .text_xs()
+                        .text_color(self.theme.ink())
+                        .whitespace_normal()
+                        .child(hint_label),
+                );
+            }
+
             if expanded {
                 let mut details = div()
                     .w_full()
@@ -1563,26 +1589,6 @@ impl ChatFeed {
                         );
                     }
                     details = details.child(list);
-                }
-                if let Some(hint) = semantic_hint
-                    && !hint.trim().is_empty()
-                {
-                    let hint_label =
-                        self.tf("verify.semantic.hint", &[("hint", hint)]);
-                    details = details.child(
-                        div()
-                            .id(("verify-semantic-hint", row_id))
-                            .role(gpui::Role::Status)
-                            .aria_label(hint_label.clone())
-                            .px(self.theme.space(8.))
-                            .py(self.theme.space(4.))
-                            .rounded_md()
-                            .bg(self.theme.soft())
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .whitespace_normal()
-                            .child(hint_label),
-                    );
                 }
                 card = card.child(self.reveal_collapsible(
                     ("verify-detail-reveal", row_id),
@@ -2987,5 +2993,38 @@ mod tests {
             .expect("verified and overridden deliverables must surface");
         let paths: Vec<&str> = found.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, vec!["outputs/ok.pptx", "outputs/override.docx"]);
+    }
+
+    #[gpui::test]
+    fn collapsed_passed_verification_card_still_shows_l3_semantic_hint(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let (_feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed =
+                ChatFeed::new(ui, i18n.clone(), Some("verify-l3".into()), cx);
+            feed.sync_rows(
+                Some("verify-l3".into()),
+                vec![ChatLine::Verification {
+                    report_id: "report-l3".into(),
+                    artifact_path: "outputs/sub/east.pptx".into(),
+                    artifact_hash: "1122334455667788".into(),
+                    ok: true,
+                    issues: Vec::new(),
+                    semantic_hint: Some("第1页写成华南区".into()),
+                    override_used: false,
+                }],
+                cx,
+            );
+            feed
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            cx.debug_bounds("chat-verify-semantic-hint").is_some(),
+            "L3 semantic hint must remain visible on collapsed passed cards"
+        );
     }
 }

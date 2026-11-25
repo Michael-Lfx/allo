@@ -198,6 +198,7 @@ impl Button {
         );
         crate::A11yElement::new(element.into_element())
             .busy(loading)
+            .disabled(self.disabled)
             .into_any_element()
             .into_any_element()
     }
@@ -318,6 +319,7 @@ impl IconButton {
         .child(div().id(icon_id).child(leading));
         crate::A11yElement::new(element.into_element())
             .busy(loading)
+            .disabled(self.button.disabled)
             .into_any_element()
             .into_any_element()
     }
