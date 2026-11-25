@@ -2552,6 +2552,43 @@ pub struct SystemActionView {
     pub at: i64,
 }
 
+/// 评审留痕读侧的一行（m1，`GET /courses/{id}/graph/structure/findings`）：
+/// 生长评审 / 预算留痕照表透出（`learning_structure_findings`，只增审计面）。
+/// source / field 是机器名（Rust 写侧单源），人面文案由前端 i18n 承担；
+/// node / issue / advice 是模型写的自由文本原文，读侧不改写。
+/// `read_by_repair` = `seq <= 修补水位`——只表示**修补回合读过这条**，不表示
+/// 问题已解决（applied 与 noop 都推水位）。自增 `id` 不透出（x06：不可移植，
+/// 水位不锚它）。读侧宽容：未知 source / field 原样透出，不报错。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureFindingView {
+    /// 每课程单调游标（水位锚本列而非自增 id）。
+    pub seq: i64,
+    /// 留痕落表时刻（ms）；同一批共用一个值。
+    pub ts: i64,
+    pub source: String,
+    /// 上下文锚：节点标题或块 slug；空串 = 全课面（预算留痕恒空）。
+    pub node: String,
+    /// 被点名的字段机器名；空串 = 未点名字段（预算留痕恒空）。
+    pub field: String,
+    pub issue: String,
+    /// 可为空串（预算留痕恒空）。
+    pub advice: String,
+    pub read_by_repair: bool,
+}
+
+/// 评审留痕读侧（m1）：最近的留痕按 seq 倒序 + 三个读数。`total` = 本课
+/// 全部留痕行数（不随 limit 截断变——前端据此如实说「最近 N 条 · 共 M
+/// 条」）；`watermark` = 当前修补水位（无状态行 = 0）；`unread` = 水位之后
+/// 的行数（修补回合尚未读过的留痕）。展示与水位解耦：不按水位过滤，否则
+/// 一次 noop 回合就能让可见面清空。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureFindingsView {
+    pub findings: Vec<StructureFindingView>,
+    pub total: i64,
+    pub watermark: i64,
+    pub unread: i64,
+}
+
 /// 批次内的一个节点行。
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphNodeHistoryView {

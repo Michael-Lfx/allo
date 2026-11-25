@@ -74,6 +74,7 @@ import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import { StructureGraphTab } from './structure/StructureGraphTab';
+import { StructureFindingsLoader } from './structure/StructureFindingsSection';
 import { DeclarationWindow } from './structure/DeclarationWindow';
 
 const { Text, Title, Paragraph } = Typography;
@@ -1254,6 +1255,10 @@ const LearningGraphWorkspace: React.FC<{
             onDeclareBasis={(doors) => void declareBasis(doors)}
             declaringBasis={basisDeclareBusy}
           />
+          {/* 评审留痕（m1）：独立自取数的默认折叠段，紧跟结构图——不放进上面
+              Tab 的挂载卡「详情」折叠（挂载卡只在有挂载行时存在，没跑过挂载的
+              课程会永远看不到留痕）。纯读面：零 LLM、不推水位、不触发回合。 */}
+          <StructureFindingsLoader courseId={detail.course.id} />
         </Tabs.TabPane>
       </Tabs>
       </div>

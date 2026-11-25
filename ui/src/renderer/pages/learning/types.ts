@@ -864,6 +864,37 @@ export interface SystemActionView {
   at: number;
 }
 
+/** 评审留痕读侧的一行（m1，GET /courses/{id}/graph/structure/findings）：生长
+ * 评审 / 预算留痕照表透出（只增审计面）。source / field 是机器名（后端写侧
+ * 单源），人面文案走 i18n；node / issue / advice 是模型写的自由文本原文。
+ * read_by_repair = seq <= 修补水位：只表示修补回合读过这条，不表示问题已
+ * 解决（applied 与 noop 都推水位）。 */
+export interface StructureFindingView {
+  seq: number;
+  /** 留痕落表时刻（ms）；同一批共用一个值 */
+  ts: number;
+  source: string;
+  /** 上下文锚：节点标题或块 slug；空串 = 全课面（预算留痕恒空） */
+  node: string;
+  /** 被点名的字段机器名；空串 = 未点名字段（预算留痕恒空） */
+  field: string;
+  issue: string;
+  /** 可为空串（预算留痕恒空） */
+  advice: string;
+  read_by_repair: boolean;
+}
+
+/** 评审留痕读侧（m1）：最近的留痕按 seq 倒序 + 三个读数。total = 本课全部
+ * 留痕行数（不随 limit 截断变）；watermark = 当前修补水位（无状态行 = 0）；
+ * unread = 水位之后的行数（修补回合尚未读过）。展示与水位解耦：不按水位
+ * 过滤，否则一次 noop 回合就能让可见面清空。 */
+export interface StructureFindingsView {
+  findings: StructureFindingView[];
+  total: number;
+  watermark: number;
+  unread: number;
+}
+
 export interface GraphNodeHistoryView {
   lesson_id: string;
   title: string;

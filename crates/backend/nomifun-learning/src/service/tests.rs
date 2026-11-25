@@ -17311,3 +17311,257 @@ async fn growth_wake_ignores_an_idle_batch() {
         "空手批不登记唤醒"
     );
 }
+
+// ── m1：评审留痕读侧（structure_findings，纯读零 LLM 零写）──────────────
+//
+// 留痕此前只有写侧（append_structure_findings）与两处内部消费（修补回合 /
+// maintenance_needs），没有任何对外读面。本块锁读侧契约：seq 倒序 + limit
+// 归一（复用系统动作簿的 50/200 口径）、read_by_repair 与水位一致、404 口径
+// 与 structure_view 同（不存在/软删；归档课仍 200）、HTTP 信封。
+
+/// 读侧：按 seq 倒序返回最近留痕；limit 缺省 50、下限 1、上限 200（坏值
+/// 截断不报错，与系统动作簿同一归一）；`total` 恒为本课全部行数，不随截断
+/// 变——截断时前端据此如实说「最近 N 条 · 共 M 条」。
+#[tokio::test]
+async fn structure_findings_orders_desc_and_honours_the_limit() {
+    let (service, _user, course) =
+        seed_maintenance_course(205, 1, ScriptedCompleter::new("{}", false)).await;
+
+    let view = service
+        .structure_findings(&course, SYSTEM_ACTION_DEFAULT_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(view.findings.len(), 50, "缺省 50");
+    assert_eq!(view.findings[0].seq, 205, "最近的在前");
+    assert_eq!(view.findings[49].seq, 156);
+    assert_eq!(view.total, 205, "total 是全量行数");
+
+    // 字段照表透出（source / node / field / issue / advice / ts 原值）。
+    let newest = &view.findings[0];
+    assert_eq!(newest.source, "concept-review");
+    assert_eq!(newest.node, "块一");
+    assert_eq!(newest.field, "definition");
+    assert_eq!(newest.issue, "留痕 204");
+    assert_eq!(newest.advice, "建议");
+    // ts 照表透出：种子逐行写入 `now_ms() + index`，时间戳随 seq 严格递增
+    // （种子每行各取一次 now_ms()，差值不是常数——只断言序关系）。
+    for pair in view.findings.windows(2) {
+        assert!(
+            pair[0].ts > pair[1].ts,
+            "ts 随 seq 递增：{:?}",
+            pair.iter().map(|row| (row.seq, row.ts)).collect::<Vec<_>>()
+        );
+    }
+
+    let limited = service.structure_findings(&course, 2).await.unwrap();
+    assert_eq!(
+        limited.findings.iter().map(|row| row.seq).collect::<Vec<_>>(),
+        vec![205, 204],
+        "limit 截断取最近的 N 条"
+    );
+    assert_eq!(limited.total, 205, "截断不改 total");
+    assert_eq!(
+        service.structure_findings(&course, 500).await.unwrap().findings.len(),
+        200,
+        "上限 200"
+    );
+    assert_eq!(
+        service.structure_findings(&course, 0).await.unwrap().findings.len(),
+        1,
+        "下限 1（坏值不拒绝）"
+    );
+}
+
+/// `read_by_repair` 与水位一致（两侧）：无状态行 = 水位 0 → 全部未读
+/// （`unread == total`）；写入 `findings_watermark = 2` → seq 1、2 已读、
+/// seq 3 未读，`watermark` / `unread` 读数同步。已读行仍在列表里——展示与
+/// 水位解耦，不按水位过滤。读面纯读：不落水位行、不推水位。
+#[tokio::test]
+async fn structure_findings_read_by_repair_agrees_with_the_watermark() {
+    let (service, _user, course) =
+        seed_maintenance_course(3, 1, ScriptedCompleter::new("{}", false)).await;
+
+    // 无状态行：水位 0，全部未读。
+    let view = service.structure_findings(&course, 50).await.unwrap();
+    assert_eq!(
+        view.findings.iter().map(|row| row.seq).collect::<Vec<_>>(),
+        vec![3, 2, 1]
+    );
+    assert!(
+        view.findings.iter().all(|row| !row.read_by_repair),
+        "无水位行：全部未读"
+    );
+    assert_eq!(view.watermark, 0);
+    assert_eq!(view.total, 3);
+    assert_eq!(view.unread, 3, "无水位行：未读 = 全量");
+    assert_eq!(
+        maintenance_watermark(&service, &course).await,
+        None,
+        "读面不落水位行"
+    );
+
+    // 修补回合读到 seq 2（applied / noop 都推水位 = 已读，不是已修复）。
+    sqlx::query(
+        "INSERT INTO learning_maintenance_state (course_id, findings_watermark, updated_at) \
+         VALUES (?, 2, ?)",
+    )
+    .bind(course.as_str())
+    .bind(now_ms())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let view = service.structure_findings(&course, 50).await.unwrap();
+    let read: Vec<(i64, bool)> = view
+        .findings
+        .iter()
+        .map(|row| (row.seq, row.read_by_repair))
+        .collect();
+    assert_eq!(read, vec![(3, false), (2, true), (1, true)]);
+    assert_eq!(view.watermark, 2);
+    assert_eq!(view.unread, 1);
+    assert_eq!(view.total, 3);
+    assert_eq!(
+        maintenance_watermark(&service, &course).await,
+        Some(2),
+        "读面不推水位"
+    );
+}
+
+/// 404 口径与 structure_view / 系统动作簿同：课程不存在、已软删 → 404；归档
+/// 课（enabled = 0）仍 200——留痕是只增审计面，历史可见，不设 enabled 门。
+#[tokio::test]
+async fn structure_findings_404s_for_missing_and_soft_deleted_courses() {
+    let (service, _user, course) =
+        seed_maintenance_course(2, 1, ScriptedCompleter::new("{}", false)).await;
+    assert_eq!(
+        service.structure_findings(&course, 50).await.unwrap().total,
+        2,
+        "夹具前提：软删前可读"
+    );
+
+    sqlx::query("UPDATE learning_courses SET deleted_at = 1 WHERE course_id = ?")
+        .bind(course.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let error = service.structure_findings(&course, 50).await.unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+
+    let missing = LearningCourseId::new();
+    let error = service.structure_findings(&missing, 50).await.unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+
+    // 归档课仍 200。
+    let (archived_service, _archived_user, archived_course) =
+        seed_maintenance_course(1, 0, ScriptedCompleter::new("{}", false)).await;
+    let view = archived_service
+        .structure_findings(&archived_course, 50)
+        .await
+        .unwrap();
+    assert_eq!(view.total, 1);
+    assert_eq!(view.findings.len(), 1);
+}
+
+/// 零留痕的课程 = 空列表 + 零读数（200，不是错误）——前端据此整段不渲染。
+#[tokio::test]
+async fn structure_findings_is_empty_for_a_course_without_findings() {
+    let (service, _user, course) =
+        seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
+    let view = service.structure_findings(&course, 50).await.unwrap();
+    assert!(view.findings.is_empty());
+    assert_eq!(view.total, 0);
+    assert_eq!(view.watermark, 0);
+    assert_eq!(view.unread, 0);
+}
+
+/// m1 路由层：评审留痕读端点经真实提取器栈（`Router::oneshot`，夹具同
+/// `grow_route_model_choice`）——200 信封 `{success, data}`、缺省 limit 50、
+/// `?limit=1` 截断、课程不存在 404（失败信封）。本 crate 首次读响应体：
+/// 经 `axum::body::to_bytes` 再解 JSON。
+mod structure_findings_route {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn app(service: &LearningService, owner: &nomifun_common::UserId) -> axum::Router {
+        crate::routes::learning_routes(crate::state::LearningRouterState::new(Arc::new(
+            service.clone(),
+        )))
+        .layer(axum::Extension(nomifun_auth::CurrentUser {
+            id: owner.clone(),
+            username: "owner".into(),
+        }))
+    }
+
+    fn get(course_id: &str, query: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/learning/courses/{course_id}/graph/structure/findings{query}"
+            ))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn structure_findings_route_serves_the_envelope_limit_and_404() {
+        let (service, owner, course) =
+            seed_maintenance_course(51, 1, ScriptedCompleter::new("{}", false)).await;
+
+        // 缺省 limit = 50：信封 + 最近 50 条；total / unread 是全量读数。
+        let response = app(&service, &owner)
+            .oneshot(get(course.as_str(), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["success"], json!(true));
+        let data = &body["data"];
+        let findings = data["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 50, "缺省 50");
+        assert_eq!(findings[0]["seq"], json!(51), "最近的在前");
+        assert_eq!(findings[49]["seq"], json!(2));
+        assert_eq!(data["total"], json!(51));
+        assert_eq!(data["watermark"], json!(0));
+        assert_eq!(data["unread"], json!(51));
+        // 行字段照 DTO 原样上线（snake_case）。
+        assert_eq!(findings[0]["issue"], json!("留痕 50"));
+        assert_eq!(findings[0]["source"], json!("concept-review"));
+        assert_eq!(findings[0]["node"], json!("块一"));
+        assert_eq!(findings[0]["field"], json!("definition"));
+        assert_eq!(findings[0]["advice"], json!("建议"));
+        assert!(findings[0]["ts"].is_i64());
+        assert_eq!(findings[0]["read_by_repair"], json!(false));
+
+        // `?limit=1` 截断：只回最近一条，total 不变。
+        let response = app(&service, &owner)
+            .oneshot(get(course.as_str(), "?limit=1"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let findings = body["data"]["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0]["seq"], json!(51));
+        assert_eq!(body["data"]["total"], json!(51));
+
+        // 课程不存在：404 + 失败信封。
+        let missing = LearningCourseId::new();
+        let response = app(&service, &owner)
+            .oneshot(get(missing.as_str(), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_body(response).await;
+        assert_eq!(body["success"], json!(false));
+        assert_eq!(body["code"], json!("NOT_FOUND"));
+    }
+}

@@ -41,6 +41,7 @@ import type {
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
   MountRoundSummary,
+  StructureFindingsView,
   StructureRepairSummary,
   SystemActionView,
   XpCalendar,
@@ -103,6 +104,14 @@ export const learningApi = {
     httpRequest<SystemActionView[]>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/system-actions?limit=${limit}`
+    ),
+  // 评审留痕读侧（m1）：最近留痕按 seq 倒序 + 读数（total / watermark /
+  // unread；limit 缺省 50、上限 200，由后端归一）。纯读零 LLM 零写——不推
+  // 水位、不触发回合；课程不存在/软删 404，归档课仍可读
+  structureFindings: (courseId: string, limit = 50) =>
+    httpRequest<StructureFindingsView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/findings?limit=${limit}`
     ),
   // 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源
   graphConcepts: (courseId: string) =>

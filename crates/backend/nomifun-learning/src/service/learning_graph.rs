@@ -4293,6 +4293,88 @@ impl LearningService {
         ))
     }
 
+    /// 评审留痕读侧（m1）：按 seq 倒序返回最近 limit 条 + 三个读数
+    /// （`total` 本课全部行数 / `watermark` 当前水位 / `unread` 水位之后的
+    /// 行数）。纯读——零 LLM 零写：不推水位、不触发任何回合。
+    /// `read_by_repair` = `seq <= 库里的水位`，**不套**
+    /// `NOMI_LEARNING_FINDINGS_WATERMARK` 开关：读面与进程级 env 解耦，开关
+    /// off 时水位停在最后一次推进处，「修补已读」仍是如实读数。limit 归一
+    /// 复用系统动作簿口径（下限 1、上限 200，坏值截断不拒绝；缺省 50 在
+    /// handler 侧补）。404 口径与 [`Self::structure_view`] / 系统动作簿同：
+    /// 课程不存在或已软删 → 404；归档 / 非图课仍 200。
+    pub async fn structure_findings(
+        &self,
+        course_id: &LearningCourseId,
+        limit: i64,
+    ) -> Result<crate::models::StructureFindingsView, AppError> {
+        let deleted_at: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT deleted_at FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        match deleted_at {
+            Some(None) => {}
+            Some(Some(_)) | None => {
+                return Err(AppError::NotFound(format!("course {course_id}")));
+            }
+        }
+        let limit = system_action_limit(Some(limit));
+        let rows: Vec<(i64, i64, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT seq, ts, source, node, field, issue, advice \
+             FROM learning_structure_findings \
+             WHERE course_id = ? ORDER BY seq DESC LIMIT ?",
+        )
+        .bind(course_id.as_str())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        // 水位只读一次：行的 read_by_repair 与 unread 同源于这一个值，响应
+        // 自洽（修补回合在两次查询之间推进水位也不会出现「读数对不上」）。
+        let watermark = self.findings_watermark(course_id).await?;
+        let unread: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_structure_findings \
+             WHERE course_id = ? AND seq > ?",
+        )
+        .bind(course_id.as_str())
+        .bind(watermark)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let findings = rows
+            .into_iter()
+            .map(
+                |(seq, ts, source, node, field, issue, advice)| {
+                    crate::models::StructureFindingView {
+                        seq,
+                        ts,
+                        source,
+                        node,
+                        field,
+                        issue,
+                        advice,
+                        // 水位 = 已读不是已修复：applied 与 noop 都推水位。
+                        read_by_repair: seq <= watermark,
+                    }
+                },
+            )
+            .collect();
+        Ok(crate::models::StructureFindingsView {
+            findings,
+            total,
+            watermark,
+            unread,
+        })
+    }
+
     /// 组装学习图课程视图：就绪集推荐 + 水位读数。
     /// DAG 画布已不存在——节点本体就是模块课时，图视图只承载生长语义
     /// （结构读侧投影走独立的 structure 视图接口）。

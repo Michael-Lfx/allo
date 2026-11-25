@@ -22,7 +22,8 @@ use crate::models::{
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, MemoryCalibrationBin, MountRoundSummary,
     QuizGradeFeedback, QuizOverviewCourse, QuizProgressView, QuizRoundReport, QuizRoundView,
-    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
+    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest,
+    StructureFindingsView, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
 };
@@ -89,6 +90,13 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/courses/{id}/graph/structure",
             get(get_structure_view),
+        )
+        // 评审留痕读侧（m1）：最近留痕按 seq 倒序 + limit（缺省 50、上限
+        // 200）；纯读零 LLM 零写——不推水位、不触发任何回合。课程不存在/
+        // 软删 404，归档课仍可读。
+        .route(
+            "/api/learning/courses/{id}/graph/structure/findings",
+            get(get_structure_findings),
         )
         // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点）
         // + 读数 + 撤销（概念留池）。off 开关 = 409 如实拒绝（service 侧执法）。
@@ -400,6 +408,32 @@ async fn get_structure_view(
     Ok(Json(ApiResponse::ok(
         state.service.structure_view(&course_id).await?,
     )))
+}
+
+/// 评审留痕读侧（m1）：最近留痕按 seq 倒序 + limit（缺省 50、上限 200，
+/// 归一在 service）；纯读零 LLM。课程不存在/软删 404，归档课仍可读。前端
+/// 结构图页签的留痕段以 WS growth_* / structure_mount_* / structure_repair_*
+/// 帧触发重取本接口（生长回合追加留痕、修补回合读过留痕后推水位；挂载帧
+/// 与系统动作簿同组监听）。
+async fn get_structure_findings(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<StructureFindingsQuery>,
+) -> Result<Json<ApiResponse<StructureFindingsView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let limit = query
+        .limit
+        .unwrap_or(crate::service::SYSTEM_ACTION_DEFAULT_LIMIT);
+    Ok(Json(ApiResponse::ok(
+        state.service.structure_findings(&course_id, limit).await?,
+    )))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StructureFindingsQuery {
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 async fn graph_concepts(
