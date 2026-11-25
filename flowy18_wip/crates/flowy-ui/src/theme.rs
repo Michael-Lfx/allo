@@ -399,6 +399,22 @@ impl ResolvedTheme {
     pub fn pill_surface(self) -> Rgba {
         rgb(if self.dark { 0x0028_2826 } else { 0x00ff_ffff })
     }
+    /// Identity tint for spreadsheet deliverables (XLSX / CSV).
+    pub fn file_kind_sheet(self) -> Rgba {
+        rgb(if self.dark { 0x0034_d399 } else { 0x0015_803d })
+    }
+    /// Identity tint for presentation deliverables (PPTX).
+    pub fn file_kind_slides(self) -> Rgba {
+        rgb(if self.dark { 0x00fb_bf24 } else { 0x00d9_7706 })
+    }
+    /// Identity tint for document deliverables (DOCX / PDF / MD).
+    pub fn file_kind_doc(self) -> Rgba {
+        rgb(if self.dark { 0x0060_a5fa } else { 0x0025_63eb })
+    }
+    /// Neutral identity tint for other local deliverables.
+    pub fn file_kind_other(self) -> Rgba {
+        self.muted()
+    }
     /// Active motion policy for animations. Respects `FLOWY_REDUCED_MOTION=1`.
     pub fn motion_policy(self) -> MotionPolicy {
         if std::env::var_os("FLOWY_REDUCED_MOTION")

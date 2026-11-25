@@ -28,6 +28,10 @@ pub const FLIP: Duration = Duration::from_millis(280);
 pub const AUTO_HEIGHT: Duration = Duration::from_millis(220);
 /// Subtle breathing liveness cycle when hovered or actively running.
 pub const PULSE: Duration = Duration::from_millis(2400);
+/// Progress-ring breathing cycle for active flowchart branches.
+pub const RING_PULSE: Duration = Duration::from_millis(1600);
+/// Directed flowchart edge pulse cycle for running branches.
+pub const FLOW_EDGE: Duration = Duration::from_millis(1200);
 /// Rolling pill counter arrival duration.
 pub const COUNTER_ROLL: Duration = Duration::from_millis(180);
 

@@ -19,6 +19,27 @@ pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
+    WorkspaceMenu,
+    VerifyToggle,
+    SkillMenu,
+    CloudNotReady,
+}
+
+/// Pushed read-only snapshot from `StudioPanel` so `ChatComposer` stays decoupled
+/// without positional boolean flags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComposerViewState {
+    pub model: Model,
+    pub model_menu_open: bool,
+    pub running: bool,
+    pub model_label: SharedString,
+    pub cloud_ready: bool,
+    pub workspace_label: SharedString,
+    pub workspace_bound: bool,
+    pub workspace_menu_open: bool,
+    pub semantic_verify_enabled: bool,
+    pub skill_label: Option<SharedString>,
+    pub skill_menu_open: bool,
 }
 
 pub struct ChatComposer {
@@ -30,6 +51,12 @@ pub struct ChatComposer {
     /// Live cloud-catalog label. The catalog lives on `StudioPanel`, so the
     /// selected model name is pushed down while the composer stays cached.
     model_label: SharedString,
+    workspace_label: SharedString,
+    workspace_bound: bool,
+    workspace_menu_open: bool,
+    semantic_verify_enabled: bool,
+    skill_label: Option<SharedString>,
+    skill_menu_open: bool,
     cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
@@ -63,6 +90,12 @@ impl ChatComposer {
             i18n,
             model,
             model_label: SharedString::default(),
+            workspace_label: SharedString::default(),
+            workspace_bound: false,
+            workspace_menu_open: false,
+            semantic_verify_enabled: false,
+            skill_label: None,
+            skill_menu_open: false,
             cloud_ready: false,
             model_menu_open: false,
             running: false,
@@ -73,25 +106,32 @@ impl ChatComposer {
 
     pub(crate) fn sync_state(
         &mut self,
-        model: Model,
-        menu_open: bool,
-        running: bool,
-        model_label: String,
-        cloud_ready: bool,
+        next: ComposerViewState,
         cx: &mut Context<'_, Self>,
     ) {
-        let model_label = SharedString::from(model_label);
-        if self.model != model
-            || self.model_menu_open != menu_open
-            || self.running != running
-            || self.model_label != model_label
-            || self.cloud_ready != cloud_ready
+        if self.model != next.model
+            || self.model_menu_open != next.model_menu_open
+            || self.running != next.running
+            || self.model_label != next.model_label
+            || self.cloud_ready != next.cloud_ready
+            || self.workspace_label != next.workspace_label
+            || self.workspace_bound != next.workspace_bound
+            || self.workspace_menu_open != next.workspace_menu_open
+            || self.semantic_verify_enabled != next.semantic_verify_enabled
+            || self.skill_label != next.skill_label
+            || self.skill_menu_open != next.skill_menu_open
         {
-            self.model = model;
-            self.model_menu_open = menu_open;
-            self.running = running;
-            self.model_label = model_label;
-            self.cloud_ready = cloud_ready;
+            self.model = next.model;
+            self.model_menu_open = next.model_menu_open;
+            self.running = next.running;
+            self.model_label = next.model_label;
+            self.cloud_ready = next.cloud_ready;
+            self.workspace_label = next.workspace_label;
+            self.workspace_bound = next.workspace_bound;
+            self.workspace_menu_open = next.workspace_menu_open;
+            self.semantic_verify_enabled = next.semantic_verify_enabled;
+            self.skill_label = next.skill_label;
+            self.skill_menu_open = next.skill_menu_open;
             cx.notify();
         }
     }
@@ -122,10 +162,11 @@ impl ChatComposer {
                     // gpui-pre reads the draft through `value()`, not
                     // `as_str()`.
                     let draft = !this.prompt.read(cx).value().trim().is_empty();
-                    // A running turn no longer blocks Enter: the host accepts
-                    // the message into its durable queue instead of rejecting
-                    // it, so "accepted" and "answered" are separate events.
-                    if !draft || !this.cloud_ready {
+                    if !draft {
+                        return;
+                    }
+                    if !this.cloud_ready {
+                        cx.emit(ComposerEvent::CloudNotReady);
                         return;
                     }
                     tracing::debug!(
@@ -145,8 +186,8 @@ impl ChatComposer {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .max_w(px(760.))
-                    .rounded(px(20.))
+                    .max_w(px(crate::STAGE_MAX_W))
+                    .rounded(self.theme.modal_radius())
                     .border_1()
                     .border_color(self.theme.line())
                     .bg(self.theme.card())
@@ -160,22 +201,40 @@ impl ChatComposer {
                     .child(
                         // The kit multi-line editor is `h_full` inside, so it
                         // needs a bounded parent or it collapses to one row.
-                        div().w_full().min_h(px(44.)).max_h(px(160.)).child(
-                            text_area("chat-prompt", &self.prompt)
-                                .into_any_element(),
-                        ),
+                        div()
+                            .w_full()
+                            .min_h(px(48.))
+                            .max_h(px(160.))
+                            .pb(px(2.))
+                            .child(
+                                text_area("chat-prompt", &self.prompt)
+                                    .into_any_element(),
+                            ),
                     )
                     .child(
                         div()
+                            .w_full()
+                            .min_w_0()
                             .flex()
-                            .flex_wrap()
                             .items_center()
-                            .gap(self.theme.space(6.))
-                            .child(div().flex_1())
-                            .child(self.model_chip(cx))
+                            .justify_between()
+                            .gap(self.theme.space(8.))
                             .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(self.model_chip(cx))
+                                    .child(self.workspace_chip(cx))
+                                    .child(self.verify_chip(cx))
+                                    .child(self.skill_chip(cx)),
+                            )
+                            .child(div().flex_none().child(
                                 self.composer_submit(running, has_draft, cx),
-                            ),
+                            )),
                     ),
             )
     }
@@ -188,30 +247,162 @@ impl ChatComposer {
         }
     }
 
+    fn cockpit_chip(
+        &self,
+        id: &'static str,
+        labels: (String, Option<String>),
+        colors: (gpui::Rgba, gpui::Rgba),
+        icon: theme::icons::Icon,
+        layout: (Option<f32>, bool),
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> impl gpui::StatefulInteractiveElement + gpui::Element {
+        let (label, accessible_label) = labels;
+        let aria_label = accessible_label.unwrap_or_else(|| label.clone());
+        let (bg, fg) = colors;
+        let (max_w, open) = layout;
+        let label_el = if max_w.is_some() {
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .truncate()
+                .child(label)
+                .into_any_element()
+        } else {
+            label.into_any_element()
+        };
+        // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+        // `Action::Expand`, so keeping the plain button role ensures both mouse
+        // and Windows UIA clicks work identically.
+        theme::interactive(id, aria_label, &self.theme)
+            .focus_visible(|style| style.border_color(self.theme.focus_ring()))
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .when_some(max_w, |chip, width| chip.max_w(px(width)))
+            .px(self.theme.space(8.))
+            .rounded_full()
+            .border_1()
+            .border_color(if open { self.theme.border_strong() } else { bg })
+            .bg(bg)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_xs()
+            .text_color(fg)
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.dock_hover()))
+            .on_click(on_click)
+            .child(icon)
+            .child(label_el)
+    }
+
     fn model_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let label = self.composer_model_label();
+        let (bg, fg) = if self.cloud_ready {
+            (self.theme.soft(), self.theme.ink())
+        } else {
+            (
+                self.theme.status_attention_bg(),
+                self.theme.status_attention(),
+            )
+        };
         theme::anchor_trigger(
-            theme::interactive("composer-model", label.clone(), &self.theme)
-                .focus_visible(|style| {
-                    style.border_color(self.theme.focus_ring())
-                })
-                .min_h(self.theme.control_height(theme::ControlSize::Small))
-                .px(self.theme.space(10.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .gap(self.theme.space(4.))
-                .text_xs()
-                .text_color(self.theme.ink())
-                .child(theme::icons::sparkles().size(px(12.)))
-                .child(label)
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft().opacity(0.45)))
-                .aria_expanded(self.model_menu_open)
-                .on_click(cx.listener(|_, _, _, cx| {
+            self.cockpit_chip(
+                "composer-model",
+                (label, None),
+                (bg, fg),
+                theme::icons::sparkles().size(px(12.)),
+                (None, self.model_menu_open),
+                cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
-                })),
+                }),
+            ),
             "composer-model-trigger",
+            &self.ui,
+        )
+    }
+
+    fn workspace_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let label = if self.workspace_label.is_empty() {
+            self.t("composer.workspace_default")
+        } else {
+            self.workspace_label.to_string()
+        };
+        // Scope the accessible name when bound to a project so screen readers
+        // and UIA distinguish the composer workspace picker from the sidebar's
+        // project folder button with the same project name.
+        let aria_label = self
+            .workspace_bound
+            .then(|| format!("{}: {label}", self.t("dock.projects")));
+        let (bg, fg) = if self.workspace_bound {
+            (self.theme.status_active_bg(), self.theme.status_active())
+        } else {
+            (self.theme.soft(), self.theme.ink())
+        };
+        theme::anchor_trigger(
+            self.cockpit_chip(
+                "composer-workspace",
+                (label, aria_label),
+                (bg, fg),
+                theme::icons::folder().size(px(12.)),
+                (Some(148.0), self.workspace_menu_open),
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::WorkspaceMenu);
+                }),
+            ),
+            "composer-workspace-trigger",
+            &self.ui,
+        )
+    }
+
+    fn verify_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let (label, bg, fg) = if self.semantic_verify_enabled {
+            (
+                self.t("composer.verify_l3_on"),
+                self.theme.status_verified_bg(),
+                self.theme.status_verified(),
+            )
+        } else {
+            (
+                self.t("composer.verify_ask"),
+                self.theme.soft(),
+                self.theme.muted(),
+            )
+        };
+        self.cockpit_chip(
+            "composer-verify",
+            (label, None),
+            (bg, fg),
+            theme::icons::check().size(px(11.)),
+            (None, false),
+            cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::VerifyToggle);
+            }),
+        )
+    }
+
+    fn skill_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let active = self.skill_label.is_some();
+        let label = self
+            .skill_label
+            .as_ref()
+            .map_or_else(|| self.t("composer.skill_pick"), ToString::to_string);
+        let (bg, fg) = if active {
+            (self.theme.status_active_bg(), self.theme.status_active())
+        } else {
+            (self.theme.soft(), self.theme.muted())
+        };
+        theme::anchor_trigger(
+            self.cockpit_chip(
+                "composer-skill",
+                (label, None),
+                (bg, fg),
+                theme::icons::sparkles().size(px(11.)),
+                (Some(136.0), self.skill_menu_open),
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::SkillMenu);
+                }),
+            ),
+            "composer-skill-trigger",
             &self.ui,
         )
     }
@@ -222,9 +413,10 @@ impl ChatComposer {
         has_draft: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        // A missing cloud model means no live routing is configured; keep the
-        // send affordance disabled instead of failing after the click.
-        let has_draft = has_draft && self.cloud_ready;
+        // Keep the button actionable whenever a draft exists: if cloud routing
+        // is not ready, clicking guides the user to the model menu just like
+        // pressing Enter instead of silently ignoring clicks.
+        let needs_setup = has_draft && !self.cloud_ready;
         // While a turn is running the stop affordance must stay reachable, and
         // a new message must still be submittable: the host accepts it into its
         // durable queue (`AgentHandle::accept_deferred`) instead of dropping it.
@@ -253,13 +445,32 @@ impl ChatComposer {
         let send_colors =
             self.theme.control_colors(theme::ControlVariant::Primary);
         let send_size = self.theme.control_height(theme::ControlSize::Small);
+        let btn_bg = if needs_setup {
+            self.theme.status_attention()
+        } else {
+            send_colors.background
+        };
+        let btn_fg = if needs_setup {
+            self.theme.on_ink()
+        } else {
+            send_colors.foreground
+        };
+        let btn_hover = if needs_setup {
+            self.theme.status_attention().opacity(0.88)
+        } else {
+            send_colors.hover
+        };
         row.child(
             theme::button(
                 "chat-send",
                 self.t("studio.send"),
                 !has_draft,
                 &self.theme,
-                cx.listener(|_, _, _, cx| {
+                cx.listener(|this, _, _, cx| {
+                    if !this.cloud_ready {
+                        cx.emit(ComposerEvent::CloudNotReady);
+                        return;
+                    }
                     tracing::debug!(
                         target: "flowy.prompt",
                         stage = "ui.composer.chat-send",
@@ -274,11 +485,11 @@ impl ChatComposer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(send_colors.background)
-            .text_color(send_colors.foreground)
+            .bg(btn_bg)
+            .text_color(btn_fg)
             .when(!has_draft, |el| el.opacity(0.45))
             .when(has_draft, move |el| {
-                el.hover(move |style| style.bg(send_colors.hover))
+                el.hover(move |style| style.bg(btn_hover))
             })
             .child(theme::icons::arrow_right().size(px(14.))),
         )

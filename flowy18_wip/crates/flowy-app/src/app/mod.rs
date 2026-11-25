@@ -100,6 +100,7 @@ pub enum Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Studio,
+    Board,
     // Computer,
     // Agent,
     Search,
@@ -203,11 +204,8 @@ impl FlowyApp {
         self.task_menu = None;
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
-            panel.bg_tasks_open = false;
-            panel.credits_hover = false;
-            panel.credits_close = None;
-            cx.notify();
+            panel.close_all_popovers();
+            panel.close_flow_modal(cx);
         });
         self.active_dialog = dialog;
         cx.notify();
@@ -234,23 +232,10 @@ impl FlowyApp {
                 self.task_menu = None;
             }
             "model-list" | "model-info" | "credit-card"
-            | "bg-tasks-popover" => {
+            | "bg-tasks-popover" | "workspace-menu" | "skill-menu"
+            | "env-status-popover" | "flow-modal-panel" | "flow-modal" => {
                 self.studio.update(cx, |panel, cx| {
-                    match scope {
-                        "model-list" => {
-                            panel.model_menu_open = false;
-                        }
-                        "model-info" => {
-                            panel.model_info_open = false;
-                        }
-                        "bg-tasks-popover" => {
-                            panel.bg_tasks_open = false;
-                        }
-                        _ => {
-                            panel.credits_hover = false;
-                        }
-                    }
-                    cx.notify();
+                    panel.dismiss_overlay(scope, cx);
                 });
             }
             "skill-unlock" => {
@@ -402,6 +387,12 @@ impl FlowyApp {
             })
         };
         let subscriptions = vec![
+            cx.on_app_quit(|app, cx| {
+                let agent = app.studio.read(cx).agent.clone();
+                cx.background_executor().spawn(async move {
+                    agent.prepare_shutdown();
+                })
+            }),
             cx.subscribe(&library, |app, _, event: &LibraryEvent, cx| {
                 app.library_event(event, cx);
             }),
@@ -602,6 +593,7 @@ impl FlowyApp {
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
         app.load_library(cx);
+        app.sync_studio_skills(cx);
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::new",
@@ -815,6 +807,7 @@ impl FlowyApp {
                 self.applied_tier = None;
                 self.studio.update(cx, |panel, cx| {
                     panel.cloud_ready = false;
+                    panel.refresh_env_status(cx);
                     panel.set_notice(Some(key), cx);
                 });
                 self.publish_tier_state(cx);
@@ -954,6 +947,7 @@ impl FlowyApp {
                                 was_ready && app.applied_tier.is_some();
                             app.studio.update(cx, |panel, cx| {
                                 panel.cloud_ready = keep_ready;
+                                panel.refresh_env_status(cx);
                                 cx.notify();
                             });
                             app.note(error.key(), cx);
@@ -1221,10 +1215,8 @@ impl FlowyApp {
                             app.screen = Screen::Main;
                             app.refresh_models(cx);
                             app.refresh_credits(cx);
-                            let open = false;
                             app.studio.update(cx, |panel, cx| {
-                                panel.model_info_open = open;
-                                cx.notify();
+                                panel.dismiss_overlay("model-info", cx);
                             });
                         }
                         Err(AuthError::InvalidCode) => {
@@ -1380,15 +1372,7 @@ impl FlowyApp {
         self.credits_generation = self.credits_generation.wrapping_add(1);
         self.credits_task = None;
         self.studio.update(cx, |panel, cx| {
-            panel.cloud_ready = false;
-            panel.catalog_loading = false;
-            panel.catalog = flowy_agent::ProviderCatalog::new();
-            panel.tiers.clear();
-            panel.plan = flowy_agent::Plan::Free;
-            panel.credits = flowy_studio::CreditsViewState::Unavailable;
-            panel.agent.stop();
-            let _ = panel.agent.apply_config(Self::disconnected_config());
-            cx.notify();
+            panel.prepare_for_sign_out(Self::disconnected_config(), cx);
         });
         self.store.clear();
         self.set_input_text(&self.auth.email, "", cx);
@@ -1453,6 +1437,21 @@ impl FlowyApp {
             .update(cx, |panel, cx| panel.fill_prompt_key(key, cx));
     }
 
+    pub(super) fn open_project_board(
+        &mut self,
+        project_id: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.project_menu = None;
+        self.user_menu = false;
+        self.push_section(Section::Board, cx);
+        let pid = project_id.to_owned();
+        self.studio.update(cx, |panel, cx| {
+            panel.open_board_for_project(Some(pid), cx);
+        });
+        cx.notify();
+    }
+
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
         self.push_section(Section::Studio, cx);
         self.studio
@@ -1483,18 +1482,27 @@ impl FlowyApp {
                     } else {
                         StudioSurface::Home
                     };
+                    panel.close_flow_modal(cx);
                     panel.set_surface(surface, cx);
+                    panel.set_notice(notice, cx);
+                });
+            }
+            Section::Board => {
+                self.studio.update(cx, |panel, cx| {
+                    panel.open_board(cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Automation => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Search => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.search",
@@ -1507,14 +1515,14 @@ impl FlowyApp {
             }
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
-                    panel.model_menu_open = false;
-                    panel.model_info_open = false;
-                    panel.credits_hover = false;
+                    panel.close_all_popovers();
+                    panel.close_flow_modal(cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Create => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.create",
@@ -1527,6 +1535,7 @@ impl FlowyApp {
             }
             Section::More => {
                 self.studio.update(cx, |panel, cx| {
+                    panel.close_flow_modal(cx);
                     panel.set_notice(notice, cx);
                 });
             }
@@ -1600,6 +1609,13 @@ impl FlowyApp {
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
+                if self.section == Section::Board
+                    && self.studio.read(cx).surface != StudioSurface::Board
+                {
+                    self.nav_back.push(Section::Board);
+                    self.nav_forward.clear();
+                    self.section = Section::Studio;
+                }
                 self.load_library(cx);
                 cx.notify();
             }
@@ -1689,6 +1705,7 @@ impl FlowyApp {
                         panel.set_i18n(i18n, cx);
                     });
                     app.sync_artifact_preview_locale(cx);
+                    app.sync_studio_skills(cx);
                     cx.notify();
                 });
                 if updated.is_err() {
@@ -1743,6 +1760,13 @@ impl Render for FlowyApp {
                     && self.section == Section::Library)
                     .then(|| self.library.read(cx).modal_scope())
                     .flatten()
+            })
+            .or_else(|| {
+                (self.screen == Screen::Main
+                    && self.section != Section::More
+                    && self.section != Section::Library
+                    && self.studio.read(cx).has_flow_modal())
+                .then(|| gpui::SharedString::from("flow-modal-panel"))
             });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
@@ -1765,32 +1789,9 @@ impl Render for FlowyApp {
                     && self.section != Section::More
                     && self.section != Section::Library
                     && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).model_menu_open =>
+                        != StudioSurface::Automation =>
             {
-                Some("model-list")
-            }
-            settings::Picker::None
-                if self.active_dialog == state::ActiveDialog::None
-                    && self.screen == Screen::Main
-                    && self.section != Section::More
-                    && self.section != Section::Library
-                    && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).model_info_open =>
-            {
-                Some("model-info")
-            }
-            settings::Picker::None
-                if self.active_dialog == state::ActiveDialog::None
-                    && self.screen == Screen::Main
-                    && self.section != Section::More
-                    && self.section != Section::Library
-                    && self.studio.read(cx).surface
-                        != StudioSurface::Automation
-                    && self.studio.read(cx).credits_hover =>
-            {
-                Some("credit-card")
+                self.studio.read(cx).active_popup_scope()
             }
             settings::Picker::None => None,
         }
@@ -1932,6 +1933,16 @@ impl Render for FlowyApp {
                 root.child(self.artifact_cleanup_layer(window, cx))
             }
         };
+        if self.active_dialog == state::ActiveDialog::None
+            && self.screen == Screen::Main
+            && self.section != Section::More
+            && self.section != Section::Library
+            && let Some(modal) = self
+                .studio
+                .update(cx, |panel, cx| panel.flow_modal_overlay(cx))
+        {
+            root = root.child(modal);
+        }
         let menu = match self.settings.picker {
             settings::Picker::Language => Some((
                 "language-menu",
@@ -2261,14 +2272,7 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         .expect("open main window");
     window
         .update(cx, |app, window, cx| {
-            let quit_subscription = cx.on_app_quit(|app, cx| {
-                let agent = app.studio.read(cx).agent.clone();
-                cx.background_executor().spawn(async move {
-                    agent.prepare_shutdown();
-                })
-            });
-            app.subscriptions.push(quit_subscription);
-            window.on_window_should_close(cx, move |window, cx| {
+            window.on_window_should_close(cx, |window, cx| {
                 // Hide to the tray only when a tray icon exists to bring the
                 // window back; otherwise closing would strand the process
                 // with no window and no way to quit.

@@ -6,8 +6,8 @@ use crate::feed::{
 };
 use crate::starter::catalog::Category;
 use flowy_agent::{
-    AgentHandle, AgentWorkspace, FileEntry, LlmConfig, Model, Plan,
-    ProviderCatalog, SessionOrigin,
+    AgentHandle, AgentWorkspace, CardAction, FileEntry, LlmConfig, Model, Plan,
+    ProviderCatalog, ReceiptState, SessionOrigin, TaskTarget,
 };
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
@@ -38,6 +38,7 @@ fn new_submission_id() -> u128 {
 pub enum StudioSurface {
     Home,
     Chat,
+    Board,
     Automation,
     Placeholder {
         title_key: &'static str,
@@ -119,6 +120,63 @@ const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
         )
 }
 
+/// Mutually exclusive transient popover open on [`StudioPanel`].
+///
+/// Encoding popovers as a single enum guarantees two cockpit menus can never
+/// overlap visually or drift out of sync with `OverlayHost`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActivePopover {
+    #[default]
+    None,
+    ModelInfo,
+    ModelMenu {
+        anchor: &'static str,
+    },
+    BgTasks,
+    EnvStatus,
+    WorkspaceMenu,
+    SkillMenu,
+    Credits,
+}
+
+impl ActivePopover {
+    #[must_use]
+    pub const fn scope(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ModelMenu { .. } => Some("model-list"),
+            Self::ModelInfo => Some("model-info"),
+            Self::WorkspaceMenu => Some("workspace-menu"),
+            Self::SkillMenu => Some("skill-menu"),
+            Self::EnvStatus => Some("env-status-popover"),
+            Self::BgTasks => Some("bg-tasks-popover"),
+            Self::Credits => Some("credit-card"),
+        }
+    }
+}
+
+/// Self-contained UI state for the centered Flowchart Modal.
+#[derive(Clone, Debug, Default)]
+pub struct FlowModalState {
+    pub session: Option<String>,
+    pub branch: Option<String>,
+    pub tab: crate::overview::FlowModalTab,
+    pub override_ack: bool,
+}
+
+impl FlowModalState {
+    pub fn close(&mut self) {
+        self.session = None;
+        self.branch = None;
+        self.override_ack = false;
+    }
+
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        self.session.is_some()
+    }
+}
+
 pub struct StudioPanel {
     pub ui: UiContext,
     pub theme: ResolvedTheme,
@@ -130,6 +188,13 @@ pub struct StudioPanel {
     /// Backed by the acceptance journal, not by this field: it is re-read from
     /// disk, so a restart still shows what was accepted.
     pub(crate) pending_receipts: Vec<flowy_agent::AcceptedMessage>,
+    /// All non-terminal acceptance receipts (`Queued`, `Running`, `Retrying`,
+    /// `Quarantined`, `Dead`) projected directly from
+    /// `AgentHandle::visible_acceptances()`, surviving restarts cleanly.
+    pub(crate) visible_receipts:
+        Vec<(flowy_agent::AcceptedMessage, ReceiptState)>,
+    /// Receipts currently being requeued via `CardAction::RetryDeadReceipt`.
+    pub(crate) retrying_receipts: std::collections::HashSet<String>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -139,9 +204,9 @@ pub struct StudioPanel {
     submission: Option<u128>,
     pub(crate) submission_pending: bool,
     submission_generation: u64,
-    submission_stop: Option<Arc<AtomicBool>>,
+    pub(crate) submission_stop: Option<Arc<AtomicBool>>,
     /// Session whose durable delivery marker is currently being retried.
-    retrying_delivery: Option<String>,
+    pub(crate) retrying_delivery: Option<String>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
     last_elapsed: Option<u64>,
@@ -157,13 +222,25 @@ pub struct StudioPanel {
     pub document: DocumentSession,
     pub agent: AgentHandle,
     pub credits: crate::CreditsViewState,
-    pub credits_hover: bool,
-    pub credits_close: Option<Task<()>>,
-    pub model_info_open: bool,
-    pub model_menu_open: bool,
-    pub bg_tasks_open: bool,
+    pub(crate) popover: ActivePopover,
+    pub(crate) credits_close: Option<Task<()>>,
+    pub(crate) board_snapshot: crate::ports::WorkBoardSnapshot,
+    pub(crate) local_env: crate::ports::LocalEnvSnapshot,
+    pub(crate) board_filter: crate::overview::BoardFilter,
+    pub(crate) board_project_filter: Option<String>,
+    pub(crate) flow_modal: FlowModalState,
+    pub(crate) trace_filter: crate::overview::TraceFilter,
+    /// Dirty-cached redacted traces for the currently open Trace tab so
+    /// `Render::render` never touches kernel journal files on disk.
+    pub(crate) cached_trace:
+        Option<(String, Vec<crate::ports::RedactedTraceEntry>)>,
+    pub(crate) drawer_tab: crate::deliverables::RightDrawerTab,
+    pub(crate) right_drawer_open: bool,
+    pub(crate) selected_skill: Option<crate::ports::SkillChip>,
+    pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
+    pub(crate) board_generation: u64,
+    pub(crate) last_board_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
-    pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
     pub model: Model,
     pub catalog: ProviderCatalog,
@@ -284,7 +361,10 @@ impl StudioPanel {
             "→ AgentHandle::with_config"
         );
         let agent = if background {
-            AgentHandle::with_config_background(store_root.clone(), llm)
+            let handle =
+                AgentHandle::with_config_background(store_root.clone(), llm);
+            handle.set_autonomous_drain(true);
+            handle
         } else {
             AgentHandle::with_config(store_root.clone(), llm)
         };
@@ -311,14 +391,7 @@ impl StudioPanel {
             |panel, _, event: &flowy_ui::OverlayEvent, cx| {
                 let flowy_ui::OverlayEvent::CloseRequested { scope, .. } =
                     event;
-                match scope.as_ref() {
-                    "model-list" => panel.model_menu_open = false,
-                    "model-info" => panel.model_info_open = false,
-                    "credit-card" => panel.credits_hover = false,
-                    "bg-tasks-popover" => panel.bg_tasks_open = false,
-                    _ => return,
-                }
-                cx.notify();
+                panel.dismiss_overlay(scope.as_ref(), cx);
             },
         );
         let feed = cx.new(|cx| {
@@ -399,10 +472,31 @@ impl StudioPanel {
                     }
                     ComposerEvent::Stop => panel.stop_turn(cx),
                     ComposerEvent::ModelMenu(anchor) => {
-                        panel.model_menu_open = !panel.model_menu_open
-                            || panel.model_menu_anchor != *anchor;
-                        panel.model_menu_anchor = anchor;
+                        panel.toggle_popover(ActivePopover::ModelMenu {
+                            anchor,
+                        });
                         cx.notify();
+                    }
+                    ComposerEvent::WorkspaceMenu => {
+                        panel.toggle_popover(ActivePopover::WorkspaceMenu);
+                        cx.notify();
+                    }
+                    ComposerEvent::VerifyToggle => {
+                        panel.toggle_popover(ActivePopover::None);
+                        panel.toggle_semantic_verify(cx);
+                    }
+                    ComposerEvent::SkillMenu => {
+                        panel.toggle_popover(ActivePopover::SkillMenu);
+                        cx.notify();
+                    }
+                    ComposerEvent::CloudNotReady => {
+                        panel.open_popover(ActivePopover::ModelMenu {
+                            anchor: "composer-model-trigger",
+                        });
+                        panel.emit_notice(
+                            Some("notice.model_setup_required"),
+                            cx,
+                        );
                     }
                 }
             });
@@ -428,12 +522,15 @@ impl StudioPanel {
         // Read the journal up front: an accepted message outlives the process,
         // so it must be visible again before anything is submitted this run.
         let pending_receipts = agent.pending_acceptances();
+        let visible_receipts = agent.visible_acceptances();
         let mut panel = Self {
             ui,
             theme,
             feed,
             composer,
             pending_receipts,
+            visible_receipts,
+            retrying_receipts: std::collections::HashSet::new(),
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -459,13 +556,26 @@ impl StudioPanel {
             document: DocumentSession::new(product),
             agent,
             credits: crate::CreditsViewState::Unavailable,
-            credits_hover: false,
+            popover: if model_info_open {
+                ActivePopover::ModelInfo
+            } else {
+                ActivePopover::None
+            },
             credits_close: None,
-            model_info_open,
-            model_menu_open: false,
-            bg_tasks_open: false,
+            board_snapshot: crate::ports::WorkBoardSnapshot::default(),
+            local_env: crate::ports::LocalEnvSnapshot::default(),
+            board_filter: crate::overview::BoardFilter::All,
+            board_project_filter: None,
+            flow_modal: FlowModalState::default(),
+            trace_filter: crate::overview::TraceFilter::All,
+            cached_trace: None,
+            drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
+            right_drawer_open: false,
+            selected_skill: None,
+            installed_skills: Vec::new(),
+            board_generation: 0,
+            last_board_refresh: None,
             tiers: Vec::new(),
-            model_menu_anchor: "model-menu-trigger",
             i18n,
             model,
             catalog: ProviderCatalog::new(),
@@ -490,6 +600,8 @@ impl StudioPanel {
         };
         panel.start_pump(cx);
         panel.refresh_chat(cx);
+        panel.refresh_board_snapshot();
+        panel.refresh_local_env();
         // A persisted failed status must be visible on the first frame too.
         panel.refresh_working(cx);
         panel
@@ -511,19 +623,22 @@ impl StudioPanel {
                         panel.last_elapsed = elapsed;
                         panel.refresh_working(cx);
                     }
-                    // Level-triggered drain: a restart, a crashed lease, or an
-                    // expired backoff all become a run without another submit.
-                    let now = std::time::Instant::now();
-                    let due = panel.last_drain_check.is_none_or(|last| {
-                        now.duration_since(last) >= Duration::from_secs(5)
-                    });
-                    if due
-                        && panel.initialized
-                        && !panel.submission_pending
-                        && !panel.status.is_busy()
-                    {
-                        panel.last_drain_check = Some(now);
-                        panel.refresh_pending_receipts(cx);
+                    if !panel.agent.autonomous_drain() {
+                        // Legacy caller-driven drain kept only for deterministic
+                        // `StudioPanel::new` unit tests; production relies on
+                        // kernel autonomous drain + `AgentUpdate::Receipt`.
+                        let now = std::time::Instant::now();
+                        let due = panel.last_drain_check.is_none_or(|last| {
+                            now.duration_since(last) >= Duration::from_secs(5)
+                        });
+                        if due
+                            && panel.initialized
+                            && !panel.submission_pending
+                            && !panel.status.is_busy()
+                        {
+                            panel.last_drain_check = Some(now);
+                            panel.refresh_pending_receipts(cx);
+                        }
                     }
                 });
                 if ok.is_err() {
@@ -533,7 +648,7 @@ impl StudioPanel {
         }));
     }
 
-    fn process_agent_updates(
+    pub(crate) fn process_agent_updates(
         &mut self,
         updates: Vec<flowy_agent::AgentUpdate>,
         cx: &mut Context<'_, Self>,
@@ -587,26 +702,80 @@ impl StudioPanel {
         {
             cx.emit(StudioEvent::ArtifactsChanged);
         }
+        let mut receipt_changed = false;
+        let mut receipt_notice: Option<&'static str> = None;
+        for update in &updates {
+            if let flowy_agent::AgentUpdate::Receipt { state, .. } = update {
+                receipt_changed = true;
+                match state {
+                    ReceiptState::Dead => {
+                        receipt_notice = Some("notice.receipt_gave_up");
+                    }
+                    ReceiptState::Quarantined => {
+                        receipt_notice = Some("notice.receipt_quarantined");
+                    }
+                    ReceiptState::Retrying if self.agent.autonomous_drain() => {
+                        receipt_notice = Some("notice.receipt_retrying");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if receipt_changed {
+            self.sync_receipts();
+        }
+        if let Some(key) = receipt_notice {
+            self.emit_notice(Some(key), cx);
+        }
         if updates.iter().any(|update| {
             matches!(update, flowy_agent::AgentUpdate::StorageError)
         }) {
             self.emit_notice(Some("notice.session_storage_failed"), cx);
         }
+        let structural_update = initialized
+            || receipt_changed
+            || updates.iter().any(|update| {
+                matches!(
+                    update,
+                    flowy_agent::AgentUpdate::Sessions
+                        | flowy_agent::AgentUpdate::Artifacts
+                        | flowy_agent::AgentUpdate::StorageError
+                )
+            });
+        let prev_status = self.status.clone();
         self.refresh_chat(cx);
-        let background_claim_settled = self.agent.has_active_claim()
-            && self
-                .agent
-                .claimed_session_status()
-                .is_none_or(|status| !status.is_busy());
-        if initialized || background_claim_settled {
-            // Startup is a level, not an edge: a receipt accepted by the
-            // previous process must start without a second submit, and a
-            // claim running in a background session must settle when it ends.
-            self.refresh_pending_receipts(cx);
+        let status_changed = self.status != prev_status;
+        if structural_update || status_changed {
+            self.refresh_board_snapshot();
+        } else if self.surface == StudioSurface::Board
+            && self.last_board_refresh.is_none_or(|last| {
+                last.elapsed() >= Duration::from_millis(1200)
+            })
+        {
+            // While streaming deltas, only refresh the board when it is open
+            // and at most once per 1.2s to avoid per-token disk reads.
+            self.refresh_board_snapshot();
+        }
+        if !self.agent.autonomous_drain() {
+            let background_claim_settled = self.agent.has_active_claim()
+                && self
+                    .agent
+                    .claimed_session_status()
+                    .is_none_or(|status| !status.is_busy());
+            if initialized || background_claim_settled {
+                // Startup is a level, not an edge: a receipt accepted by the
+                // previous process must start without a second submit, and a
+                // claim running in a background session must settle when it ends.
+                self.refresh_pending_receipts(cx);
+            }
+        } else if initialized {
+            self.sync_receipts();
+            self.refresh_board_snapshot();
+            cx.notify();
         }
     }
 
-    fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.agent.active_session_id();
         let history = self.agent.chat_history();
         let status = history.status.clone();
@@ -618,10 +787,12 @@ impl StudioPanel {
             self.refresh_working(cx);
             cx.notify();
             if was_busy && !self.status.is_busy() {
-                // A finished turn is the moment the queue could shrink once
-                // draining exists; refreshing here keeps the strip honest
-                // without waiting for the next submission.
-                self.refresh_pending_receipts(cx);
+                if self.agent.autonomous_drain() {
+                    self.sync_receipts();
+                } else {
+                    // Legacy caller-driven drain path for deterministic unit tests.
+                    self.refresh_pending_receipts(cx);
+                }
                 cx.emit(StudioEvent::TurnFinished);
             }
         }
@@ -660,12 +831,22 @@ impl StudioPanel {
         });
     }
 
-    fn invalidate_submission(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn invalidate_submission(&mut self, cx: &mut Context<'_, Self>) {
         self.submission_generation = self.submission_generation.wrapping_add(1);
         self.submission_pending = false;
         self.submission_stop = None;
         self.submission = None;
         self.refresh_working(cx);
+    }
+
+    /// Whether the composer should allow submitting immediately (or queueing
+    /// during cold-start catalog loading) rather than showing the model-setup
+    /// amber warning state.
+    #[must_use]
+    pub(crate) fn can_submit_prompt(&self) -> bool {
+        self.cloud_ready
+            || self.catalog_loading
+            || !self.agent.requires_cloud_ready()
     }
 
     pub fn set_surface(
@@ -686,6 +867,7 @@ impl StudioPanel {
             .update(cx, |composer, cx| composer.sync_i18n(i18n.clone(), cx));
         self.feed.update(cx, |feed, cx| feed.sync_i18n(i18n, cx));
         self.refresh_working(cx);
+        self.refresh_board_snapshot();
         cx.notify();
     }
 
@@ -748,7 +930,11 @@ impl StudioPanel {
 
     /// Open the folder holding `path`. This is the only step that can fail, so
     /// a failure goes through the existing notice channel instead of silence.
-    fn reveal_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+    pub(crate) fn reveal_file(
+        &mut self,
+        path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
         let folder = std::path::Path::new(path)
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty());
@@ -782,18 +968,19 @@ impl StudioPanel {
         });
     }
 
-    fn clear_right_sheet(&mut self) {
+    pub(crate) fn clear_right_sheet(&mut self) {
+        self.right_drawer_open = false;
         self.deliverables = None;
         self.inspected_work = None;
         self.preview_file = None;
         self.preview_body = None;
+        self.refresh_trace_cache();
     }
 
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
-        self.model_info_open = false;
-        self.model_menu_open = false;
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -802,9 +989,8 @@ impl StudioPanel {
         self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         self.emit_notice(None, cx);
-        self.credits_hover = false;
-        self.credits_close = None;
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
     }
@@ -813,12 +999,15 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
+                self.close_all_popovers();
+                self.flow_modal.close();
                 self.clear_right_sheet();
                 self.active_project_id = None;
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
                 self.surface = StudioSurface::Home;
                 self.refresh_chat(cx);
+                self.refresh_board_snapshot();
                 self.emit_notice(None, cx);
                 self.set_prompt_text("", cx);
                 cx.emit(StudioEvent::SessionsChanged);
@@ -832,9 +1021,8 @@ impl StudioPanel {
     /// session and prepared its origin on a background worker.
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
-        self.model_info_open = false;
-        self.model_menu_open = false;
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
+        self.flow_modal.close();
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -842,6 +1030,7 @@ impl StudioPanel {
         self.surface = StudioSurface::Home;
         self.set_prompt_text("", cx);
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
@@ -849,12 +1038,7 @@ impl StudioPanel {
 
     /// Toggles the floating background-tasks popover anchored above the composer.
     pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = !self.bg_tasks_open;
-        if self.bg_tasks_open {
-            self.model_menu_open = false;
-            self.model_info_open = false;
-            self.credits_hover = false;
-        }
+        self.toggle_popover(ActivePopover::BgTasks);
         cx.notify();
     }
 
@@ -884,35 +1068,62 @@ impl StudioPanel {
         ids
     }
 
+    /// Visible receipts shown in the background-tasks popover, skipping any
+    /// `Running` receipt whose target session is already represented in
+    /// `running_ids` so running work is never listed twice.
+    pub(crate) fn popover_visible_receipts<'a>(
+        &'a self,
+        running_ids: &[String],
+    ) -> Vec<(&'a flowy_agent::AcceptedMessage, ReceiptState)> {
+        self.visible_receipts
+            .iter()
+            .filter(|(receipt, state)| {
+                if *state == ReceiptState::Running {
+                    let already_listed =
+                        receipt.target_session_id.as_deref().is_some_and(
+                            |sid| running_ids.iter().any(|id| id == sid),
+                        );
+                    return !already_listed;
+                }
+                !matches!(
+                    state,
+                    ReceiptState::Completed | ReceiptState::Cancelled
+                )
+            })
+            .map(|(receipt, state)| (receipt, *state))
+            .collect()
+    }
+
     /// Total active/queued works shown in the background-tasks pill.
     #[must_use]
     pub fn background_work_count(&self) -> usize {
-        let mut running = self.background_running_session_ids().len();
+        let running_ids = self.background_running_session_ids();
+        let mut running = running_ids.len();
         if self.surface != StudioSurface::Chat
             && running == 0
             && (self.status.is_busy() || self.submission_pending)
         {
             running = 1;
         }
-        running + self.pending_receipts.len()
+        running + self.popover_visible_receipts(&running_ids).len()
     }
 
     /// Total active/queued works across all sessions (including foreground),
     /// for the sidebar Chief Assistant status badge.
     #[must_use]
     pub fn total_active_work_count(&self) -> usize {
-        let mut running = self.agent.running_session_count();
+        let busy_ids = self.agent.busy_session_ids();
+        let mut running = busy_ids.len();
         if (self.status.is_busy() || self.submission_pending) && running == 0 {
             running = 1;
         }
-        running + self.pending_receipts.len()
+        running + self.popover_visible_receipts(&busy_ids).len()
     }
 
     /// Non-destructively folds the active table back to the calm Home stage
     /// while leaving any running turns or queued background tasks untouched.
     pub fn fold_desk(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = false;
-        self.model_menu_open = false;
+        self.close_all_popovers();
         self.surface = StudioSurface::Home;
         cx.notify();
     }
@@ -920,7 +1131,7 @@ impl StudioPanel {
     /// Jumps to the Chief Assistant's active default-workspace thread, or lands
     /// calmly on the Home stage ready for a fresh instruction.
     pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
-        self.bg_tasks_open = false;
+        self.close_all_popovers();
         if self.agent.active_session_id().is_some()
             && self.active_project_id.is_none()
             && self.agent.has_messages()
@@ -965,11 +1176,17 @@ impl StudioPanel {
         Ok(())
     }
 
-    /// Marks the cloud route ready and immediately checks if any queued
-    /// receipts were waiting for the catalog to finish loading.
+    /// Marks the cloud route ready and refreshes receipts/board state.
+    /// In autonomous mode, `AgentHandle::apply_config` wakes draining itself;
+    /// deterministic unit tests still use the legacy check below.
     pub fn notify_cloud_ready(&mut self, cx: &mut Context<'_, Self>) {
         self.cloud_ready = true;
-        if self.initialized {
+        self.refresh_local_env();
+        if self.agent.autonomous_drain() {
+            self.sync_receipts();
+            self.refresh_board_snapshot();
+            cx.notify();
+        } else if self.initialized {
             self.refresh_pending_receipts(cx);
         } else {
             cx.notify();
@@ -982,7 +1199,7 @@ impl StudioPanel {
         // A manual submit in flight must not interleave with a queued receipt;
         // the pump re-checks when it settles.
         if self.submission_pending {
-            self.pending_receipts = self.agent.pending_acceptances();
+            self.sync_receipts();
             cx.notify();
             return;
         }
@@ -992,7 +1209,7 @@ impl StudioPanel {
                 .as_ref()
                 .is_some_and(flowy_agent::TurnStatus::is_busy)
             {
-                self.pending_receipts = self.agent.pending_acceptances();
+                self.sync_receipts();
                 cx.notify();
                 return;
             }
@@ -1033,7 +1250,7 @@ impl StudioPanel {
                         // drained session.
                         let _ = self.agent.clear_active();
                     }
-                    self.pending_receipts = self.agent.pending_acceptances();
+                    self.sync_receipts();
                     self.refresh_chat(cx);
                     if previous.as_deref() != Some(run.session_id.as_str()) {
                         self.emit_notice(Some("notice.accepted_ran"), cx);
@@ -1044,7 +1261,7 @@ impl StudioPanel {
                 Err(error) => self.emit_notice(Some(error), cx),
             }
         }
-        self.pending_receipts = self.agent.pending_acceptances();
+        self.sync_receipts();
         cx.notify();
     }
 
@@ -1068,7 +1285,7 @@ impl StudioPanel {
                 // The journal is global, but re-read it on every open so the
                 // strip can never show a state older than the click that
                 // brought the user here.
-                self.pending_receipts = self.agent.pending_acceptances();
+                self.sync_receipts();
                 let workspace = self.agent.active_workspace();
                 self.active_project_id =
                     workspace.as_ref().map(|value| value.project_id.clone());
@@ -1078,6 +1295,7 @@ impl StudioPanel {
                     StudioSurface::Home
                 };
                 self.refresh_chat(cx);
+                self.refresh_trace_cache();
                 self.emit_notice(
                     workspace
                         .as_ref()
@@ -1115,17 +1333,38 @@ impl StudioPanel {
             self.emit_notice(Some("chat.publish.context"), cx);
             return;
         };
-        match self.agent.override_deliver_artifact(
+        self.confirm_override_for_session(
             &session_id,
             report_id,
             artifact_path,
-        ) {
+            cx,
+        );
+    }
+
+    /// Explicit override bound to a specific session and real non-empty
+    /// verification `report_id` (required by kernel `f8fb6b491`).
+    pub(crate) fn confirm_override_for_session(
+        &mut self,
+        session_id: &str,
+        report_id: &str,
+        artifact_path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if report_id.trim().is_empty() {
+            self.emit_notice(Some("verify.override.missing_report"), cx);
+            return;
+        }
+        match self.agent.apply_card_action(CardAction::OverrideDeliver {
+            session_id: session_id.to_owned(),
+            report_id: report_id.to_owned(),
+            artifact_path: artifact_path.to_owned(),
+        }) {
             Ok(_) => {
                 if let Ok(store) = self.agent.artifact_store()
                     && let Ok(records) = store.list()
                 {
-                    let overridden_hashes =
-                        self.agent.overridden_artifact_hashes();
+                    // Single hash query instead of O(N*E) per-record scan.
+                    let overridden = self.agent.overridden_artifact_hashes();
                     let items = records
                         .into_iter()
                         .map(|record| {
@@ -1136,7 +1375,7 @@ impl StudioPanel {
                                 .unwrap_or_default()
                                 .to_ascii_lowercase();
                             let override_used =
-                                overridden_hashes.contains(&receipt.sha256);
+                                overridden.contains(&receipt.sha256);
                             crate::library::LibraryItem {
                                 id: receipt.artifact_id,
                                 title: receipt.display_name,
@@ -1171,7 +1410,9 @@ impl StudioPanel {
                         .collect();
                     self.set_artifacts(items, cx);
                 }
+                self.flow_modal.override_ack = false;
                 self.refresh_chat(cx);
+                self.refresh_board_snapshot();
                 self.emit_notice(None, cx);
                 cx.emit(StudioEvent::ArtifactsChanged);
             }
@@ -1214,6 +1455,7 @@ impl StudioPanel {
             self.set_prompt_text("", cx);
         }
         self.refresh_chat(cx);
+        self.refresh_board_snapshot();
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
     }
@@ -1291,15 +1533,23 @@ impl StudioPanel {
         // Text queued for the next render has not reached the prompt state yet;
         // it is still what the user asked to send.
         let typed = self.prompt_text(cx);
+        let trimmed = typed.trim();
+        let trimmed_draft = trimmed.to_owned();
+        let text = if let Some(skill) = &self.selected_skill
+            && !trimmed.is_empty()
+        {
+            format!("[Skill: {}]\n{trimmed}", skill.title)
+        } else {
+            trimmed_draft.clone()
+        };
         tracing::debug!(
             target: "flowy.prompt",
             stage = "StudioPanel::send_prompt",
             cloud_ready = self.cloud_ready,
             model = ?model,
-            chars = typed.trim().chars().count(),
+            chars = text.chars().count(),
             "enter"
         );
-        let text = typed.trim().to_string();
         if text.is_empty() {
             tracing::debug!(
                 target: "flowy.prompt",
@@ -1349,7 +1599,13 @@ impl StudioPanel {
                     // The receipt is the feedback now. Saying "added to this
                     // session's task list" while no such list existed was a
                     // lie; `pending_receipts` is rendered by `workspace()`.
-                    self.refresh_pending_receipts(cx);
+                    if self.agent.autonomous_drain() {
+                        self.sync_receipts();
+                        self.refresh_board_snapshot();
+                        cx.notify();
+                    } else {
+                        self.refresh_pending_receipts(cx);
+                    }
                 }
                 Err(error) => self.emit_notice(Some(error), cx),
             }
@@ -1387,7 +1643,8 @@ impl StudioPanel {
             let stopped = if let Ok(session_id) = &result
                 && worker_stop.load(Ordering::Acquire)
             {
-                worker_agent.stop_if_active(Some(session_id));
+                let _ = worker_agent
+                    .cancel_task(TaskTarget::Session(session_id.clone()));
                 true
             } else {
                 false
@@ -1405,7 +1662,8 @@ impl StudioPanel {
                 let session_id = session_id.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        agent.stop_if_active(Some(&session_id));
+                        let _ =
+                            agent.cancel_task(TaskTarget::Session(session_id));
                     })
                     .detach();
             }
@@ -1419,7 +1677,8 @@ impl StudioPanel {
                 panel.submission_pending = false;
                 panel.submission_stop = None;
                 let active = panel.agent.active_session_id();
-                let draft_matches = panel.prompt_text(cx).trim() == text;
+                let draft_matches =
+                    panel.prompt_text(cx).trim() == trimmed_draft;
                 match result {
                     Ok(session_id)
                         if active.as_deref() == Some(session_id.as_str()) =>
@@ -1466,7 +1725,10 @@ impl StudioPanel {
         cx.notify();
         let job_expected = expected.clone();
         let job = cx.background_executor().spawn(async move {
-            let result = agent.retry_delivery(Some(&job_expected));
+            let result = agent.apply_card_action(CardAction::RetryDelivery {
+                session_id: job_expected,
+                submission_id: None,
+            });
             let updates = agent.drain_updates();
             (result, updates)
         });
@@ -1496,16 +1758,10 @@ impl StudioPanel {
             if let Some(stop) = &self.submission_stop {
                 stop.store(true, Ordering::Release);
             }
-        } else {
-            let agent = self.agent.clone();
-            let expected = agent.active_session_id();
-            cx.background_executor()
-                .spawn(async move {
-                    agent.stop_if_active(expected.as_deref());
-                })
-                .detach();
+            cx.notify();
+        } else if let Some(session_id) = self.agent.active_session_id() {
+            self.cancel_task_target(TaskTarget::Session(session_id), cx);
         }
-        cx.notify();
     }
 
     pub fn fill_prompt(&mut self, text: &str, cx: &mut Context<'_, Self>) {
@@ -1572,6 +1828,23 @@ impl StudioPanel {
         self.fill_prompt(&text, cx);
     }
 
+    /// Fills the prompt from a starter and optionally pre-mounts its suggested
+    /// skill when installed.
+    pub(crate) fn request_fill_prompt_with_skill(
+        &mut self,
+        text: String,
+        skill_id: Option<&str>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(id) = skill_id
+            && let Some(chip) =
+                self.installed_skills.iter().find(|skill| skill.id == id)
+        {
+            self.selected_skill = Some(chip.clone());
+        }
+        self.request_fill_prompt(text, cx);
+    }
+
     /// Switches which category's examples the home stage shows.
     pub(crate) fn set_starter_category(
         &mut self,
@@ -1600,8 +1873,10 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.clear_right_sheet();
+        self.right_drawer_open = true;
         self.deliverables = Some(files);
-        self.bg_tasks_open = false;
+        self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
+        self.close_all_popovers();
         cx.notify();
     }
 
@@ -1613,22 +1888,31 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.clear_right_sheet();
+        self.right_drawer_open = true;
         self.inspected_work = Some(work);
-        self.bg_tasks_open = false;
+        self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
+        self.close_all_popovers();
         cx.notify();
     }
 
-    /// Opens the drawer with the latest turn's files, or closes it if open.
+    /// Toggles the unified right-hand 3-mode drawer (Deliverables / Steps / Trace),
+    /// even before the turn has produced files so Steps and Trace stay reachable.
     pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
-        if self.deliverables.is_some() {
+        if self.right_drawer_open {
             self.close_right_sheet(cx);
             return;
         }
         let files = self.feed.read(cx).latest_deliverables();
-        match files {
-            Some(files) => self.open_deliverables(files, cx),
-            None => self.emit_notice(Some("chat.no_deliverables"), cx),
+        self.clear_right_sheet();
+        self.right_drawer_open = true;
+        if let Some(files) = files {
+            self.deliverables = Some(files);
+            self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
+        } else {
+            self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
         }
+        self.close_all_popovers();
+        cx.notify();
     }
 
     /// Closes whichever right-hand sheet is open (deliverables or single-work
@@ -1644,23 +1928,6 @@ impl StudioPanel {
             .read(cx)
             .latest_deliverables()
             .map_or(0, |files| files.len())
-    }
-
-    /// Requests a graceful stop for one specific background or active session.
-    pub(crate) fn stop_session_turn(
-        &self,
-        session_id: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let agent = self.agent.clone();
-        let target = session_id.to_owned();
-        cx.background_executor()
-            .spawn(async move {
-                let _ =
-                    agent.cancel_task(flowy_agent::TaskTarget::Session(target));
-            })
-            .detach();
-        cx.notify();
     }
 
     /// Picks a file to preview; `None` returns the drawer to the list.
@@ -1720,6 +1987,8 @@ impl StudioPanel {
                     root: project.root,
                 }));
         }
+        self.refresh_board_snapshot();
+        self.refresh_local_env();
         cx.notify();
         Ok(())
     }
@@ -1743,6 +2012,8 @@ impl StudioPanel {
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
         }
+        self.refresh_board_snapshot();
+        self.refresh_local_env();
         cx.emit(StudioEvent::SessionsChanged);
         cx.notify();
         Ok(())
@@ -1829,6 +2100,10 @@ impl StudioPanel {
         self.new_task(cx);
     }
 
+    pub fn new_conversation(&mut self, cx: &mut Context<'_, Self>) {
+        self.new_task(cx);
+    }
+
     pub(crate) fn placeholder_title(&self) -> String {
         match self.surface {
             StudioSurface::Placeholder { title_key, .. } => self.t(title_key),
@@ -1852,18 +2127,36 @@ impl Render for StudioPanel {
     ) -> impl IntoElement {
         self.apply_prompt_pending(window, cx);
         let model_label = self.model_label();
-        let can_submit = self.cloud_ready
-            || self.catalog_loading
-            || self.agent.requires_cloud_ready();
-        self.composer.update(cx, |composer, cx| {
-            composer.sync_state(
-                self.model,
-                self.model_menu_open,
-                self.submission_pending || self.status.is_busy(),
-                model_label,
-                can_submit,
-                cx,
+        let can_submit = self.can_submit_prompt();
+        let workspace_label = self
+            .active_project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|p| p.id == id))
+            .map_or_else(
+                || self.t("composer.workspace_default"),
+                |project| project.name.clone(),
             );
+        let workspace_bound = self.active_project_id.is_some();
+        let semantic_verify_enabled = self.agent.semantic_verify_enabled();
+        let skill_label = self
+            .selected_skill
+            .as_ref()
+            .map(|skill| gpui::SharedString::from(skill.title.clone()));
+        let composer_state = crate::composer::ComposerViewState {
+            model: self.model,
+            model_menu_open: self.is_model_menu_open(),
+            running: self.submission_pending || self.status.is_busy(),
+            model_label: gpui::SharedString::from(model_label),
+            cloud_ready: can_submit,
+            workspace_label: gpui::SharedString::from(workspace_label),
+            workspace_bound,
+            workspace_menu_open: self.is_workspace_menu_open(),
+            semantic_verify_enabled,
+            skill_label,
+            skill_menu_open: self.is_skill_menu_open(),
+        };
+        self.composer.update(cx, |composer, cx| {
+            composer.sync_state(composer_state, cx);
         });
         self.workspace(window, cx)
     }
@@ -3155,6 +3448,251 @@ mod tests {
             }));
         });
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn dead_receipt_lifecycle_surfaces_notice_and_syncs_visible_receipts(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "dead-receipt-state");
+        panel.update(cx, |panel, cx| {
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Receipt {
+                    id: "rcpt-dead-1".into(),
+                    state: ReceiptState::Dead,
+                }],
+                cx,
+            );
+            assert_eq!(panel.notice, Some("notice.receipt_gave_up"));
+            assert_eq!(
+                panel.visible_receipts,
+                panel.agent.visible_acceptances()
+            );
+
+            panel.process_agent_updates(
+                vec![flowy_agent::AgentUpdate::Receipt {
+                    id: "rcpt-q-1".into(),
+                    state: ReceiptState::Quarantined,
+                }],
+                cx,
+            );
+            assert_eq!(panel.notice, Some("notice.receipt_quarantined"));
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn autonomous_drain_apply_config_and_notify_cloud_ready_syncs_queue(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-auto-cloud-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let panel = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: "flowy".into(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.agent.set_autonomous_drain(true);
+            let receipt = panel
+                .agent
+                .accept_deferred("wake after cloud ready")
+                .expect("accepted");
+            assert_eq!(panel.agent.pending_acceptances().len(), 1);
+            // Kernel 65772f857 wakes autonomous drain inside `apply_config`
+            // once the config becomes runnable; `notify_cloud_ready` only
+            // syncs visible receipts and rebuilds the board snapshot.
+            panel
+                .agent
+                .apply_config(LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: String::new(),
+                    ..LlmConfig::default()
+                })
+                .expect("apply runnable config");
+            panel.notify_cloud_ready(cx);
+            assert!(panel.agent.autonomous_drain());
+            let _ = receipt;
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn prepare_for_sign_out_cancels_queued_receipts_and_invalidates_submission(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "signout-cancel");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_check = stop.clone();
+        panel.update(cx, |panel, cx| {
+            let receipt = panel
+                .agent
+                .accept_deferred("queued before sign-out")
+                .expect("accept deferred");
+            panel.sync_receipts();
+            assert_eq!(panel.visible_receipts.len(), 1);
+            panel.submission_pending = true;
+            panel.submission = Some(42);
+            panel.submission_stop = Some(stop);
+            panel.retrying_receipts.insert(receipt.id);
+            panel.cached_trace = Some(("s1".into(), Vec::new()));
+
+            panel.prepare_for_sign_out(
+                LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: "flowy".into(),
+                    ..LlmConfig::default()
+                },
+                cx,
+            );
+
+            assert!(stop_check.load(Ordering::Acquire));
+            assert!(!panel.submission_pending);
+            assert!(panel.submission.is_none());
+            assert!(!panel.cloud_ready);
+            assert!(!panel.catalog_loading);
+            assert!(!panel.can_submit_prompt());
+            assert_eq!(panel.retrying_receipts.len(), 0);
+            assert!(panel.cached_trace.is_none());
+            assert_eq!(panel.visible_receipts.len(), 0);
+            assert_eq!(panel.agent.pending_acceptances().len(), 0);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn bind_default_workspace_preserves_prompt_draft(cx: &mut TestAppContext) {
+        let (panel, root) = submission_panel(cx, "bind-default-workspace");
+        let project_dir = root.join("alpha-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        panel.update(cx, |panel, cx| {
+            panel
+                .create_project("Alpha", &project_dir, cx)
+                .expect("create project");
+            assert!(panel.active_project_id.is_some());
+
+            panel.fill_prompt("draft must survive workspace unbind", cx);
+            panel.bind_default_workspace(cx);
+
+            assert!(panel.active_project_id.is_none());
+            assert!(panel.agent.active_workspace().is_none());
+            assert_eq!(
+                visible_prompt(panel, cx),
+                "draft must survive workspace unbind"
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn cloud_ready_gate_blocks_when_offline_and_allows_during_catalog_loading(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "cloud-gate");
+        panel.update(cx, |panel, _cx| {
+            panel
+                .agent
+                .apply_config(LlmConfig {
+                    api_key: None,
+                    base_url: String::new(),
+                    model: String::new(),
+                    provider: "flowy".into(),
+                    ..LlmConfig::default()
+                })
+                .unwrap();
+            panel.cloud_ready = false;
+            panel.catalog_loading = false;
+            assert!(!panel.can_submit_prompt());
+
+            panel.catalog_loading = true;
+            assert!(panel.can_submit_prompt());
+
+            panel.catalog_loading = false;
+            panel.cloud_ready = true;
+            assert!(panel.can_submit_prompt());
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn active_popover_enforces_mutual_exclusion_and_overlay_dismissal(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "popover-seam");
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.active_popup_scope(), None);
+
+            panel.toggle_popover(ActivePopover::EnvStatus);
+            assert_eq!(panel.active_popup_scope(), Some("env-status-popover"));
+
+            // Opening the model menu automatically replaces EnvStatus (never two popovers).
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "model-menu-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), Some("model-list"));
+            assert!(panel.is_model_menu_open());
+
+            // Switching anchor keeps ModelMenu open on the new anchor.
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "composer-model-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), Some("model-list"));
+
+            // Same anchor toggles closed.
+            panel.toggle_popover(ActivePopover::ModelMenu {
+                anchor: "composer-model-trigger",
+            });
+            assert_eq!(panel.active_popup_scope(), None);
+
+            // Overlay dismissal only closes matching scope and also handles Flow Modal.
+            panel.toggle_popover(ActivePopover::BgTasks);
+            assert!(!panel.dismiss_overlay("model-list", cx));
+            assert_eq!(panel.active_popup_scope(), Some("bg-tasks-popover"));
+            assert!(panel.dismiss_overlay("bg-tasks-popover", cx));
+            assert_eq!(panel.active_popup_scope(), None);
+
+            panel.open_flow_modal("s-demo".into(), None, cx);
+            assert!(panel.has_flow_modal());
+            assert!(panel.dismiss_overlay("flow-modal-panel", cx));
+            assert!(!panel.has_flow_modal());
+        });
+        drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
 }

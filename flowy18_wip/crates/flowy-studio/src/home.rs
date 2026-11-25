@@ -6,9 +6,6 @@
 use flowy_ui as theme;
 use gpui::{Context, Window, div, prelude::*, px};
 
-/// Maximum width of the calm Home stage, shared with the composer and starters.
-const HOME_STAGE_W: f32 = 760.;
-
 impl crate::panel::StudioPanel {
     pub(crate) fn studio(
         &self,
@@ -64,7 +61,7 @@ impl crate::panel::StudioPanel {
             // width from the parent so narrow windows stay responsive.
             .flex_1()
             .min_w_0()
-            .max_w(px(HOME_STAGE_W))
+            .max_w(px(crate::STAGE_MAX_W))
             .flex()
             .flex_col()
             .items_center()
@@ -131,7 +128,8 @@ impl crate::panel::StudioPanel {
                 resume_label.clone(),
                 &self.theme,
             )
-            .aria_expanded(self.bg_tasks_open)
+            // Omit `.aria_expanded(...)`: gpui-pre 0.3.14 drops AccessKit
+            // `Action::Expand`, so keeping a plain button stays clickable via Windows UIA.
             .mt(self.theme.space(4.))
             .px(self.theme.space(12.))
             .py(self.theme.space(4.))
@@ -168,7 +166,7 @@ impl crate::panel::StudioPanel {
             )
             .child(
                 div().flex_none().text_color(self.theme.muted()).child(
-                    if self.bg_tasks_open {
+                    if self.is_bg_tasks_open() {
                         theme::icons::chevron_up().size(px(12.))
                     } else {
                         theme::icons::chevron_down().size(px(12.))

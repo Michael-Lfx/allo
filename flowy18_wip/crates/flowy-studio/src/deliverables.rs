@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use flowy_agent::{ChatLine, FileEntry};
+use flowy_agent::{ChatLine, FileEntry, ReceiptState};
 use flowy_ui as theme;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, Image,
@@ -14,10 +14,21 @@ use gpui::{
 };
 
 use crate::panel::StudioPanel;
+use flowy_ui::status_pill;
+
+/// Active tab inside the unified right-hand sheet drawer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RightDrawerTab {
+    #[default]
+    Deliverables,
+    Steps,
+    Trace,
+}
 
 /// Truncated parent directory path, keeping the tail legible in a narrow drawer.
 fn short_parent_path(path: &str) -> String {
-    let parent = Path::new(path)
+    let cleaned = crate::ports::display_path_str(path);
+    let parent = Path::new(&cleaned)
         .parent()
         .and_then(Path::to_str)
         .unwrap_or_default();
@@ -28,32 +39,6 @@ fn short_parent_path(path: &str) -> String {
     }
     let tail: String = parent.chars().skip(count - (MAX - 1)).collect();
     format!("\u{2026}{tail}")
-}
-
-fn status_pill(
-    bg: gpui::Rgba,
-    fg: gpui::Rgba,
-    label: String,
-    leading: Option<AnyElement>,
-) -> AnyElement {
-    div()
-        .flex_none()
-        .px(px(8.))
-        .py(px(2.))
-        .rounded_full()
-        .bg(bg)
-        .flex()
-        .items_center()
-        .gap(px(5.))
-        .children(leading)
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(fg)
-                .child(label),
-        )
-        .into_any_element()
 }
 
 /// Reading more than this on the UI path would stall the frame.
@@ -123,30 +108,117 @@ pub fn load_preview(path: &str) -> PreviewBody {
 }
 
 impl StudioPanel {
-    /// Unified right-hand sheet drawer: either the Single-Work Step Inspector
-    /// (opened from the background-works popover) or Space Deliverables & file
-    /// preview (opened from the top bar or inline receipt).
+    /// Unified right-hand sheet drawer: 3-mode inspector (Deliverables | Steps |
+    /// Trace) or focused Single-Work Inspector from the background popover.
     pub(crate) fn right_sheet_drawer(
         &self,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let (title, badge_count, body) =
-            if let Some(work) = &self.inspected_work {
-                (
-                    self.t("drawer.work_title"),
-                    None,
-                    self.work_inspector_view(work, cx),
-                )
-            } else {
-                let files = self.deliverables.as_deref().unwrap_or(&[]);
-                let count = (!files.is_empty()).then_some(files.len());
-                let body = match (&self.preview_file, &self.preview_body) {
-                    (Some(path), Some(preview)) => {
-                        self.preview_view(path, preview, cx).into_any_element()
+        let active_session = self.agent.active_session_id();
+        let body = if let Some(work) = &self.inspected_work {
+            match self.drawer_tab {
+                RightDrawerTab::Trace => match work {
+                    InspectedWork::Session { id, .. } => div()
+                        .p(self.theme.space(12.))
+                        .child(self.modal_trace_panel(id, cx))
+                        .into_any_element(),
+                    InspectedWork::Receipt(r) => {
+                        let sid = r
+                            .target_session_id
+                            .as_deref()
+                            .or(r.session_hint.as_deref())
+                            .unwrap_or(
+                                crate::ports::UNASSIGNED_QUEUE_SESSION_ID,
+                            );
+                        div()
+                            .p(self.theme.space(12.))
+                            .child(self.modal_trace_panel(sid, cx))
+                            .into_any_element()
                     }
-                    _ => self.deliverables_list(files, cx),
-                };
-                (self.t("chat.deliverables"), count, body)
+                },
+                _ => self.work_inspector_view(work, cx),
+            }
+        } else {
+            match self.drawer_tab {
+                RightDrawerTab::Deliverables => {
+                    let files = self.deliverables.as_deref().unwrap_or(&[]);
+                    match (&self.preview_file, &self.preview_body) {
+                        (Some(path), Some(preview)) => self
+                            .preview_view(path, preview, cx)
+                            .into_any_element(),
+                        _ => self.deliverables_list(files, cx),
+                    }
+                }
+                RightDrawerTab::Steps => {
+                    if let Some(sid) = &active_session {
+                        let title = self.agent.session_title();
+                        self.work_inspector_view(
+                            &InspectedWork::Session {
+                                id: sid.clone(),
+                                title,
+                            },
+                            cx,
+                        )
+                    } else {
+                        div()
+                            .p(self.theme.space(12.))
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("drawer.work_no_steps"))
+                            .into_any_element()
+                    }
+                }
+                RightDrawerTab::Trace => {
+                    if let Some(sid) = &active_session {
+                        div()
+                            .p(self.theme.space(12.))
+                            .child(self.modal_trace_panel(sid, cx))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .p(self.theme.space(12.))
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("trace.empty"))
+                            .into_any_element()
+                    }
+                }
+            }
+        };
+
+        let tab_pill =
+            |tab: RightDrawerTab, key: &'static str, id: &'static str| {
+                let label = self.t(key);
+                let selected = self.drawer_tab == tab;
+                theme::interactive(id, label.clone(), &self.theme)
+                    .px(self.theme.space(8.))
+                    .py(px(3.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .bg(if selected {
+                        self.theme.card()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .text_color(if selected {
+                        self.theme.ink()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        panel.drawer_tab = tab;
+                        if matches!(tab, RightDrawerTab::Deliverables) {
+                            panel.inspected_work = None;
+                            if panel.deliverables.is_none() {
+                                panel.deliverables =
+                                    panel.feed.read(cx).latest_deliverables();
+                            }
+                        }
+                        panel.refresh_trace_cache();
+                        cx.notify();
+                    }))
             };
 
         let sheet = div()
@@ -163,6 +235,7 @@ impl StudioPanel {
                     .w_full()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .gap(self.theme.space(8.))
                     .px(self.theme.space(12.))
                     .py(self.theme.space(10.))
@@ -170,30 +243,27 @@ impl StudioPanel {
                     .border_color(self.theme.line())
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .p(px(2.))
+                            .rounded_lg()
+                            .bg(self.theme.soft())
                             .flex()
                             .items_center()
-                            .gap(self.theme.space(6.))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .child(title),
-                            )
-                            .when_some(badge_count, |row, count| {
-                                row.child(
-                                    div()
-                                        .px(px(6.))
-                                        .py(px(1.))
-                                        .rounded_full()
-                                        .bg(self.theme.soft())
-                                        .text_xs()
-                                        .text_color(self.theme.muted())
-                                        .child(count.to_string()),
-                                )
-                            }),
+                            .gap(px(2.))
+                            .child(tab_pill(
+                                RightDrawerTab::Deliverables,
+                                "chat.deliverables",
+                                "drawer-tab-deliverables",
+                            ))
+                            .child(tab_pill(
+                                RightDrawerTab::Steps,
+                                "drawer.tab_steps",
+                                "drawer-tab-steps",
+                            ))
+                            .child(tab_pill(
+                                RightDrawerTab::Trace,
+                                "drawer.tab_trace",
+                                "drawer-tab-trace",
+                            )),
                     )
                     .child(
                         theme::Button::new(
@@ -324,239 +394,299 @@ impl StudioPanel {
     ) -> AnyElement {
         match work {
             InspectedWork::Session { id, title } => {
-                let is_running = self.agent.busy_session_ids().contains(id);
-                let needs_attention = self.agent.session_needs_attention(id);
-                let steps = self.session_steps(id);
-                let open_id = id.clone();
-                let stop_id = id.clone();
+                self.inspect_session_view(id, title, cx)
+            }
+            InspectedWork::Receipt(receipt) => {
+                self.inspect_receipt_view(receipt, cx)
+            }
+        }
+    }
 
-                let status_badge = if is_running {
-                    status_pill(
-                        self.theme.status_active_bg(),
-                        self.theme.status_active(),
-                        self.t("chat.bg_task_running"),
-                        Some(crate::motion::live_dot(
-                            "inspector-running-dot",
-                            self.theme.status_active(),
-                            self.theme.motion_policy(),
-                        )),
-                    )
-                } else if needs_attention {
-                    status_pill(
-                        self.theme.status_attention_bg(),
-                        self.theme.status_attention(),
-                        self.t("dock.attention_badge"),
-                        None,
-                    )
-                } else {
-                    status_pill(
-                        self.theme.status_verified_bg(),
-                        self.theme.status_verified(),
-                        self.t("verify.card.passed"),
-                        None,
-                    )
-                };
+    fn inspect_session_view(
+        &self,
+        id: &str,
+        title: &str,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let is_running = self.agent.busy_session_ids().iter().any(|s| s == id);
+        let needs_attention = self.agent.session_needs_attention(id);
+        let steps = self.session_steps(id);
+        let work_progress = self
+            .board_snapshot
+            .sessions
+            .iter()
+            .find(|group| group.session_id == id)
+            .and_then(|group| group.session_contract.as_ref());
+        let open_id = id.to_owned();
+        let stop_id = id.to_owned();
 
-                let mut steps_col =
-                    div().w_full().flex().flex_col().gap(self.theme.space(6.));
-                if steps.is_empty() {
-                    steps_col = steps_col.child(
+        let status_badge = if is_running {
+            status_pill(
+                self.theme.status_active_bg(),
+                self.theme.status_active(),
+                self.t("chat.bg_task_running"),
+                Some(crate::motion::live_dot(
+                    "inspector-running-dot",
+                    self.theme.status_active(),
+                    self.theme.motion_policy(),
+                )),
+            )
+        } else if needs_attention {
+            status_pill(
+                self.theme.status_attention_bg(),
+                self.theme.status_attention(),
+                self.t("dock.attention_badge"),
+                None,
+            )
+        } else {
+            status_pill(
+                self.theme.status_verified_bg(),
+                self.theme.status_verified(),
+                self.t("verify.card.passed"),
+                None,
+            )
+        };
+
+        let mut steps_col =
+            div().w_full().flex().flex_col().gap(self.theme.space(6.));
+        if steps.is_empty() {
+            steps_col = steps_col.child(
+                div()
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(12.))
+                    .rounded_lg()
+                    .bg(self.theme.soft().opacity(0.45))
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("drawer.work_no_steps")),
+            );
+        } else {
+            for (step_ix, step_text) in steps.into_iter().enumerate() {
+                steps_col = steps_col.child(
+                    div()
+                        .id(("work-step", step_ix as u64))
+                        .w_full()
+                        .px(self.theme.space(10.))
+                        .py(self.theme.space(8.))
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(self.theme.line())
+                        .bg(self.theme.canvas())
+                        .flex()
+                        .items_start()
+                        .gap(self.theme.space(8.))
+                        .child(
+                            div()
+                                .size(px(18.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(self.theme.soft())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(self.theme.muted())
+                                .child((step_ix + 1).to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(self.theme.ink())
+                                .whitespace_normal()
+                                .child(step_text),
+                        ),
+                );
+            }
+        }
+
+        div()
+            .w_full()
+            .p(self.theme.space(12.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(12.))
+            .child(
+                div()
+                    .w_full()
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
                         div()
                             .w_full()
-                            .px(self.theme.space(10.))
-                            .py(self.theme.space(12.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.theme.ink())
+                                    .whitespace_normal()
+                                    .child(title.to_owned()),
+                            )
+                            .child(status_badge),
+                    )
+                    .when_some(work_progress, |card, progress| {
+                        card.child(self.contract_progress_block(progress))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                theme::Button::new(
+                                    "work-inspector-open",
+                                    self.t("drawer.work_open_session"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.open_session(&open_id, cx);
+                                        panel.close_right_sheet(cx);
+                                    }),
+                                ),
+                            )
+                            .when(is_running, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "work-inspector-stop",
+                                        self.t("drawer.work_stop"),
+                                    )
+                                    .variant(theme::ControlVariant::Ghost)
+                                    .size(theme::ControlSize::Small)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel.stop_session_turn(
+                                                &stop_id, cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            }),
+                    ),
+            )
+            .child(steps_col)
+            .into_any_element()
+    }
+
+    fn inspect_receipt_view(
+        &self,
+        receipt: &flowy_agent::AcceptedMessage,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let owner = self.receipt_owner(receipt);
+        let hint = receipt
+            .target_session_id
+            .clone()
+            .or_else(|| receipt.session_hint.clone());
+        let state = self
+            .visible_receipts
+            .iter()
+            .find(|(item, _)| item.id == receipt.id)
+            .map_or(ReceiptState::Queued, |(_, state)| *state);
+        let (state_fg, state_label, _) = self.receipt_state_visual(state);
+        let work_progress = self
+            .board_snapshot
+            .sessions
+            .iter()
+            .flat_map(|group| group.branches.iter())
+            .find(|branch| {
+                matches!(
+                    &branch.phase,
+                    crate::ports::BranchPhase::Queued { receipt_id, .. }
+                        if receipt_id == &receipt.id
+                )
+            })
+            .and_then(|branch| branch.work_progress.as_ref());
+        let cancel_id = receipt.id.clone();
+        let retry_id = receipt.id.clone();
+        let can_cancel = matches!(
+            state,
+            ReceiptState::Queued
+                | ReceiptState::Running
+                | ReceiptState::Retrying
+        );
+        let is_dead = state == ReceiptState::Dead;
+        let retrying = self.retrying_receipts.contains(receipt.id.as_str());
+        div()
+            .w_full()
+            .p(self.theme.space(12.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(12.))
+            .child(
+                div()
+                    .w_full()
+                    .p(self.theme.space(12.))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(self.theme.space(8.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(self.theme.muted())
+                                    .child(owner),
+                            )
+                            .child(status_pill(
+                                self.theme.soft(),
+                                state_fg,
+                                state_label,
+                                None,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .p(self.theme.space(10.))
                             .rounded_lg()
                             .bg(self.theme.soft().opacity(0.45))
                             .text_xs()
-                            .text_color(self.theme.muted())
+                            .text_color(self.theme.ink())
                             .whitespace_normal()
-                            .child(self.t("drawer.work_no_steps")),
-                    );
-                } else {
-                    for (step_ix, step_text) in steps.into_iter().enumerate() {
-                        steps_col = steps_col.child(
-                            div()
-                                .id(("work-step", step_ix as u64))
-                                .w_full()
-                                .px(self.theme.space(10.))
-                                .py(self.theme.space(8.))
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(self.theme.line())
-                                .bg(self.theme.canvas())
-                                .flex()
-                                .items_start()
-                                .gap(self.theme.space(8.))
-                                .child(
-                                    div()
-                                        .size(px(18.))
-                                        .flex_none()
-                                        .rounded_full()
-                                        .bg(self.theme.soft())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.muted())
-                                        .child((step_ix + 1).to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .text_color(self.theme.ink())
-                                        .whitespace_normal()
-                                        .child(step_text),
-                                ),
-                        );
-                    }
-                }
-
-                div()
-                    .w_full()
-                    .p(self.theme.space(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(12.))
-                    .child(
-                        div()
-                            .w_full()
-                            .p(self.theme.space(12.))
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(self.theme.line())
-                            .bg(self.theme.canvas())
-                            .flex()
-                            .flex_col()
-                            .gap(self.theme.space(8.))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(self.theme.ink())
-                                            .whitespace_normal()
-                                            .child(title.clone()),
-                                    )
-                                    .child(status_badge),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        theme::Button::new(
-                                            "work-inspector-open",
-                                            self.t("drawer.work_open_session"),
-                                        )
-                                        .variant(
-                                            theme::ControlVariant::Secondary,
-                                        )
-                                        .size(theme::ControlSize::Small)
-                                        .render(
-                                            &self.theme,
-                                            cx.listener(
-                                                move |panel, _, _, cx| {
-                                                    panel.open_session(
-                                                        &open_id, cx,
-                                                    );
-                                                    panel.close_right_sheet(cx);
-                                                },
-                                            ),
-                                        ),
-                                    )
-                                    .when(is_running, |row| {
-                                        row.child(
-                                            theme::Button::new(
-                                                "work-inspector-stop",
-                                                self.t("drawer.work_stop"),
-                                            )
-                                            .variant(
-                                                theme::ControlVariant::Ghost,
-                                            )
-                                            .size(theme::ControlSize::Small)
-                                            .render(
-                                                &self.theme,
-                                                cx.listener(
-                                                    move |panel, _, _, cx| {
-                                                        panel
-                                                            .stop_session_turn(
-                                                                &stop_id, cx,
-                                                            );
-                                                    },
-                                                ),
-                                            ),
-                                        )
-                                    }),
-                            ),
+                            .child(crate::ports::redact_trace_text(
+                                &receipt.text,
+                            )),
                     )
-                    .child(steps_col)
-                    .into_any_element()
-            }
-            InspectedWork::Receipt(receipt) => {
-                let owner = self.receipt_owner(receipt);
-                let hint = receipt.session_hint.clone();
-                div()
-                    .w_full()
-                    .p(self.theme.space(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(self.theme.space(12.))
+                    .when_some(work_progress, |card, progress| {
+                        card.child(self.contract_progress_block(progress))
+                    })
                     .child(
                         div()
-                            .w_full()
-                            .p(self.theme.space(12.))
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(self.theme.line())
-                            .bg(self.theme.canvas())
                             .flex()
-                            .flex_col()
+                            .flex_wrap()
+                            .items_center()
                             .gap(self.theme.space(8.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(self.theme.space(8.))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(self.theme.muted())
-                                            .child(owner),
-                                    )
-                                    .child(status_pill(
-                                        self.theme.soft(),
-                                        self.theme.muted(),
-                                        self.t("chat.bg_task_queued"),
-                                        None,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .p(self.theme.space(10.))
-                                    .rounded_lg()
-                                    .bg(self.theme.soft().opacity(0.45))
-                                    .text_xs()
-                                    .text_color(self.theme.ink())
-                                    .whitespace_normal()
-                                    .child(receipt.text.clone()),
-                            )
-                            .when_some(hint, |card, session_id| {
-                                card.child(
+                            .when_some(hint, |row, session_id| {
+                                row.child(
                                     theme::Button::new(
                                         "receipt-inspector-open",
                                         self.t("drawer.work_open_session"),
@@ -571,11 +701,46 @@ impl StudioPanel {
                                         }),
                                     ),
                                 )
+                            })
+                            .when(is_dead, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "receipt-inspector-retry",
+                                        self.t("board.retry_dead_receipt"),
+                                    )
+                                    .variant(theme::ControlVariant::Primary)
+                                    .size(theme::ControlSize::Small)
+                                    .disabled(retrying)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel.retry_dead_receipt(
+                                                &retry_id, cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            })
+                            .when(can_cancel, |row| {
+                                row.child(
+                                    theme::Button::new(
+                                        "receipt-inspector-cancel",
+                                        self.t("board.cancel_receipt"),
+                                    )
+                                    .variant(theme::ControlVariant::Ghost)
+                                    .size(theme::ControlSize::Small)
+                                    .render(
+                                        &self.theme,
+                                        cx.listener(move |panel, _, _, cx| {
+                                            panel
+                                                .cancel_receipt(&cancel_id, cx);
+                                        }),
+                                    ),
+                                )
                             }),
-                    )
-                    .into_any_element()
-            }
-        }
+                    ),
+            )
+            .into_any_element()
     }
 
     fn deliverables_list(
@@ -707,6 +872,30 @@ impl StudioPanel {
                 )),
             );
         }
+        if self.active_project_id.is_none()
+            && let Some(first) = files.first()
+        {
+            let first_path = first.path.clone();
+            column = column.child(
+                div().w_full().pt(self.theme.space(8.)).child(
+                    theme::Button::new(
+                        "deliverables-promote-project",
+                        self.t("deliverables.promote_project"),
+                    )
+                    .variant(theme::ControlVariant::Secondary)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.register_deliverable_folder_as_project(
+                                &first_path,
+                                cx,
+                            );
+                        }),
+                    ),
+                ),
+            );
+        }
         column.into_any_element()
     }
 
@@ -773,22 +962,42 @@ impl StudioPanel {
                     )
                     .child(
                         theme::Button::new(
-                            "preview-open-external",
-                            self.t("deliverables.open_external"),
+                            "preview-reveal-folder",
+                            self.t("board.reveal_folder"),
                         )
                         .variant(theme::ControlVariant::Ghost)
                         .size(theme::ControlSize::Small)
                         .render(
                             &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                if open::that(&external_path).is_err() {
-                                    panel.emit_notice(
-                                        Some("library.error.open"),
-                                        cx,
-                                    );
+                            cx.listener({
+                                let reveal_path = external_path.clone();
+                                move |panel, _, _, cx| {
+                                    panel.reveal_file_in_os(&reveal_path, cx);
                                 }
                             }),
                         ),
+                    )
+                    .when(
+                        flowy_agent::can_open_with_default_app(&external_path),
+                        |row| {
+                            row.child(
+                                theme::Button::new(
+                                    "preview-open-external",
+                                    self.t("deliverables.open_external"),
+                                )
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, _, cx| {
+                                        panel.open_file_externally(
+                                            &external_path,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            )
+                        },
                     ),
             )
             .child(body)
@@ -798,6 +1007,7 @@ impl StudioPanel {
 #[cfg(test)]
 mod tests {
     use super::{MAX_PREVIEW_BYTES, PreviewBody, load_preview};
+    use crate::panel::StudioPanel;
 
     fn scratch(name: &str) -> std::path::PathBuf {
         std::env::temp_dir()
@@ -845,5 +1055,26 @@ mod tests {
             PreviewBody::Notice("chat.preview_too_large")
         ));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn external_open_gate_blocks_executables_and_missing_files() {
+        let safe = scratch("report.pdf");
+        let script = scratch("payload.ps1");
+        std::fs::write(&safe, b"%PDF-1.4").expect("write safe");
+        std::fs::write(&script, b"Write-Host boom").expect("write script");
+
+        assert!(StudioPanel::can_open_file_externally(
+            safe.to_str().expect("utf8")
+        ));
+        assert!(!StudioPanel::can_open_file_externally(
+            script.to_str().expect("utf8")
+        ));
+        assert!(!StudioPanel::can_open_file_externally(
+            "flowy-nonexistent-doc.pdf"
+        ));
+
+        let _ = std::fs::remove_file(safe);
+        let _ = std::fs::remove_file(script);
     }
 }

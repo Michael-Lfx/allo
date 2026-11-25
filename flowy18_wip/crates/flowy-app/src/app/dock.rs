@@ -7,6 +7,7 @@ use gpui::{
 #[derive(Clone, Copy)]
 enum DockIcon {
     NewTask,
+    Board,
     // Search,
     Library,
     Create,
@@ -20,6 +21,7 @@ impl DockIcon {
     fn render(self) -> theme::icons::Icon {
         match self {
             Self::NewTask => theme::icons::square_pen(),
+            Self::Board => theme::icons::layout_grid(),
             // Self::Search => theme::icons::search(),
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
@@ -49,6 +51,16 @@ const NAV: &[(&str, &str, Section, DockIcon)] = &[
         DockIcon::Automation,
     ),
 ];
+
+/// Single-frame read snapshot sampled once per `dock_scroll` render so sidebar
+/// sections never re-scan `AgentHandle::list_sessions()` multiple times per frame.
+struct DockSessionSnapshot {
+    sessions: Vec<flowy_agent::SessionSummary>,
+    projects: Vec<flowy_studio::Project>,
+    active_session: Option<String>,
+    busy_ids: Vec<String>,
+    attention_ids: std::collections::HashSet<String>,
+}
 
 impl FlowyApp {
     pub fn dock(
@@ -84,32 +96,103 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let (
             active_work,
+            board_blockers,
+            board_active,
             in_chat,
             chief_selected,
             new_task_selected,
             chief_preview,
-            busy_ids,
+            snapshot,
         ) = {
             let studio = self.studio.read(cx);
             let in_chat = self.section == Section::Studio
                 && studio.surface == flowy_studio::StudioSurface::Chat;
-            let default_preview = studio
-                .agent
-                .list_sessions()
-                .into_iter()
+            let sessions = studio.agent.list_sessions();
+            let default_preview = sessions
+                .iter()
                 .find(|session| session.project_id.is_none())
                 .and_then(|session| studio.agent.session_preview(&session.id));
+            let attention_ids: std::collections::HashSet<String> = sessions
+                .iter()
+                .filter(|s| studio.agent.session_needs_attention(&s.id))
+                .map(|s| s.id.clone())
+                .collect();
+            let snapshot = DockSessionSnapshot {
+                sessions,
+                projects: studio.projects.clone(),
+                active_session: studio.agent.active_session_id(),
+                busy_ids: studio.agent.busy_session_ids(),
+                attention_ids,
+            };
             (
                 studio.total_active_work_count(),
+                studio.board_blocker_count(),
+                studio.board_active_count(),
                 in_chat,
                 in_chat && studio.active_project_id.is_none(),
                 self.section == Section::Studio && !in_chat,
                 default_preview,
-                studio.agent.busy_session_ids(),
+                snapshot,
             )
         };
-        let mut navigation =
-            div().flex().flex_col().gap_1().child(Self::nav_item(
+        let board_row = item_row(
+            self.theme,
+            "board",
+            self.t("dock.board"),
+            self.section == Section::Board,
+            DockIcon::Board,
+        )
+        .when(board_blockers > 0, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(self.theme.status_attention_bg())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(self.theme.status_attention())
+                    .child(board_blockers.to_string()),
+            )
+        })
+        .when(board_blockers == 0 && board_active > 0, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(self.theme.status_active_bg())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.theme.status_active())
+                    .child(board_active.to_string()),
+            )
+        })
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.select_navigation("board", Section::Board, cx);
+        }));
+        let skills_selected = self.section == Section::More
+            && self.persona.page == super::more::Page::Skills;
+        let skills_row = item_row(
+            self.theme,
+            "skills",
+            self.t("more.skills"),
+            skills_selected,
+            DockIcon::Skills,
+        )
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.user_menu = false;
+            app.select_more_page(super::more::Page::Skills, cx);
+        }));
+
+        // Top core 4 entries: New Task, Visual Board, Library, Skills.
+        let navigation = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(Self::nav_item(
                 &self.theme,
                 "new-task",
                 self.t("dock.new_task"),
@@ -117,19 +200,18 @@ impl FlowyApp {
                 Section::Studio,
                 DockIcon::NewTask,
                 cx,
-            ));
-
-        // Primary space navigation (Library stays prominent); secondary tools sit
-        // quieter below a subtle hairline divider.
-        navigation = navigation.child(Self::nav_item(
-            &self.theme,
-            "library",
-            self.t("dock.library"),
-            self.section == Section::Library,
-            Section::Library,
-            DockIcon::Library,
-            cx,
-        ));
+            ))
+            .child(board_row)
+            .child(Self::nav_item(
+                &self.theme,
+                "library",
+                self.t("dock.library"),
+                self.section == Section::Library,
+                Section::Library,
+                DockIcon::Library,
+                cx,
+            ))
+            .child(skills_row);
         let mut secondary = div()
             .mt_1()
             .pt_1()
@@ -154,21 +236,13 @@ impl FlowyApp {
                 cx,
             ));
         }
-        secondary = secondary
-            .child(self.more_page_dock_item(
-                "skills",
-                "more.skills",
-                super::more::Page::Skills,
-                DockIcon::Skills,
-                cx,
-            ))
-            .child(self.more_page_dock_item(
-                "personalization",
-                "more.personal",
-                super::more::Page::Personal,
-                DockIcon::Personalization,
-                cx,
-            ));
+        secondary = secondary.child(self.more_page_dock_item(
+            "personalization",
+            "more.personal",
+            super::more::Page::Personal,
+            DockIcon::Personalization,
+            cx,
+        ));
 
         div()
             .id("dock-scroll")
@@ -189,8 +263,8 @@ impl FlowyApp {
                 cx,
             ))
             .child(navigation)
-            .child(self.project_section(&busy_ids, window, cx))
-            .child(self.task_section(&busy_ids, window, cx))
+            .child(self.project_section(&snapshot, window, cx))
+            .child(self.task_section(&snapshot, window, cx))
             .child(secondary)
     }
 
@@ -341,21 +415,7 @@ impl FlowyApp {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(self.theme.ink())
                                     .child(title),
-                            )
-                            .when(active_work > 0, |row| {
-                                row.child(
-                                    div()
-                                        .flex_none()
-                                        .px(px(5.))
-                                        .py(px(1.))
-                                        .rounded_full()
-                                        .bg(self.theme.status_active_bg())
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(self.theme.status_active())
-                                        .child(active_work.to_string()),
-                                )
-                            }),
+                            ),
                     )
                     .child(subtitle),
             )
@@ -458,25 +518,15 @@ impl FlowyApp {
 
     fn project_rows(
         &self,
-        busy_ids: &[String],
+        snapshot: &DockSessionSnapshot,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let (mut projects, sessions, active_session, attention_ids) = {
-            let studio = self.studio.read(cx);
-            let sessions = studio.agent.list_sessions();
-            let attention_ids: std::collections::HashSet<String> = sessions
-                .iter()
-                .filter(|s| studio.agent.session_needs_attention(&s.id))
-                .map(|s| s.id.clone())
-                .collect();
-            (
-                studio.projects.clone(),
-                sessions,
-                studio.agent.active_session_id(),
-                attention_ids,
-            )
-        };
+        let mut projects = snapshot.projects.clone();
+        let sessions = &snapshot.sessions;
+        let active_session = &snapshot.active_session;
+        let busy_ids = &snapshot.busy_ids;
+        let attention_ids = &snapshot.attention_ids;
         projects.sort_by_key(|project| !project.pinned);
         let project_ids: Vec<String> =
             projects.iter().map(|project| project.id.clone()).collect();
@@ -495,11 +545,12 @@ impl FlowyApp {
                 session.project_id.as_deref() == Some(project_id.as_str())
                     && busy_ids.contains(&session.id)
             });
-            let project_attention = !project_busy
-                && sessions.iter().any(|session| {
-                    session.project_id.as_deref() == Some(project_id.as_str())
-                        && attention_ids.contains(&session.id)
-                });
+            // Never mask a pending approval / failed verification behind another
+            // running session in the same project.
+            let project_attention = sessions.iter().any(|session| {
+                session.project_id.as_deref() == Some(project_id.as_str())
+                    && attention_ids.contains(&session.id)
+            });
             let flip_offset = flip.read(cx).offset_for(&project_id);
             let toggle_label = if expanded {
                 self.tf("project.collapse", &[("name", &project.name)])
@@ -607,6 +658,9 @@ impl FlowyApp {
                                 .text_size(self.theme.body_size())
                                 .child(project.name.clone()),
                         )
+                        .when(project_attention, |row| {
+                            row.child(attention_dot(self.theme))
+                        })
                         .when(project_busy, |row| {
                             row.child(running_dot(
                                 SharedString::from(format!(
@@ -614,9 +668,6 @@ impl FlowyApp {
                                 )),
                                 self.theme,
                             ))
-                        })
-                        .when(project_attention, |row| {
-                            row.child(attention_dot(self.theme))
                         })
                         .when(project.pinned, |row| {
                             row.child(
@@ -655,8 +706,7 @@ impl FlowyApp {
                     session.project_id.as_deref() == Some(project_id.as_str())
                 }) {
                     let busy = busy_ids.contains(&session.id);
-                    let attention =
-                        !busy && attention_ids.contains(&session.id);
+                    let attention = attention_ids.contains(&session.id);
                     rows = rows.child(self.conversation_row(
                         window,
                         cx,
@@ -809,14 +859,12 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .when(attention, |row| row.child(attention_dot(self.theme)))
             .when(busy, |row| {
                 row.child(running_dot(
                     SharedString::from(format!("dock-running-{session_id}")),
                     self.theme,
                 ))
-            })
-            .when(attention && !busy, |row| {
-                row.child(attention_dot(self.theme))
             })
             .when(show_menu, |row| {
                 row.child(self.conversation_row_actions(
@@ -874,32 +922,26 @@ impl FlowyApp {
 
     fn task_rows(
         &self,
-        busy_ids: &[String],
+        snapshot: &DockSessionSnapshot,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let (sessions, active, attention_ids) = {
-            let studio = self.studio.read(cx);
-            let sessions: Vec<_> = studio
-                .agent
-                .list_sessions()
-                .into_iter()
-                .filter(|session| {
-                    session.project_id.as_ref().is_none_or(|project_id| {
-                        !studio
-                            .projects
-                            .iter()
-                            .any(|project| &project.id == project_id)
-                    })
+        let sessions: Vec<_> = snapshot
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.project_id.as_ref().is_none_or(|project_id| {
+                    !snapshot
+                        .projects
+                        .iter()
+                        .any(|project| &project.id == project_id)
                 })
-                .collect();
-            let attention_ids: std::collections::HashSet<String> = sessions
-                .iter()
-                .filter(|s| studio.agent.session_needs_attention(&s.id))
-                .map(|s| s.id.clone())
-                .collect();
-            (sessions, studio.agent.active_session_id(), attention_ids)
-        };
+            })
+            .cloned()
+            .collect();
+        let active = &snapshot.active_session;
+        let busy_ids = &snapshot.busy_ids;
+        let attention_ids = &snapshot.attention_ids;
         if sessions.is_empty() {
             return div()
                 .px_4()
@@ -926,7 +968,7 @@ impl FlowyApp {
             };
             let selected = active.as_deref() == Some(session_id.as_str());
             let busy = busy_ids.contains(&session_id);
-            let attention = !busy && attention_ids.contains(&session_id);
+            let attention = attention_ids.contains(&session_id);
             let flip_offset = flip.read(cx).offset_for(&session_id);
             let row = self.conversation_row(
                 window,
@@ -956,7 +998,7 @@ impl FlowyApp {
 
     fn project_section(
         &self,
-        busy_ids: &[String],
+        snapshot: &DockSessionSnapshot,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
@@ -975,14 +1017,14 @@ impl FlowyApp {
             toggle,
         ));
         if open {
-            section = section.child(self.project_rows(busy_ids, window, cx));
+            section = section.child(self.project_rows(snapshot, window, cx));
         }
         section
     }
 
     fn task_section(
         &self,
-        busy_ids: &[String],
+        snapshot: &DockSessionSnapshot,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
@@ -1001,7 +1043,7 @@ impl FlowyApp {
             toggle,
         ));
         if open {
-            section = section.child(self.task_rows(busy_ids, window, cx));
+            section = section.child(self.task_rows(snapshot, window, cx));
         }
         section
     }
@@ -1197,7 +1239,7 @@ impl FlowyApp {
 
     pub(super) fn toggle_user_menu(&mut self, cx: &mut Context<'_, Self>) {
         self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
+            panel.close_all_popovers();
             cx.notify();
         });
         self.user_menu = !self.user_menu;

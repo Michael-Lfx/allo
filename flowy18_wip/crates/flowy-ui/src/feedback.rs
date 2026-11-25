@@ -199,3 +199,30 @@ pub fn empty_state(
 ) -> Div {
     EmptyState::new(title, description).render(theme)
 }
+
+/// Compact rounded status pill shared across boards, drawers, popovers, and modals.
+pub fn status_pill(
+    bg: gpui::Rgba,
+    fg: gpui::Rgba,
+    label: impl Into<SharedString>,
+    leading: Option<AnyElement>,
+) -> AnyElement {
+    div()
+        .flex_none()
+        .px(gpui::px(8.))
+        .py(gpui::px(2.))
+        .rounded_full()
+        .bg(bg)
+        .flex()
+        .items_center()
+        .gap(gpui::px(5.))
+        .children(leading)
+        .child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(fg)
+                .child(label.into()),
+        )
+        .into_any_element()
+}

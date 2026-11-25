@@ -36,7 +36,7 @@ impl FlowyApp {
         });
         self.set_input_text(&self.flex.api_key, mask, cx);
         self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
+            panel.close_all_popovers();
             cx.notify();
         });
         cx.notify();

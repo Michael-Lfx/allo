@@ -30,6 +30,14 @@ impl Category {
         }
     }
 
+    pub(crate) const fn suggested_skill_id(self) -> &'static str {
+        match self {
+            Self::Data => "excel",
+            Self::Docs => "research",
+            Self::Website | Self::App | Self::Game => "script",
+        }
+    }
+
     pub(crate) const fn examples(self) -> &'static [Starter] {
         match self {
             Self::Website => WEBSITE,
