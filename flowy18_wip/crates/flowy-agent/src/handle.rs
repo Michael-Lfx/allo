@@ -6,15 +6,15 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, RunError, SessionOrigin, SessionRecord,
-    SessionWorkspace, TurnObserver, TurnState, complete_text, echo_stream_fn,
-    log_preview,
+    LoopOutcome, ModelRoute, ReceiptState, RunError, SessionOrigin,
+    SessionRecord, SessionWorkspace, TurnObserver, TurnState, complete_text,
+    echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -137,11 +137,24 @@ struct UiState {
     artifact_store: OnceLock<ArtifactStore>,
     initializing: Mutex<bool>,
     context_generation: AtomicU64,
+    semantic_verify_enabled: AtomicBool,
     updates: Mutex<VecDeque<AgentUpdate>>,
     load_failed: Mutex<bool>,
     history_unavailable: Mutex<bool>,
     dispatch: Mutex<()>,
     index_write: Mutex<()>,
+}
+
+fn env_semantic_verify_enabled() -> bool {
+    !matches!(
+        std::env::var("FLOWY_L3_VERIFY")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("0" | "false" | "off")
+    )
 }
 
 impl UiState {
@@ -161,6 +174,9 @@ impl UiState {
             artifact_store: store_slot,
             initializing: Mutex::new(true),
             context_generation: AtomicU64::new(0),
+            semantic_verify_enabled: AtomicBool::new(
+                env_semantic_verify_enabled(),
+            ),
             updates: Mutex::new(VecDeque::new()),
             load_failed: Mutex::new(false),
             history_unavailable: Mutex::new(false),
@@ -563,6 +579,7 @@ impl AgentHandle {
         }
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
+        reconcile_committed_acceptances(&state.root, &engine);
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -1168,11 +1185,25 @@ impl AgentHandle {
             origin: SessionOrigin::Home,
         };
         let result = gate
-            .deliver_with(&full_path, true, now, |_bytes| {
-                store.prepare(prepare)
-            })
+            .deliver_override_for_report(
+                &full_path,
+                report_id,
+                now,
+                |checked_bytes| {
+                    let expected_hash =
+                        crate::delivery::hash_bytes(checked_bytes);
+                    let receipt = store.prepare(prepare)?;
+                    if receipt.sha256 != expected_hash {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "DELIVERY_ARTIFACT_CHANGED",
+                        ));
+                    }
+                    Ok(receipt)
+                },
+            )
             .map_err(|_| "chat.publish.failed")?;
-        let receipt = result.value.ok_or("chat.publish.failed")?;
+        let receipt = result.value.ok_or("chat.publish.not_verified")?;
         let root_session_id = self.root_session_id_for(session_id);
         tracing::info!(
             target: "flowy.delivery",
@@ -1561,6 +1592,40 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
+    /// Look up any accepted receipt by id across all lifecycle states
+    /// (`Queued`, `Running`, `Retrying`, `Completed`, `Dead`).
+    #[must_use]
+    pub fn receipt_by_id(&self, id: &str) -> Option<AcceptedMessage> {
+        AcceptanceQueue::new(self.inner.state.root.clone())
+            .get(id)
+            .ok()
+            .flatten()
+    }
+
+    /// Current lifecycle state of receipt `id`, if it exists in the journal.
+    #[must_use]
+    pub fn receipt_state(&self, id: &str) -> Option<ReceiptState> {
+        self.receipt_by_id(id)
+            .map(|receipt| receipt.state_at(now_ms()))
+    }
+
+    /// Host disclosure switch controlling whether `verify_deck` may send
+    /// extracted brief + deck text to the configured LLM for L3 semantic hints.
+    pub fn set_semantic_verify_enabled(&self, enabled: bool) {
+        self.inner
+            .state
+            .semantic_verify_enabled
+            .store(enabled, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn semantic_verify_enabled(&self) -> bool {
+        self.inner
+            .state
+            .semantic_verify_enabled
+            .load(Ordering::Acquire)
+    }
+
     /// Whether the configured provider requires the cloud catalog before running.
     #[must_use]
     pub fn requires_cloud_ready(&self) -> bool {
@@ -1575,13 +1640,15 @@ impl AgentHandle {
 
     /// Claim and start the oldest accepted receipt, if any.
     ///
-    /// This is the consumer entry point: it takes a lease, resolves the session
-    /// hint (or opens a new home conversation), derives the `ExecInput`, and
-    /// submits the turn. The caller must call [`Self::finish_accepted`] when the
-    /// turn ends.
+    /// Reconciles any previously bound receipt whose engine turn already
+    /// committed on disk before claiming new work, so a crash between engine
+    /// commit and journal settlement never re-runs completed turns.
     pub fn run_accepted_once(
         &self,
     ) -> Result<Option<AcceptedRun>, &'static str> {
+        if let Some(engine) = lock(&self.inner.engine).as_ref() {
+            reconcile_committed_acceptances(&self.inner.state.root, engine);
+        }
         if !self.can_run_turns()
             || self.has_active_claim()
             || self.has_busy_session()
@@ -1611,6 +1678,7 @@ impl AgentHandle {
         getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
         let submission = u128::from_le_bytes(bytes);
         let attempt_id = format!("attempt-{submission:032x}");
+        let submission_id = format!("submission-{submission:032x}");
         let now = now_ms();
         let Some(claimed) = queue
             .take(&next.id, &attempt_id, now, ACCEPTED_LEASE_MS)
@@ -1636,11 +1704,12 @@ impl AgentHandle {
                     Err(_) => match self.create_home_session() {
                         Ok(session) => session,
                         Err(error) => {
-                            let _ = queue.release(
+                            settle_failed_attempt(
+                                &queue,
                                 &claimed.id,
                                 &attempt_id,
+                                claimed.attempts,
                                 now_ms(),
-                                0,
                             );
                             return Err(error);
                         }
@@ -1650,19 +1719,39 @@ impl AgentHandle {
             None => match self.create_home_session() {
                 Ok(session) => session,
                 Err(error) => {
-                    let _ =
-                        queue.release(&claimed.id, &attempt_id, now_ms(), 0);
+                    settle_failed_attempt(
+                        &queue,
+                        &claimed.id,
+                        &attempt_id,
+                        claimed.attempts,
+                        now_ms(),
+                    );
                     return Err(error);
                 }
             },
         };
+        // Persist (session_id, submission_id) before starting the engine so
+        // crash recovery can detect committed output instead of re-running.
+        let _ = queue.bind(
+            &claimed.id,
+            &attempt_id,
+            &session,
+            &submission_id,
+            now_ms(),
+        );
         if let Err(error) = self.submit_chat(submission, &claimed.text) {
             if let Some(prev) = &previous_active
                 && prev != &session
             {
                 let _ = self.select_session(prev);
             }
-            let _ = queue.release(&claimed.id, &attempt_id, now_ms(), 0);
+            settle_failed_attempt(
+                &queue,
+                &claimed.id,
+                &attempt_id,
+                claimed.attempts,
+                now_ms(),
+            );
             return Err(error);
         }
         if let Some(prev) = &previous_active
@@ -1677,7 +1766,6 @@ impl AgentHandle {
             attempts: claimed.attempts,
         });
         let root_session_id = self.root_session_id_for(&session);
-        let submission_id = format!("submission-{submission:032x}");
         tracing::info!(
             target: "flowy.acceptance",
             event = "claimed",
@@ -1891,13 +1979,19 @@ impl AgentHandle {
                 state.root.join("delivery"),
             );
             let contract = crate::verify::BriefContract::from_brief(&prompt);
-            let semantic = config.api_key.as_ref().map(|api_key| {
-                crate::semantic_verify::SemanticContext {
-                    brief: prompt.clone(),
-                    route: model_route(&config),
-                    api_key: api_key.clone(),
-                }
-            });
+            let semantic = state
+                .semantic_verify_enabled
+                .load(Ordering::Acquire)
+                .then(|| {
+                    config.api_key.as_ref().map(|api_key| {
+                        crate::semantic_verify::SemanticContext {
+                            brief: prompt.clone(),
+                            route: model_route(&config),
+                            api_key: api_key.clone(),
+                        }
+                    })
+                })
+                .flatten();
             run_config.registry.register(
                 crate::verify::definition_with_semantic_and_contract(
                     Some(delivery.clone()),
@@ -3562,6 +3656,104 @@ fn release_backoff(attempts: u32) -> u64 {
         .min(ACCEPTED_RELEASE_MAX_MS)
 }
 
+fn settle_failed_attempt(
+    queue: &AcceptanceQueue,
+    receipt_id: &str,
+    attempt_id: &str,
+    attempts: u32,
+    now: u64,
+) {
+    if attempts >= ACCEPTED_MAX_ATTEMPTS {
+        let _ = queue.give_up(receipt_id, attempt_id, now);
+    } else {
+        let _ = queue.release(
+            receipt_id,
+            attempt_id,
+            now,
+            release_backoff(attempts),
+        );
+    }
+}
+
+/// Returns `true` only when `submission_id` has durable post-execution output
+/// in `record` (either a successful `DeliveryCommit` or at least one
+/// Assistant/Tool message following the submission's User message on a
+/// non-running session). Never mistakes a pre-run User prompt saved by
+/// `Engine::prepare` for a completed turn.
+fn submission_committed_in_session(
+    record: &SessionRecord,
+    submission_id: &str,
+) -> bool {
+    if record.delivery_commits.iter().any(|commit| {
+        commit.submission_id == submission_id && commit.completed_successfully
+    }) {
+        return true;
+    }
+    if record.status.is_busy() {
+        return false;
+    }
+    let Some(user_idx) = record
+        .messages
+        .iter()
+        .position(|msg| msg.id == submission_id && msg.role == Role::User)
+    else {
+        return false;
+    };
+    record.messages[user_idx + 1..]
+        .iter()
+        .take_while(|msg| !matches!(msg.source, MessageSource::User))
+        .any(|msg| {
+            msg.role == Role::Assistant
+                || matches!(msg.source, MessageSource::Tool { .. })
+        })
+}
+
+/// Reconcile any previously bound receipt whose engine turn already committed
+/// on disk before the process could append `Completed` to the journal.
+fn reconcile_committed_acceptances(root: &Path, engine: &Engine) {
+    let queue = AcceptanceQueue::new(root.to_path_buf());
+    let Ok(receipts) = queue.replay() else {
+        return;
+    };
+    let now = now_ms();
+    for receipt in receipts {
+        // Only reconcile unsettled claims (`Taken` + `Bound` with no
+        // subsequent `Completed` / `Released` / `Dead`): an explicit `Released`
+        // clears `lease` to signal that the host intentionally requested retry.
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.lease.is_none()
+        {
+            continue;
+        }
+        let (Some(attempt_id), Some(session_id), Some(submission_id)) = (
+            receipt.last_attempt_id.as_deref(),
+            receipt.target_session_id.as_deref(),
+            receipt.submission_id.as_deref(),
+        ) else {
+            continue;
+        };
+        let Some(record) = engine.session(session_id) else {
+            continue;
+        };
+        if submission_committed_in_session(&record, submission_id)
+            && queue
+                .complete_reconciled(&receipt.id, attempt_id, now)
+                .unwrap_or(false)
+        {
+            tracing::info!(
+                target: "flowy.acceptance",
+                event = "reconciled_completed",
+                receipt_id = %receipt.id,
+                attempt_id,
+                session_id,
+                submission_id,
+                "reconciled committed engine turn to prevent duplicate rerun"
+            );
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -4366,10 +4558,12 @@ mod background_init_tests {
 #[cfg(test)]
 mod guard_tests {
     use super::{
-        AgentWorkspace, confined_to, path_guard,
-        promote_latest_turn_verifications, session_working_directory,
-        take_file_change, tool_arg_key, tool_registry,
-        tool_result_display_text, upsert_verification_line,
+        AcceptanceQueue, AgentHandle, AgentWorkspace, CancelToken,
+        ContentBlock, LlmConfig, Message, MessageSource, ReceiptState, Role,
+        SessionOrigin, SessionRecord, TurnState, confined_to, lock,
+        model_route, next_stamp, path_guard, promote_latest_turn_verifications,
+        session_working_directory, take_file_change, tool_arg_key,
+        tool_registry, tool_result_display_text, upsert_verification_line,
     };
     use crate::projection::{ChatLine, FileChangeKind, VerificationIssue};
     use flowy_agent_core::types::ToolCallArgs;
@@ -4584,5 +4778,254 @@ mod guard_tests {
             &lines[3],
             ChatLine::Artifact { artifact_id } if artifact_id == "art-1"
         ));
+    }
+
+    #[test]
+    fn crash_after_engine_commit_reconciles_receipt_without_rerunning_while_user_only_stays_retryable()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-crash-reconcile-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let receipt = handle
+            .accept_deferred("complete once then crash before journal")
+            .expect("accept");
+        let run = handle.run_accepted_once().expect("claim").expect("claimed");
+        for _ in 0..200 {
+            if !handle.has_busy_session() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!handle.has_busy_session());
+        // Simulate process crash AFTER engine committed history, BEFORE
+        // `finish_accepted(true)` wrote `Completed` to acceptance/journal.jsonl.
+        drop(handle);
+
+        // Also simulate a second receipt whose engine session crashed right
+        // after `Engine::prepare` wrote only the User message (status=Running).
+        let queue = AcceptanceQueue::new(root.clone());
+        let user_only = queue
+            .accept(None, "crashed after prepare", 1_000)
+            .expect("accept second");
+        let _ = queue
+            .take(&user_only.id, "attempt-prep-only", 1_100, 1)
+            .expect("take second");
+        let _ = queue
+            .bind(
+                &user_only.id,
+                "attempt-prep-only",
+                "s-prep-only",
+                "submission-prep-only",
+                1_110,
+            )
+            .expect("bind second");
+        let mut index =
+            flowy_agent_core::SessionIndex::load(&root).expect("load history");
+        index.upsert(SessionRecord {
+            id: "s-prep-only".into(),
+            status: TurnState::Running,
+            messages: vec![Message {
+                id: "submission-prep-only".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("crashed after prepare")],
+                source: MessageSource::User,
+            }],
+            origin: SessionOrigin::Home,
+            ..SessionRecord::default()
+        });
+        index.save(&root).expect("save history");
+
+        // Reopen a fresh handle: `boot()` must reconcile receipt 1 to Completed
+        // without re-running it, and must NOT mark user-only receipt 2 done.
+        let reopened = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        assert_eq!(
+            reopened.receipt_state(&receipt.id),
+            Some(ReceiptState::Completed),
+            "committed engine turn must reconcile to Completed on restart"
+        );
+        assert_eq!(
+            reopened.receipt_state(&user_only.id),
+            Some(ReceiptState::Retrying),
+            "user-only pre-run prompt must never be mistaken for a committed turn"
+        );
+        let pending_ids: Vec<String> = reopened
+            .pending_acceptances()
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(pending_ids, vec![user_only.id]);
+
+        // Verify original session history was not duplicated by a rerun.
+        let restored_history =
+            flowy_agent_core::SessionIndex::load(&root).expect("reload");
+        let committed_session = restored_history
+            .get(&run.session_id)
+            .expect("original session");
+        let user_msgs = committed_session
+            .messages
+            .iter()
+            .filter(|msg| msg.role == Role::User)
+            .count();
+        assert_eq!(user_msgs, 1, "committed receipt must execute exactly once");
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn override_deliver_artifact_rejects_swapped_file_after_failed_report() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-override-tamper-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let session_id = handle.create_home_session().expect("home session");
+        let workspace_root = lock(&handle.inner.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(&session_id))
+            .and_then(|record| record.workspace.map(|ws| ws.root))
+            .expect("home workspace");
+        let deck = workspace_root
+            .join("outputs")
+            .join("sub-1")
+            .join("deck.pptx");
+        std::fs::create_dir_all(deck.parent().unwrap()).unwrap();
+        std::fs::write(&deck, b"PK\x03\x04original-failed-deck").unwrap();
+
+        let gate = crate::delivery::DeliveryStore::new(root.join("delivery"));
+        let report = gate
+            .record_report(
+                &deck,
+                vec![crate::delivery::Issue {
+                    code: "STRUCTURE".to_owned(),
+                    field: "brief_min_slides".to_owned(),
+                }],
+                1_000,
+            )
+            .expect("record failed report");
+
+        // Swap the bytes on disk after the failed verification card opened.
+        std::fs::write(&deck, b"PK\x03\x04tampered-after-card-opened").unwrap();
+
+        let err = handle
+            .override_deliver_artifact(
+                &session_id,
+                &report.id,
+                &deck.display().to_string(),
+            )
+            .expect_err(
+                "override must reject bytes changed after the failed report",
+            );
+        assert_eq!(err, "chat.publish.not_verified");
+        let artifacts = handle
+            .artifact_store()
+            .expect("store")
+            .list()
+            .expect("list");
+        assert_eq!(artifacts.len(), 0);
+        let events =
+            std::fs::read_to_string(root.join("delivery").join("events.jsonl"))
+                .unwrap_or_default();
+        assert!(!events.contains("deliver_override"));
+        assert!(!events.contains("\"deliver\""));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabled_semantic_verify_makes_zero_cloud_requests() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = listener.local_addr().expect("addr");
+        listener.set_nonblocking(true).expect("nonblocking");
+
+        let root = std::env::temp_dir()
+            .join(format!("flowy-l3-disclosure-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: Some("test-key".to_owned()),
+                base_url: format!("http://{addr}/v1"),
+                model: "test-model".to_owned(),
+                provider: "openai".to_owned(),
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_semantic_verify_enabled(false);
+        assert!(!handle.semantic_verify_enabled());
+
+        let deck = root.join("deck.pptx");
+        crate::pptx::write_deck(&deck, "T", &["one".to_owned()]).unwrap();
+        let store = crate::delivery::DeliveryStore::new(root.join("delivery"));
+        let semantic = handle.semantic_verify_enabled().then(|| {
+            crate::semantic_verify::SemanticContext {
+                brief: "T".to_owned(),
+                route: model_route(&lock(&handle.inner.config)),
+                api_key: "test-key".to_owned(),
+            }
+        });
+        let tool = crate::verify::definition_with_semantic_and_contract(
+            Some(store),
+            semantic,
+            None,
+        );
+        let context = flowy_agent_core::ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: Some("s-l3".to_owned()),
+            cwd: Some(root.display().to_string()),
+            todos: None,
+            submission_id: Some("sub-l3".to_owned()),
+            session_origin: SessionOrigin::Home,
+            output_root: None,
+            artifact_delivery_available: true,
+        };
+        let args = ToolCallArgs {
+            call_id: "call-l3-off".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: serde_json::json!({
+                "path": "deck.pptx",
+                "slides": 1,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "T"},
+                    {"anchor": "S0-body", "value": "one"},
+                ],
+            }),
+        };
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let result = rt.block_on((tool.execute)(args, context));
+        assert!(matches!(
+            result,
+            flowy_agent_core::ToolExecutionResult::Success { .. }
+        ));
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "disabling host semantic verification must make zero outbound requests"
+        );
+
+        drop(rt);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

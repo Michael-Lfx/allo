@@ -176,15 +176,16 @@ impl DeliveryStore {
         writeln!(file, "{line}")
     }
 
-    /// Persist a verification report and its `verify` event.
-    pub fn record_report(
+    /// Persist a verification report for already-parsed `bytes`, binding the
+    /// recorded SHA-256 directly to the bytes that were verified (no re-open).
+    pub fn record_report_bytes(
         &self,
         artifact: &Path,
+        bytes: &[u8],
         issues: Vec<Issue>,
         now_ms: u64,
     ) -> io::Result<Report> {
-        let bytes = std::fs::read(artifact)?;
-        let artifact_hash = hash_bytes(&bytes);
+        let artifact_hash = hash_bytes(bytes);
         let report_id = format!("report-{}-{}", now_ms, next_id());
         let report = Report {
             id: report_id.clone(),
@@ -208,6 +209,17 @@ impl DeliveryStore {
             },
         )?;
         Ok(report)
+    }
+
+    /// Persist a verification report and its `verify` event.
+    pub fn record_report(
+        &self,
+        artifact: &Path,
+        issues: Vec<Issue>,
+        now_ms: u64,
+    ) -> io::Result<Report> {
+        let bytes = std::fs::read(artifact)?;
+        self.record_report_bytes(artifact, &bytes, issues, now_ms)
     }
 
     /// Latest persisted report for `artifact`, if any.
@@ -468,6 +480,138 @@ impl DeliveryStore {
             value: Some(value),
         })
     }
+
+    /// Explicit user override bound to one verified report and its exact file
+    /// hash (§8.3). Refuses missing reports, stale `expected_report_id`, and
+    /// any file whose bytes changed since the report was recorded.
+    pub fn deliver_override_for_report<T, F>(
+        &self,
+        artifact: &Path,
+        expected_report_id: &str,
+        now_ms: u64,
+        send: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
+        let delivery_id = format!("delivery-{}-{}", now_ms, next_id());
+        let bytes = std::fs::read(artifact)?;
+        let artifact_hash = hash_bytes(&bytes);
+        let path_display = artifact.display().to_string();
+        let report = self.latest_report(artifact)?;
+        let hard_block = match &report {
+            None => Some(BlockReason::MissingReport),
+            Some(report)
+                if (!expected_report_id.is_empty()
+                    && report.id != expected_report_id)
+                    || report.artifact_hash != artifact_hash =>
+            {
+                Some(BlockReason::HashMismatch)
+            }
+            Some(_) => None,
+        };
+        let issues = report
+            .as_ref()
+            .map_or_else(Vec::new, |report| report.issues.clone());
+        let report_id = report.as_ref().map(|report| report.id.clone());
+        if let Some(reason) = hard_block {
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverBlocked {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display,
+                    artifact_hash: artifact_hash.clone(),
+                    code: reason.code().to_owned(),
+                    issues,
+                    at_ms: now_ms,
+                },
+            )?;
+            tracing::info!(
+                target: "flowy.delivery",
+                delivery_id = %delivery_id,
+                artifact_hash = %artifact_hash,
+                outcome = "blocked",
+                code = reason.code(),
+                "override delivery rejected: report missing or artifact changed"
+            );
+            return Ok(DeliveryResult {
+                outcome: DeliveryOutcome {
+                    delivery_id,
+                    delivered: false,
+                    blocked: Some(reason),
+                    report_id,
+                    override_used: false,
+                    exemption_code: None,
+                },
+                value: None,
+            });
+        }
+        let report = report.expect("report checked above");
+        let override_used = !report.ok;
+        let blocked = override_used.then_some(BlockReason::VerificationFailed);
+        if override_used {
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverBlocked {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display.clone(),
+                    artifact_hash: artifact_hash.clone(),
+                    code: BlockReason::VerificationFailed.code().to_owned(),
+                    issues,
+                    at_ms: now_ms,
+                },
+            )?;
+            Self::append_json(
+                &self.events_path(),
+                &AuditEvent::DeliverOverride {
+                    delivery_id: delivery_id.clone(),
+                    artifact_path: path_display.clone(),
+                    artifact_hash: artifact_hash.clone(),
+                    code: BlockReason::VerificationFailed.code().to_owned(),
+                    at_ms: now_ms,
+                },
+            )?;
+        }
+        Self::append_json(
+            &self.events_path(),
+            &AuditEvent::DeliverIntent {
+                delivery_id: delivery_id.clone(),
+                artifact_path: path_display.clone(),
+                artifact_hash: artifact_hash.clone(),
+                at_ms: now_ms,
+            },
+        )?;
+        let value = send(&bytes)?;
+        Self::append_json(
+            &self.events_path(),
+            &AuditEvent::Deliver {
+                delivery_id: delivery_id.clone(),
+                artifact_path: path_display,
+                artifact_hash: artifact_hash.clone(),
+                at_ms: now_ms,
+            },
+        )?;
+        tracing::info!(
+            target: "flowy.delivery",
+            delivery_id = %delivery_id,
+            artifact_hash = %artifact_hash,
+            outcome = "delivered",
+            override_used,
+            exemption_code = "",
+            "delivery sent"
+        );
+        Ok(DeliveryResult {
+            outcome: DeliveryOutcome {
+                delivery_id,
+                delivered: true,
+                blocked,
+                report_id,
+                override_used,
+                exemption_code: None,
+            },
+            value: Some(value),
+        })
+    }
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -503,7 +647,8 @@ pub(crate) fn artifact_key(path: &Path) -> String {
     }
 }
 
-fn hash_bytes(bytes: &[u8]) -> String {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn hash_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
@@ -739,6 +884,70 @@ mod tests {
         let unresolved = store.in_doubt_deliveries().unwrap();
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].delivery_id, intent_id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn report_override_blocks_missing_stale_and_tampered_artifacts() {
+        let root = scratch("override-bound");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK original");
+        let (calls, send) = counting_sender();
+
+        // Missing report must be hard-blocked even on override.
+        let missing = store
+            .deliver_override_for_report(&path, "report-none", 1_000, send)
+            .unwrap();
+        assert!(!missing.outcome.delivered);
+        assert_eq!(missing.outcome.blocked, Some(BlockReason::MissingReport));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        // Record a failed report for the original bytes.
+        let failed = store
+            .record_report_bytes(
+                &path,
+                b"PK original",
+                vec![Issue {
+                    code: "STRUCTURE".to_owned(),
+                    field: "brief_min_slides".to_owned(),
+                }],
+                2_000,
+            )
+            .unwrap();
+
+        // Stale report_id must be rejected.
+        let (stale_calls, stale_send) = counting_sender();
+        let stale = store
+            .deliver_override_for_report(
+                &path,
+                "report-stale",
+                2_500,
+                stale_send,
+            )
+            .unwrap();
+        assert!(!stale.outcome.delivered);
+        assert_eq!(stale.outcome.blocked, Some(BlockReason::HashMismatch));
+        assert_eq!(stale_calls.load(Ordering::SeqCst), 0);
+
+        // Tampering with file bytes after the failed card opened must be rejected.
+        std::fs::write(&path, b"PK swapped-bytes").unwrap();
+        let (swap_calls, swap_send) = counting_sender();
+        let swapped = store
+            .deliver_override_for_report(&path, &failed.id, 3_000, swap_send)
+            .unwrap();
+        assert!(!swapped.outcome.delivered);
+        assert_eq!(swapped.outcome.blocked, Some(BlockReason::HashMismatch));
+        assert_eq!(swap_calls.load(Ordering::SeqCst), 0);
+
+        // Restoring the exact bytes bound to `failed.id` allows explicit override.
+        std::fs::write(&path, b"PK original").unwrap();
+        let (ok_calls, ok_send) = counting_sender();
+        let allowed = store
+            .deliver_override_for_report(&path, &failed.id, 4_000, ok_send)
+            .unwrap();
+        assert!(allowed.outcome.delivered);
+        assert!(allowed.outcome.override_used);
+        assert_eq!(ok_calls.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

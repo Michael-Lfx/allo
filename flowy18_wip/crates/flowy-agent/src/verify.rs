@@ -15,7 +15,6 @@ use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{ToolCallArgs, ToolExecutionResult, ToolRunContext};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::delivery::{self, DeliveryStore};
 use crate::pptx::resolve_turn_path;
@@ -358,12 +357,18 @@ fn evaluate(
     }
 }
 
+struct VerifiedDeck {
+    report: VerifyReport,
+    bytes: Vec<u8>,
+    shapes: Vec<(String, String)>,
+}
+
 fn verify_deck_file_with_shapes(
     path: &Path,
     expected_slides: usize,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
-) -> Result<(VerifyReport, Vec<(String, String)>), String> {
+) -> Result<VerifiedDeck, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let presentation = rpptx::Presentation::from_bytes(&bytes)
         .map_err(|error| error.to_string())?;
@@ -412,7 +417,11 @@ fn verify_deck_file_with_shapes(
         &mut report.issues,
     );
     report.ok = report.issues.is_empty();
-    Ok((report, deck))
+    Ok(VerifiedDeck {
+        report,
+        bytes,
+        shapes: deck,
+    })
 }
 
 fn read_zip_xml(
@@ -435,7 +444,7 @@ fn verify_docx_file(
     path: &Path,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
-) -> Result<VerifyReport, String> {
+) -> Result<(VerifyReport, Vec<u8>), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
@@ -444,15 +453,15 @@ fn verify_docx_file(
     let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))
     else {
         push_unique(&mut issues, STRUCTURE, "docx_archive");
-        return Ok(report_for(path, "bookmark", issues));
+        return Ok((report_for(path, "bookmark", issues), bytes));
     };
     let Some(xml) = read_zip_xml(&mut archive, "word/document.xml") else {
         push_unique(&mut issues, STRUCTURE, "docx_document");
-        return Ok(report_for(path, "bookmark", issues));
+        return Ok((report_for(path, "bookmark", issues), bytes));
     };
     let Ok(doc) = roxmltree::Document::parse(&xml) else {
         push_unique(&mut issues, STRUCTURE, "docx_document");
-        return Ok(report_for(path, "bookmark", issues));
+        return Ok((report_for(path, "bookmark", issues), bytes));
     };
     let mut non_empty_paragraphs = 0_usize;
     let mut bookmarks: Vec<(String, String)> = Vec::new();
@@ -497,14 +506,14 @@ fn verify_docx_file(
     if !expected.is_empty() {
         evaluate_pairs(&bookmarks, expected, false, &mut issues);
     }
-    Ok(report_for(path, "bookmark", issues))
+    Ok((report_for(path, "bookmark", issues), bytes))
 }
 
 fn verify_xlsx_file(
     path: &Path,
     expected: &[DeckAnchor],
     contract: Option<&BriefContract>,
-) -> Result<VerifyReport, String> {
+) -> Result<(VerifyReport, Vec<u8>), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut issues = Vec::new();
     if let Some(contract) = contract {
@@ -513,15 +522,15 @@ fn verify_xlsx_file(
     let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))
     else {
         push_unique(&mut issues, STRUCTURE, "xlsx_archive");
-        return Ok(report_for(path, "row_key", issues));
+        return Ok((report_for(path, "row_key", issues), bytes));
     };
     let Some(wb_xml) = read_zip_xml(&mut archive, "xl/workbook.xml") else {
         push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok(report_for(path, "row_key", issues));
+        return Ok((report_for(path, "row_key", issues), bytes));
     };
     if roxmltree::Document::parse(&wb_xml).is_err() {
         push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok(report_for(path, "row_key", issues));
+        return Ok((report_for(path, "row_key", issues), bytes));
     }
     let shared_strings: Vec<String> =
         read_zip_xml(&mut archive, "xl/sharedStrings.xml")
@@ -559,7 +568,7 @@ fn verify_xlsx_file(
     sheet_names.sort();
     if sheet_names.is_empty() {
         push_unique(&mut issues, STRUCTURE, "xlsx_sheets");
-        return Ok(report_for(path, "row_key", issues));
+        return Ok((report_for(path, "row_key", issues), bytes));
     }
 
     let mut non_empty_rows = 0_usize;
@@ -680,7 +689,7 @@ fn verify_xlsx_file(
             }
         }
     }
-    Ok(report_for(path, "row_key", issues))
+    Ok((report_for(path, "row_key", issues), bytes))
 }
 
 fn report_for(
@@ -726,24 +735,22 @@ fn now_ms() -> u64 {
         })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared verification finalizer keeps report, verified bytes, and telemetry in one path"
+)]
 async fn finalize_report(
     path: &Path,
     raw_path: &str,
     report: VerifyReport,
+    verified_bytes: &[u8],
     shapes: Option<&[(String, String)]>,
     context: &ToolRunContext,
     store: Option<&DeliveryStore>,
     semantic: Option<&SemanticContext>,
 ) -> ToolExecutionResult {
     let mut report_id = String::new();
-    let mut artifact_hash = std::fs::read(path).map_or_else(
-        |_| String::new(),
-        |bytes| {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            format!("{:x}", hasher.finalize())
-        },
-    );
+    let mut artifact_hash = delivery::hash_bytes(verified_bytes);
     if let Some(store) = store {
         let issues = report
             .issues
@@ -753,7 +760,8 @@ async fn finalize_report(
                 field: issue.field.clone(),
             })
             .collect();
-        match store.record_report(path, issues, now_ms()) {
+        match store.record_report_bytes(path, verified_bytes, issues, now_ms())
+        {
             Ok(persisted) => {
                 report_id = persisted.id;
                 artifact_hash = persisted.artifact_hash;
@@ -858,12 +866,13 @@ async fn execute_deck(
         &args.anchors,
         contract,
     ) {
-        Ok((report, shapes)) => {
+        Ok(verified) => {
             finalize_report(
                 &path,
                 &args.path,
-                report,
-                Some(&shapes),
+                verified.report,
+                &verified.bytes,
+                Some(&verified.shapes),
                 context,
                 store,
                 semantic,
@@ -915,7 +924,7 @@ async fn execute_artifact(
                 &args.anchors,
                 contract,
             )
-            .map(|(report, _)| report),
+            .map(|verified| (verified.report, verified.bytes)),
             None => Err(
                 "pptx verification requires expected slide count (`slides`)"
                     .to_owned(),
@@ -934,9 +943,9 @@ async fn execute_artifact(
         }
     };
     match result {
-        Ok(report) => {
+        Ok((report, bytes)) => {
             finalize_report(
-                &path, &args.path, report, None, context, store, None,
+                &path, &args.path, report, &bytes, None, context, store, None,
             )
             .await
         }

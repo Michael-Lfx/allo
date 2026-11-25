@@ -13,7 +13,7 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
-pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease};
+pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease, ReceiptState};
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
 pub use loop_runner::{
     LoopOutcome, ModelRoute, TurnRequest, TurnResult, complete_text,

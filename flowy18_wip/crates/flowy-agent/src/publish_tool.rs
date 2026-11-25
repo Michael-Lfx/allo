@@ -162,7 +162,18 @@ pub fn definition(
                             &artifact,
                             false,
                             now_ms(),
-                            |_bytes| store.prepare(prepare_args),
+                            |checked_bytes| {
+                                let expected_hash =
+                                    crate::delivery::hash_bytes(checked_bytes);
+                                let receipt = store.prepare(prepare_args)?;
+                                if receipt.sha256 != expected_hash {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "DELIVERY_ARTIFACT_CHANGED",
+                                    ));
+                                }
+                                Ok(receipt)
+                            },
                         ) {
                             Ok(result) => {
                                 if let Some(reason) = result.outcome.blocked {
@@ -204,6 +215,17 @@ pub fn definition(
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "publish_file failed in delivery gate or staging");
+                                if error.kind()
+                                    == std::io::ErrorKind::InvalidData
+                                    && error.to_string()
+                                        == "DELIVERY_ARTIFACT_CHANGED"
+                                {
+                                    return publish_error(
+                                        "DELIVERY_ARTIFACT_CHANGED",
+                                        "chat.publish.not_verified",
+                                        "This file changed after verification.",
+                                    );
+                                }
                                 return publish_error(
                                     "PUBLISH_FAILED",
                                     "chat.publish.failed",

@@ -66,6 +66,27 @@ pub struct AcceptedMessage {
     /// record stays for inspection; it is never claimed again.
     #[serde(default)]
     pub dead: bool,
+    /// Last attempt id that claimed this receipt, kept even after lease expiry
+    /// so crash recovery can reconcile against committed engine history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_id: Option<String>,
+    /// Target session bound before invoking the engine on the latest attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_session_id: Option<String>,
+    /// Submission id bound before invoking the engine on the latest attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<String>,
+}
+
+/// Externally observable lifecycle state for one receipt at a point in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptState {
+    Queued,
+    Running,
+    Retrying,
+    Completed,
+    Dead,
 }
 
 /// A claim on one receipt. The attempt id lets only the owner complete or
@@ -87,6 +108,25 @@ impl AcceptedMessage {
                 .lease
                 .as_ref()
                 .is_none_or(|lease| lease.expires_at_ms <= now_ms)
+    }
+
+    #[must_use]
+    pub fn state_at(&self, now_ms: u64) -> ReceiptState {
+        if self.completed_at_ms.is_some() {
+            ReceiptState::Completed
+        } else if self.dead {
+            ReceiptState::Dead
+        } else if self
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.expires_at_ms > now_ms)
+        {
+            ReceiptState::Running
+        } else if self.attempts > 0 {
+            ReceiptState::Retrying
+        } else {
+            ReceiptState::Queued
+        }
     }
 }
 
@@ -110,6 +150,16 @@ enum JournalEntry {
         /// reads as an already-expired lease so the receipt can be retried.
         #[serde(default)]
         lease_until_ms: u64,
+        at_ms: u64,
+    },
+    /// Durable link between a claimed attempt and the engine session/submission
+    /// written immediately before starting execution, so crash recovery can
+    /// verify committed engine state instead of re-running completed work.
+    Bound {
+        id: String,
+        attempt_id: String,
+        session_id: String,
+        submission_id: String,
         at_ms: u64,
     },
     Completed {
@@ -195,6 +245,9 @@ impl AcceptanceQueue {
                     available_at_ms: None,
                     attempts: 0,
                     dead: false,
+                    last_attempt_id: None,
+                    target_session_id: None,
+                    submission_id: None,
                 }),
                 JournalEntry::Taken {
                     id,
@@ -208,10 +261,27 @@ impl AcceptanceQueue {
                         receipt.taken_at_ms.get_or_insert(at_ms);
                         receipt.available_at_ms = None;
                         receipt.attempts = receipt.attempts.saturating_add(1);
+                        receipt.last_attempt_id = Some(attempt_id.clone());
                         receipt.lease = Some(Lease {
                             attempt_id,
                             expires_at_ms: lease_until_ms,
                         });
+                    }
+                }
+                JournalEntry::Bound {
+                    id,
+                    attempt_id,
+                    session_id,
+                    submission_id,
+                    ..
+                } => {
+                    if let Some(receipt) =
+                        receipts.iter_mut().find(|receipt| receipt.id == id)
+                        && receipt.last_attempt_id.as_deref()
+                            == Some(attempt_id.as_str())
+                    {
+                        receipt.target_session_id = Some(session_id);
+                        receipt.submission_id = Some(submission_id);
                     }
                 }
                 JournalEntry::Completed { id, at_ms, .. } => {
@@ -219,6 +289,7 @@ impl AcceptanceQueue {
                         receipts.iter_mut().find(|receipt| receipt.id == id)
                     {
                         receipt.completed_at_ms = Some(at_ms);
+                        receipt.lease = None;
                     }
                 }
                 JournalEntry::Released {
@@ -262,6 +333,12 @@ impl AcceptanceQueue {
         self.replay()
     }
 
+    /// Look up one receipt by id regardless of lifecycle state (queued,
+    /// running, backing off, completed, or dead).
+    pub fn get(&self, id: &str) -> io::Result<Option<AcceptedMessage>> {
+        Ok(self.replay()?.into_iter().find(|receipt| receipt.id == id))
+    }
+
     /// Accept `text` for `session_id` and return the receipt.
     ///
     /// This is the only write the busy path performs: one append, no read, no
@@ -291,6 +368,9 @@ impl AcceptanceQueue {
             available_at_ms: None,
             attempts: 0,
             dead: false,
+            last_attempt_id: None,
+            target_session_id: None,
+            submission_id: None,
         })
     }
 
@@ -340,6 +420,7 @@ impl AcceptanceQueue {
         receipt.taken_at_ms.get_or_insert(now_ms);
         receipt.available_at_ms = None;
         receipt.attempts = receipt.attempts.saturating_add(1);
+        receipt.last_attempt_id = Some(attempt_id.to_owned());
         receipt.lease = Some(lease.clone());
         let claimed = receipt.clone();
         self.append(&JournalEntry::Taken {
@@ -349,6 +430,69 @@ impl AcceptanceQueue {
             at_ms: now_ms,
         })?;
         Ok(Some(claimed))
+    }
+
+    /// Persist the target engine session and submission id for an active claim
+    /// before execution begins, so recovery can check committed engine state.
+    pub fn bind(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        session_id: &str,
+        submission_id: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
+        else {
+            return Ok(false);
+        };
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.lease.as_ref().map(|l| l.attempt_id.as_str())
+                != Some(attempt_id)
+        {
+            return Ok(false);
+        }
+        self.append(&JournalEntry::Bound {
+            id: id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            session_id: session_id.to_owned(),
+            submission_id: submission_id.to_owned(),
+            at_ms: now_ms,
+        })?;
+        Ok(true)
+    }
+
+    /// Mark an already-committed receipt complete during crash recovery even if
+    /// its lease has since expired.
+    pub fn complete_reconciled(
+        &self,
+        id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+    ) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let receipts = self.replay()?;
+        let Some(receipt) = receipts.iter().find(|receipt| receipt.id == id)
+        else {
+            return Ok(false);
+        };
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.last_attempt_id.as_deref() != Some(attempt_id)
+        {
+            return Ok(false);
+        }
+        self.append(&JournalEntry::Completed {
+            id: id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            at_ms: now_ms,
+        })?;
+        Ok(true)
     }
 
     /// Mark the receipt complete. Only the current lease owner can complete it.
@@ -935,6 +1079,52 @@ mod tests {
                 .map(|lease| lease.attempt_id.as_str()),
             Some("attempt-new")
         );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn binding_persists_session_and_submission_and_reconciles_after_lease_expiry()
+     {
+        let root = temp_root("bind-reconcile");
+        let queue = AcceptanceQueue::new(&root);
+        let accepted = queue.accept(None, "ship deck", 1_000).expect("accept");
+        assert_eq!(accepted.state_at(1_000), ReceiptState::Queued);
+
+        let claimed = queue
+            .take(&accepted.id, "attempt-1", 1_100, 500)
+            .expect("take")
+            .expect("claimed");
+        assert_eq!(claimed.state_at(1_200), ReceiptState::Running);
+        assert!(
+            queue
+                .bind(
+                    &accepted.id,
+                    "attempt-1",
+                    "s-99",
+                    "submission-abc",
+                    1_150
+                )
+                .expect("bind")
+        );
+
+        let after_expiry =
+            queue.get(&accepted.id).expect("get").expect("found");
+        assert_eq!(after_expiry.target_session_id.as_deref(), Some("s-99"));
+        assert_eq!(
+            after_expiry.submission_id.as_deref(),
+            Some("submission-abc")
+        );
+        assert_eq!(after_expiry.state_at(5_000), ReceiptState::Retrying);
+
+        assert!(
+            queue
+                .complete_reconciled(&accepted.id, "attempt-1", 5_100)
+                .expect("reconcile")
+        );
+        let settled = queue.get(&accepted.id).expect("get").expect("found");
+        assert_eq!(settled.state_at(5_200), ReceiptState::Completed);
+        assert_eq!(queue.pending_at(5_200).expect("pending").len(), 0);
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

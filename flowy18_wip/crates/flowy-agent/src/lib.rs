@@ -33,8 +33,8 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, SessionOrigin,
-    SessionWorkspace,
+    AcceptanceQueue, AcceptedMessage, DeliveryCommit, ReceiptState,
+    SessionOrigin, SessionWorkspace,
 };
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary,
