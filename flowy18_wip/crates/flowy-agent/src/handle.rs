@@ -3452,7 +3452,10 @@ mod guard_tests {
         let skill = installed_skill(false);
         let active = Arc::new(Mutex::new(HashSet::from([skill.id.clone()])));
         let shell = args(shell_name(), json!({ "command": "echo hi" }));
-        assert!(shell_guard(&[skill.clone()], &active, &shell).is_some());
+        assert!(
+            shell_guard(std::slice::from_ref(&skill), &active, &shell)
+                .is_some()
+        );
         let mut enabled = skill;
         enabled.scripts_enabled = true;
         assert!(shell_guard(&[enabled], &active, &shell).is_none());
@@ -3461,8 +3464,10 @@ mod guard_tests {
     #[test]
     fn auto_listed_skills_are_in_shell_scope() {
         let skill = installed_skill(false);
-        let active =
-            Arc::new(Mutex::new(skill_scope(&[skill.clone()], Vec::new())));
+        let active = Arc::new(Mutex::new(skill_scope(
+            std::slice::from_ref(&skill),
+            Vec::new(),
+        )));
         let shell = args(shell_name(), json!({ "command": "echo hi" }));
         assert!(active.lock().unwrap().contains(&skill.id));
         assert!(shell_guard(&[skill], &active, &shell).is_some());
