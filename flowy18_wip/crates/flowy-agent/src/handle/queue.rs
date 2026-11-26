@@ -345,8 +345,6 @@ impl Harness {
         if self.state.shutdown_requested.load(Ordering::Acquire)
             || !self.state.accepting_runs.load(Ordering::Acquire)
             || !self.can_run_turns()
-            || self.has_active_claim()
-            || self.has_busy_session()
             || self.in_flight_work_count() >= self.max_concurrent_works()
         {
             return Ok(None);

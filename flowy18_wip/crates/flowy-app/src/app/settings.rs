@@ -122,6 +122,7 @@ impl FlowyApp {
     fn choose_locale(&mut self, locale: Locale, cx: &mut Context<'_, Self>) {
         self.prefs.locale = locale;
         self.i18n.set_locale(locale);
+        self.host.set_notification_locale(locale);
         let i18n = self.i18n.clone();
         self.studio.update(cx, |panel, cx| {
             panel.sync_i18n(i18n, cx);

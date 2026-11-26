@@ -43,6 +43,21 @@ pub(super) struct GrantAuthority {
 }
 
 impl GrantAuthority {
+    pub(super) fn prune_retired(
+        &self,
+        caller: &flowy_automation::CallerContext,
+        refs: &std::collections::BTreeSet<GrantId>,
+        now_ms: i64,
+    ) -> Result<(), GrantError> {
+        let state = self.authority.state.lock().unwrap();
+        check_caller(&state, &caller.principal, &caller.account_generation)?;
+        let result =
+            self.ledger()?
+                .prune_retired(&caller.principal, refs, now_ms);
+        drop(state);
+        result
+    }
+
     pub(super) fn open_guarded(
         authority: Authority,
         root: &Path,
@@ -93,6 +108,58 @@ impl GrantAuthority {
         let state = self.authority.state.lock().unwrap();
         check_caller(&state, &request.principal, &request.account_generation)?;
         self.ledger()?.decide(request, approved, now_ms)
+    }
+
+    pub(super) fn complete_approval(
+        &self,
+        request: GrantRequest,
+        user_decision: Option<bool>,
+        apply: &mut dyn FnMut(
+            Option<flowy_automation::GrantId>,
+        ) -> Result<
+            flowy_automation::CommandReceipt,
+            flowy_automation::store::StoreError,
+        >,
+    ) -> Result<
+        Option<flowy_automation::CommandReceipt>,
+        flowy_automation::store::StoreError,
+    > {
+        use flowy_automation::store::StoreError;
+        let state = self.authority.state.lock().unwrap();
+        check_caller(&state, &request.principal, &request.account_generation)
+            .map_err(grant_store_error)?;
+        let ledger = self.ledger().map_err(grant_store_error)?;
+        let now = current_time_ms();
+        let status = match (
+            ledger
+                .recover_command_decision(request.clone(), now)
+                .map_err(grant_store_error)?,
+            user_decision,
+        ) {
+            (Some(GrantStatus::Denied), Some(true))
+            | (Some(GrantStatus::Approved(_)), Some(false)) => {
+                return Err(StoreError::Conflict);
+            }
+            (Some(status), _) => status,
+            (None, Some(approved)) => ledger
+                .decide(request, approved, now)
+                .map_err(grant_store_error)?,
+            (None, None) => return Ok(None),
+        };
+        let receipt = match status {
+            GrantStatus::Approved(binding) => apply(Some(binding.grant_id))?,
+            GrantStatus::Denied => apply(None)?,
+            GrantStatus::Revoked | GrantStatus::Expired
+                if user_decision.is_none() =>
+            {
+                apply(None)?
+            }
+            GrantStatus::Revoked | GrantStatus::Expired => {
+                return Err(StoreError::AccessDenied);
+            }
+        };
+        drop(state);
+        Ok(Some(receipt))
     }
 
     pub(super) fn status_for_request(
@@ -188,6 +255,43 @@ impl GrantAuthority {
             capabilities: request.capabilities,
         }))
     }
+
+    pub(super) fn check_request(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+        capabilities: &CapabilityRequest,
+    ) -> Result<(), GrantError> {
+        let state = self.authority.state.lock().unwrap();
+        check_caller(&state, principal, generation)?;
+        let grant = capabilities
+            .grant_ref
+            .as_ref()
+            .ok_or(GrantError::UnknownGrant)?;
+        let binding =
+            self.ledger()?
+                .binding(principal, grant, current_time_ms())?;
+        self.ledger()?.check(
+            principal,
+            &binding,
+            capabilities,
+            current_time_ms(),
+        )
+    }
+}
+
+fn grant_store_error(error: GrantError) -> flowy_automation::store::StoreError {
+    use flowy_automation::store::StoreError;
+    match error {
+        GrantError::RequestExpired => StoreError::RequestExpired,
+        GrantError::RequestConflict => StoreError::Conflict,
+        GrantError::Storage(error) => StoreError::Io(error),
+        GrantError::Corrupt => StoreError::Corrupt("automation grant ledger"),
+        GrantError::Unavailable | GrantError::UnsupportedVersion => {
+            StoreError::Unavailable
+        }
+        _ => StoreError::AccessDenied,
+    }
 }
 
 struct GrantExecutionGate {
@@ -281,6 +385,58 @@ impl fmt::Debug for Authority {
 }
 
 impl Authority {
+    pub(super) fn has_automation_credential(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        check_caller(&state, principal, generation).is_ok()
+            && state
+                .account
+                .as_ref()
+                .is_some_and(|account| !account.credential.trim().is_empty())
+    }
+
+    pub(super) fn resolve_route(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+        binding: &flowy_automation::ModelBinding,
+    ) -> Result<ModelRoute, ExecutionDenied> {
+        let state = self.state.lock().unwrap();
+        if &state.generation != generation {
+            return Err(ExecutionDenied::LeaseExpired);
+        }
+        let account = state
+            .account
+            .as_ref()
+            .ok_or(ExecutionDenied::AccountUnavailable)?;
+        if &account.principal != principal {
+            return Err(ExecutionDenied::OwnerMismatch);
+        }
+        for model in
+            std::iter::once(&binding.selected).chain(&binding.allowed_fallbacks)
+        {
+            if model.provider != CLOUD_PROVIDER {
+                continue;
+            }
+            if let Some((_, base_url)) =
+                account.routes.iter().find(|(id, _)| id == &model.model)
+            {
+                let route = ModelRoute {
+                    provider: model.provider.clone(),
+                    model: model.model.clone(),
+                    base_url: base_url.clone(),
+                    ..ModelRoute::default()
+                };
+                drop(state);
+                return Ok(route);
+            }
+        }
+        drop(state);
+        Err(ExecutionDenied::ModelUnavailable)
+    }
     pub(super) fn new(namespace: String, session: Option<&Session>) -> Self {
         let state = AuthorityState {
             generation: AccountGeneration {

@@ -299,6 +299,15 @@ impl AgentHandle {
         }
         self.detached_engine()?;
         self.check_detached_intake()?;
+        while self.inner.has_busy_standard_session() {
+            if cancel.is_cancelled() {
+                return Err(DetachedError::Cancelled);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if cancel.is_cancelled() {
+            return Err(DetachedError::Cancelled);
+        }
         let tools = spec.allowed_tools.iter().cloned().collect::<Vec<_>>();
         let resources = match &session.origin {
             SessionOrigin::Home if session.workspace.is_none() => {
@@ -482,6 +491,9 @@ impl AgentHandle {
         spec: DetachedRunSpec,
     ) -> Result<DetachedRun, DetachedError> {
         let _dispatch = lock(&self.inner.state.dispatch);
+        if self.inner.has_busy_standard_session() {
+            return Err(DetachedError::Busy);
+        }
         let prepared = self.prepare_detached(&spec)?;
         let resources = prepared.resources(&spec)?;
         let permit = self
@@ -502,6 +514,15 @@ impl AgentHandle {
         spec: DetachedRunSpec,
         cancel: &CancelToken,
     ) -> Result<DetachedRun, DetachedError> {
+        while self.inner.has_busy_standard_session() {
+            if cancel.is_cancelled() {
+                return Err(DetachedError::Cancelled);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if cancel.is_cancelled() {
+            return Err(DetachedError::Cancelled);
+        }
         let (prepared, resources) = {
             let _dispatch = lock(&self.inner.state.dispatch);
             let prepared = self.prepare_detached(&spec)?;

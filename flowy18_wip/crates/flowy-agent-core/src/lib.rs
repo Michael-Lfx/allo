@@ -163,6 +163,8 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: None,
+            execution_gate: None,
+            run_budget: None,
         };
         let engine = Arc::new(
             Engine::open(
@@ -302,6 +304,8 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: None,
+            execution_gate: None,
+            run_budget: None,
         };
         let engine = Arc::new(
             Engine::open(
@@ -436,6 +440,8 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: Some(hook),
+            execution_gate: None,
+            run_budget: None,
         };
         let engine = Arc::new(
             Engine::open(

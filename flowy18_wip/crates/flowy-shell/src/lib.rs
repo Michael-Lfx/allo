@@ -52,7 +52,9 @@ pub use autostart::{
     is_enabled as autostart_enabled, set_enabled as set_autostart,
 };
 pub use deep_link::{DeepLink, parse as parse_deep_link, take_pending};
-pub use notify::{NotifyKind, show_update_notification};
+pub use notify::{
+    NotifyKind, show_automation_notification, show_update_notification,
+};
 
 pub fn brand() -> Brand {
     *BRAND
@@ -103,8 +105,19 @@ pub fn install(
     cx.on_action(move |_: &QuitApp, cx| {
         request_shutdown(cx);
     });
-    cx.on_system_notification_response(|response, cx| {
-        if response.action_id.as_deref() == Some("open") {
+    cx.on_system_notification_response(move |response, cx| {
+        if let Some(run_id) = notify::automation_response(
+            &response.tag,
+            response.action_id.as_deref(),
+        ) {
+            deep_link::enqueue(vec![format!(
+                "{}://automation-run/{run_id}",
+                brand.url_scheme
+            )]);
+            ensure_main_window(cx);
+        } else if matches!(response.tag.as_ref(), "ota-ready" | "ota-available")
+            && response.action_id.as_deref() == Some("open")
+        {
             ensure_main_window(cx);
         }
     });

@@ -1207,6 +1207,7 @@ fn fault_injection_crash_after_first_child_deleted_finishes_cascade_cleanup_on_b
             delivery_key: "note.txt".into(),
             display_name: None,
             origin: SessionOrigin::Home,
+            execution: ExecutionMetadata::conversation(),
         })
         .unwrap();
     let commit = DeliveryCommit {
@@ -1217,6 +1218,7 @@ fn fault_injection_crash_after_first_child_deleted_finishes_cascade_cleanup_on_b
         committed_at_ms: now_ms(),
         origin: SessionOrigin::Home,
         origin_title_snapshot: "child 2".into(),
+        execution: ExecutionMetadata::conversation(),
     };
     lock(&handle.inner.engine)
         .clone()

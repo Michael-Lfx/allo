@@ -2428,6 +2428,7 @@ version = "1.8.0"
 dependencies = [
  "chrono",
  "flowy-agent",
+ "flowy-automation",
  "flowy-core",
  "flowy-i18n",
  "flowy-ui",

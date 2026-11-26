@@ -1,5 +1,19 @@
 # Personal Agent 自动化 · 分批实施与验证记录
 
+> **状态**：本地实现与 Windows 验收完成；2026-11-26。31/31 任务卡闭环，七个 crate 本地回归 **739 通过 / 0 失败 / 5 忽略**。
+> **代码基线**：`C:/code/flowy/allo/flowy18_wip`，分支 `codex/personal-agent-automation`。
+> **发布边界**：桌面 debug/release 编译已验证；跨平台原生交互、真实云模型和发布环境矩阵仍见 §12.3。
+
+## 历史进度
+
+> 以下内容为历史快照，逐字保留，不代表当前状态；当前事实以上方状态头为准。
+
+> **最新进度（2026-11-26）**：计划第 26–31 项已完成本地实现与 Windows 批次验收，累计 **31/31 任务卡**。七个 crate 最终回归 **735 通过 / 0 失败 / 5 忽略**；严格 Clippy、workspace check、Windows 桌面构建、格式、UI 契约与隔离 Reminder 冒烟通过。桌面生产启动已接入，跨平台与真实云模型发布验收仍按 §12.3 单列。见[第 12 节](#pa-26-31)。
+
+> **最新进度（2026-11-26）**：计划第 20–26 项完成，累计 **26/31**。Windows 回归 **728 通过 / 0 失败 / 5 忽略**。见[第 11 节](#pa-20-26)。
+
+> **最新进度（2026-11-26）**：PA-A11、PA-B03–PA-B06、PA-C01 通过 Windows 本地批次验收，累计 **20/31**。七个 crate 完整回归 **720 通过 / 0 失败 / 5 忽略**。见[第 10 节](#pa-a11-b03-c01)。
+
 > **接续验收更新（2026-11-26）**：新增 PA-A06–PA-A10 验收完成，累计 **14/31**。本次最终回归 **671 passed / 0 failed / 5 ignored**，全目标严格 Clippy 与 workspace check 通过。详细结果、静止证明限制和剩余任务见[第 9 节](#pa-a06-a10)；以下旧进度保留作历史。
 
 > **状态**：实施中；2026-11-25。
@@ -9,9 +23,9 @@
 > **执行规则**：每项先修改、再验证、记录证据后才标记完成；Cargo 操作串行。全部目标仍为完整首版闭环，本记录不缩小原计划。
 > **代码分支**：`codex/personal-agent-automation`；实现基线 `22e6a195c72be18365229fe938984aa2af9043f8`。
 
-## 1. 当前进度
+## 1. 历史批次：A02
 
-以下表格和说明为 A02 批次结束时的历史状态。当前实施证据见后续追加记录。
+以下表格和说明为 A02 批次结束时的历史状态，不是当前状态；当前事实以上方状态头和后续批次记录为准。
 
 | 阶段 | 完成/总数 | 当前状态 |
 |---|---|---|
@@ -304,3 +318,130 @@ PA-A09 对真实 Shell、验证器及未知进程能力工具采用保守静止�
 PA-A06–PA-A10 的任务接口和本地回归条件已满足，可计入当前 14/31；不是 V2 全部 24 项端到端用例的总验收。PA-A11、PA-B03 等后续任务仍按依赖图实施，生产自动化保持关闭。本次未运行真实云模型、跨平台或中英浅深色人工操作；macOS/Linux 和实际通知、休眠、强杀验收留在后续交付矩阵。
 
 回退时先停止后台新运行并等待或隔离已有写入者，保留授权账本、generation 门禁、预算与完成检查点；不得通过删除记录或关闭门禁恢复执行。当前改动仍在 `codex/personal-agent-automation` 工作区，本次未提交、推送或改写历史。
+
+<a id="pa-a11-b03-c01"></a>
+
+## 10. PA-A11、PA-B03–PA-B06、PA-C01 批次验收（2026-11-26）
+
+| 任务 | 本批验证范围 |
+|---|---|
+| PA-A11 | 会话和产物按持久 owner 授权。覆盖直接 ID、账户切换、旧回调和缺失 owner 的隔离。 |
+| PA-B03 | `CommandService` 统一写命令、按主体查询和订阅。覆盖同请求并发重试、revision 冲突、审批推进、收据过期和时钟回拨。 |
+| PA-B04 | 手动 Worker 从 SQLite 领取，核对取消与开始窗口。Reminder 直接结算，运行终态和 Outbox 原子提交。 |
+| PA-B05 | `AgentRunExecutor` 接 detached 执行，AppHost 提供内部验证装配。隔离 Reminder 冒烟已结算。Agent 测试使用本地脚本 provider。 |
+| PA-B06 | 恢复先读 Agent 历史和产物证据，再对账 Run。测试覆盖子进程退出、无证据隔离、重试产物提交、重复对账和唯一 Outbox。 |
+| PA-C01 | Host 从已验证的 session、submission、调用 ID 和账户 generation 构建 `CallerContext`。同一调用沿用原 envelope，工具注册在 PA-C02 接续。 |
+
+`schema/002.sql` 为独立自动化 SQLite 数据集追加 `command_clocks`。表按主体保存请求时间高水位与订阅游标，`001.sql` 保留原样。命令服务在异步权限和准入检查后读取最新时钟，存储先持久化时间观测，再在命令事务内检查到期时间。达到 `expires_at_ms` 即返回 `REQUEST_EXPIRED`，即使历史收据仍在。回归先创建真实收据，再删除收据、重开数据集并回拨时钟，确认同一请求无法再次创建自动化。
+
+### 10.1 实跑结果
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p flowy-agent-core -p flowy-agent -p flowy-app -p flowy-automation -p flowy-shell -p flowy-i18n -p flowy-studio --locked --no-fail-fast -- --test-threads=1` | **720 通过 / 0 失败 / 5 忽略**。Agent 274/0/3、Core 151/0/2、App 96/0/0、Automation 73/0/0、Shell 1/0/0、i18n 10/0/0、Studio 115/0/0。文档测试通过。 |
+| `cargo fmt --all -- --check` | 通过。 |
+| `cargo check --workspace --locked` | 整个 GPUI 工作区编译检查通过。 |
+| `cargo clippy -p flowy-agent-core -p flowy-agent -p flowy-automation -p flowy-shell -p flowy-ui -p flowy-i18n -p flowy-studio -p flowy-app --all-targets --locked -- -D warnings` | 八个 crate 全目标通过。 |
+| `cargo build -p flowy-desktop --locked` | Windows 桌面构建通过。 |
+| `bun scripts/check-ui-contracts.mjs --self-test` 和 `bun scripts/check-ui-contracts.mjs` | 24 项 fixture 断言和 UI 契约均通过。 |
+| `automation_smoke --isolated-root <新目录>` | Reminder 达到 `Settled/Succeeded`。 |
+
+本地日志保存在 `.scratch/pa-batch-verification-*.log`。恢复验证包含 Agent 历史／产物子进程退出夹具、SQLite 故障夹具和恢复服务的证据矩阵。忽略项是一个手动性能基准、两个真实云模型测试和两个依赖外部 Shell 的测试。
+
+### 10.2 进度与后续批次
+
+| 阶段 | 已验收 / 总数 | 下一步 |
+|---|---|---|
+| P0-A | 12/12 | 本阶段已验收。 |
+| P0-B | 6/6 | 本阶段已验收。 |
+| P0-C | 1/3 | PA-C02–PA-C03，工具注册与审批恢复。 |
+| P0-D | 1/4 | PA-D02–PA-D04，持久调度与接线。 |
+| P0-E | 0/6 | PA-E01–PA-E06，交付、保留和生产验收。 |
+| 合计 | **20/31** | 余 11 项。 |
+
+真实云模型、跨平台及原生交互验证留在发布验收矩阵。生产自动化仍关闭，生产开启由 PA-E06 验收。
+
+
+<a id="pa-20-26"></a>
+
+## 11. 计划第 20–26 项实施与验证（2026-11-26）
+
+| 序号 | 任务 | 交付 |
+|---|---|---|
+| 20 | PA-C02 | 前台注册 11 个自动化对话工具，通过宿主发放的 CallerContext 和统一命令收据读写数据。立即运行返回持久 Run ID。投递重试可指定目标，产物提交重试沿用原 Attempt。 |
+| 21 | PA-C03 | 待审批收据投影到来源对话的审批卡片，覆盖 23 种 locale。原 Grant 决议先写入账本，再由存储线程 CAS 原收据。重开后按原绑定恢复，过期、撤权、版本变化和迟到的跨账户回调都受约束。 |
+| 22 | PA-D01 | 复用已有 Once、每日、每周、IANA 偏好和夏令时规则。调度规则随自动化 revision 写入，已有 Run 保留原数据。 |
+| 23 | PA-D02 | SQLite 同事务写入到期 occurrence 与覆盖区间、推进 UTC 游标。实现错过周期合并、跳过、重叠跳过及暂停和归档的既有行为。 |
+| 24 | PA-D03 | 持久记录 blocked 原因和复查时间。账户、授权、凭据、模型、工作区与准入恢复后重验同一 Run。未开始的 queued、blocked 和 waiting_workspace 均会过期。 |
+| 25 | PA-D04 | AppHost 验证装配先核对持久数据和 Agent 完成证据，再并行运行后台执行与维护循环。模型路由、账户和命令唤醒复查，周期扫描覆盖休眠恢复、时钟跳变和漏事件。 |
+| 26 | PA-E01 | 独立的收件区与系统通知 Outbox 目标，通过稳定 delivery key、领取回执、CAS、退避和账户挂起处理投递。SQLite 中已交付的收件项直接作为收件卡片投影。系统通知适配与点击路由由 PA-E02 接入。 |
+
+独立自动化 SQLite 数据集追加 schema 003，现有 001 和 002 保留原样。v3 将下次触发点、覆盖区间、审批来源、blocked 复查、产物重试及投递领取和错误写入主数据集。自动化使用既有隔离验证入口启动，生产开启留给 PA-E06。
+
+本批采用 1 秒周期扫描和 5 秒正常触发容差。容差用于 Calendar 的 skip 策略。Once 使用定义中的迟到窗口。审批批准的 Grant 默认有效 30 天，从原命令签发时间计算，恢复时沿用原时间。 提醒的默认迟到窗口为 1 小时，日历 Agent Task 默认为 6 小时。一次性任务在审批期间到期时，批准后继续按原定触发时间和原迟到窗口结算。
+
+### 11.1 实跑结果
+
+| 检查 | 结果 |
+|---|---|
+| Windows Rust 回归 | **728 通过 / 0 失败 / 5 忽略**。Agent 275/0/3、Core 151/0/2、App 97/0/0、Automation 78/0/0、Shell 1/0/0、i18n 10/0/0、Studio 116/0/0。文档测试通过。 |
+| `cargo check --workspace --locked` | 通过。 |
+| `cargo clippy -p flowy-automation -p flowy-agent -p flowy-app -p flowy-studio -p flowy-i18n --all-targets --locked -- -D warnings` | 通过。 |
+| `cargo build -p flowy-desktop --locked` | Windows 桌面构建通过。 |
+| `cargo fmt --all -- --check` 和 `git diff --check` | 通过。 |
+| `bun scripts/check-ui-contracts.mjs --self-test` 和 `bun scripts/check-ui-contracts.mjs` | 24 项 fixture 断言和 UI 契约通过。 |
+
+最后调整调度默认值和审批期间到期的 Once 行为后，重新运行 App 与 Automation 的完整回归，以及 Agent 的 11 工具集成用例。
+
+用例覆盖 11 个对话工具、版本冲突、原收据批准续办和撤权、跨账户迟到回调、v1/v2 迁移、到期事务回滚、时钟回拨、重复扫描、长休眠后的补跑语义、跨账户投递挂起、系统通知回执丢失后按原 key 重投，以及中英浅深主题下只在来源对话显示审批卡片。AppHost 集成测试在无窗口、无模型配置时结算了一次性提醒并生成收件卡片。
+
+完整日志在 `.scratch/pa-20-26-*.log`。物理休眠、真实系统通知、真实云模型和 macOS/Linux 发布验证仍在发布验收范围。
+
+<a id="pa-26-31"></a>
+
+## 12. 计划第 26–31 项实施与验证（2026-11-26）
+
+| 序号 | 任务 | 交付 |
+|---|---|---|
+| 26 | PA-E01 | 收件区与系统通知 Outbox 已由持久 delivery key、claim/CAS、退避、账户挂起和已交付卡片投影闭环。 |
+| 27 | PA-E02 | 系统通知使用稳定 `automation-run:<run_id>` tag，正文与 action 都进入路由；点击由当前账户重新查询 Run，旧账户无法靠通知正文绕过权限。已有窗口收到通知时立即消费待处理深链，不再只激活窗口。 |
+| 28 | PA-E03 | 自动化管理页替换静态草稿：定义列表/详情、编辑、暂停/启用、立即运行、归档、历史、收件区、blocked/expired/cancelling/finalizing/source_removed、keep、取消和受控 interrupted/abandon 操作均由统一 Handle 查询与命令。 |
+| 29 | PA-E04 | 新增 `RetentionLimits`、跨存储 usage 计量和有界准入；覆盖 history/index、私有工作区、ArtifactStore、SQLite 与 pending Outbox。保留结果、打开视图、频段/字节/数量压力和 `storage_suspended` 都会阻止新运行。 |
+| 30 | PA-E05 | 清理先持久化删除计划并标记 source removed，再通过 Agent/ArtifactStore 的既有可恢复删除协议处理会话、产物与受管私有目录；失败保留计划与实际计量，重启后继续。项目根目录和用户替换的工作区不会按路径盲删。 |
+| 31 | PA-E06 | 原有 CI 顺序加入 core/automation/agent/shell 测试；桌面入口在 Agent recovery 就绪后启动真实、有界存储准入的自动化宿主，生产模式与隔离验证模式共享同一生命周期。 |
+
+自动化独立数据集追加 schema 004，保留 001–003 原样；新增 keep、compaction、收件摘要、abandon 和 storage suspension 字段及索引。本章的“31/31”表示计划任务卡的代码与本地验收闭环，不把跨平台、真实模型或人工原生交互尚未执行的环境项冒充通过。
+
+### 12.1 接线与生命周期结论
+
+- 桌面 `main` 在应用宿主成功后调用 `start_automation_host`；该入口等待 `AgentInitialization::Ready`，随后打开自动化存储、安装 11 个对话工具并启动后台 worker。初始化或存储失败时自动化保持不可用，不安装宽松准入或 mock 结果。
+- 系统通知 API 的提交只证明宿主/OS API 已接受；收件卡片仍以 SQLite 交付为事实源。通知丢失或重复只重试通知 target，不重跑 Agent。
+- 管理页轮询只在 Automation 页面可见时查询权威状态；账户 generation 或 view 变化会丢弃旧回调，结果不插入前台 turn。
+- 存储受限时新 Run/Outbox 被暂停；清理完成并重测低于阈值后解除 `storage_suspended`，已有 Definition 不会被误改。
+- 清理计划在删除前可撤销，提交后以 `source_removed` 防复活；Windows 占用、损坏/替换 ownership marker 和 redirect 均保留实际占用并等待下次恢复。
+
+### 12.2 实跑结果
+
+| 检查 | 结果 |
+|---|---|
+| Windows Rust 回归 | **739 通过 / 0 失败 / 5 忽略**。Agent 278/0/3、Core 151/0/2、App 97/0/0、Automation 84/0/0、Shell 2/0/0、i18n 11/0/0、Studio 116/0/0；文档测试通过。 |
+| `cargo check --workspace --locked` | 通过。 |
+| `cargo clippy -p flowy-automation -p flowy-agent -p flowy-app -p flowy-studio -p flowy-i18n -p flowy-shell -p flowy-agent-core --all-targets --locked -- -D warnings` | 通过，0 warning。 |
+| `cargo build -p flowy-desktop --locked` | Windows debug 桌面二进制构建通过。 |
+| `cargo fmt --all -- --check` | 通过。 |
+| `git diff --check` | 通过。 |
+| `bun scripts/check-ui-contracts.mjs --self-test` 与正常扫描 | 24 项 fixture 断言及 Flowy 1.8 UI 契约通过。 |
+| `automation_smoke --isolated-root <新目录>` | Reminder 达到 `Settled / Succeeded`，不依赖模型或凭据。 |
+
+新增的容量边界测试覆盖数据库字节、pending Outbox 数量/字节和摘要上限；新增 retention cutoff 饱和测试；既有用例继续覆盖 keep 与 pending delivery 优先、删除计划重开恢复、账户挂起、同 tag 至少一次通知和来源已删后的不可重放。
+
+完整本地日志保留在 gitignored 的 `.scratch/pa-26-31-*`；可复现命令与 CI artifact 是评审依据，不把本地日志路径当作可提交证据。
+
+### 12.3 发布环境剩余项
+
+<a id="pa-26-31-release-gaps"></a>
+
+- 当前机器未提供 `FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`，因此没有把真实云模型 AgentTask 标记为通过。Reminder 冒烟已通过，不替代模型链路。
+- 本批原生交互在 Windows 上完成编译与自动化回执；macOS/Linux 的托盘、系统通知展示/点击、窗口恢复和安装包仍需对应发布机验证。
+- 物理休眠、强杀进程、真实 OS 通知 ack 丢失以及中/英 × 浅/深人工视觉检查属于发布环境矩阵；现有 SQLite/Agent 故障夹具和 UI 契约不能替代这些人工或平台证据。
+- 本次仍未提交、推送或创建 PR；分支保持 `codex/personal-agent-automation` 的本地工作区状态。

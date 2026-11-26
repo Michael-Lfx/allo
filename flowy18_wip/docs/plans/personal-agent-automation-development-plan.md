@@ -1,5 +1,20 @@
 # Personal Agent 对话式自动化 · 开发计划
 
+> **状态**：本地实现与 Windows 验收完成；2026-11-26。31/31 任务卡闭环，七个 crate 本地回归 **739 通过 / 0 失败 / 5 忽略**。
+> **代码基线**：`C:/code/flowy/allo/flowy18_wip`，分支 `codex/personal-agent-automation`。
+> **核心原则**：对话和 UI 使用同一自动化服务；每次运行绑定独立会话、账户、任务版本和工作区。
+> **发布边界**：跨平台原生交互、真实云模型和发布环境矩阵仍见实施记录 §12.3。
+
+## 历史进度
+
+> 以下内容为历史快照，逐字保留，不代表当前状态；当前事实以上方状态头为准。
+
+> **最新进度（2026-11-26）**：任务书第 26–31 项已完成本地实现与 Windows 验收，累计 **31/31 任务卡**。本批覆盖 PA-E01–PA-E06，接入系统通知/深链、自动化管理页与收件区、容量准入、跨存储可重入清理、CI 和桌面生产启动。最终七 crate **735 通过 / 0 失败 / 5 忽略**；跨平台原生交互、真实云模型和发布环境矩阵仍见[实施记录 §12.3](personal-agent-automation-execution.md#pa-26-31-release-gaps)。
+
+> **最新进度（2026-11-26）**：任务书第 20–26 项已实现并通过 Windows 回归，累计 **26/31**。本批覆盖 PA-C02、PA-C03、PA-D01–PA-D04 和 PA-E01。下一项为 PA-E02，生产开启由 PA-E06 验收。见[实施记录第 11 节](personal-agent-automation-execution.md#pa-20-26)。
+
+> **最新进度（2026-11-26）**：PA-A11、PA-B03–PA-B06、PA-C01 通过 Windows 本地批次验收，累计 **20/31**。下一批为 PA-C02–PA-C03，生产开启由 PA-E06 验收。见[实施记录第 10 节](personal-agent-automation-execution.md#pa-a11-b03-c01)。
+
 > **接续验收更新（2026-11-26）**：PA-A06、PA-A07、PA-A08、PA-A09、PA-A10 已完成接口与回归验收，累计 **14/31**。最终七个 crate **671 passed / 0 failed / 5 ignored**，八个 crate 全目标严格 Clippy、workspace check、格式和 UI 契约通过。Shell 执行后的静止证明仍采用保守隔离；自动化生产功能尚未开启。当前证据与剩余范围见[第 9 节验收记录](personal-agent-automation-execution.md#pa-a06-a10)。以下旧状态逐字保留作历史。
 
 > **状态**：计划，待实施；2026-11-25。
@@ -621,6 +636,8 @@ cargo build -p flowy-desktop --locked
 - **回退与主要不确定性**：停功能保留 DB/WAL，不逆向 DDL；风险是事务边界和后续版本演进。
 
 #### PA-B03：统一命令、revision 与幂等收据
+
+实现使用 `AutomationHandle` 委托 `CommandService` 提供 `command`、`query` 和 `subscribe`。独立自动化数据集从 `001.sql` 向前追加 `002.sql`，新增 `command_clocks` 持久保存主体级请求时间高水位和订阅游标。该高水位独立于收据保留周期。请求达到 `expires_at_ms` 后，连同已有终态收据的重试一并返回 `REQUEST_EXPIRED`，清理收据或墙钟回拨也不会恢复命令资格。
 
 - **目标、依赖、复杂度**：UI/对话同一真实命令语义；前置 PA-B02/PA-A08；L。
 - **crate、文件、符号**：flowy-automation；command/service/store.rs；AutomationHandle::command/query。

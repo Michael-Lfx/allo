@@ -44,6 +44,9 @@ fn home_spec(attempt: &DetachedAttempt) -> SessionSpec {
         origin: SessionOrigin::Home,
         workspace: None,
         execution: attempt.execution.clone(),
+        role: crate::SessionRole::Standard,
+        root_session_id: None,
+        access_mode: crate::WorkAccessMode::ReadWrite,
     }
 }
 

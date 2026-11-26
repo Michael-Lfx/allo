@@ -140,6 +140,20 @@ impl WorkspaceRequest {
         directory: &Path,
         tools: &[String],
     ) -> io::Result<Self> {
+        // Router orchestration and automation bridge calls do not directly
+        // touch the local workspace; their child work acquires its own permit.
+        let non_filesystem = |tool: &str| {
+            matches!(
+                tool,
+                "query_work_status"
+                    | "dispatch_work"
+                    | "control_work"
+                    | "ask_user_choice"
+            ) || tool.starts_with("automation_")
+        };
+        if tools.iter().all(|tool| non_filesystem(tool)) {
+            return Ok(Self::Scoped(Vec::new()));
+        }
         // Only these built-in file tools have path guards proving a scope.
         // Shell, verification/rendering, publishing and future unknown tools
         // are deliberately device-exclusive until all of their I/O is known.

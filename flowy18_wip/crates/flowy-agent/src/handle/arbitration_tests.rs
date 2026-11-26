@@ -300,6 +300,9 @@ fn checkpoint_only_attempt_is_interrupted_and_cannot_be_replayed_or_rebound() {
             origin: SessionOrigin::Home,
             workspace: None,
             execution: attempt.execution.clone(),
+            role: SessionRole::Standard,
+            root_session_id: None,
+            access_mode: WorkAccessMode::ReadWrite,
         })
         .unwrap();
     let engine = lock(&handle.inner.engine).clone().unwrap();

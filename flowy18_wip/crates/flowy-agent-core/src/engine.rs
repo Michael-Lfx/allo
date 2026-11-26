@@ -2407,7 +2407,10 @@ fn valid_completion(
         && evidence.execution.is_valid()
         && record.messages.iter().any(|message| {
             message.role == Role::User
-                && matches!(message.source, MessageSource::User)
+                && matches!(
+                    message.source,
+                    MessageSource::User | MessageSource::CardResume
+                )
                 && message.id == evidence.submission_id
         })
         && record
@@ -2462,7 +2465,10 @@ fn valid_saved_commit(record: &SessionRecord, commit: &DeliveryCommit) -> bool {
                 && proofs[0].artifact_ids == commit.artifact_ids
                 && record.messages.iter().any(|message| {
                     message.role == Role::User
-                        && matches!(message.source, MessageSource::User)
+                        && matches!(
+                            message.source,
+                            MessageSource::User | MessageSource::CardResume
+                        )
                         && message.id == commit.submission_id
                 })))
 }
@@ -3015,7 +3021,8 @@ mod tests {
     use crate::loop_runner::{LoopOutcome, ModelRoute};
     use crate::session::{
         DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-        SessionWorkspace, TurnExecutionOutcome, TurnState,
+        SessionRole, SessionWorkspace, TurnExecutionOutcome, TurnState,
+        WorkAccessMode,
     };
     use crate::tools::{ToolDefinition, ToolRegistry};
     use crate::types::{ArtifactReceipt, ContentBlock, ToolExecutionResult};
@@ -5077,6 +5084,9 @@ mod tests {
                             attempt_id: id.into(),
                         },
                     },
+                    role: SessionRole::Standard,
+                    root_session_id: None,
+                    access_mode: WorkAccessMode::ReadWrite,
                 })
                 .unwrap();
         }

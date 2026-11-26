@@ -284,6 +284,16 @@ fn key_set(messages: &HashMap<String, String>) -> BTreeSet<&str> {
 }
 
 #[cfg(test)]
+fn placeholders(value: &str) -> BTreeSet<&str> {
+    value
+        .split('{')
+        .skip(1)
+        .filter_map(|tail| tail.split_once('}'))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::{I18n, Locale, key_set};
     use std::fs;
@@ -291,13 +301,38 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn every_locale_preserves_english_placeholders() {
+        let i18n = I18n::embedded("Flowy");
+        let english = i18n.messages.get(&Locale::En).unwrap();
+        for locale in Locale::ALL {
+            let messages = i18n.messages.get(&locale).unwrap();
+            for (key, expected) in
+                english.iter().filter(|(key, _)| key.starts_with("auto."))
+            {
+                assert_eq!(
+                    super::placeholders(messages.get(key).unwrap()),
+                    super::placeholders(expected),
+                    "{} / {key}",
+                    locale.code(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_locale_has_the_same_keys() {
         let i18n = I18n::embedded("Flowy");
         let base = key_set(i18n.messages.get(&Locale::ZhCn).unwrap());
         assert!(base.len() > 20);
         for locale in Locale::ALL {
-            let keys = key_set(i18n.messages.get(&locale).unwrap());
+            let messages = i18n.messages.get(&locale).unwrap();
+            let keys = key_set(messages);
             assert_eq!(keys, base, "{}", locale.code());
+            for (key, value) in
+                messages.iter().filter(|(key, _)| key.starts_with("auto."))
+            {
+                assert!(!value.trim().is_empty(), "{} / {key}", locale.code());
+            }
         }
     }
 

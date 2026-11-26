@@ -1,5 +1,5 @@
 use super::{AppHost, OwnedBootstrap};
-use crate::app::FlowyApp;
+use crate::app::{FlowyApp, GrantStatus, automation_access::current_time_ms};
 use crate::session::SessionStore;
 use flowy_agent::{AgentInitialization, ChatLine, TurnStatus};
 use gpui::TestAppContext;
@@ -915,4 +915,385 @@ fn account_changes_advance_result_viewer_generation() {
         assert!(visible(&host));
         previous = current;
     }
+}
+
+#[test]
+fn explicit_manual_host_runs_reminder_then_joins_and_releases_store() {
+    use flowy_automation::*;
+    let root = TestRoot::new();
+    let host = root.host();
+    assert!(
+        !root.path().join("automation/automations.sqlite3").exists(),
+        "normal host construction must not open automation storage before lifecycle startup"
+    );
+    host.start_automation_account(&flowy_auth::Session {
+        access_token: "isolated-reminder-account".into(),
+        email: "reminder@example.invalid".into(),
+        display_name: "Reminder fixture".into(),
+        user_id: Some(916),
+    });
+    let (principal, account_generation) =
+        host.automation_account_binding().unwrap();
+    let caller = CallerContext {
+        principal,
+        account_generation,
+        source: CallerSource::UserInterface,
+        grant_refs: vec![],
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let handle = host
+            .start_retained_automation(retention::RetentionLimits::default())
+            .await
+            .unwrap();
+        let now = crate::app::automation_access::current_time_ms();
+        let create = CommandEnvelope::new(
+            RequestKey::parse("host-reminder-create").unwrap(),
+            now,
+            now + 60_000,
+            AutomationCommand::CreateManual {
+                definition: Box::new(ManualAutomationInput {
+                    schedule: None,
+                    title: PrivateText::new("Isolated reminder"),
+                    action: ActionSpec::Reminder {
+                        text: PrivateText::new("A local reminder result"),
+                    },
+                    workspace: None,
+                    capabilities: CapabilityRequest::default(),
+                    model: None,
+                    budget: None,
+                }),
+            },
+        )
+        .unwrap();
+        let receipt = handle.command(&caller, create).await.unwrap();
+        let CommandOutcome::Created {
+            automation_id,
+            revision,
+        } = receipt.outcome
+        else {
+            panic!("definition was not durably created");
+        };
+        let start = CommandEnvelope::new(
+            RequestKey::parse("host-reminder-run").unwrap(),
+            now,
+            now + 60_000,
+            AutomationCommand::RunNow {
+                automation_id,
+                expected_revision: revision,
+            },
+        )
+        .unwrap();
+        let receipt = handle.command(&caller, start).await.unwrap();
+        let CommandOutcome::RunQueued { run_id } = receipt.outcome else {
+            panic!("reminder was not queued");
+        };
+        let until = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = handle
+                .query(
+                    &caller,
+                    AutomationQuery::Run {
+                        run_id: run_id.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            let QuerySnapshot::Run(run) = result else {
+                panic!("wrong query projection");
+            };
+            if run.phase == RunPhase::Settled {
+                assert_eq!(run.outcome, Some(RunOutcome::Succeeded));
+                assert_eq!(run.current_attempt_id, None);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < until,
+                "host worker did not settle reminder"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        use flowy_automation::schedule::{MisfirePolicy, SchedulePolicy, TriggerSpec};
+        let now = current_time_ms();
+        let scheduled_at = now + 250;
+        let booked = handle.command(&caller, CommandEnvelope::new(
+            RequestKey::parse("host-scheduled-reminder-create").unwrap(),now,now+60_000,
+            AutomationCommand::CreateManual { definition:Box::new(ManualAutomationInput {
+                title:PrivateText::new("Scheduled reminder"),
+                action:ActionSpec::Reminder { text:PrivateText::new("Run in the headless host") },
+                schedule:Some(SchedulePolicy { trigger:TriggerSpec::Once {scheduled_at_ms:scheduled_at}, misfire:MisfirePolicy::Skip,
+                    max_lateness_ms:std::num::NonZeroU64::new(60_000).unwrap() }),
+                workspace:None, model:None, budget:None, capabilities:CapabilityRequest::default(),
+            }) },
+        ).unwrap()).await.unwrap();
+        let CommandOutcome::Created { automation_id,.. } = booked.outcome else { panic!("scheduled definition") };
+        tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                let history = handle.query(&caller,AutomationQuery::History {automation_id:automation_id.clone()}).await.unwrap();
+                if matches!(history,QuerySnapshot::History(runs) if runs.len()==1 && runs[0].scheduled_at_ms==Some(scheduled_at) && runs[0].outcome==Some(RunOutcome::Succeeded)) {
+                    let QuerySnapshot::Inbox(cards) = handle.query(&caller,AutomationQuery::Inbox).await.unwrap() else { panic!("inbox") };
+                    if cards.len()==2 { break; }
+                }
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+        }).await.expect("scheduled reminder and its inbox card settle without a window");
+        host.stop_manual_automation().await.unwrap();
+        assert!(matches!(
+            handle.query(&caller, AutomationQuery::List).await,
+            Err(PortError::Unavailable)
+        ));
+    });
+    drop(runtime);
+    drop(host);
+    wait_until(|| OwnedBootstrap::acquire(root.path()).is_ok());
+}
+
+#[test]
+fn conversation_caller_factory_checks_persisted_submission_and_account_generation()
+ {
+    let root = TestRoot::new();
+    fs::create_dir_all(root.path().join("sessions")).unwrap();
+    let history = serde_json::json!({
+        "active": "caller-session",
+        "sessions": [{
+            "id": "caller-session",
+            "origin": {"kind": "home"},
+            "execution": {"owner": null, "source": {"kind": "conversation"}},
+            "messages": [{"id": "submission-1", "role": "user", "source": {"kind": "user"}, "content": [{"type": "text", "text": "isolated caller test"}]}]
+        }]
+    });
+    fs::write(
+        root.path().join("sessions/history.json"),
+        serde_json::to_vec(&history).unwrap(),
+    )
+    .unwrap();
+    let host = root.host();
+    let user = flowy_auth::Session {
+        access_token: "isolated-caller-account".into(),
+        email: "caller@example.invalid".into(),
+        display_name: "Caller test".into(),
+        user_id: Some(91),
+    };
+    host.start_automation_account(&user);
+    let factory = host.automation_caller_factory(vec![]).unwrap();
+    let mut context = flowy_agent::ToolRunContext {
+        signal: flowy_agent::CancelToken::new(),
+        agent_id: Some("caller-session".into()),
+        cwd: None,
+        todos: None,
+        submission_id: Some("submission-1".into()),
+        session_origin: flowy_agent::SessionOrigin::Home,
+        execution: flowy_agent::ExecutionMetadata::conversation(),
+        output_root: None,
+        artifact_delivery_available: false,
+    };
+    let args = flowy_agent::ToolCallArgs {
+        call_id: "call-1".into(),
+        name: "automation_create".into(),
+        arguments: serde_json::json!({}),
+    };
+    assert!(factory(&context, &args).is_ok());
+    context.submission_id = Some("forged-submission".into());
+    assert_eq!(
+        factory(&context, &args),
+        Err(flowy_automation::PortError::Forbidden)
+    );
+    context.submission_id = Some("submission-1".into());
+    host.invalidate_automation_leases();
+    assert_eq!(
+        factory(&context, &args),
+        Err(flowy_automation::PortError::Forbidden)
+    );
+    let fresh = host.automation_caller_factory(vec![]).unwrap();
+    assert!(fresh(&context, &args).is_ok());
+    let mut other = user;
+    other.user_id = Some(92);
+    host.start_automation_account(&other);
+    assert_eq!(
+        fresh(&context, &args),
+        Err(flowy_automation::PortError::Forbidden)
+    );
+}
+
+#[test]
+fn approval_ledger_recovery_binds_original_receipt_and_rechecks_owner_and_revocation()
+ {
+    use super::super::automation_host::{approval_request, resolve_approval};
+    use flowy_automation::store::{AutomationStore, ReceiptState};
+    use flowy_automation::*;
+
+    let root = TestRoot::new();
+    let host = root.host();
+    let mut user = flowy_auth::Session {
+        access_token: "isolated-approval-account".into(),
+        email: "approval@example.invalid".into(),
+        display_name: "Approval fixture".into(),
+        user_id: Some(917),
+    };
+    host.start_automation_account(&user);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let conversation = |host: &AppHost| {
+        let (principal, account_generation) =
+            host.automation_account_binding().unwrap();
+        CallerContext {
+            principal,
+            account_generation,
+            grant_refs: vec![],
+            source: CallerSource::TrustedSubmission {
+                session_id: SessionRef::parse("approval-source").unwrap(),
+                submission_id: SubmissionRef::parse("approval-submission")
+                    .unwrap(),
+                call_id: "approval-tool-call".into(),
+            },
+        }
+    };
+    runtime.block_on(async {
+        let store =
+            AutomationStore::open(root.path().to_path_buf(), Arc::new(()))
+                .await
+                .unwrap();
+        let owner = conversation(&host);
+        let now = current_time_ms();
+        let definition = ManualAutomationInput {
+            title: PrivateText::new("Approved work"),
+            action: ActionSpec::AgentTask {
+                prompt: PrivateText::new("Draft the report"),
+            },
+            workspace: None,
+            schedule: None,
+            capabilities: CapabilityRequest {
+                tools: vec![],
+                resources: vec!["model:flowy/fixture".into()],
+                grant_ref: None,
+            },
+            model: Some(ModelBinding {
+                selected: ModelRef {
+                    provider: "flowy".into(),
+                    model: "fixture".into(),
+                },
+                allowed_fallbacks: vec![],
+            }),
+            budget: RunBudget::new(60_000, 2, 2),
+        };
+        for key in ["recover-original", "revoked-before-apply"] {
+            let envelope = CommandEnvelope::new(
+                RequestKey::parse(key).unwrap(),
+                now,
+                now + 60_000,
+                AutomationCommand::CreateManual {
+                    definition: Box::new(definition.clone()),
+                },
+            )
+            .unwrap();
+            let receipt = store
+                .apply_command(
+                    owner.clone(),
+                    envelope.clone(),
+                    now,
+                    HostAccessDecision::Blocked(
+                        BlockedReason::ApprovalRequired,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(receipt.outcome, CommandOutcome::PendingApproval);
+        }
+        let cards = store
+            .pending_approvals(owner.principal.clone(), now)
+            .await
+            .unwrap();
+        assert_eq!(cards.len(), 2);
+        let mut grants = Vec::new();
+        for card in &cards {
+            let GrantStatus::Approved(binding) = host
+                .decide_automation_grant(approval_request(&owner, card), true)
+                .unwrap()
+            else {
+                panic!("approved")
+            };
+            grants.push(binding.grant_id);
+        }
+        host.revoke_automation_grant(
+            &owner.principal,
+            &owner.account_generation,
+            &grants[1],
+        )
+        .unwrap();
+        store.shutdown().await.unwrap();
+        let store =
+            AutomationStore::open(root.path().to_path_buf(), Arc::new(()))
+                .await
+                .unwrap();
+
+        user.user_id = Some(918);
+        host.start_automation_account(&user);
+        let other = conversation(&host);
+        assert_eq!(
+            store.pending_approvals(other.principal, now).await.unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            resolve_approval(
+                &store,
+                &host.inner.grants,
+                owner.clone(),
+                cards[0].clone(),
+                Some(true)
+            )
+            .await,
+            Err(PortError::Forbidden)
+        );
+
+        user.user_id = Some(917);
+        host.start_automation_account(&user);
+        let restored = conversation(&host);
+        for card in cards {
+            resolve_approval(
+                &store,
+                &host.inner.grants,
+                restored.clone(),
+                card,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let applied = store
+            .receipt(
+                owner.principal.clone(),
+                RequestKey::parse("recover-original").unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(applied.state, ReceiptState::Applied);
+        let rejected = store
+            .receipt(
+                owner.principal.clone(),
+                RequestKey::parse("revoked-before-apply").unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rejected.state, ReceiptState::Rejected);
+        let QuerySnapshot::Automations(items) = store
+            .query(owner.principal, AutomationQuery::List)
+            .await
+            .unwrap()
+        else {
+            panic!("definitions")
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].definition.capabilities.grant_ref.as_ref(),
+            Some(&grants[0])
+        );
+        store.shutdown().await.unwrap();
+    });
 }

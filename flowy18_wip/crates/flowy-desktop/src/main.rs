@@ -3,6 +3,30 @@ use std::sync::{Arc, OnceLock};
 
 static LOG_GUARDS: OnceLock<LogGuards> = OnceLock::new();
 
+#[cfg(debug_assertions)]
+fn validation_root(
+    normal: std::path::PathBuf,
+) -> std::io::Result<(std::path::PathBuf, bool)> {
+    let Some(path) = std::env::var_os("FLOWY_AUTOMATION_VALIDATION_ROOT")
+    else {
+        return Ok((normal, false));
+    };
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(std::io::Error::other(
+            "expected an existing absolute directory",
+        ));
+    }
+    let path = path.canonicalize()?;
+    let normal = normal.canonicalize().unwrap_or(normal);
+    if path.starts_with(&normal) || normal.starts_with(&path) {
+        return Err(std::io::Error::other(
+            "expected a directory separate from the default data root",
+        ));
+    }
+    Ok((path, true))
+}
+
 /// Point pi-rust's temp staging and child shells at the app runtime directory.
 ///
 /// SAFETY: called from `main` before GPUI, tracing, telemetry, or any worker
@@ -20,6 +44,16 @@ fn main() {
     // tracing is not live yet — queue notes until init_tracing drains them.
     flowy_obs::record_boot_note(BootNoteLevel::Info, "stage=main enter");
     let data_root = flowy_app::app::default_store_root();
+    #[cfg(debug_assertions)]
+    let (data_root, validation) = match validation_root(data_root) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("Invalid FLOWY_AUTOMATION_VALIDATION_ROOT: {error}");
+            return;
+        }
+    };
+    #[cfg(not(debug_assertions))]
+    let validation = false;
     flowy_obs::record_boot_note(
         BootNoteLevel::Info,
         format!(
@@ -87,7 +121,7 @@ fn main() {
     );
     let telemetry = Arc::new(Telemetry::open(TelemetryConfig {
         data_dir: data_root,
-        opt_out: prefs.telemetry_opt_out,
+        opt_out: validation || prefs.telemetry_opt_out,
     }));
     flowy_app::set_telemetry(Arc::clone(&telemetry));
     let mut props = serde_json::Map::new();
@@ -116,7 +150,8 @@ fn main() {
         product = flowy_app::brand_api::product(),
         "brand"
     );
-    if prefs.launch_at_login != flowy_shell::autostart_enabled() {
+    if !validation && prefs.launch_at_login != flowy_shell::autostart_enabled()
+    {
         let _ = flowy_shell::set_autostart(prefs.launch_at_login);
         tracing::debug!(
             target: "flowy.boot",
@@ -154,6 +189,8 @@ fn main() {
         if let Err(error) = flowy_app::app::run_owned(bootstrap, cx) {
             tracing::error!(%error, "could not start application host");
             cx.quit();
+        } else {
+            flowy_app::app::start_automation_host(cx);
         }
     });
 }

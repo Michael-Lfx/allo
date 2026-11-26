@@ -7,7 +7,13 @@ mod artifact_preview;
 #[cfg(test)]
 mod artifact_tests;
 mod automation_access;
+mod automation_approval;
+mod automation_caller;
+mod automation_delivery;
 mod automation_grants;
+mod automation_host;
+mod automation_page;
+mod automation_retention;
 mod conversation_actions;
 mod dock;
 mod flex;
@@ -192,6 +198,8 @@ pub struct FlowyApp {
     credits_generation: u64,
     credits_poll: Option<Task<()>>,
     locale_watch: Option<Task<()>>,
+    automation_approvals: automation_approval::AutomationApprovals,
+    automation_page: automation_page::AutomationPageState,
     shell_watch: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
     /// Programmatic input text waiting for a window; see [`FlowyApp::set_input_text`].
@@ -709,6 +717,9 @@ impl FlowyApp {
             credits_generation: 0,
             credits_poll: None,
             locale_watch: None,
+            automation_approvals:
+                automation_approval::AutomationApprovals::default(),
+            automation_page: automation_page::AutomationPageState::default(),
             shell_watch: None,
             subscriptions,
             pending_input_text: std::cell::RefCell::new(Vec::new()),
@@ -723,6 +734,8 @@ impl FlowyApp {
         }
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
+        app.watch_automation_approvals(cx);
+        app.watch_automation_page(cx);
         app.load_library(cx);
         app.sync_studio_skills(cx);
         tracing::debug!(
@@ -1150,6 +1163,7 @@ impl FlowyApp {
                                 &models,
                                 app.effective_tier,
                             );
+                            app.host.wake_automation();
                             app.prefs.model_account =
                                 account.clone().unwrap_or_default();
                             let catalog = flowy_agent::ProviderCatalog::new();
@@ -1602,6 +1616,7 @@ impl FlowyApp {
 
     pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
         self.host.clear_automation_account();
+        self.sync_automation_approvals(cx);
         self.reset_results_for_account_change(cx);
         self.host.publish_model(None);
         AppHost::notify_model(cx);
@@ -1782,6 +1797,12 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         match event {
+            StudioEvent::AutomationApproval { id, approve } => {
+                self.decide_automation_approval(id, *approve, cx);
+            }
+            StudioEvent::Automation(action) => {
+                self.handle_automation_action(action, cx);
+            }
             StudioEvent::Notice(notice) => {
                 // Events are delivered after the current action. Reconcile the
                 // panel again so a navigation action cannot restore stale text
@@ -1980,20 +2001,8 @@ impl FlowyApp {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
-                let pending = flowy_shell::take_pending();
-                if pending.is_empty() {
-                    continue;
-                }
                 let updated = weak.update(cx, |app, cx| {
-                    for url in pending {
-                        match flowy_shell::parse_deep_link(&url) {
-                            Some(flowy_shell::DeepLink::Invite { code }) => {
-                                app.receive_invite_code(code, cx);
-                            }
-                            Some(flowy_shell::DeepLink::Open) | None => {}
-                        }
-                    }
-                    cx.notify();
+                    apply_pending_deep_links(app, cx);
                 });
                 if updated.is_err() {
                     break;
@@ -2012,6 +2021,7 @@ impl Render for FlowyApp {
         // A host account change can happen before this window's next Studio
         // pump. Clear cached results before they are painted for a new viewer.
         self.sync_result_viewer(cx);
+        self.sync_automation_page_owner(cx);
         self.apply_pending_input_text(window, cx);
         let modal = self
             .active_dialog
@@ -2538,6 +2548,8 @@ pub fn run_owned(
         AppHost::request_shutdown,
         cx,
     );
+    let host = cx.global::<AppHost>().clone();
+    host.install_automation_notifications(cx);
     tracing::debug!(
         target: "flowy.boot",
         stage = "app::run",
@@ -2637,6 +2649,39 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
     window
 }
 
+/// Start the desktop automation host after Agent recovery is ready.
+///
+/// The same lifecycle is used by production and isolated validation roots; the
+/// latter only changes the data root at boot.
+pub fn start_automation_host(cx: &mut App) {
+    let host = cx.global::<AppHost>().clone();
+    let Some(runtime) = host.automation_runtime() else {
+        return;
+    };
+    // Agent recovery owns file reconciliation. Wait for it before the
+    // automation store reads evidence or accepts any work.
+    let task = runtime.spawn(async move {
+        loop {
+            match host.initialization_state() {
+                flowy_agent::AgentInitialization::Ready => break,
+                flowy_agent::AgentInitialization::Initializing => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                _ => return,
+            }
+        }
+        if let Err(error) = host
+            .start_retained_automation(
+                flowy_automation::retention::RetentionLimits::default(),
+            )
+            .await
+        {
+            tracing::warn!(%error, "could not start automation host");
+        }
+    });
+    drop(task);
+}
+
 pub fn default_store_root() -> std::path::PathBuf {
     crate::session::default_root()
 }
@@ -2683,6 +2728,11 @@ fn apply_pending_deep_links(
         match flowy_shell::parse_deep_link(&url) {
             Some(flowy_shell::DeepLink::Invite { code }) => {
                 app.receive_invite_code(code, cx);
+            }
+            Some(flowy_shell::DeepLink::AutomationRun { run_id }) => {
+                if let Ok(run_id) = flowy_automation::RunId::parse(run_id) {
+                    app.open_automation_run(run_id, cx);
+                }
             }
             Some(flowy_shell::DeepLink::Open) | None => {}
         }

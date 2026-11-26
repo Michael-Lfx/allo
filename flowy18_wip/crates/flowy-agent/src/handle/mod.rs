@@ -3155,6 +3155,27 @@ impl Harness {
         !engine.active_session_ids().is_empty()
     }
 
+    /// Direct Standard turns may run concurrently across workspaces, but their
+    /// default registry can contain an unscoped shell. Background detached work
+    /// must wait while such a foreground turn is active.
+    pub(super) fn has_busy_standard_session(&self) -> bool {
+        let live_busy = lock(&self.state.live).values().any(|session| {
+            session.role == SessionRole::Standard && session.status.is_busy()
+        });
+        if live_busy {
+            return true;
+        }
+        let Some(engine) = lock(&self.engine).clone() else {
+            return false;
+        };
+        engine.active_session_ids().into_iter().any(|sid| {
+            self.settle_finishing_fence(&engine, &sid);
+            engine.with_session(&sid, |record| {
+                record.role == SessionRole::Standard && record.status.is_busy()
+            }) == Some(true)
+        })
+    }
+
     pub(super) fn is_session_busy_or_active(&self, id: &str) -> bool {
         if lock(&self.state.live)
             .get(id)
@@ -3569,14 +3590,6 @@ impl Harness {
             None => self.ensure_active_session_locked()?,
         };
         self.settle_finishing_fence(&engine, &id);
-        if lock(&state.live)
-            .get(&id)
-            .is_some_and(|session| session.status.is_busy())
-            || engine.is_active(&id)
-            || (pending_claim.is_some() && self.has_busy_session())
-        {
-            return Err("notice.agent_busy");
-        }
         if let Err(error) = ensure_engine_session(&engine, &id, &self.state) {
             log_storage_io_error(
                 "ensure structured session",
@@ -3782,19 +3795,6 @@ impl Harness {
             cwd.clone(),
             Arc::clone(state),
         ));
-        let resources =
-            WorkspaceRequest::for_tools(&cwd, &run_config.registry.list())
-                .and_then(|resources| {
-                    resources.with_skill_reads(
-                        skills.iter().map(|skill| skill.root.clone()),
-                    )
-                })
-                .map_err(|_| "notice.session_storage_failed")?;
-        let execution_permit = state
-            .coordinator
-            .try_acquire(ExecutionClass::Foreground, resources)
-            .map_err(|_| "notice.storage_error")?
-            .ok_or("notice.agent_busy")?;
         let mut staged_intents_for_turn: Option<
             crate::publish_tool::StagedIntentLog,
         > = None;
@@ -3964,17 +3964,25 @@ impl Harness {
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
         }
-        let resources =
-            WorkspaceRequest::for_tools(&cwd, &run_config.registry.list())
-                .and_then(|resources| {
-                    resources.with_skill_reads(
-                        skills.iter().map(|skill| skill.root.clone()),
-                    )
-                })
-                .map_err(|_| "notice.session_storage_failed")?;
-        if !execution_permit.covers(ExecutionClass::Foreground, &resources) {
-            return Err("notice.storage_error");
-        }
+        let execution_permit = if core_session.role == SessionRole::Worker {
+            let resources =
+                WorkspaceRequest::for_tools(&cwd, &run_config.registry.list())
+                    .and_then(|resources| {
+                        resources.with_skill_reads(
+                            skills.iter().map(|skill| skill.root.clone()),
+                        )
+                    })
+                    .map_err(|_| "notice.session_storage_failed")?;
+            Some(
+                state
+                    .coordinator
+                    .try_acquire(ExecutionClass::Foreground, resources)
+                    .map_err(|_| "notice.storage_error")?
+                    .ok_or("notice.agent_busy")?,
+            )
+        } else {
+            None
+        };
         let unproven_process_started =
             track_unproven_process_dispatches(&run_config.registry);
         let mut workspace_lease = if let Some(access_mode) =
@@ -4009,7 +4017,9 @@ impl Harness {
         let turn = match turn {
             Ok(turn) => turn,
             Err(error) => {
-                execution_permit.complete();
+                if let Some(permit) = execution_permit {
+                    permit.complete();
+                }
                 if let RunError::Storage(storage_error) = &error {
                     log_storage_io_error(
                         "start agent turn",
@@ -4024,7 +4034,7 @@ impl Harness {
                 });
             }
         };
-        let execution_permit = execution_permit.started();
+        let execution_permit = execution_permit.map(|permit| permit.started());
         let (fallback_title, title_signal) = {
             let mut live = lock(&state.live);
             let session = live.get_mut(&id).expect("active session exists");
@@ -4208,8 +4218,9 @@ impl Harness {
             // File capture/abort bookkeeping and the real tool futures have
             // finished. Native shells may still have live descendants: retain
             // quarantine in that case rather than infer physical quiescence.
-            execution_permit
-                .settle(unproven_process_started.load(Ordering::Acquire));
+            if let Some(permit) = execution_permit {
+                permit.settle(unproven_process_started.load(Ordering::Acquire));
+            }
             let expected_sub =
                 completed_submission.map(|s| format!("submission-{s:032x}"));
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {

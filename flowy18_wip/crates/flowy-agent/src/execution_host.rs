@@ -35,7 +35,12 @@ pub fn track_unproven_process_dispatches(
                 | "verify_artifact"
                 | "publish_file"
                 | "todo_write"
-        ) {
+                | "query_work_status"
+                | "dispatch_work"
+                | "control_work"
+                | "ask_user_choice"
+        ) || name.starts_with("automation_")
+        {
             continue;
         }
         let Some(definition) = registry.get(&name) else {

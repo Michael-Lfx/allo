@@ -248,6 +248,9 @@ impl GrantLedger {
         {
             return Err(GrantError::RequestExpired);
         }
+        if state.decisions.len() >= 10_000 {
+            return Err(GrantError::Unavailable);
+        }
 
         let mut next = state.clone();
         let decision = if approved {
@@ -290,6 +293,26 @@ impl GrantLedger {
         let Some(entry) = state.decisions.get(&request_key(&request)) else {
             return Ok(None);
         };
+        verify_request(entry, &request)?;
+        let status = entry.status(now_ms);
+        drop(state);
+        Ok(Some(status))
+    }
+
+    /// Recover the exact already-written decision after an account epoch changes.
+    pub(super) fn recover_command_decision(
+        &self,
+        mut request: GrantRequest,
+        now_ms: i64,
+    ) -> Result<Option<GrantStatus>, GrantError> {
+        normalize_request(&mut request)?;
+        let mut state = self.state.lock().unwrap();
+        state.ensure_available()?;
+        self.expire(&mut state, now_ms)?;
+        let Some(entry) = state.decisions.get(&request_key(&request)) else {
+            return Ok(None);
+        };
+        request.account_generation = entry.request.account_generation.clone();
         verify_request(entry, &request)?;
         let status = entry.status(now_ms);
         drop(state);
@@ -385,6 +408,60 @@ impl GrantLedger {
             .iter()
             .map(|(id, (owner, _))| (owner.clone(), id.clone()))
             .collect()
+    }
+
+    pub(super) fn prune_retired(
+        &self,
+        principal: &PrincipalId,
+        refs: &std::collections::BTreeSet<GrantId>,
+        now_ms: i64,
+    ) -> Result<(), GrantError> {
+        let mut state = self.state.lock().unwrap();
+        state.ensure_available()?;
+        self.expire(&mut state, now_ms)?;
+        let cutoff = now_ms.saturating_sub(7 * 86_400_000);
+        let retired = state
+            .decisions
+            .iter()
+            .filter_map(|(key, entry)| {
+                if &entry.request.principal != principal
+                    || entry.request.request_expires_at_ms > cutoff
+                {
+                    return None;
+                }
+                let grant = match &entry.decision {
+                    Decision::Approved {
+                        grant_id,
+                        revoked_at_ms,
+                        expired_at_ms,
+                        ..
+                    } if revoked_at_ms
+                        .or(*expired_at_ms)
+                        .is_some_and(|at| at <= cutoff)
+                        && !refs.contains(grant_id) =>
+                    {
+                        Some(grant_id.clone())
+                    }
+                    Decision::Denied if entry.decided_at_ms <= cutoff => None,
+                    _ => return None,
+                };
+                Some((key.clone(), grant))
+            })
+            .collect::<Vec<_>>();
+        if retired.is_empty() {
+            return Ok(());
+        }
+        let mut next = state.clone();
+        for (key, grant) in retired {
+            next.decisions.remove(&key);
+            if let Some(grant) = grant {
+                next.grants.remove(&grant);
+            }
+        }
+        self.persist(&next)?;
+        *state = next;
+        drop(state);
+        Ok(())
     }
 
     /// Expiry observed by this host is a durable tombstone, so rewinding the

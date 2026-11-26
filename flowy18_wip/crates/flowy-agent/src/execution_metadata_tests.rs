@@ -72,6 +72,7 @@ fn index_record(execution: ExecutionMetadata) -> SessionRecord {
         origin: SessionOrigin::Home,
         session_workspace: None,
         execution,
+        ..SessionRecord::default()
     }
 }
 

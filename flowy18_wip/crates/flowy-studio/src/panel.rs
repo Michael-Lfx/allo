@@ -80,6 +80,11 @@ pub struct TierView {
 #[derive(Clone, Debug)]
 pub enum StudioEvent {
     Notice(Option<&'static str>),
+    AutomationApproval {
+        id: String,
+        approve: bool,
+    },
+    Automation(Box<crate::AutomationUiAction>),
     ModelChanged {
         model: Model,
         plan: Plan,
@@ -300,6 +305,14 @@ pub struct StudioPanel {
     pub product: &'static str,
     pub surface: StudioSurface,
     pub(crate) automation: crate::automation::AutomationDraft,
+    pub(crate) automation_approvals: Vec<crate::AutomationApprovalCard>,
+    pub(crate) automation_page: Option<crate::AutomationPage>,
+    pub(crate) automation_editor:
+        Option<crate::automation_page::DefinitionEditor>,
+    pub(crate) automation_confirm: Option<(
+        flowy_automation::RunId,
+        crate::automation_page::RunConfirmation,
+    )>,
     pub notice: Option<&'static str>,
     /// Set once the user opens a conversation in this run. Startup initialization
     /// must not pull the app back into the last thread, but a session restored
@@ -671,6 +684,10 @@ impl StudioPanel {
             product,
             surface,
             automation,
+            automation_approvals: Vec::new(),
+            automation_page: None,
+            automation_editor: None,
+            automation_confirm: None,
             notice: initial_notice,
             session_opened_by_user: false,
             deliverables: None,
@@ -3011,7 +3028,6 @@ mod tests {
         // timer pump or fabricating events. Allow generous wall-clock headroom
         // for parallel NTFS/SQLite contention on Windows CI runners.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let mut updates = Vec::new();
         loop {
             panel.update(cx, |panel, cx| {
                 if let Some(batch) = panel.subscription.poll() {
@@ -3023,7 +3039,7 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "background session initialization did not finish in time (initializing={}, updates={updates:?})",
+                "background session initialization did not finish in time (initializing={})",
                 agent.is_initializing(),
             );
             std::thread::sleep(Duration::from_millis(1));

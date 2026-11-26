@@ -87,6 +87,12 @@ struct HostInner {
     cloud: Mutex<CloudState>,
     authority: Authority,
     grants: GrantAuthority,
+    automation_wake: Arc<tokio::sync::Notify>,
+    pub(super) automation_notifications:
+        Mutex<Option<super::automation_delivery::DesktopNotifications>>,
+    manual_automation: tokio::sync::Mutex<
+        Option<Arc<super::automation_host::ManualAutomation>>,
+    >,
 }
 
 #[derive(Debug, Default)]
@@ -176,6 +182,13 @@ impl AppHost {
         }
         let host = self.clone();
         Some(runtime.spawn(async move {
+            // Stop intake and wait for the worker's real execution future.
+            // A grace timeout preserves its evidence for startup recovery.
+            let automation = host.inner.manual_automation.lock().await.clone();
+            if let Some(automation) = automation {
+                automation.request_stop();
+                let _ = tokio::time::timeout(grace, automation.join()).await;
+            }
             let until = grace.saturating_sub(Duration::from_millis(50));
             let finish = tokio::task::spawn_blocking(move || {
                 host.inner.agent.prepare_shutdown_with_timeout(until);
@@ -240,12 +253,231 @@ impl AppHost {
                 cloud: Mutex::new(CloudState::default()),
                 authority,
                 grants,
+                manual_automation: tokio::sync::Mutex::new(None),
+                automation_wake: Arc::new(tokio::sync::Notify::new()),
+                automation_notifications: Mutex::new(None),
             }),
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.inner.owner.root
+    }
+
+    /// Explicit internal validation entry. Normal desktop startup never calls
+    /// it; the caller must provide a real admission policy and an initialized
+    /// account. No permissive policy is installed by the host.
+    pub async fn start_manual_automation_for_validation(
+        &self,
+        admission: Arc<dyn flowy_automation::AdmissionPolicy>,
+    ) -> Result<flowy_automation::AutomationHandle, flowy_automation::PortError>
+    {
+        self.start_automation(Some(admission), None).await
+    }
+
+    /// Start the desktop implementation with real, bounded storage admission.
+    /// Explicit validation hosts use this until the release matrix is verified.
+    pub async fn start_retained_automation(
+        &self,
+        limits: flowy_automation::retention::RetentionLimits,
+    ) -> Result<flowy_automation::AutomationHandle, flowy_automation::PortError>
+    {
+        self.start_automation(None, Some(limits)).await
+    }
+
+    async fn start_automation(
+        &self,
+        admission: Option<Arc<dyn flowy_automation::AdmissionPolicy>>,
+        limits: Option<flowy_automation::retention::RetentionLimits>,
+    ) -> Result<flowy_automation::AutomationHandle, flowy_automation::PortError>
+    {
+        let mut installed = self.inner.manual_automation.lock().await;
+        if let Some(automation) = installed.as_ref() {
+            return Ok(automation.handle.clone());
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_ref()
+            .ok_or(flowy_automation::PortError::Unavailable)?
+            .handle()
+            .clone();
+        let owner: Arc<dyn Send + Sync> = self.inner.owner.clone();
+        let store = flowy_automation::store::AutomationStore::open(
+            self.root().to_path_buf(),
+            owner,
+        )
+        .await
+        .map_err(|_| flowy_automation::PortError::Storage)?;
+        let retention = limits.map(|limits| {
+            flowy_automation::retention::RetentionService::new(
+                store.clone(),
+                Arc::new(super::automation_retention::AgentRetention::new(
+                    self.agent(),
+                    self.inner.authority.clone(),
+                )),
+                limits,
+            )
+        });
+        let admission = admission
+            .or_else(|| {
+                retention.as_ref().map(
+                    |policy| -> Arc<dyn flowy_automation::AdmissionPolicy> {
+                        Arc::new(policy.clone())
+                    },
+                )
+            })
+            .ok_or(flowy_automation::PortError::Unavailable)?;
+        let automation = match super::automation_host::ManualAutomation::start(
+            store.clone(),
+            self.agent(),
+            self.inner.authority.clone(),
+            self.inner.grants.clone(),
+            admission,
+            runtime,
+            self.inner.automation_wake.clone(),
+            self.notifications(),
+            retention,
+        )
+        .await
+        {
+            Ok(automation) => Arc::new(automation),
+            Err(error) => {
+                let _ = store.shutdown().await;
+                return Err(error);
+            }
+        };
+        let handle = automation.handle.clone();
+        let owner: Arc<dyn Send + Sync> = self.inner.owner.clone();
+        let factory =
+            self.automation_caller_factory(vec![]).unwrap_or_else(|_| {
+                Arc::new(|_, _| Err(flowy_automation::PortError::Forbidden))
+            });
+        let tools =
+            match flowy_agent::automation_tools::AutomationToolBridge::open(
+                self.root(),
+                handle.clone(),
+                factory,
+                owner,
+            ) {
+                Ok(tools) => tools,
+                Err(error) => {
+                    let _ = automation.join().await;
+                    return Err(error);
+                }
+            };
+        self.agent().set_automation_tools(Some(tools));
+        *installed = Some(automation);
+        drop(installed);
+        Ok(handle)
+    }
+
+    pub async fn stop_manual_automation(
+        &self,
+    ) -> Result<(), flowy_automation::PortError> {
+        let mut installed = self.inner.manual_automation.lock().await;
+        self.agent().set_automation_tools(None);
+        if let Some(automation) = installed.as_ref() {
+            automation.join().await?;
+        }
+        *installed = None;
+        drop(installed);
+        Ok(())
+    }
+
+    pub(super) fn wake_automation(&self) {
+        self.inner.automation_wake.notify_one();
+    }
+
+    pub(super) fn automation_is_active(&self) -> bool {
+        self.inner
+            .manual_automation
+            .try_lock()
+            .is_ok_and(|installed| installed.is_some())
+    }
+
+    pub(super) fn automation_runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.inner
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.handle().clone())
+    }
+
+    pub(super) async fn automation_handle(
+        &self,
+    ) -> Result<flowy_automation::AutomationHandle, flowy_automation::PortError>
+    {
+        self.inner
+            .manual_automation
+            .lock()
+            .await
+            .as_ref()
+            .map(|automation| automation.handle.clone())
+            .ok_or(flowy_automation::PortError::Unavailable)
+    }
+
+    pub(super) fn notification_slot(
+        &self,
+    ) -> &Mutex<Option<super::automation_delivery::DesktopNotifications>> {
+        &self.inner.automation_notifications
+    }
+
+    pub(super) async fn approval_cards(
+        &self,
+        caller: &flowy_automation::CallerContext,
+    ) -> Result<
+        Vec<flowy_automation::store::ApprovalProposal>,
+        flowy_automation::PortError,
+    > {
+        let installed = self
+            .inner
+            .manual_automation
+            .lock()
+            .await
+            .clone()
+            .ok_or(flowy_automation::PortError::Unavailable)?;
+        let cards = installed
+            .store
+            .pending_approvals(
+                caller.principal.clone(),
+                super::automation_access::current_time_ms(),
+            )
+            .await
+            .map_err(super::automation_host::port_error)?;
+        if self.automation_account_binding()
+            != Some((
+                caller.principal.clone(),
+                caller.account_generation.clone(),
+            ))
+        {
+            return Err(flowy_automation::PortError::Forbidden);
+        }
+        Ok(cards)
+    }
+
+    pub(super) async fn resolve_approval(
+        &self,
+        caller: flowy_automation::CallerContext,
+        proposal: flowy_automation::store::ApprovalProposal,
+        approved: bool,
+    ) -> Result<(), flowy_automation::PortError> {
+        let installed = self
+            .inner
+            .manual_automation
+            .lock()
+            .await
+            .clone()
+            .ok_or(flowy_automation::PortError::Unavailable)?;
+        super::automation_host::resolve_approval(
+            &installed.store,
+            &self.inner.grants,
+            caller,
+            proposal,
+            Some(approved),
+        )
+        .await?;
+        self.wake_automation();
+        Ok(())
     }
 
     pub fn initialization_state(&self) -> AgentInitialization {
@@ -264,7 +496,15 @@ impl AppHost {
         if let Some(previous) = self.inner.authority.sign_in(session) {
             self.inner.agent.cancel_automation_owner(&previous);
         }
+        self.rebind_automation_tools();
         self.publish_result_viewer();
+    }
+
+    fn rebind_automation_tools(&self) {
+        if let Ok(factory) = self.automation_caller_factory(vec![]) {
+            self.inner.agent.rebind_automation_tools(factory);
+        }
+        self.wake_automation();
     }
 
     pub(super) fn clear_automation_account(&self) {
@@ -272,6 +512,7 @@ impl AppHost {
             self.inner.agent.cancel_automation_owner(&previous);
         }
         self.publish_result_viewer();
+        self.wake_automation();
     }
 
     /// Every account change advances the viewer generation, including a
@@ -292,6 +533,7 @@ impl AppHost {
         if let Some(previous) = self.inner.authority.revoke_leases() {
             self.inner.agent.cancel_automation_owner(&previous);
         }
+        self.rebind_automation_tools();
     }
 
     /// The current stable cloud account, if automation can bind an owner.
@@ -378,6 +620,7 @@ impl AppHost {
                 },
             );
         }
+        self.rebind_automation_tools();
         result
     }
 
@@ -445,3 +688,22 @@ impl AppHost {
 
 #[cfg(test)]
 mod tests;
+
+impl AppHost {
+    /// Issue a conversation delegation under the current account generation.
+    /// A later sign-out, switch or grant revocation invalidates this factory.
+    pub fn automation_caller_factory(
+        &self,
+        grant_refs: Vec<GrantId>,
+    ) -> Result<
+        flowy_agent::automation_tools::AutomationCallerFactory,
+        flowy_automation::PortError,
+    > {
+        super::automation_caller::factory(
+            self.inner.authority.clone(),
+            self.inner.grants.clone(),
+            self.inner.agent.clone(),
+            grant_refs,
+        )
+    }
+}
