@@ -248,7 +248,7 @@ impl FlowyApp {
             let id =
                 SharedString::from(format!("flex-provider-{}", provider.id()));
             menu = menu.child(
-                // Omit `Role::MenuItemRadio` and `.aria_selected(...)` so
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
                 // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(
                     id,

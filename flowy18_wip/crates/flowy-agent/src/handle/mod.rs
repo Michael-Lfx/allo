@@ -3271,7 +3271,9 @@ impl Harness {
                     ),
                 );
                 run_config.delivery_committer = Some(Arc::new(store));
-                let empty_hint = if workspace_has_user_files(&cwd) {
+                let empty_hint = if !core_session.messages.is_empty()
+                    || workspace_has_user_files(&cwd, &submission_id)
+                {
                     ""
                 } else {
                     " The session workspace is currently empty (only the turn output directory exists). Do not search parent directories or run redundant glob/shell discovery looking for existing project files; build deliverables directly from scratch in the output directory above."
@@ -3281,7 +3283,7 @@ impl Harness {
                     output_root.display()
                 );
             } else if run_config.system.trim().is_empty() {
-                run_config.system = BASE_BEHAVIOR_PROMPT.to_owned();
+                BASE_BEHAVIOR_PROMPT.clone_into(&mut run_config.system);
             }
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
@@ -3912,18 +3914,33 @@ fn prepare_skill_prompt(
 const BASE_BEHAVIOR_PROMPT: &str = "Always respond in the same language as the user's latest message unless explicitly asked otherwise.";
 
 /// Returns `true` when `dir` contains at least one user-visible file or folder
-/// other than Flowy's internal `outputs` directory and dot-prefixed metadata.
-fn workspace_has_user_files(dir: &Path) -> bool {
+/// outside the current turn's `outputs/<current_submission>` directory and
+/// dot-prefixed metadata (including deliverables from earlier turns).
+fn workspace_has_user_files(dir: &Path, current_submission: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    entries.flatten().any(|entry| {
+    for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             return true;
         };
-        name != "outputs" && !name.starts_with('.')
-    })
+        if name.starts_with('.') {
+            continue;
+        }
+        if name == "outputs" {
+            if let Ok(sub_entries) = std::fs::read_dir(entry.path())
+                && sub_entries.flatten().any(|sub| {
+                    sub.file_name().to_str() != Some(current_submission)
+                })
+            {
+                return true;
+            }
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
@@ -4139,19 +4156,28 @@ mod workspace_probe_tests {
 
     #[test]
     fn ignores_internal_outputs_and_dotfiles_but_detects_user_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "flowy-ws-probe-{}",
-            super::next_stamp()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("flowy-ws-probe-{}", super::next_stamp()));
         std::fs::create_dir_all(dir.join("outputs/submission-1")).unwrap();
         std::fs::create_dir_all(dir.join(".hidden")).unwrap();
         assert!(
-            !workspace_has_user_files(&dir),
-            "workspace with only outputs/ and dotfiles must be treated as empty"
+            !workspace_has_user_files(&dir, "submission-1"),
+            "workspace with only current submission dir and dotfiles must be treated as empty"
         );
+        std::fs::create_dir_all(dir.join("outputs/submission-0")).unwrap();
+        std::fs::write(
+            dir.join("outputs/submission-0/index.html"),
+            "<h1>prev</h1>",
+        )
+        .unwrap();
+        assert!(
+            workspace_has_user_files(&dir, "submission-1"),
+            "prior turn deliverables under outputs/ must be detected as non-empty"
+        );
+        let _ = std::fs::remove_dir_all(dir.join("outputs/submission-0"));
         std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
         assert!(
-            workspace_has_user_files(&dir),
+            workspace_has_user_files(&dir, "submission-1"),
             "workspace with user-visible files must be detected as non-empty"
         );
         let _ = std::fs::remove_dir_all(dir);

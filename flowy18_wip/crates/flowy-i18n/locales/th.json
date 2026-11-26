@@ -471,7 +471,7 @@
   "settings.mail": "จดหมาย {product}",
   "settings.mailbox": "กล่องจดหมาย",
   "settings.manage": "Manage",
-  "settings.notify": "เบราว์เซอร์จะแจ้งเมื่องานต้องการคุณ",
+  "settings.notify": "แสดงการแจ้งเตือนบนเดสก์ท็อปเมื่องานต้องการคุณ",
   "settings.personal_plan": "ส่วนตัว",
   "settings.personalization": "การปรับให้เป็นส่วนตัว",
   "settings.phone": "โทรศัพท์",

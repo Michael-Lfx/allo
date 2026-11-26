@@ -14,7 +14,6 @@ pub struct Fold {
 pub struct FoldMeta {
     pub step_count: usize,
     pub live: bool,
-    pub duration_secs: u64,
     pub active_step: Option<String>,
 }
 
@@ -168,9 +167,9 @@ fn summarize_turn_process(
     let mut primary_steps = 0usize;
     let mut fallback_results = 0usize;
     // Keep the fold live for the entire busy turn even after intermediate
-    // assistant prose has flushed between tool calls.
-    let mut live = turn_still_running;
-    let mut duration_secs = 0u64;
+    // assistant prose has flushed between tool calls; once the turn settles,
+    // stale `live`/`running` flags on interrupted rows must never pin it live.
+    let live = turn_still_running;
     let mut active_step: Option<String> = None;
 
     for line in slice {
@@ -178,16 +177,8 @@ fn summarize_turn_process(
             continue;
         }
         match line {
-            ChatLine::Reasoning {
-                duration_secs: secs,
-                live: row_live,
-                ..
-            } => {
+            ChatLine::Reasoning { .. } => {
                 primary_steps += 1;
-                duration_secs = duration_secs.saturating_add(*secs);
-                if *row_live {
-                    live = true;
-                }
             }
             ChatLine::ToolCall {
                 name,
@@ -196,8 +187,7 @@ fn summarize_turn_process(
                 ..
             } => {
                 primary_steps += 1;
-                if *running {
-                    live = true;
+                if turn_still_running && *running {
                     let summary = if target.trim().is_empty() {
                         name.clone()
                     } else {
@@ -229,7 +219,6 @@ fn summarize_turn_process(
     FoldMeta {
         step_count,
         live,
-        duration_secs,
         active_step,
     }
 }
@@ -389,7 +378,7 @@ mod tests {
 
     #[test]
     fn live_collapse_stays_live_after_intermediate_assistant_and_hides_cot_glimpse()
-    {
+     {
         let lines = [
             ChatLine::User {
                 text: "build landing page".into(),

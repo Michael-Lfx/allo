@@ -1460,7 +1460,7 @@ impl FlowyApp {
             .session
             .as_ref()
             .map(|s| s.email.trim())
-            .filter(|email| !email.is_empty() && *email != name)
+            .filter(|email| !email.is_empty() && *email != name.trim())
             .map_or_else(
                 || self.t(self.studio.read(cx).plan.label_key()),
                 ToOwned::to_owned,

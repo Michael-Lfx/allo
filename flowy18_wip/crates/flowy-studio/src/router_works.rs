@@ -230,10 +230,12 @@ impl StudioPanel {
             .count();
         let detail = include_detail
             .then(|| {
-                let waiting = self.t("card.heartbeat_waiting");
                 works.first().and_then(|top| {
                     top.heartbeat.as_ref().and_then(|hb| {
-                        crate::pending_card::format_heartbeat_line(hb, &waiting)
+                        crate::pending_card::format_heartbeat_line_localized(
+                            hb,
+                            &|key| self.t(key),
+                        )
                     })
                 })
             })
@@ -703,9 +705,10 @@ impl StudioPanel {
         } else {
             crate::ports::redact_trace_text(&work.title)
         };
-        let waiting = self.t("card.heartbeat_waiting");
         let heartbeat_detail = work.heartbeat.as_ref().and_then(|hb| {
-            crate::pending_card::format_heartbeat_line(hb, &waiting)
+            crate::pending_card::format_heartbeat_line_localized(hb, &|key| {
+                self.t(key)
+            })
         });
         let subtitle = match (parent_label, heartbeat_detail) {
             (Some(parent), Some(hb)) => Some(format!("{parent} \u{00b7} {hb}")),

@@ -471,7 +471,7 @@
   "settings.mail": "{product} postası",
   "settings.mailbox": "Posta kutusu",
   "settings.manage": "Manage",
-  "settings.notify": "Bir görev size ihtiyaç duyduğunda tarayıcı bildirir.",
+  "settings.notify": "Bir görev size ihtiyaç duyduğunda masaüstü bildirimi göster.",
   "settings.personal_plan": "Kişisel",
   "settings.personalization": "Kişiselleştirme",
   "settings.phone": "Telefon",

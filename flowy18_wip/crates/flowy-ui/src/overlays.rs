@@ -1442,13 +1442,15 @@ mod tests {
         // Home composer `+` button sits near vertical center (~380px top,
         // ~412px bottom on an 820px viewport): prefer_above must flip below
         // where there is more room and clamp max_h strictly within space_below.
-        let (above, max_h) = resolve_popover_vertical(380.0, 412.0, 820.0, true);
+        let (above, max_h) =
+            resolve_popover_vertical(380.0, 412.0, 820.0, true);
         assert!(!above);
         assert!(max_h <= 820.0 - 412.0 - 12.0);
 
         // Chat composer at bottom (~750px top, ~782px bottom): stays above and
         // clamps strictly within space_above so it never overlaps the trigger.
-        let (above, max_h) = resolve_popover_vertical(750.0, 782.0, 820.0, true);
+        let (above, max_h) =
+            resolve_popover_vertical(750.0, 782.0, 820.0, true);
         assert!(above);
         assert!(max_h <= 750.0 - 12.0);
 

@@ -471,7 +471,7 @@
   "settings.mail": "Mail {product}",
   "settings.mailbox": "メールボックス",
   "settings.manage": "Manage",
-  "settings.notify": "タスクがあなたを必要とするとき、ブラウザが知らせます。",
+  "settings.notify": "タスクがあなたを必要とするときにデスクトップ通知を表示します。",
   "settings.personal_plan": "個人",
   "settings.personalization": "パーソナライズ",
   "settings.phone": "電話",

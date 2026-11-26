@@ -432,24 +432,17 @@ impl StudioPanel {
                                 .truncate()
                                 .child(skill_text),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(self.theme.muted())
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .truncate()
-                                .child(real_pct.map_or_else(
-                                    || gate_title.clone(),
-                                    |pct| {
-                                        format!(
-                                            "{}%",
-                                            pct.clamp(0.0, 100.0).round()
-                                                as u32
-                                        )
-                                    },
-                                )),
-                        ),
+                        .when_some(real_pct, |col, pct| {
+                            col.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(format!("{}%", pct.round() as u32)),
+                            )
+                        }),
                 ),
             )
             .child(flow_connector(

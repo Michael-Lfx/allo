@@ -1,5 +1,6 @@
-//! Bounded Markdown display for settled assistant text. The source stays
-//! in the conversation record; rendering has no file or network side effects.
+//! Bounded Markdown display for settled and streaming assistant text. The
+//! source stays in the conversation record; rendering has no file or network
+//! side effects.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -276,7 +277,13 @@ impl Renderer<'_> {
                 }
             }
         }
-        append_text(result, &mut text, &mut runs, self.control(), self.interactive)
+        append_text(
+            result,
+            &mut text,
+            &mut runs,
+            self.control(),
+            self.interactive,
+        )
     }
 
     fn blocks(&self, nodes: &[Node<'_>]) -> Div {
@@ -402,10 +409,12 @@ impl Renderer<'_> {
                                     .child(language.to_owned()),
                             )
                             .when(self.interactive, |row| {
-                                row.child(self.copy(
-                                    "markdown.copy_code",
-                                    code.clone(),
-                                ))
+                                row.child(
+                                    self.copy(
+                                        "markdown.copy_code",
+                                        code.clone(),
+                                    ),
+                                )
                             }),
                     )
                     .child(if self.interactive {
@@ -430,11 +439,8 @@ impl Renderer<'_> {
                     })
                     .into_any_element()
             }
-            Tag::Table(_) => div()
-                .id(("markdown-table", self.control()))
-                .w_full()
-                .overflow_x_scroll()
-                .child(div().flex().flex_col().children(
+            Tag::Table(_) => {
+                let table_body = div().flex().flex_col().children(
                     children.iter().filter_map(|row| {
                         let Node::Element(
                             row_tag @ (Tag::TableHead | Tag::TableRow),
@@ -470,8 +476,22 @@ impl Renderer<'_> {
                             },
                         )))
                     }),
-                ))
-                .into_any_element(),
+                );
+                if self.interactive {
+                    div()
+                        .id(("markdown-table", self.control()))
+                        .w_full()
+                        .overflow_x_scroll()
+                        .child(table_body)
+                        .into_any_element()
+                } else {
+                    div()
+                        .w_full()
+                        .overflow_hidden()
+                        .child(table_body)
+                        .into_any_element()
+                }
+            }
             _ => self
                 .prose(children, &Font::default(), self.theme.ink())
                 .into_any_element(),
@@ -498,8 +518,9 @@ fn append_text(
         return parent;
     }
     let text = std::mem::take(text);
-    let styled = StyledText::new(text.clone()).with_runs(std::mem::take(runs));
+    let runs = std::mem::take(runs);
     if interactive {
+        let styled = StyledText::new(text.clone()).with_runs(runs);
         parent.child(
             div()
                 .id(("markdown-text", id))
@@ -510,28 +531,62 @@ fn append_text(
                 .child(styled),
         )
     } else {
+        let styled = StyledText::new(text).with_runs(runs);
         parent.child(div().max_w_full().min_w_0().child(styled))
     }
 }
 
-/// Closes an unclosed triple-backtick code fence on a borrowed/owned copy so
-/// streaming code blocks do not flash as plain text until the closing fence
-/// arrives.
+/// Closes an unclosed `CommonMark` fenced code block (` ``` ` or `~~~`, up to 3
+/// leading spaces) on an owned copy so streaming code blocks do not flash as
+/// plain text until the closing fence arrives.
 fn close_unclosed_fence(source: &str) -> Cow<'_, str> {
-    let mut open_fence = false;
+    let mut open: Option<(u8, usize)> = None;
     for line in source.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            open_fence = !open_fence;
+        let bytes = line.as_bytes();
+        let indent = bytes.iter().take_while(|&&b| b == b' ').count();
+        if indent > 3 {
+            continue;
+        }
+        let rest = &bytes[indent..];
+        let Some(&marker) = rest.first() else {
+            continue;
+        };
+        if marker != b'`' && marker != b'~' {
+            continue;
+        }
+        let run_len = rest.iter().take_while(|&&b| b == marker).count();
+        if run_len < 3 {
+            continue;
+        }
+        let after = &rest[run_len..];
+        match open {
+            None => {
+                // CommonMark forbids backticks in a backtick fence info string
+                // (e.g. single-line inline code ```` ```foo``` ````).
+                if marker == b'`' && after.contains(&b'`') {
+                    continue;
+                }
+                open = Some((marker, run_len));
+            }
+            Some((open_marker, open_len)) => {
+                if marker == open_marker
+                    && run_len >= open_len
+                    && after.iter().all(u8::is_ascii_whitespace)
+                {
+                    open = None;
+                }
+            }
         }
     }
-    if open_fence {
-        let mut closed = String::with_capacity(source.len() + 5);
+    if let Some((marker, len)) = open {
+        let mut closed = String::with_capacity(source.len() + len + 2);
         closed.push_str(source);
         if !closed.ends_with('\n') {
             closed.push('\n');
         }
-        closed.push_str("```");
+        for _ in 0..len {
+            closed.push(char::from(marker));
+        }
         Cow::Owned(closed)
     } else {
         Cow::Borrowed(source)
@@ -556,7 +611,11 @@ pub fn render(source: &str, theme: ResolvedTheme, i18n: &I18n) -> Div {
 /// Lightweight streaming Markdown renderer: avoids raw `**` / backtick leakage
 /// during live tokens while keeping interactive/a11y nodes off until the turn
 /// settles, closing partial code fences, and falling back cleanly past 16 KiB.
-pub fn render_streaming(source: &str, theme: ResolvedTheme, i18n: &I18n) -> Div {
+pub fn render_streaming(
+    source: &str,
+    theme: ResolvedTheme,
+    i18n: &I18n,
+) -> Div {
     if source.len() > MAX_STREAMING_BYTES {
         return div()
             .flex()
@@ -625,7 +684,7 @@ mod tests {
 
     #[test]
     fn streaming_fence_helper_closes_partial_blocks_without_mutating_closed_ones()
-    {
+     {
         use super::close_unclosed_fence;
         use std::borrow::Cow;
 
@@ -633,9 +692,27 @@ mod tests {
         let closed = close_unclosed_fence(partial);
         assert!(matches!(closed, Cow::Owned(_)));
         let nodes = parse(&closed).unwrap();
-        assert!(nodes.iter().any(|n| matches!(n, Node::Element(Tag::CodeBlock(_), _))));
+        assert!(
+            nodes
+                .iter()
+                .any(|n| matches!(n, Node::Element(Tag::CodeBlock(_), _)))
+        );
 
         let complete = "```rust\nlet x = 1;\n```";
         assert!(matches!(close_unclosed_fence(complete), Cow::Borrowed(_)));
+
+        // Inline triple-backtick code, 4-space indented lines, and nested
+        // fences inside a 4-backtick outer fence must follow CommonMark rules.
+        let inline_code = "```foo``` and normal text";
+        assert!(matches!(
+            close_unclosed_fence(inline_code),
+            Cow::Borrowed(_)
+        ));
+        let indented = "    ```not a fence";
+        assert!(matches!(close_unclosed_fence(indented), Cow::Borrowed(_)));
+        let nested_open = "````markdown\n```rust\nlet a = 1;\n```";
+        let nested_closed = close_unclosed_fence(nested_open);
+        assert!(matches!(nested_closed, Cow::Owned(_)));
+        assert!(nested_closed.ends_with("\n````"));
     }
 }

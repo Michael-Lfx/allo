@@ -46,24 +46,31 @@ pub enum FlowModalTab {
     Trace,
 }
 
-/// Detects when a running branch's fallback caption merely echoes the parent
-/// session title (including `clip_label`'s trailing `…` or `...`).
-fn duplicates_session_title(title: &str, caption: &str) -> bool {
-    let title = title.trim();
-    let trimmed = caption
-        .trim()
+fn trim_ellipsis(text: &str) -> &str {
+    text.trim()
         .trim_end_matches('\u{2026}')
         .trim_end_matches("...")
-        .trim();
-    !title.is_empty()
-        && !trimmed.is_empty()
-        && (title.starts_with(trimmed) || trimmed.starts_with(title))
+        .trim()
+}
+
+/// Detects when a running branch's fallback caption merely echoes the parent
+/// session title (including `clip_label`'s trailing `…` or `...` on either side).
+fn duplicates_session_title(title: &str, caption: &str) -> bool {
+    let title = trim_ellipsis(title);
+    let caption = trim_ellipsis(caption);
+    if title.is_empty() || caption.is_empty() {
+        return false;
+    }
+    if title.starts_with(caption) {
+        return true;
+    }
+    caption.starts_with(title)
 }
 
 /// Returns an honest percentage only when backed by a real delivery or a
 /// concrete `WorkContract` deliverable denominator. Unbounded running/queued
 /// turns return `None` so the UI never displays fabricated percentages.
-pub(super) fn real_contract_progress_pct(
+pub fn real_contract_progress_pct(
     branch: &crate::ports::WorkBranchSummary,
 ) -> Option<f32> {
     if matches!(branch.phase, BranchPhase::Delivered { .. }) {
@@ -1572,10 +1579,7 @@ impl StudioPanel {
                         step_label.clone()
                     };
                     let label = if let Some(pct) = real_pct {
-                        format!(
-                            "{}% \u{00b7} {step}",
-                            pct.clamp(0.0, 100.0).round() as u32
-                        )
+                        format!("{}% \u{00b7} {step}", pct.round() as u32)
                     } else {
                         step
                     };
@@ -1622,7 +1626,7 @@ impl StudioPanel {
             };
             let has_file_deliverable = branch.deliverable_path.is_some();
             let bar_ratio = real_pct.map_or(0.0, |pct| {
-                if pct <= 0.0 || !pct.is_finite() {
+                if pct <= 0.0 {
                     0.0
                 } else {
                     (pct / 100.0).clamp(0.08, 1.0)
@@ -1633,118 +1637,119 @@ impl StudioPanel {
                 && duplicates_session_title(
                     &group.title,
                     &branch.deliverable_name,
-                )
-            {
+                ) {
                 self.t("chat.thinking")
             } else {
                 branch.deliverable_name.clone()
             };
 
             branches_col = branches_col.child(
-                theme::interactive(
-                    row_id,
-                    branch_caption.clone(),
-                    &self.theme,
-                )
-                .w_full()
-                .px(self.theme.space(10.))
-                .py(self.theme.space(6.))
-                .rounded_lg()
-                .bg(self.theme.soft())
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.dock_hover()))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .justify_between()
-                .gap(self.theme.space(8.))
-                .on_click(cx.listener(move |panel, _, _, cx| {
-                    cx.stop_propagation();
-                    panel.open_flow_modal(
-                        sid_branch.clone(),
-                        Some(bid.clone()),
-                        cx,
-                    );
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(160.))
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(6.))
-                        .child(dot)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(self.theme.ink())
-                                .whitespace_nowrap()
-                                .child(
-                                    branch.skill_label.resolve(|k| self.t(k)),
-                                ),
-                        )
-                        .when(has_file_deliverable, |row| {
-                            row.child(
+                theme::interactive(row_id, branch_caption.clone(), &self.theme)
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(6.))
+                    .rounded_lg()
+                    .bg(self.theme.soft())
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.dock_hover()))
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(self.theme.space(8.))
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        cx.stop_propagation();
+                        panel.open_flow_modal(
+                            sid_branch.clone(),
+                            Some(bid.clone()),
+                            cx,
+                        );
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .flex()
+                            .items_center()
+                            .gap(self.theme.space(6.))
+                            .child(dot)
+                            .child(
                                 div()
-                                    .px(px(5.))
-                                    .py(px(1.))
-                                    .rounded_sm()
-                                    .bg(format_color)
                                     .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(self.theme.on_ink())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.theme.ink())
+                                    .whitespace_nowrap()
                                     .child(
-                                        self.format_tag_label(branch.format),
+                                        branch
+                                            .skill_label
+                                            .resolve(|k| self.t(k)),
                                     ),
                             )
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_xs()
-                                .text_color(self.theme.muted())
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .truncate()
-                                .child(branch_caption),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(8.))
-                        .when(real_pct.is_some(), |right| {
-                            right.child(
+                            .when(has_file_deliverable, |row| {
+                                row.child(
+                                    div()
+                                        .px(px(5.))
+                                        .py(px(1.))
+                                        .rounded_sm()
+                                        .bg(format_color)
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(self.theme.on_ink())
+                                        .child(
+                                            self.format_tag_label(
+                                                branch.format,
+                                            ),
+                                        ),
+                                )
+                            })
+                            .child(
                                 div()
-                                    .w(px(56.))
-                                    .h(px(5.))
-                                    .rounded_full()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
                                     .overflow_hidden()
-                                    .bg(self.theme.card())
-                                    .when(bar_ratio > 0.0, |track| {
-                                        track.child(
-                                            div()
-                                                .h_full()
-                                                .rounded_full()
-                                                .bg(dot_color)
-                                                .w(gpui::relative(bar_ratio)),
-                                        )
-                                    }),
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(dot_color)
-                                .whitespace_nowrap()
-                                .child(state_label),
-                        ),
-                ),
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(branch_caption),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(self.theme.space(8.))
+                            .when(real_pct.is_some(), |right| {
+                                right.child(
+                                    div()
+                                        .w(px(56.))
+                                        .h(px(5.))
+                                        .rounded_full()
+                                        .overflow_hidden()
+                                        .bg(self.theme.card())
+                                        .when(bar_ratio > 0.0, |track| {
+                                            track.child(
+                                                div()
+                                                    .h_full()
+                                                    .rounded_full()
+                                                    .bg(dot_color)
+                                                    .w(gpui::relative(
+                                                        bar_ratio,
+                                                    )),
+                                            )
+                                        }),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(dot_color)
+                                    .whitespace_nowrap()
+                                    .child(state_label),
+                            ),
+                    ),
             );
         }
 

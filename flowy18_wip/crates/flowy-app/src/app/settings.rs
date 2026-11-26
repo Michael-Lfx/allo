@@ -345,8 +345,8 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let id = SharedString::from(format!("settings-{}", page.key()));
-        // Omit `Role::MenuItemRadio` and `.aria_selected(...)` so
-        // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
+        // Omit `Role::MenuItemRadio`, `.aria_toggled(...)`, and `.aria_selected(...)`
+        // so `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
         let link = theme::interactive(id, label.clone(), &self.theme)
             .mx_2()
             .px(self.theme.space(8.))
@@ -367,7 +367,8 @@ impl FlowyApp {
                 cx.notify();
             }));
         #[cfg(test)]
-        let link = link.debug_selector(move || format!("settings-nav-{}", page.key()));
+        let link =
+            link.debug_selector(move || format!("settings-nav-{}", page.key()));
         link
     }
 
@@ -584,7 +585,7 @@ impl FlowyApp {
             let selected = self.i18n.locale() == locale;
             let id = SharedString::from(format!("locale-{}", locale.code()));
             menu = menu.child(
-                // Omit `Role::MenuItemRadio` and `.aria_selected(...)` so
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
                 // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, locale.endonym(), &self.theme)
                     .px_3()
@@ -637,7 +638,7 @@ impl FlowyApp {
             let label = self.t(mode.key());
             let id = SharedString::from(format!("send-{}", mode.key()));
             menu = menu.child(
-                // Omit `Role::MenuItemRadio` and `.aria_selected(...)` so
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
                 // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, label.clone(), &self.theme)
                     .px_3()
@@ -1155,10 +1156,8 @@ mod nav_click_tests {
 
     #[gpui::test]
     fn clicking_settings_nav_link_switches_page(cx: &mut TestAppContext) {
-        let root = std::env::temp_dir().join(format!(
-            "flowy-settings-nav-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir()
+            .join(format!("flowy-settings-nav-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (app, cx) = cx.add_window_view(|window, cx| {
             FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)

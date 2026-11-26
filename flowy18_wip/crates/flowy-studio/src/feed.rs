@@ -29,6 +29,7 @@ pub struct ChatFeed {
     copied_row: Option<(u64, u64)>,
     copy_epoch: u64,
     history: ChatHistory,
+    suppress_trailing_stopped: bool,
     projection: Projection,
     expanded_turns: HashMap<String, HashSet<usize>>,
     theme: ResolvedTheme,
@@ -276,6 +277,7 @@ impl ChatFeed {
             copied_row: None,
             copy_epoch: 0,
             history: ChatHistory::default(),
+            suppress_trailing_stopped: false,
             projection: Projection::default(),
             expanded_turns: HashMap::new(),
             theme,
@@ -361,6 +363,13 @@ impl ChatFeed {
         self.row_focus.get(self.row_ids.get(row)?).cloned()
     }
 
+    pub(crate) const fn set_suppress_trailing_stopped(
+        &mut self,
+        suppress: bool,
+    ) {
+        self.suppress_trailing_stopped = suppress;
+    }
+
     pub(crate) fn sync_history(
         &mut self,
         session: Option<String>,
@@ -387,12 +396,29 @@ impl ChatFeed {
         cx: &mut Context<'_, Self>,
     ) {
         let name = session.as_deref().unwrap_or_default();
-        let projection = Projection::build_live(
+        let mut projection = Projection::build_live(
             &self.history.rows,
             self.history.streaming,
             !self.history.status.is_busy(),
             self.expanded_turns.get(name),
         );
+        // When a detailed StopHandoffManifest card already surfaces "已停止"
+        // directly below the feed, omit the redundant trailing status row at
+        // projection time so no empty list item or padding row is emitted.
+        // Fast-cancels and restored stopped sessions without a manifest keep
+        // the trailing status row visible.
+        if self.suppress_trailing_stopped
+            && matches!(self.history.status, TurnStatus::Stopped)
+            && projection.source_rows.last().is_some_and(|&idx| {
+                matches!(
+                    self.history.rows.get(idx),
+                    Some(ChatLine::Status { text })
+                        if text == "chat.status_stopped"
+                )
+            })
+        {
+            projection.source_rows.pop();
+        }
         let changed = projection != self.projection;
         let remeasure: Vec<_> = self
             .projection
@@ -934,9 +960,7 @@ impl ChatFeed {
                             .whitespace_normal()
                             .child(if is_streaming {
                                 markdown::render_streaming(
-                                    text,
-                                    self.theme,
-                                    &self.i18n,
+                                    text, self.theme, &self.i18n,
                                 )
                             } else {
                                 markdown::render(text, self.theme, &self.i18n)
@@ -1034,17 +1058,6 @@ impl ChatFeed {
                 .into_any_element()
             }
             ChatLine::Status { text } => {
-                // When the active turn just settled into Stopped, the dedicated
-                // StopHandoffManifest card / working status already presents
-                // "已停止" right below the feed; hide the redundant trailing
-                // status row while preserving it in history once a later turn
-                // appends new rows.
-                if matches!(self.history.status, TurnStatus::Stopped)
-                    && text == "chat.status_stopped"
-                    && index + 1 == self.lines.len()
-                {
-                    return div().into_any_element();
-                }
                 let label = if text.starts_with("chat.") {
                     self.t(text)
                 } else {
@@ -3015,7 +3028,6 @@ mod tests {
                     rows: initial_rows,
                     streaming: Some(tail_ix),
                     status: TurnStatus::Running,
-                    ..ChatHistory::default()
                 },
                 cx,
             );
@@ -3038,7 +3050,10 @@ mod tests {
         let streaming_ids =
             cx.read_entity(&feed, |feed, _| feed.row_ids.clone());
         assert!(
-            cx.read_entity(&feed, |feed, _| feed.projection.streaming.is_some()),
+            cx.read_entity(&feed, |feed, _| feed
+                .projection
+                .streaming
+                .is_some()),
             "tail row should be projected as streaming"
         );
 
@@ -3057,7 +3072,6 @@ mod tests {
                         rows: finished_rows,
                         streaming: None,
                         status: TurnStatus::Idle,
-                        ..ChatHistory::default()
                     },
                     cx,
                 );
@@ -3288,5 +3302,61 @@ mod tests {
             cx.debug_bounds("chat-verify-semantic-hint").is_some(),
             "L3 semantic hint must remain visible on collapsed passed cards"
         );
+    }
+
+    #[gpui::test]
+    fn trailing_stopped_row_suppressed_only_when_handoff_manifest_present(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let stopped_history = || ChatHistory {
+            rows: vec![
+                ChatLine::User {
+                    text: "stop me".into(),
+                },
+                ChatLine::Status {
+                    text: "chat.status_stopped".into(),
+                },
+            ],
+            status: TurnStatus::Stopped,
+            streaming: None,
+        };
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            ChatFeed::new(ui, i18n.clone(), Some("s-stop".into()), cx)
+        });
+
+        // Without a stop-handoff manifest, the stopped status row stays visible
+        // so fast cancels and restored sessions never look silent.
+        feed.update(cx, |feed, cx| {
+            feed.set_suppress_trailing_stopped(false);
+            feed.sync_history(Some("s-stop".into()), stopped_history(), cx);
+            assert_eq!(feed.lines.len(), 2);
+        });
+
+        // When a detailed stop-handoff card is visible right below the feed,
+        // projection omits the duplicate trailing row completely (zero empty row).
+        feed.update(cx, |feed, cx| {
+            feed.set_suppress_trailing_stopped(true);
+            feed.sync_history(Some("s-stop".into()), stopped_history(), cx);
+            assert_eq!(feed.lines.len(), 1);
+            assert!(matches!(feed.lines[0], ChatLine::User { .. }));
+        });
+
+        // Once a follow-up turn starts, historical stopped status stays in transcript.
+        feed.update(cx, |feed, cx| {
+            let mut next = stopped_history();
+            next.rows.push(ChatLine::User {
+                text: "continue".into(),
+            });
+            next.status = TurnStatus::Running;
+            feed.set_suppress_trailing_stopped(true);
+            feed.sync_history(Some("s-stop".into()), next, cx);
+            assert_eq!(feed.lines.len(), 3);
+            assert!(matches!(
+                &feed.lines[1],
+                ChatLine::Status { text } if text == "chat.status_stopped"
+            ));
+        });
     }
 }
