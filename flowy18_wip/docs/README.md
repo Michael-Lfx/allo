@@ -18,6 +18,10 @@ Agent 阅读顺序：本页 → 对应分类 `README.md` → 目标文档。
 
 当前资料库实施计划：[首页对话文件交付与资料库](plans/conversation-artifact-library.zh.md)。来源为首页对话的显式交付，删除原对话后文件独立保留。
 
+Personal Agent 自动化开发计划：[对话式自动化开发计划](plans/personal-agent-automation-development-plan.md)（计划，2026-11-25；含 31 项任务、依赖图与 V2 验收映射）。
+
+分批执行状态：[Personal Agent 自动化实施与验证记录](plans/personal-agent-automation-execution.md)（2026-11-26，PA-A01、PA-A02、PA-A04、PA-B01 已完成并验证，当前 4/31；下一项 PA-A03）。
+
 ## 维护规则
 
 1. 新文档先放入对应分类目录，再更新该分类 `README.md` 和本页入口。

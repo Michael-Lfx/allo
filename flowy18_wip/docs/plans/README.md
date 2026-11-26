@@ -6,6 +6,8 @@
 | --- | --- | --- |
 | [local-first-ui-v2.zh.md](local-first-ui-v2.zh.md) | 已实现并收尾（2026-11-25，分支 `feat/flowy-local-ui-v2` @ `a0fe5df13`，基线 `feat/flowy-v0-rc` @ `10b99bac0`） | Local-First UI v2 可视化工作台看板、居中流程图弹窗、4 筹码驾驶舱、`flowy-agent` 6+4 接口全闭环、模块拆解、外部打开安全门禁、ADR 权衡与踩坑溯源手册 |
 | [super-agent-ui-and-motion.zh.md](super-agent-ui-and-motion.zh.md) | 计划（2026-11-25 架构与交互定稿） | Super Agent 常驻助理/项目空间侧栏、全程实时折叠时间线、悬浮任务胶囊、GPUI 120fps 丝滑动效映射与双分支并行方案 |
+| [personal-agent-automation-execution.md](personal-agent-automation-execution.md) | 实施中（2026-11-26，4/31） | 分批实施、每步验证；PA-A01、PA-A02、PA-A04、PA-B01 已完成并验证；下一项 PA-A03 |
+| [personal-agent-automation-development-plan.md](personal-agent-automation-development-plan.md) | 实施中（2026-11-26，4/31 已完成） | Personal Agent 对话式自动化：31 项可执行任务、五阶段依赖、六项审查修订、24 项验收映射与 V2 完整快照 |
 | [clawhub-skill-market.md](clawhub-skill-market.md) | 已实现（2026-11-23） | ClawHub 社区货架、官方 JSON、SQLite 缓存、审核过滤与安装门禁 |
 | [conversation-artifact-library-execution.zh.md](conversation-artifact-library-execution.zh.md) | 实施与验证中 | 代码链路、自动化证据、TC-01–35 与待完成原生/发行门禁 |
 | [conversation-artifact-library.zh.md](conversation-artifact-library.zh.md) | 计划（2026-11-21，产品范围已确认） | 首页对话文件交付、自动归集、独立存储、共享预览与来源定位的完整实施计划 |

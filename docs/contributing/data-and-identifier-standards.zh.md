@@ -260,3 +260,32 @@ coverage/
 
 如果工具生成了非标准临时目录或依赖产物，应先加入本地 ignore 策略再继续。
 不要为了“清理”其他开发者生成的文件而把它们加入提交。
+
+
+## 11. 已登记的 Flowy GPUI 自动化独立数据集
+
+[ADR-0018](../adr/0018-personal-agent-automation-local-store.md) 登记
+`flowy18_wip` 的 `flowy-gpui-automation-v1` 数据集，位置为
+`<store_root>/automation/automations.sqlite3`。该数据集以
+`flowy-automation::schema_contract` 作为本库产品表与受管侧存储引用的可执行
+registry；不得把这些表加入 `nomifun-db::id_schema_contract` 的单库表清单，
+也不得为了打开此独立库而引入 backend runtime。
+
+固定技术主键 `id INTEGER PRIMARY KEY AUTOINCREMENT`、具名裸 UUIDv7 业务
+身份、逻辑引用、事务归属检查、已登记索引/删除/重建/孤儿审计策略以及禁止物理
+FK 的规则均不变。revision 使用本地技术主键及 `(automation_id, revision)`
+业务唯一约束。GPUI workspace 通过已登记的 `uuid` 依赖拥有其 UUID 实现，
+并使用与 `nomifun-common` 相同的严格验证向量；这不授权其他模块各自新增临时
+ID 生成器。
+
+云主体是宿主选定的 authority 加服务器稳定外部 user ID。既有 Agent
+session/submission 引用保留 opaque 协议格式。request、occurrence、delivery、
+generation token 保留各自目的明确的契约；不得仅因字段以 `_id` 结尾就将这些
+类别强制转换成新的业务 UUID。
+
+此新数据集不改变 nomifun v3 的 lineage、reset 或 restore 契约。它不得重置、
+导入、迁移或认领既有 GPUI session JSON、ArtifactStore、skills 数据库或
+用户项目；这些存储保持其原所有者，仅通过明确登记的引用关联。新库缺失时可
+初始化；自动化 lineage 损坏、未知或来自未来版本时保留数据并停执行。加入
+持久层时必须检查真实 schema 与侧存储；单有 registry 清单不等于实际数据库
+已经通过审计。

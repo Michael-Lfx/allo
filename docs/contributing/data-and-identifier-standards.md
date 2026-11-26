@@ -298,3 +298,38 @@ coverage/
 If a tool produces a non-standard temporary directory or dependency artifact,
 add it to the local ignore policy before continuing. Never "clean up" another
 developer's generated files by adding them to a commit.
+
+
+## 11. Registered standalone Flowy GPUI automation dataset
+
+[ADR-0018](../adr/0018-personal-agent-automation-local-store.md) registers
+`flowy18_wip`'s `flowy-gpui-automation-v1` dataset at
+`<store_root>/automation/automations.sqlite3`. The dataset uses
+`flowy-automation::schema_contract` as its executable registry for its own
+product tables and managed side-store references. Do not add these tables to
+`nomifun-db::id_schema_contract`'s single-database table inventory or import
+the backend runtime to open this independent database.
+
+The mandatory technical `id INTEGER PRIMARY KEY AUTOINCREMENT`, named bare
+UUIDv7 business identities, logical references, transaction ownership checks,
+registered indexes/delete/rebuild/orphan-audit policies, and no-physical-FK
+rules apply unchanged. A revision has a local technical primary key and a
+business uniqueness constraint on `(automation_id, revision)`. The GPUI
+workspace owns its UUID implementation using the registered `uuid` dependency
+and the same strict validation vectors as `nomifun-common`; this does not
+permit independent ad-hoc ID generators elsewhere.
+
+Cloud principal identity is the host-selected authority plus the server's
+stable external user ID. Existing Agent session/submission references retain
+their opaque protocol format. Request, occurrence, delivery, and generation
+tokens retain their purpose-specific contracts. These categories must not be
+coerced into new business UUIDs merely because a field ends in `_id`.
+
+This new dataset does not change the nomifun v3 dataset lineage, reset, or
+restore contract. It must not reset, import, migrate, or claim the existing
+GPUI session JSON, ArtifactStore, skills database, or user-owned projects.
+Those stores keep their existing owners and are linked only through explicitly
+registered references. New database absence permits initialization; corrupt,
+unknown, or future automation lineage preserves the data and stops execution.
+Actual schema and side-store audits are required when persistence is added;
+a registry inventory alone is not evidence that a live database passed audit.
