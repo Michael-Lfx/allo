@@ -1,7 +1,7 @@
 //! Responsive Global Visual Board (`StudioSurface::Board`).
 //!
 //! Submodules keep concerns separated without extra abstraction layers:
-//! - `overview/mod.rs`: KPI strip, filter bar, and session-layered board cards.
+//! - `overview/mod.rs`: KPI strip, filter bar, 7-day fold, and de-noised session rows.
 //! - `overview/flow_modal.rs`: centered top-level Flowchart Modal & branch actions.
 //! - `overview/trace_panel.rs`: shared redacted Trace panel, contract progress
 //!   card, and `ReceiptState` visuals.
@@ -12,11 +12,16 @@ mod trace_panel;
 use flowy_ui as theme;
 use flowy_ui::charts::{DonutSegment, donut_chart};
 use flowy_ui::status_pill;
-use gpui::{AnyElement, Context, FontWeight, IntoElement, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, FontWeight, IntoElement, MouseButton, div, prelude::*,
+    px,
+};
 
-use crate::panel::StudioPanel;
+use crate::panel::{StudioEvent, StudioPanel};
 use crate::ports::{
-    BoardKpiSummary, BranchPhase, DeliverableFormat, SessionBoardGroup,
+    BoardKpiSummary, BranchPhase, DailyActivityBucket, DeliverableFormat,
+    SessionBoardGroup, civil_month_day_from_epoch_ms, compute_daily_7d,
+    is_older_than_7d, normalize_epoch_ms, now_epoch_ms,
 };
 
 pub use trace_panel::TraceFilter;
@@ -29,6 +34,7 @@ pub enum BoardFilter {
     Approval,
     Running,
     Delivered,
+    Archived,
 }
 
 /// Active tab inside the Flowchart Modal detail footer.
@@ -45,20 +51,50 @@ impl StudioPanel {
             DeliverableFormat::Sheet => self.theme.file_kind_sheet(),
             DeliverableFormat::Slides => self.theme.file_kind_slides(),
             DeliverableFormat::Doc => self.theme.file_kind_doc(),
+            DeliverableFormat::CodeWeb => self.theme.file_kind_code(),
             DeliverableFormat::Other => self.theme.file_kind_other(),
         }
     }
 
     pub(super) fn format_tag_label(&self, format: DeliverableFormat) -> String {
         match format {
+            DeliverableFormat::CodeWeb => self.t("deliverables.kind_code"),
             DeliverableFormat::Other => self.t("deliverables.kind_file"),
             other => other.tag().to_owned(),
+        }
+    }
+
+    fn format_relative_time(&self, updated_at: u64, now_ms: u64) -> String {
+        let ts = normalize_epoch_ms(updated_at);
+        if ts == 0 {
+            return String::new();
+        }
+        let age_secs = now_ms.saturating_sub(ts) / 1_000;
+        if age_secs < 60 {
+            self.t("time.just_now")
+        } else if age_secs < 3_600 {
+            let mins = (age_secs / 60).max(1);
+            self.tf("time.mins_ago", &[("n", &mins.to_string())])
+        } else if age_secs < 86_400 {
+            let hours = (age_secs / 3_600).max(1);
+            self.tf("time.hours_ago", &[("n", &hours.to_string())])
+        } else if age_secs < 30 * 86_400 {
+            let days = (age_secs / 86_400).max(1);
+            self.tf("time.days_ago", &[("n", &days.to_string())])
+        } else {
+            let (month, day) = civil_month_day_from_epoch_ms(ts);
+            format!("{month}/{day}")
         }
     }
 
     /// Global Visual Board surface (`StudioSurface::Board`).
     pub(crate) fn board_canvas(&self, cx: &Context<'_, Self>) -> AnyElement {
         let snapshot = &self.board_snapshot;
+        let now_ms = if snapshot.generated_at_ms > 0 {
+            snapshot.generated_at_ms
+        } else {
+            now_epoch_ms()
+        };
         let project_filtered: Vec<&SessionBoardGroup> = snapshot
             .sessions
             .iter()
@@ -73,19 +109,29 @@ impl StudioPanel {
         } else {
             snapshot.kpi.clone()
         };
+        let scoped_daily_7d = if self.board_project_filter.is_some()
+            || snapshot.daily_7d.is_empty()
+        {
+            compute_daily_7d(&project_filtered, now_ms)
+        } else {
+            snapshot.daily_7d.clone()
+        };
         let filtered: Vec<&SessionBoardGroup> = project_filtered
             .iter()
             .copied()
             .filter(|group| match self.board_filter {
-                BoardFilter::All => true,
-                BoardFilter::Approval => group.has_blocker,
-                BoardFilter::Running => group.is_running,
-                BoardFilter::Delivered => group.has_delivered,
+                BoardFilter::Archived => group.archived,
+                BoardFilter::All => !group.archived,
+                BoardFilter::Approval => !group.archived && group.has_blocker,
+                BoardFilter::Running => !group.archived && group.is_running,
+                BoardFilter::Delivered => {
+                    !group.archived && group.has_delivered
+                }
             })
             .collect();
 
         let mut sessions_col =
-            div().w_full().flex().flex_col().gap(self.theme.space(10.));
+            div().w_full().flex().flex_col().gap(self.theme.space(8.));
 
         if filtered.is_empty() {
             sessions_col = sessions_col.child(
@@ -115,13 +161,37 @@ impl StudioPanel {
                             .child(self.t("board.empty_detail")),
                     ),
             );
+        } else if self.board_filter == BoardFilter::Archived {
+            for (card_idx, group) in filtered.into_iter().enumerate() {
+                sessions_col = sessions_col.child(self.board_session_card(
+                    group,
+                    card_idx as u64,
+                    now_ms,
+                    cx,
+                ));
+            }
         } else {
             let active_groups: Vec<&SessionBoardGroup> =
                 filtered.iter().copied().filter(|g| g.is_active).collect();
-            let settled_groups: Vec<&SessionBoardGroup> =
-                filtered.iter().copied().filter(|g| !g.is_active).collect();
+            let recent_settled: Vec<&SessionBoardGroup> = filtered
+                .iter()
+                .copied()
+                .filter(|g| {
+                    !g.is_active
+                        && (g.pinned || !is_older_than_7d(g.updated_at, now_ms))
+                })
+                .collect();
+            let older_settled: Vec<&SessionBoardGroup> = filtered
+                .iter()
+                .copied()
+                .filter(|g| {
+                    !g.is_active
+                        && !g.pinned
+                        && is_older_than_7d(g.updated_at, now_ms)
+                })
+                .collect();
             let show_headers =
-                !active_groups.is_empty() && !settled_groups.is_empty();
+                !active_groups.is_empty() && !recent_settled.is_empty();
             let mut card_idx: u64 = 0;
 
             if !active_groups.is_empty() {
@@ -139,12 +209,13 @@ impl StudioPanel {
                     );
                 }
                 for group in active_groups {
-                    sessions_col = sessions_col
-                        .child(self.board_session_card(group, card_idx, cx));
+                    sessions_col = sessions_col.child(
+                        self.board_session_card(group, card_idx, now_ms, cx),
+                    );
                     card_idx += 1;
                 }
             }
-            if !settled_groups.is_empty() {
+            if !recent_settled.is_empty() {
                 if show_headers {
                     sessions_col = sessions_col.child(
                         div()
@@ -154,14 +225,67 @@ impl StudioPanel {
                             .text_color(self.theme.muted())
                             .child(self.tf(
                                 "board.group_settled",
-                                &[("count", &settled_groups.len().to_string())],
+                                &[("count", &recent_settled.len().to_string())],
                             )),
                     );
                 }
-                for group in settled_groups {
-                    sessions_col = sessions_col
-                        .child(self.board_session_card(group, card_idx, cx));
+                for group in recent_settled {
+                    sessions_col = sessions_col.child(
+                        self.board_session_card(group, card_idx, now_ms, cx),
+                    );
                     card_idx += 1;
+                }
+            }
+            if !older_settled.is_empty() {
+                let older_label = self.tf(
+                    "board.group_older",
+                    &[("count", &older_settled.len().to_string())],
+                );
+                let chevron = if self.board_older_expanded {
+                    theme::icons::chevron_down()
+                } else {
+                    theme::icons::chevron_right()
+                };
+                sessions_col = sessions_col.child(
+                    theme::interactive(
+                        "board-older-divider",
+                        older_label.clone(),
+                        &self.theme,
+                    )
+                    .w_full()
+                    .mt(self.theme.space(6.))
+                    .px(self.theme.space(8.))
+                    .py(px(6.))
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.soft()))
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        panel.board_older_expanded =
+                            !panel.board_older_expanded;
+                        cx.notify();
+                    }))
+                    .child(chevron.size(px(13.)).text_color(self.theme.muted()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.muted())
+                            .whitespace_nowrap()
+                            .child(older_label),
+                    )
+                    .child(div().flex_1().h(px(1.)).bg(self.theme.line())),
+                );
+                if self.board_older_expanded {
+                    for group in older_settled {
+                        sessions_col =
+                            sessions_col.child(self.board_session_card(
+                                group, card_idx, now_ms, cx,
+                            ));
+                        card_idx += 1;
+                    }
                 }
             }
         }
@@ -176,18 +300,21 @@ impl StudioPanel {
             .py(self.theme.space(16.))
             .flex()
             .flex_col()
-            .gap(self.theme.space(14.))
-            .child(self.board_kpi_strip(&scoped_kpi, &project_filtered, cx))
+            .gap(self.theme.space(16.))
+            .child(self.board_kpi_strip(&scoped_kpi, &scoped_daily_7d, cx))
             .child(self.board_filter_bar(&scoped_kpi, cx))
             .child(sessions_col)
             .into_any_element()
     }
 
-    /// Adaptive 2x2 / 4x1 KPI visualization strip (`flex_wrap` + `min_w(210px)`).
+    /// Expanded 3-card KPI visualization header (~148px tall):
+    /// 1. Enlarged 76px progress donut + inline blocker CTA
+    /// 2. Real 7-day daily activity & delivery bar chart
+    /// 3. Expanded 5-category deliverable composition bar
     fn board_kpi_strip(
         &self,
         kpi: &BoardKpiSummary,
-        visible_sessions: &[&SessionBoardGroup],
+        daily_7d: &[DailyActivityBucket],
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let segments = vec![
@@ -205,20 +332,86 @@ impl StudioPanel {
             ),
         ];
 
-        let tile_donut = div()
+        let has_blockers = kpi.approval_count > 0;
+        let health_pill: AnyElement = if has_blockers {
+            let label = format!(
+                "{} {} \u{00b7} {}",
+                kpi.approval_count,
+                self.t("board.kpi_blockers"),
+                self.t("board.jump_blocker")
+            );
+            theme::interactive("board-kpi-blocker", label.clone(), &self.theme)
+                .px(self.theme.space(10.))
+                .py(px(5.))
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.status_attention().opacity(0.45))
+                .bg(self.theme.status_attention_bg())
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.open_first_blocker_modal(cx);
+                }))
+                .child(
+                    theme::icons::circle_alert()
+                        .size(px(13.))
+                        .text_color(self.theme.status_attention()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.status_attention())
+                        .whitespace_nowrap()
+                        .child(label),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .px(self.theme.space(8.))
+                .py(px(4.))
+                .rounded_lg()
+                .bg(self.theme.status_verified_bg())
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .child(
+                    theme::icons::check()
+                        .size(px(12.))
+                        .text_color(self.theme.status_verified()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.status_verified())
+                        .whitespace_nowrap()
+                        .child(self.t("board.kpi_clear")),
+                )
+                .into_any_element()
+        };
+
+        let card_progress = div()
             .flex_1()
-            .min_w(px(190.))
-            .p(self.theme.space(12.))
-            .rounded_xl()
+            .min_w(px(270.))
+            .min_h(px(148.))
+            .p(self.theme.space(16.))
+            .rounded_2xl()
             .border_1()
-            .border_color(self.theme.line())
+            .border_color(if has_blockers {
+                self.theme.status_attention().opacity(0.4)
+            } else {
+                self.theme.line()
+            })
             .bg(self.theme.card())
             .flex()
             .items_center()
-            .gap(self.theme.space(12.))
+            .gap(self.theme.space(16.))
             .child(donut_chart(
                 "board-kpi-donut",
-                52.0,
+                76.0,
                 segments,
                 kpi.total_branches.to_string(),
                 &self.theme,
@@ -227,23 +420,43 @@ impl StudioPanel {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .h_full()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .justify_between()
+                    .gap(self.theme.space(8.))
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
-                            .whitespace_nowrap()
-                            .child(self.t("board.kpi_branches")),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(self.theme.ink())
+                                    .whitespace_nowrap()
+                                    .child(self.t("board.kpi_branches")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .whitespace_nowrap()
+                                    .child(format!(
+                                        "{} / {}",
+                                        kpi.active_sessions, kpi.total_sessions
+                                    )),
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap(self.theme.space(8.))
+                            .gap_x(self.theme.space(10.))
+                            .gap_y(px(4.))
                             .text_xs()
                             .child(self.kpi_dot_stat(
                                 self.theme.status_attention(),
@@ -260,96 +473,182 @@ impl StudioPanel {
                                 kpi.delivered_count,
                                 self.t("board.stat_done"),
                             )),
-                    ),
+                    )
+                    .child(div().flex().items_center().child(health_pill)),
             );
 
-        let has_blockers = kpi.approval_count > 0;
-        let blocker_fg = if has_blockers {
-            self.theme.status_attention()
-        } else {
-            self.theme.status_verified()
-        };
-        let blocker_bg = if has_blockers {
-            self.theme.status_attention_bg()
-        } else {
-            self.theme.status_verified_bg()
-        };
-        let blocker_label = if has_blockers {
-            self.t("board.kpi_blockers")
-        } else {
-            self.t("board.kpi_clear")
-        };
-        let tile_blocker = theme::interactive(
-            "board-kpi-blocker",
-            blocker_label.clone(),
-            &self.theme,
-        )
-        .flex_1()
-        .min_w(px(190.))
-        .p(self.theme.space(12.))
-        .rounded_xl()
-        .border_1()
-        .border_color(if has_blockers {
-            self.theme.status_attention().opacity(0.45)
-        } else {
-            self.theme.line()
-        })
-        .bg(blocker_bg)
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(self.theme.space(8.))
-        .on_click(cx.listener(|panel, _, _, cx| {
-            panel.open_first_blocker_modal(cx);
-        }))
-        .child(
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(blocker_fg)
-                        .whitespace_nowrap()
-                        .child(blocker_label),
-                )
-                .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(blocker_fg)
-                        .child(kpi.approval_count.to_string()),
-                ),
-        )
-        .when(has_blockers, |card| {
-            card.child(
+        // Card 2: Real 7-day activity & delivery bar chart.
+        let week_total: usize =
+            daily_7d.iter().map(DailyActivityBucket::total).sum();
+        let max_day = daily_7d
+            .iter()
+            .map(DailyActivityBucket::total)
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let mut chart_cols = div()
+            .w_full()
+            .h(px(82.))
+            .flex()
+            .items_end()
+            .justify_between()
+            .gap(px(6.));
+        for bucket in daily_7d {
+            let total = bucket.total();
+            let bar_max_h: f32 = 50.0;
+            let bar_track = if total > 0 {
+                let fill_h = ((total as f32 / max_day as f32) * bar_max_h)
+                    .clamp(7.0, bar_max_h);
+                let active_h = if bucket.active_or_blocked > 0 {
+                    ((bucket.active_or_blocked as f32 / total as f32) * fill_h)
+                        .clamp(3.0, fill_h)
+                } else {
+                    0.0
+                };
+                let done_h = (fill_h - active_h).max(0.0);
                 div()
-                    .flex_none()
-                    .px(self.theme.space(8.))
-                    .py(px(4.))
-                    .rounded_lg()
-                    .bg(self.theme.card())
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(blocker_fg)
-                    .whitespace_nowrap()
-                    .child(self.t("board.jump_blocker")),
-            )
-        });
+                    .w_full()
+                    .max_w(px(24.))
+                    .h(px(bar_max_h))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .when(active_h > 0.0, |col| {
+                        col.child(
+                            div()
+                                .w_full()
+                                .h(px(active_h))
+                                .bg(self.theme.status_active()),
+                        )
+                    })
+                    .when(done_h > 0.0, |col| {
+                        col.child(
+                            div()
+                                .w_full()
+                                .h(px(done_h))
+                                .bg(self.theme.status_verified()),
+                        )
+                    })
+            } else {
+                div()
+                    .w_full()
+                    .max_w(px(24.))
+                    .h(px(bar_max_h))
+                    .rounded_md()
+                    .bg(self.theme.soft().opacity(0.65))
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .child(div().w_full().h(px(3.)).bg(self.theme.line()))
+            };
+            let day_label = if bucket.day_offset == 0 {
+                self.t("board.kpi_today")
+            } else {
+                format!("{}/{}", bucket.month, bucket.day)
+            };
+            let is_today = bucket.day_offset == 0;
+            chart_cols = chart_cols.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .h(px(13.))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if total > 0 {
+                                self.theme.ink()
+                            } else {
+                                self.theme.muted().opacity(0.4)
+                            })
+                            .child(if total > 0 {
+                                total.to_string()
+                            } else {
+                                String::new()
+                            }),
+                    )
+                    .child(bar_track)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(if is_today {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if is_today {
+                                self.theme.ink()
+                            } else {
+                                self.theme.muted()
+                            })
+                            .whitespace_nowrap()
+                            .child(day_label),
+                    ),
+            );
+        }
 
+        let card_trend = div()
+            .flex_1()
+            .min_w(px(270.))
+            .min_h(px(148.))
+            .p(self.theme.space(16.))
+            .rounded_2xl()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
+            .flex()
+            .flex_col()
+            .justify_between()
+            .gap(self.theme.space(10.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.ink())
+                            .whitespace_nowrap()
+                            .child(self.t("board.kpi_trend_7d")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.muted())
+                            .whitespace_nowrap()
+                            .child(self.tf(
+                                "board.kpi_trend_sub",
+                                &[("count", &week_total.to_string())],
+                            )),
+                    ),
+            )
+            .child(chart_cols);
+
+        // Card 3: Expanded 5-category deliverable composition bar.
         let format_total = (kpi.sheet_count
             + kpi.slides_count
             + kpi.doc_count
+            + kpi.code_count
             + kpi.other_count)
             .max(1);
         let raw_shares: Vec<(f32, gpui::Rgba)> = [
             (kpi.sheet_count, self.theme.file_kind_sheet()),
             (kpi.slides_count, self.theme.file_kind_slides()),
             (kpi.doc_count, self.theme.file_kind_doc()),
+            (kpi.code_count, self.theme.file_kind_code()),
             (kpi.other_count, self.theme.file_kind_other()),
         ]
         .into_iter()
@@ -365,7 +664,7 @@ impl StudioPanel {
             .max(1.0);
         let mut bar_track = div()
             .w_full()
-            .h(px(7.))
+            .h(px(10.))
             .rounded_full()
             .overflow_hidden()
             .bg(self.theme.soft())
@@ -379,35 +678,38 @@ impl StudioPanel {
                     .w(gpui::relative(share / share_sum)),
             );
         }
-        let tile_formats = div()
+
+        let card_formats = div()
             .flex_1()
-            .min_w(px(190.))
-            .p(self.theme.space(12.))
-            .rounded_xl()
+            .min_w(px(270.))
+            .min_h(px(148.))
+            .p(self.theme.space(16.))
+            .rounded_2xl()
             .border_1()
             .border_color(self.theme.line())
             .bg(self.theme.card())
             .flex()
             .flex_col()
             .justify_between()
-            .gap(self.theme.space(8.))
+            .gap(self.theme.space(10.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(self.theme.space(6.))
-                    .text_xs()
+                    .gap(self.theme.space(8.))
                     .child(
                         div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.ink())
                             .whitespace_nowrap()
                             .child(self.t("board.kpi_deliverables")),
                     )
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_lg()
+                            .font_weight(FontWeight::BOLD)
                             .text_color(self.theme.status_verified())
                             .whitespace_nowrap()
                             .child(kpi.delivered_count.to_string()),
@@ -419,149 +721,87 @@ impl StudioPanel {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .justify_between()
-                    .gap(px(6.))
+                    .gap_x(self.theme.space(12.))
+                    .gap_y(px(6.))
                     .text_xs()
-                    .child(
-                        div()
-                            .text_color(self.theme.file_kind_sheet())
-                            .child(format!("XLSX {}", kpi.sheet_count)),
-                    )
-                    .child(
-                        div()
-                            .text_color(self.theme.file_kind_slides())
-                            .child(format!("PPTX {}", kpi.slides_count)),
-                    )
-                    .child(
-                        div()
-                            .text_color(self.theme.file_kind_doc())
-                            .child(format!("DOCX {}", kpi.doc_count)),
-                    )
-                    .when(kpi.other_count > 0, |row| {
-                        row.child(
-                            div()
-                                .text_color(self.theme.file_kind_other())
-                                .child(format!(
-                                    "{} {}",
-                                    self.t("deliverables.kind_file"),
-                                    kpi.other_count
-                                )),
-                        )
-                    }),
+                    .child(self.format_legend_item(
+                        self.theme.file_kind_sheet(),
+                        "XLSX".to_owned(),
+                        kpi.sheet_count,
+                    ))
+                    .child(self.format_legend_item(
+                        self.theme.file_kind_slides(),
+                        "PPTX".to_owned(),
+                        kpi.slides_count,
+                    ))
+                    .child(self.format_legend_item(
+                        self.theme.file_kind_doc(),
+                        "DOCX".to_owned(),
+                        kpi.doc_count,
+                    ))
+                    .child(self.format_legend_item(
+                        self.theme.file_kind_code(),
+                        self.t("deliverables.kind_code"),
+                        kpi.code_count,
+                    ))
+                    .child(self.format_legend_item(
+                        self.theme.file_kind_other(),
+                        self.t("deliverables.kind_file"),
+                        kpi.other_count,
+                    )),
             );
-
-        let mut spark_bars =
-            div().w_full().h(px(22.)).flex().items_end().gap(px(4.));
-        for (idx, group) in visible_sessions.iter().copied().take(8).enumerate()
-        {
-            let bar_h = (group.total_branch_count as f32)
-                .mul_add(4.0, 8.0)
-                .min(22.0);
-            let color = if group.has_blocker {
-                self.theme.status_attention()
-            } else if group.is_running {
-                self.theme.status_active()
-            } else if group.has_delivered {
-                self.theme.status_verified().opacity(0.6)
-            } else {
-                self.theme.line()
-            };
-            let sid = group.session_id.clone();
-            let spark_label = format!(
-                "{} \u{00b7} {}",
-                self.t("board.kpi_sessions"),
-                group.title
-            );
-            spark_bars = spark_bars.child(
-                theme::interactive(
-                    ("board-spark", idx as u64),
-                    spark_label,
-                    &self.theme,
-                )
-                .flex_1()
-                .min_w(px(10.))
-                .max_w(px(28.))
-                .h(px(bar_h))
-                .rounded_sm()
-                .bg(color)
-                .cursor_pointer()
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        panel.open_flow_modal(sid.clone(), None, cx);
-                    },
-                )),
-            );
-        }
-        let tile_sessions = div()
-            .flex_1()
-            .min_w(px(190.))
-            .p(self.theme.space(12.))
-            .rounded_xl()
-            .border_1()
-            .border_color(self.theme.line())
-            .bg(self.theme.card())
-            .flex()
-            .flex_col()
-            .justify_between()
-            .gap(self.theme.space(6.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_xs()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
-                            .whitespace_nowrap()
-                            .child(self.t("board.kpi_sessions")),
-                    )
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.ink())
-                            .child(format!(
-                                "{} / {}",
-                                kpi.active_sessions, kpi.total_sessions
-                            )),
-                    ),
-            )
-            .child(spark_bars)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .child(self.t("board.click_hint")),
-            );
-
-        // Two paired rows guarantee 4x1 on wide viewports and a symmetric 2x2
-        // grid at 960px (never a 3+1 orphan row).
-        let pair_left = div()
-            .flex_1()
-            .min_w(px(420.))
-            .flex()
-            .gap(self.theme.space(12.))
-            .child(tile_donut)
-            .child(tile_blocker);
-        let pair_right = div()
-            .flex_1()
-            .min_w(px(420.))
-            .flex()
-            .gap(self.theme.space(12.))
-            .child(tile_formats)
-            .child(tile_sessions);
 
         div()
             .w_full()
             .flex()
             .flex_wrap()
             .gap(self.theme.space(12.))
-            .child(pair_left)
-            .child(pair_right)
+            .child(card_progress)
+            .child(card_trend)
+            .child(card_formats)
+            .into_any_element()
+    }
+
+    fn format_legend_item(
+        &self,
+        color: gpui::Rgba,
+        label: String,
+        count: usize,
+    ) -> AnyElement {
+        let dimmed = count == 0;
+        div()
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .whitespace_nowrap()
+            .child(div().size(px(6.)).rounded_full().bg(if dimmed {
+                color.opacity(0.4)
+            } else {
+                color
+            }))
+            .child(
+                div()
+                    .text_color(if dimmed {
+                        self.theme.muted().opacity(0.7)
+                    } else {
+                        self.theme.muted()
+                    })
+                    .child(label),
+            )
+            .child(
+                div()
+                    .font_weight(if dimmed {
+                        FontWeight::NORMAL
+                    } else {
+                        FontWeight::SEMIBOLD
+                    })
+                    .text_color(if dimmed {
+                        self.theme.muted().opacity(0.6)
+                    } else {
+                        self.theme.ink()
+                    })
+                    .child(count.to_string()),
+            )
             .into_any_element()
     }
 
@@ -592,7 +832,7 @@ impl StudioPanel {
         kpi: &BoardKpiSummary,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let filters = [
+        let mut filters = vec![
             (
                 BoardFilter::All,
                 self.tf(
@@ -604,6 +844,17 @@ impl StudioPanel {
             (BoardFilter::Running, self.t("board.filter_running")),
             (BoardFilter::Delivered, self.t("board.filter_delivered")),
         ];
+        if kpi.archived_sessions > 0
+            || self.board_filter == BoardFilter::Archived
+        {
+            filters.push((
+                BoardFilter::Archived,
+                self.tf(
+                    "board.filter_archived",
+                    &[("count", &kpi.archived_sessions.to_string())],
+                ),
+            ));
+        }
 
         let mut pills = div()
             .flex()
@@ -734,32 +985,132 @@ impl StudioPanel {
             .into_any_element()
     }
 
+    fn board_row_actions(
+        &self,
+        session_id: &str,
+        index: u64,
+        include_flow_icon: bool,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let sid_chat = session_id.to_owned();
+        let sid_flow = session_id.to_owned();
+        let sid_menu = session_id.to_owned();
+        let open_chat_label = self.t("board.open_chat");
+        let open_flow_label = self.t("board.open_flow");
+        let more_label = self.t("library.more");
+
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                theme::interactive(
+                    ("board-row-chat", index),
+                    open_chat_label,
+                    &self.theme,
+                )
+                .size(px(24.))
+                .rounded_md()
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(self.theme.muted())
+                .hover(|s| {
+                    s.bg(self.theme.dock_hover()).text_color(self.theme.ink())
+                })
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    cx.stop_propagation();
+                    panel.open_session(&sid_chat, cx);
+                }))
+                .child(theme::icons::arrow_up_right().size(px(13.))),
+            )
+            .when(include_flow_icon, |row| {
+                row.child(
+                    theme::interactive(
+                        ("board-row-flow", index),
+                        open_flow_label,
+                        &self.theme,
+                    )
+                    .size(px(24.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(self.theme.muted())
+                    .hover(|s| {
+                        s.bg(self.theme.dock_hover())
+                            .text_color(self.theme.ink())
+                    })
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        cx.stop_propagation();
+                        panel.open_flow_modal(sid_flow.clone(), None, cx);
+                    }))
+                    .child(theme::icons::workflow().size(px(13.))),
+                )
+            })
+            .child(
+                theme::interactive(
+                    ("board-row-menu", index),
+                    more_label,
+                    &self.theme,
+                )
+                .size(px(24.))
+                .rounded_md()
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(self.theme.muted())
+                .hover(|s| {
+                    s.bg(self.theme.dock_hover()).text_color(self.theme.ink())
+                })
+                .on_click(cx.listener(
+                    move |_panel, event: &gpui::ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(StudioEvent::OpenSessionMenu {
+                            session_id: sid_menu.clone(),
+                            position: event.position(),
+                        });
+                    },
+                ))
+                .child(theme::icons::ellipsis().size(px(13.))),
+            )
+            .into_any_element()
+    }
+
     fn board_session_card(
         &self,
         group: &SessionBoardGroup,
         index: u64,
+        now_ms: u64,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let sid_card = group.session_id.clone();
-        let project_label = group
-            .project_name
-            .clone()
-            .unwrap_or_else(|| self.t("studio.space_default_sub"));
+        let sid_right = group.session_id.clone();
+        let is_real_session = !group.is_synthetic();
+        let rel_time = self.format_relative_time(group.updated_at, now_ms);
 
         if !group.is_active {
-            let file_branches: Vec<_> = group
+            let all_file_branches: Vec<_> = group
                 .branches
                 .iter()
                 .filter(|b| {
                     b.deliverable_path.is_some()
                         || !matches!(b.phase, BranchPhase::Idle)
                 })
-                .take(3)
                 .collect();
-            let has_deliverables = !file_branches.is_empty();
+            let total_files = all_file_branches.len();
+            let shown_files: Vec<_> =
+                all_file_branches.into_iter().take(3).collect();
+            let overflow_files = total_files.saturating_sub(shown_files.len());
+            let has_deliverables = !shown_files.is_empty();
+
             let mut file_chips =
-                div().flex().flex_wrap().items_center().gap(px(6.));
-            for branch in file_branches {
+                div().flex().flex_wrap().items_center().gap(px(5.));
+            for branch in shown_files {
                 let color = self.format_color(branch.format);
                 file_chips = file_chips.child(
                     div()
@@ -769,13 +1120,28 @@ impl StudioPanel {
                         .bg(self.theme.soft())
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(px(5.))
                         .text_xs()
-                        .text_color(self.theme.muted())
+                        .text_color(self.theme.ink())
                         .child(div().size(px(6.)).rounded_full().bg(color))
                         .child(branch.deliverable_name.clone()),
                 );
             }
+            if overflow_files > 0 {
+                file_chips = file_chips.child(
+                    div()
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(format!("+{overflow_files}")),
+                );
+            }
+
+            let preview_snippet =
+                (!has_deliverables).then(|| group.preview.clone()).flatten();
 
             return theme::interactive(
                 ("board-session-compact", index),
@@ -799,10 +1165,24 @@ impl StudioPanel {
             .on_click(cx.listener(move |panel, _, _, cx| {
                 panel.open_flow_modal(sid_card.clone(), None, cx);
             }))
+            .when(is_real_session, |row| {
+                row.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(
+                        move |_panel, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            cx.emit(StudioEvent::OpenSessionMenu {
+                                session_id: sid_right.clone(),
+                                position: event.position,
+                            });
+                        },
+                    ),
+                )
+            })
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(180.))
+                    .min_w(px(200.))
                     .flex()
                     .items_center()
                     .gap(self.theme.space(8.))
@@ -810,9 +1190,17 @@ impl StudioPanel {
                         if has_deliverables {
                             self.theme.status_verified()
                         } else {
-                            self.theme.muted().opacity(0.6)
+                            self.theme.muted().opacity(0.5)
                         },
                     ))
+                    .when(group.pinned, |row| {
+                        row.child(
+                            theme::icons::pin()
+                                .size(px(12.))
+                                .flex_none()
+                                .text_color(self.theme.accent()),
+                        )
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -823,25 +1211,59 @@ impl StudioPanel {
                             .truncate()
                             .child(group.title.clone()),
                     )
-                    .child(status_pill(
-                        self.theme.soft(),
-                        self.theme.muted(),
-                        project_label,
-                        None,
-                    )),
+                    .when_some(group.project_name.clone(), |row, project| {
+                        row.child(status_pill(
+                            self.theme.soft(),
+                            self.theme.muted(),
+                            project,
+                            None,
+                        ))
+                    })
+                    .when(group.archived, |row| {
+                        row.child(status_pill(
+                            self.theme.soft(),
+                            self.theme.muted(),
+                            self.t("chat.archived_badge"),
+                            None,
+                        ))
+                    }),
             )
-            .when(has_deliverables, |row| row.child(file_chips))
             .child(
                 div()
                     .flex_none()
-                    .px(self.theme.space(8.))
-                    .py(px(3.))
-                    .rounded_md()
-                    .bg(self.theme.soft())
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(self.theme.ink())
-                    .child(self.t("board.open_flow")),
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .when(has_deliverables, |right| right.child(file_chips))
+                    .when_some(preview_snippet, |right, snippet| {
+                        right.child(
+                            div()
+                                .max_w(px(260.))
+                                .text_xs()
+                                .text_color(self.theme.muted())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .truncate()
+                                .child(snippet),
+                        )
+                    })
+                    .when(!rel_time.is_empty(), |right| {
+                        right.child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.muted().opacity(0.8))
+                                .whitespace_nowrap()
+                                .child(rel_time),
+                        )
+                    })
+                    .when(is_real_session, |right| {
+                        right.child(self.board_row_actions(
+                            &group.session_id,
+                            index,
+                            false,
+                            cx,
+                        ))
+                    }),
             )
             .into_any_element();
         }
@@ -1065,6 +1487,20 @@ impl StudioPanel {
         .on_click(cx.listener(move |panel, _, _, cx| {
             panel.open_flow_modal(sid_card.clone(), None, cx);
         }))
+        .when(is_real_session, |card| {
+            card.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(
+                    move |_panel, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(StudioEvent::OpenSessionMenu {
+                            session_id: sid_right.clone(),
+                            position: event.position,
+                        });
+                    },
+                ),
+            )
+        })
         .child(
             div()
                 .w_full()
@@ -1097,6 +1533,14 @@ impl StudioPanel {
                                         ),
                                 ),
                         )
+                        .when(group.pinned, |row| {
+                            row.child(
+                                theme::icons::pin()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .text_color(self.theme.accent()),
+                            )
+                        })
                         .child(
                             div()
                                 .text_sm()
@@ -1107,12 +1551,17 @@ impl StudioPanel {
                                 .truncate()
                                 .child(group.title.clone()),
                         )
-                        .child(status_pill(
-                            self.theme.soft(),
-                            self.theme.muted(),
-                            project_label,
-                            None,
-                        ))
+                        .when_some(
+                            group.project_name.clone(),
+                            |row, project| {
+                                row.child(status_pill(
+                                    self.theme.soft(),
+                                    self.theme.muted(),
+                                    project,
+                                    None,
+                                ))
+                            },
+                        )
                         .child(status_pill(
                             badge_bg, badge_fg, badge_text, None,
                         )),
@@ -1120,16 +1569,26 @@ impl StudioPanel {
                 .child(
                     div()
                         .flex_none()
-                        .px(self.theme.space(10.))
-                        .py(px(4.))
-                        .rounded_lg()
-                        .bg(self.theme.soft())
-                        .border_1()
-                        .border_color(self.theme.line())
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.ink())
-                        .child(self.t("board.open_flow")),
+                        .flex()
+                        .items_center()
+                        .gap(self.theme.space(8.))
+                        .when(!rel_time.is_empty(), |right| {
+                            right.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.theme.muted().opacity(0.8))
+                                    .whitespace_nowrap()
+                                    .child(rel_time),
+                            )
+                        })
+                        .when(is_real_session, |right| {
+                            right.child(self.board_row_actions(
+                                &group.session_id,
+                                index,
+                                true,
+                                cx,
+                            ))
+                        }),
                 ),
         )
         .child(branches_col)

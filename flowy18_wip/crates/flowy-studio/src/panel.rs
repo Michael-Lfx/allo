@@ -260,6 +260,7 @@ pub struct StudioPanel {
     pub(crate) local_env: crate::ports::LocalEnvSnapshot,
     pub(crate) board_filter: crate::overview::BoardFilter,
     pub(crate) board_project_filter: Option<String>,
+    pub(crate) board_older_expanded: bool,
     pub(crate) flow_modal: FlowModalState,
     pub(crate) trace_filter: crate::overview::TraceFilter,
     /// Dirty-cached redacted traces for the currently open Trace tab so
@@ -599,6 +600,7 @@ impl StudioPanel {
             local_env: crate::ports::LocalEnvSnapshot::default(),
             board_filter: crate::overview::BoardFilter::All,
             board_project_filter: None,
+            board_older_expanded: false,
             flow_modal: FlowModalState::default(),
             trace_filter: crate::overview::TraceFilter::All,
             cached_trace: None,
@@ -3710,6 +3712,9 @@ mod tests {
                     project_name: None,
                     workspace_display: String::new(),
                     updated_at: 0,
+                    pinned: false,
+                    archived: false,
+                    preview: None,
                     branches: vec![crate::ports::WorkBranchSummary {
                         id: "b-demo".into(),
                         skill_label: crate::ports::SkillLabel::Key(
