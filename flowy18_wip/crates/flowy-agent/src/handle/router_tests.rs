@@ -4246,3 +4246,68 @@ fn pr2b_live_cloud_router_two_messages_non_blocking_e2e() {
         "Message 2 must NOT cancel Worker 1"
     );
 }
+
+#[test]
+fn collect_work_dispatch_turns_pairs_batched_tools_and_resets_across_turns() {
+    let rows = vec![
+        // Turn 0: cancelled mid-call leaving an orphaned `dispatch_work` tool call.
+        ChatLine::User {
+            text: "aborted turn".into(),
+        },
+        ChatLine::ToolCall {
+            name: "dispatch_work".into(),
+            target: String::new(),
+            call_id: "c-aborted".into(),
+            running: false,
+        },
+        // Turn 1: batched `dispatch_work` + `query_work_status`, where result 0 omits `receipt_id`.
+        ChatLine::User {
+            text: "batch turn".into(),
+        },
+        ChatLine::ToolCall {
+            name: "dispatch_work".into(),
+            target: String::new(),
+            call_id: "c-batch-1".into(),
+            running: false,
+        },
+        ChatLine::ToolCall {
+            name: "query_work_status".into(),
+            target: String::new(),
+            call_id: "c-batch-2".into(),
+            running: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"work_id":"w-batch"}"#.into(),
+            is_error: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"root_session_id":"r-1","works":[]}"#.into(),
+            is_error: false,
+        },
+        // Turn 2: non-dispatch tool must not inherit Turn 0's orphaned `dispatch_work`.
+        ChatLine::User {
+            text: "unrelated turn".into(),
+        },
+        ChatLine::ToolCall {
+            name: "read_file".into(),
+            target: "note.md".into(),
+            call_id: "c-read".into(),
+            running: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"work_id":"w-stale"}"#.into(),
+            is_error: false,
+        },
+    ];
+    let user_positions: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            matches!(line, ChatLine::User { .. }).then_some(idx)
+        })
+        .collect();
+    let turns =
+        AgentHandle::collect_work_dispatch_turns(&rows, &user_positions);
+    assert_eq!(turns.get("w-batch"), Some(&1));
+    assert_eq!(turns.get("w-stale"), None);
+}

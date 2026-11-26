@@ -1278,12 +1278,7 @@ impl AgentHandle {
             .ok_or("notice.agent_failed")?;
         let mut family_ids: BTreeSet<String> =
             std::iter::once(session_id.to_owned())
-                .chain(
-                    engine
-                        .child_sessions(session_id)
-                        .into_iter()
-                        .map(|child| child.id),
-                )
+                .chain(engine.child_session_ids(session_id))
                 .collect();
         let has_pending_followups = archived
             && engine
@@ -1668,9 +1663,9 @@ impl AgentHandle {
         if self.inner.session_role(session_id) == SessionRole::Router {
             let engine = lock(&self.inner.engine).clone();
             if let Some(eng) = engine {
-                return eng.child_sessions(session_id).iter().any(|child| {
-                    self.single_session_needs_attention(&child.id)
-                });
+                return eng.child_session_ids(session_id).iter().any(
+                    |child_id| self.single_session_needs_attention(child_id),
+                );
             }
         }
         false
@@ -2283,23 +2278,25 @@ impl AgentHandle {
         }
         let mut current_turn: Option<usize> = None;
         let mut user_cursor = 0_usize;
-        let mut last_tool_name: Option<&str> = None;
+        let mut pending_tools: std::collections::VecDeque<&str> =
+            std::collections::VecDeque::new();
         for (idx, line) in rows.iter().enumerate() {
             while user_cursor < user_positions.len()
                 && user_positions[user_cursor] <= idx
             {
                 current_turn = Some(user_cursor);
+                pending_tools.clear();
                 user_cursor += 1;
             }
             match line {
                 ChatLine::ToolCall { name, .. } => {
-                    last_tool_name = Some(name.as_str());
+                    pending_tools.push_back(name.as_str());
                 }
                 ChatLine::ToolResult {
                     text,
                     is_error: false,
                 } => {
-                    let prev_tool = last_tool_name.take();
+                    let prev_tool = pending_tools.pop_front();
                     if let Some(turn) = current_turn
                         && let Ok(val) =
                             serde_json::from_str::<serde_json::Value>(text)
@@ -2314,7 +2311,7 @@ impl AgentHandle {
                     }
                 }
                 ChatLine::ToolResult { is_error: true, .. } => {
-                    last_tool_name = None;
+                    let _ = pending_tools.pop_front();
                 }
                 _ => {}
             }

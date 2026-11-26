@@ -181,22 +181,20 @@ fn collect_latest_deliverables(
                     }
                 }
                 ChatLine::Verification { artifact_path, .. }
-                    if !artifact_path.trim().is_empty()
-                        && verification_settled
-                            .get(&crate::ports::display_path_str(artifact_path))
-                            .copied()
-                            == Some(true)
-                        && seen.insert(crate::ports::display_path_str(
-                            artifact_path,
-                        )) =>
+                    if !artifact_path.trim().is_empty() =>
                 {
-                    entries.push(flowy_agent::FileEntry {
-                        path: artifact_path.clone(),
-                        change: flowy_agent::FileChangeKind::Add,
-                        added: 0,
-                        removed: 0,
-                        binary: false,
-                    });
+                    let norm = crate::ports::display_path_str(artifact_path);
+                    if verification_settled.get(&norm).copied() == Some(true)
+                        && seen.insert(norm)
+                    {
+                        entries.push(flowy_agent::FileEntry {
+                            path: artifact_path.clone(),
+                            change: flowy_agent::FileChangeKind::Add,
+                            added: 0,
+                            removed: 0,
+                            binary: false,
+                        });
+                    }
                 }
                 _ => {}
             }

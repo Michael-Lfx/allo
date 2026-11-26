@@ -4111,23 +4111,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[gpui::test]
-    fn cold_start_project_a_draft_switch_to_b_creates_single_project_a_router_and_preserves_b_draft(
+    fn open_cold_panel(
         cx: &mut TestAppContext,
-    ) {
+        tag: &str,
+    ) -> (Entity<StudioPanel>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "flowy-studio-cold-proj-{}-{}",
+            "flowy-studio-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        let proj_a_dir = root.join("proj-a");
-        let proj_b_dir = root.join("proj-b");
-        std::fs::create_dir_all(&proj_a_dir).unwrap();
-        std::fs::create_dir_all(&proj_b_dir).unwrap();
-
         let panel = open_panel(cx, |window, cx| {
             let ui =
                 UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
@@ -4153,12 +4148,26 @@ mod tests {
                 cx,
             )
         });
-        let proj_a_id = Rc::new(RefCell::new(String::new()));
-        let proj_b_id = Rc::new(RefCell::new(String::new()));
-        panel.update(cx, |panel, cx| {
+        panel.update(cx, |panel, _| {
             while panel.agent.is_initializing() {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
+        });
+        (panel, root)
+    }
+
+    #[gpui::test]
+    fn cold_start_project_a_draft_switch_to_b_creates_single_project_a_router_and_preserves_b_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = open_cold_panel(cx, "cold-proj");
+        let proj_a_dir = root.join("proj-a");
+        let proj_b_dir = root.join("proj-b");
+        std::fs::create_dir_all(&proj_a_dir).unwrap();
+        std::fs::create_dir_all(&proj_b_dir).unwrap();
+        let proj_a_id = Rc::new(RefCell::new(String::new()));
+        let proj_b_id = Rc::new(RefCell::new(String::new()));
+        panel.update(cx, |panel, cx| {
             panel
                 .create_project("Alpha", &proj_a_dir, cx)
                 .expect("create project A");
@@ -4257,46 +4266,11 @@ mod tests {
     fn cold_start_existing_router_queues_instead_of_rejecting_library_loading(
         cx: &mut TestAppContext,
     ) {
-        let root = std::env::temp_dir().join(format!(
-            "flowy-studio-cold-router-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let (panel, root) = open_cold_panel(cx, "cold-router");
         let proj_a_dir = root.join("proj-a");
         std::fs::create_dir_all(&proj_a_dir).unwrap();
-        let panel = open_panel(cx, |window, cx| {
-            let ui =
-                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
-            StudioPanel::new(
-                StudioConfig {
-                    product: "Flowy",
-                    i18n: I18n::embedded("Flowy"),
-                    model: Model::Lite,
-                    plan: Plan::Free,
-                    model_info_version: String::new(),
-                    model_info_open: false,
-                    store_root: root.clone(),
-                    llm: LlmConfig {
-                        api_key: None,
-                        base_url: String::new(),
-                        model: String::new(),
-                        provider: "flowy".into(),
-                        ..LlmConfig::default()
-                    },
-                },
-                ui,
-                window,
-                cx,
-            )
-        });
         let router_id = Rc::new(RefCell::new(String::new()));
         panel.update(cx, |panel, cx| {
-            while panel.agent.is_initializing() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
             let rid = panel
                 .agent
                 .create_router_project_session(flowy_agent::AgentWorkspace {
