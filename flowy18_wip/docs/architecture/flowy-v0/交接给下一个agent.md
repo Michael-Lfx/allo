@@ -1,6 +1,6 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.15 更新）**：**直接先读 §24（`fix/flowy-desktop-shell-polish` 桌面壳可靠化、类 GPT Dot 对话净化与 695/695 基线）**，再按需查 §23（PR #503 审查复核七项修复与 679 基线）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> **现役唯一入口（2026-11-27 修订 9.16 更新）**：**直接先读 §25（`feat/flowy-dot-bubbles-and-quote` 假评分下线、Dot 分阶段气泡、悬浮操作栏与单条引用 703/703 基线）**，再按需查 §24（PR #504 `fix/flowy-desktop-shell-polish` 桌面壳可靠化、类 GPT Dot 对话净化与 695/695 基线）、§23（PR #503 审查复核七项修复与 679 基线）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
 > §1–§23 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §24 不一致处，**一律以 §24 为准**。
 
 ---
@@ -795,3 +795,18 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
 
 - **本地已绿门禁**：10-Crate `--all-targets` Clippy **0 告警**、8-Crate 串行测试 **695 / 695 PASS**（+16 净增回归用例，0 失败，6 ignored）、`cargo check -p flowy-desktop --locked` & `cargo build --bin flowy-app --locked` 通过、`cargo fmt --all -- --check` 零差异、`check-ui-contracts.mjs` 通过，双主题真机视觉 E2E `6 / 6 PNG`（Dark `zh-CN` + Light `en`）`ok=True, failures=0, log_errors=0`。
 - **后续优先级**：`persona.rs` 注入 / 跨轮 `dispatch_receipt_id` 细粒度重锚 → **S5**（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）→ **V6**（仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板不动工）。
+
+---
+
+## 25. Dot 分阶段圆角气泡、悬浮复制引用与假评分下线收口（2026-11-27 · `feat/flowy-dot-bubbles-and-quote`）
+
+- **代码与契约状态**：基于 `origin/main@08d0aebbe`（PR #504）新建特性分支 `feat/flowy-dot-bubbles-and-quote`，已完成 5 笔干净提交（`c8cbc5eae` / `e139bbfd6` / `cc4638bb5` / `c4902ded4` / `6d8827619`）。严格保留 PR #503 / Track B 内核接缝（`collect_work_dispatch_turns`、`ChatLine::Verification::source_session_id`）及 `check-ui-contracts.mjs` 全规则。
+- **核心改动摘要**：
+  1. 彻底清除无后端假五星评分（`chat.rs` `rating_row`/`rate_result`、`panel.rs` & `app/mod.rs` `StudioEvent::Rated`、23 语种 `chat.rate_prompt`/`chat.rate_thanks`/`ui.rating`），`rg` 扫描归零，反向缺键证伪生效。
+  2. `feed.rs` 落地 Dot 分阶段圆角气泡（去顶部 `sparkles`/`Flowy` 标题，区分右上 `User` 药丸、左上紧凑 `ack_rows` 气泡、独立终稿 `Assistant` 卡片与 `.border_l_1()` 展开态思考链），窄视口 `360px` 有界不溢出。
+  3. `flowy-ui` 引入 Lucide `quote.svg`，23 语种 LF 对称补齐 3 键（维持 943 键），实现 `h(px(26.))` `.group("msg-hover-{row_id}")` 零抖动悬浮栏（仅复制+引用，UIA 标签带上下文摘要）与微信式单条 `QuoteBanner` + `✕` + `/skill:` 保首的 `> ❝ <role>: <excerpt>` 拼拆/`sync_quote_session()` 单源状态同步。
+- **最近一次实测基线（详见 `证据.md` §11.43）**：
+  - `cargo fmt --all -- --check` + `check-ui-contracts.mjs --self-test`（24/24）+ 全仓扫（943 键 × 23 语种 LF）+ `cargo check -p flowy-desktop --locked` + 11-Crate `--all-targets` Clippy：**全绿 0 告警**。
+  - 8-Crate 串行 `cargo test --locked`：**703 / 703 PASS**（+8 新增单测/GPUI 测试，0 失败，6 ignored；`flowy-agent` `-- --test-threads=1` 为 257 PASS / 4 ignored；`flowy-studio` 为 140 PASS）。
+  - 双主题真机 E2E（`ui-shot.ps1`，Dark `zh-CN` + Light `en`）：**25 / 25 步全过**（`ok=True, failures=0, screenshots=4, log_errors=0`）。
+- **接手注意事项**：当前已收敛待推分支发 PR（提交信息与 Git 作者严格使用人类身份）；`QuoteBanner` 当前有意保留引用摘录原始 Markdown 符号以保 `/skill:` 与代码文本忠实透传，若后续产品希望前端显示层剥离 `##`/`**` 标记，仅需局部调整 `feed.rs`/`composer.rs` 渲染显示函数，不影响底层存储协议。
