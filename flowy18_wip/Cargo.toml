@@ -168,11 +168,20 @@ items_after_statements = "allow"
 float_cmp = "allow"
 
 [profile.dev]
-debug = "limited"
+debug = "line-tables-only"
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
+
+[profile.test]
+debug = false
+opt-level = 0
+
+[profile.test.package."*"]
+opt-level = 2
+debug = false
 
 [profile.release]
 lto = "thin"

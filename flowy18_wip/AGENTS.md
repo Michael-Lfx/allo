@@ -44,10 +44,10 @@ Windows 推荐启动步骤：
 - **前置安装（一次性）**：Rust `1.100`（`rust-toolchain.toml` 已锁，自带 `lld-link.exe`）、Visual Studio Build Tools（MSVC x64 + Windows 10/11 SDK），以及精确版本 `cargo install dioxus-cli --version 0.7.10 --locked`。
 - **分层验证（避免每次改几行都跑全量 8-crate 门禁）**：
   - 界面/布局/文案迭代：启动一次 `.\scripts\dev-hotpatch.ps1`，保存源码约 15–18s 原位热补丁生效。
-  - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`。
-  - 仅 PR 提交前跑一次完整门禁：`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-agent` 需 `-- --test-threads=1`）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`。
+  - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`；`flowy-agent` 日常整 crate 复验可先跑 `-- --test-threads=4`（~19s）。
+  - 仅 PR 提交前跑一次完整门禁：`bun scripts/check-ui-contracts.mjs --self-test && bun scripts/check-ui-contracts.mjs`、`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-ui` **禁带 `--lib`** 以免漏跑集成测试 `tests/anchor_measurement.rs`；`flowy-agent` 固定 `-- --test-threads=1` 规避 NTFS `fsync` 并发抖动）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`（改动 `flowy-agent-core`/`flowy-agent` 公开结构体时须同时覆盖下游 `flowy-studio`/`flowy-app`/`flowy-desktop`，防 `clippy::large_enum_variant` 与单测 `pedantic` 告警）。
 - **Windows Agent 避坑红线**：
   - 必须经 `.\scripts\dev-hotpatch.ps1` 启动热补丁，**不要**手敲裸 `dx serve --hot-patch` 或手动注入 `RUSTC_WRAPPER=sccache` / `-Clinker=...`。
-  - 同一 worktree 内**严禁并发运行多个 `cargo`**（会争抢 `build.noindex` 锁）。
+  - 同一 worktree 内**严禁并发运行多个 `cargo`**（会争抢 `build.noindex` 锁）；避免在同一次调试中交替跑 `-p flowy-studio -p flowy-agent` 与单独 `-p flowy-agent`（Cargo 特征统一哈希不同，首次切换会触发一次额外依赖重编）。
   - 不要删除 `scripts/dx-capture-wrapper/target/`（重编 `dx-capture-wrapper.exe` 会改变 Cargo 的 `RUSTC_WRAPPER` 指纹并触发 `desktop-dev` 依赖重编）。
   - 不要删掉 `crates/flowy-desktop/Cargo.toml` 中对 `flowy-i18n` / `flowy-studio` / `flowy-ui` 的直接依赖——它们用于让 `dx 0.7.10` 的 1-hop 监听器覆盖全部 UI crate。
