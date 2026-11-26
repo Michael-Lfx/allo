@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "이 결과가 어땠나요?",
-  "chat.rate_thanks": "평가해 주셔서 감사합니다.",
   "chat.status_completed": "작업 완료",
   "chat.status_error": "문제가 발생했습니다",
   "chat.status_idle": "준비됨",
@@ -667,7 +665,6 @@
   "ui.next": "다음",
   "ui.play": "재생",
   "ui.previous": "이전",
-  "ui.rating": "별 {n}개",
   "ui.remove": "제거",
   "ui.volume": "음량",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "작업이 중단되었습니다. {product}을(를) 열어 확인하세요.",
   "settings.local_data": "로컬 데이터 및 백업",
   "settings.local_data_help": "대화 기록과 실행 전 스냅샷이 이 컴퓨터의 sessions 및 backups에 저장됩니다.",
-  "settings.open_folder": "폴더 열기"
+  "settings.open_folder": "폴더 열기",
+  "chat.quote_reply": "인용 답장",
+  "composer.quote_clear": "인용 지우기",
+  "chat.quoted_label": "인용"
 }

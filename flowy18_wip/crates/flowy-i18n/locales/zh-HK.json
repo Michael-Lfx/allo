@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "這個結果怎麼樣？",
-  "chat.rate_thanks": "感謝評分。",
   "chat.status_completed": "任務已完成",
   "chat.status_error": "出錯了",
   "chat.status_idle": "就緒",
@@ -667,7 +665,6 @@
   "ui.next": "下一項",
   "ui.play": "播放",
   "ui.previous": "上一項",
-  "ui.rating": "{n} 星",
   "ui.remove": "移除",
   "ui.volume": "音量",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "任務處理出現異常，請打開 {product} 查看詳情。",
   "settings.local_data": "本機資料與備份",
   "settings.local_data_help": "對話歷史同啟動前自動備份保存在本機（sessions 與 backups 目錄）。",
-  "settings.open_folder": "打開資料夾"
+  "settings.open_folder": "打開資料夾",
+  "chat.quote_reply": "引用回覆",
+  "composer.quote_clear": "取消引用",
+  "chat.quoted_label": "引用"
 }

@@ -71,6 +71,15 @@ pub struct OpenDeliverables(pub Vec<flowy_agent::FileEntry>);
 
 impl gpui::EventEmitter<OpenDeliverables> for ChatFeed {}
 
+/// Ask the panel to attach a single truncated quote from a chat bubble.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuoteMessage {
+    pub role: crate::composer::QuoteRole,
+    pub text: String,
+}
+
+impl gpui::EventEmitter<QuoteMessage> for ChatFeed {}
+
 /// Keeps a long path readable in a narrow card: strips Windows `\\?\` prefixes
 /// and keeps the tail (folder and file name) legible.
 fn display_path(path: &str) -> String {
@@ -287,7 +296,7 @@ impl ChatFeed {
         }
     }
 
-    fn copy_assistant_row(
+    fn copy_row(
         &mut self,
         row_id: u64,
         text: String,
@@ -310,6 +319,122 @@ impl ChatFeed {
             });
         })
         .detach();
+    }
+
+    fn contextual_action_label(base: String, raw_text: &str) -> String {
+        let snippet = crate::composer::truncate_quote_excerpt(raw_text, 28);
+        if snippet.is_empty() {
+            base
+        } else {
+            format!("{base} \u{00b7} {snippet}")
+        }
+    }
+
+    fn bubble_action_bar(
+        &self,
+        row_id: u64,
+        hover_group: SharedString,
+        role: crate::composer::QuoteRole,
+        action_text: String,
+        align_end: bool,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let is_copied = self.copied_row.is_some_and(|(id, _)| id == row_id);
+        let soft = self.theme.soft();
+        let ink = self.theme.ink();
+        let verified = self.theme.status_verified();
+        let muted = self.theme.muted();
+        let copy_label = Self::contextual_action_label(
+            if is_copied {
+                self.t("chat.copied")
+            } else {
+                self.t("chat.copy_reply")
+            },
+            &action_text,
+        );
+        let copy_icon = if is_copied {
+            theme::icons::check().size(px(13.))
+        } else {
+            theme::icons::copy().size(px(13.))
+        };
+        let quote_label = Self::contextual_action_label(
+            self.t("chat.quote_reply"),
+            &action_text,
+        );
+        let hover_fg = if is_copied { verified } else { ink };
+        let (bar_sel, copy_sel, quote_sel): (
+            &'static str,
+            &'static str,
+            &'static str,
+        ) = match role {
+            crate::composer::QuoteRole::User => {
+                ("chat-user-action-bar", "chat-user-copy", "chat-user-quote")
+            }
+            crate::composer::QuoteRole::Assistant => (
+                "chat-final-action-bar",
+                "chat-copy-reply",
+                "chat-quote-reply",
+            ),
+        };
+        let copy_payload = action_text.clone();
+        div()
+            .debug_selector(move || bar_sel.to_owned())
+            .w_full()
+            .h(px(26.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .when(align_end, |bar| bar.justify_end().pr(px(4.)))
+            .when(!align_end, |bar| bar.justify_start().pl(px(4.)))
+            .opacity(if is_copied { 1.0 } else { 0.0 })
+            .when(!is_copied, |bar| {
+                bar.group_hover(hover_group, |style| style.opacity(1.0))
+            })
+            .child(
+                theme::interactive(
+                    ("chat-copy-reply", row_id),
+                    copy_label,
+                    &self.theme,
+                )
+                .debug_selector(move || copy_sel.to_owned())
+                .size(px(24.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(if is_copied { verified } else { muted })
+                .hover(move |style| style.bg(soft).text_color(hover_fg))
+                .child(copy_icon)
+                .on_click(cx.listener(
+                    move |feed, _, _, cx| {
+                        feed.copy_row(row_id, copy_payload.clone(), cx);
+                    },
+                )),
+            )
+            .child(
+                theme::interactive(
+                    ("chat-quote-reply", row_id),
+                    quote_label,
+                    &self.theme,
+                )
+                .debug_selector(move || quote_sel.to_owned())
+                .size(px(24.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(muted)
+                .hover(move |style| style.bg(soft).text_color(ink))
+                .child(theme::icons::quote().size(px(13.)))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(QuoteMessage {
+                        role,
+                        text: action_text.clone(),
+                    });
+                })),
+            )
     }
 
     pub(crate) fn set_artifacts(
@@ -879,6 +1004,30 @@ impl ChatFeed {
             .into_any_element()
     }
 
+    fn assistant_card_bubble(
+        &self,
+        content: impl IntoElement,
+        max_width: f32,
+        pad_y: f32,
+        selector: &'static str,
+    ) -> gpui::Div {
+        div().max_w_full().min_w_0().flex().child(
+            div()
+                .debug_selector(move || selector.to_owned())
+                .flex_shrink(1.)
+                .min_w_0()
+                .max_w(px(max_width))
+                .px(self.theme.space(16.))
+                .py(self.theme.space(pad_y))
+                .rounded(px(18.))
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.card())
+                .shadow_xs()
+                .child(content),
+        )
+    }
+
     fn chat_line(
         &self,
         index: usize,
@@ -886,174 +1035,195 @@ impl ChatFeed {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         match line {
-            ChatLine::User { text } => div()
-                .id(("chat-user", self.row_ids[index]))
-                .w_full()
-                .py(self.theme.space(4.))
-                .flex()
-                .justify_end()
-                .child(
-                    div()
-                        .max_w(px(560.))
-                        .px(self.theme.space(16.))
-                        .py(self.theme.space(10.))
-                        .rounded(px(18.))
-                        .border_1()
-                        .border_color(self.theme.line())
-                        .bg(self.theme.card())
-                        .shadow_xs()
-                        .text_sm()
-                        .text_color(self.theme.ink())
-                        .whitespace_normal()
-                        .child(text.clone()),
-                )
-                .into_any_element(),
+            ChatLine::User { text } => {
+                let row_id = self.row_ids[index];
+                let hover_group =
+                    SharedString::from(format!("msg-hover-{row_id}"));
+                let (quoted, body) = crate::composer::split_quoted_prompt(text);
+                let action_text = if body.is_empty() {
+                    text.clone()
+                } else {
+                    body.clone()
+                };
+                div()
+                    .id(("chat-user", row_id))
+                    .group(hover_group.clone())
+                    .w_full()
+                    .py(self.theme.space(4.))
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(self.theme.space(4.))
+                    .child(
+                        div()
+                            .max_w_full()
+                            .min_w_0()
+                            .flex()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        "chat-user-bubble".to_owned()
+                                    })
+                                    .flex_shrink(1.)
+                                    .min_w_0()
+                                    .max_w(px(560.))
+                                    .px(self.theme.space(16.))
+                                    .py(self.theme.space(10.))
+                                    .rounded(px(18.))
+                                    .border_1()
+                                    .border_color(self.theme.accent().opacity(
+                                        if self.theme.dark {
+                                            0.36
+                                        } else {
+                                            0.24
+                                        },
+                                    ))
+                                    .bg(self.theme.accent().opacity(
+                                        if self.theme.dark {
+                                            0.22
+                                        } else {
+                                            0.11
+                                        },
+                                    ))
+                                    .shadow_xs()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .when_some(quoted, |bubble, quote| {
+                                        bubble.child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "chat-user-quote-preview"
+                                                        .to_owned()
+                                                })
+                                                .max_w_full()
+                                                .min_w_0()
+                                                .pl(px(8.))
+                                                .border_l_2()
+                                                .border_color(
+                                                    self.theme
+                                                        .accent()
+                                                        .opacity(0.65),
+                                                )
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .text_xs()
+                                                .text_color(self.theme.muted())
+                                                .child(div().flex_none().child(
+                                                    format!(
+                                                        "{}:",
+                                                        self.t(
+                                                            "chat.quoted_label"
+                                                        )
+                                                    ),
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .flex_shrink(1.)
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .truncate()
+                                                        .child(quote.excerpt),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .text_color(self.theme.ink())
+                                            .whitespace_normal()
+                                            .child(body),
+                                    ),
+                            ),
+                    )
+                    .child(self.bubble_action_bar(
+                        row_id,
+                        hover_group,
+                        crate::composer::QuoteRole::User,
+                        action_text,
+                        true,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
             ChatLine::Assistant { text } => {
                 let row_id = self.row_ids[index];
                 let is_streaming = self.projection.streaming == Some(index);
-                let is_copied =
-                    self.copied_row.is_some_and(|(id, _)| id == row_id);
-                let copy_text = text.clone();
-                let soft = self.theme.soft();
-                let ink = self.theme.ink();
-                let verified = self.theme.status_verified();
-                let muted = self.theme.muted();
                 let is_ack = self.projection.ack_rows.contains(&index);
                 let is_process = self.projection.process_rows.contains(&index);
-                let has_prior_visible_assistant_in_turn = (0..index)
-                    .rev()
-                    .take_while(|&prev| {
-                        !matches!(self.lines[prev], ChatLine::User { .. })
-                    })
-                    .any(|prev| {
-                        matches!(self.lines[prev], ChatLine::Assistant { .. })
-                            && !self.projection.process_rows.contains(&prev)
+                let markdown_body = div()
+                    .min_w_0()
+                    .text_sm()
+                    .whitespace_normal()
+                    .child(if is_streaming {
+                        markdown::render_streaming(text, self.theme, &self.i18n)
+                    } else {
+                        markdown::render(text, self.theme, &self.i18n)
                     });
-                let show_identity =
-                    !is_process && !has_prior_visible_assistant_in_turn;
+                if is_process {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .py(self.theme.space(2.))
+                        .flex()
+                        .flex_col()
+                        .child(markdown_body)
+                        .into_any_element();
+                }
+                if is_ack {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .py(self.theme.space(4.))
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(self.assistant_card_bubble(
+                            markdown_body,
+                            580.,
+                            10.,
+                            "chat-ack-bubble",
+                        ))
+                        .into_any_element();
+                }
+                if is_streaming && text.trim().is_empty() {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .into_any_element();
+                }
+                let hover_group =
+                    SharedString::from(format!("msg-hover-{row_id}"));
+                let show_actions = !is_streaming && !text.trim().is_empty();
                 div()
                     .id(("chat-assistant", row_id))
+                    .when(show_actions, |row| row.group(hover_group.clone()))
                     .w_full()
-                    .py(if is_process {
-                        self.theme.space(2.)
-                    } else {
-                        self.theme.space(6.)
-                    })
+                    .py(self.theme.space(6.))
                     .flex()
                     .flex_col()
-                    .gap(self.theme.space(6.))
-                    .when(show_identity, |col| {
-                        col.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(self.theme.space(8.))
-                                .child(
-                                    div()
-                                        .size(px(20.))
-                                        .flex_none()
-                                        .rounded_md()
-                                        .bg(self.theme.assistant_badge_bg())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            theme::icons::sparkles()
-                                                .size(px(11.))
-                                                .text_color(
-                                                    self.theme
-                                                        .assistant_badge_fg(),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(self.theme.ink())
-                                        .child(self.t("chat.router_name")),
-                                ),
-                        )
+                    .items_start()
+                    .gap(self.theme.space(4.))
+                    .child(self.assistant_card_bubble(
+                        markdown_body,
+                        640.,
+                        12.,
+                        "chat-final-bubble",
+                    ))
+                    .when(show_actions, |col| {
+                        col.child(self.bubble_action_bar(
+                            row_id,
+                            hover_group,
+                            crate::composer::QuoteRole::Assistant,
+                            text.clone(),
+                            false,
+                            cx,
+                        ))
                     })
-                    .child(
-                        div()
-                            .w_full()
-                            .pl(if is_process { px(0.) } else { px(28.) })
-                            .text_sm()
-                            .whitespace_normal()
-                            .child(if is_streaming {
-                                markdown::render_streaming(
-                                    text, self.theme, &self.i18n,
-                                )
-                            } else {
-                                markdown::render(text, self.theme, &self.i18n)
-                            }),
-                    )
-                    .when(
-                        !is_streaming
-                            && !text.trim().is_empty()
-                            && !is_ack
-                            && !is_process,
-                        |col| {
-                            let label = if is_copied {
-                                self.t("chat.copied")
-                            } else {
-                                self.t("chat.copy_reply")
-                            };
-                            let icon = if is_copied {
-                                theme::icons::check().size(px(13.))
-                            } else {
-                                theme::icons::copy().size(px(13.))
-                            };
-                            let hover_fg =
-                                if is_copied { verified } else { ink };
-                            col.child(
-                                div()
-                                    .w_full()
-                                    .h(px(26.))
-                                    .pl(px(28.))
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        theme::interactive(
-                                            ("chat-copy-reply", row_id),
-                                            label,
-                                            &self.theme,
-                                        )
-                                        .size(px(24.))
-                                        .rounded_md()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .text_color(if is_copied {
-                                            verified
-                                        } else {
-                                            muted
-                                        })
-                                        .when(!is_copied, |btn| {
-                                            btn.opacity(0.45)
-                                        })
-                                        .hover(move |style| {
-                                            style
-                                                .opacity(1.0)
-                                                .bg(soft)
-                                                .text_color(hover_fg)
-                                        })
-                                        .child(icon)
-                                        .on_click(cx.listener(
-                                            move |feed, _, _, cx| {
-                                                feed.copy_assistant_row(
-                                                    row_id,
-                                                    copy_text.clone(),
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                    ),
-                            )
-                        },
-                    )
                     .into_any_element()
             }
             ChatLine::Reasoning {
@@ -3554,5 +3724,354 @@ mod tests {
             .expect("latest turn with deliverables surfaces only beta");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, r"C:\Work\beta.pptx");
+    }
+
+    #[gpui::test]
+    fn dot_bubbles_omit_legacy_header_and_restrict_actions_to_final_reply(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let mid_turn_rows = vec![
+            ChatLine::User {
+                text: "帮我汇总深圳天气".into(),
+            },
+            ChatLine::Assistant {
+                text: "我先核对天气源再整理结果。".into(),
+            },
+            ChatLine::Reasoning {
+                text: "Inspecting local weather adapter".into(),
+                duration_secs: 1,
+                live: false,
+            },
+            ChatLine::Assistant {
+                text: "中间补充：继续检索详情。".into(),
+            },
+            ChatLine::ToolCall {
+                name: "read".into(),
+                target: "weather.json".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let mut completed_rows = mid_turn_rows.clone();
+        completed_rows.push(ChatLine::Assistant {
+            text: "## 深圳天气结论\n今天晴朗，气温 24°C。".into(),
+        });
+
+        for dark in [false, true] {
+            let options = theme::ThemeOptions {
+                mode: if dark {
+                    theme::ThemeMode::Dark
+                } else {
+                    theme::ThemeMode::Light
+                },
+                ..Default::default()
+            };
+            let (feed, cx) = cx.add_window_view(|_, cx| {
+                let ui = UiContext::new(options, dark, cx);
+                let mut feed = ChatFeed::new(
+                    ui,
+                    i18n.clone(),
+                    Some("dot-bubbles".into()),
+                    cx,
+                );
+                feed.sync_history(
+                    Some("dot-bubbles".into()),
+                    ChatHistory {
+                        rows: mid_turn_rows.clone(),
+                        streaming: None,
+                        status: TurnStatus::Running,
+                    },
+                    cx,
+                );
+                feed
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            // Mid-turn ack + collapsed process fold never mount a copy button.
+            assert!(cx.debug_bounds("chat-user-bubble").is_some());
+            assert!(cx.debug_bounds("chat-ack-bubble").is_some());
+            assert!(cx.debug_bounds("chat-final-bubble").is_none());
+            assert!(cx.debug_bounds("chat-copy-reply").is_none());
+
+            // Expand process_rows mid-turn: still no card chrome or action bar on ack/process.
+            feed.update(cx, |feed, cx| {
+                let fold_key = feed
+                    .projection
+                    .folds
+                    .values()
+                    .next()
+                    .expect("process fold present")
+                    .key;
+                feed.set_turn_expanded(fold_key, true, cx);
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds("chat-ack-bubble").is_some());
+            assert!(cx.debug_bounds("chat-final-bubble").is_none());
+            assert!(cx.debug_bounds("chat-copy-reply").is_none());
+
+            // Once final Assistant settles, both Dot bubbles and final action slot render cleanly.
+            feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some("dot-bubbles".into()),
+                    ChatHistory {
+                        rows: completed_rows.clone(),
+                        streaming: None,
+                        status: TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let user_b = cx
+                .debug_bounds("chat-user-bubble")
+                .expect("user pill rendered");
+            let ack_b = cx
+                .debug_bounds("chat-ack-bubble")
+                .expect("ack bubble rendered");
+            let final_b = cx
+                .debug_bounds("chat-final-bubble")
+                .expect("final assistant bubble rendered");
+            let copy_b = cx
+                .debug_bounds("chat-copy-reply")
+                .expect("final reply action button rendered");
+            assert!(
+                user_b.origin.x > ack_b.origin.x,
+                "user pill aligns right of assistant bubbles (dark={dark})"
+            );
+            assert!(
+                ack_b.bottom() < final_b.origin.y,
+                "ack bubble precedes final bubble (dark={dark})"
+            );
+            assert!(
+                copy_b.origin.y >= final_b.bottom(),
+                "action button renders beneath final bubble (dark={dark})"
+            );
+            assert!(
+                cx.debug_bounds("chat-quote-reply").is_some(),
+                "final reply exposes quote action (dark={dark})"
+            );
+            assert!(
+                cx.debug_bounds("chat-user-action-bar").is_some(),
+                "user bubble mounts hover action bar (dark={dark})"
+            );
+            assert!(
+                cx.debug_bounds("chat-user-quote").is_some(),
+                "user bubble exposes quote action (dark={dark})"
+            );
+            assert!(
+                cx.debug_bounds("chat-user-copy").is_some(),
+                "user bubble exposes copy action (dark={dark})"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn hover_bar_keeps_fixed_height_and_emits_quote_for_user_and_final_assistant(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed = ChatFeed::new(ui, i18n.clone(), Some("quote".into()), cx);
+            feed.sync_history(
+                Some("quote".into()),
+                ChatHistory {
+                    rows: vec![
+                        ChatLine::User {
+                            text: "> \u{275d} Flowy: 上一条结论\n\n请基于上文继续核对".into(),
+                        },
+                        ChatLine::Assistant {
+                            text: "先检查环境配置。".into(),
+                        },
+                        ChatLine::ToolCall {
+                            name: "read".into(),
+                            target: "config.toml".into(),
+                            call_id: "q1".into(),
+                            running: false,
+                        },
+                        ChatLine::ToolResult {
+                            text: "ok".into(),
+                            is_error: false,
+                        },
+                        ChatLine::Assistant {
+                            text: "已完成最新汇总结论。".into(),
+                        },
+                    ],
+                    streaming: None,
+                    status: TurnStatus::Completed,
+                },
+                cx,
+            );
+            feed
+        });
+        let sink = events.clone();
+        let _sub = cx.update(|_, cx| {
+            cx.subscribe(&feed, move |_, event: &QuoteMessage, _| {
+                sink.lock().unwrap().push(event.clone());
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // User bubble parses the embedded prefix into its preview strip without jittering row height.
+        assert!(cx.debug_bounds("chat-user-quote-preview").is_some());
+        let user_bar_before = cx
+            .debug_bounds("chat-user-action-bar")
+            .expect("user bar slot rendered");
+        let final_bar_before = cx
+            .debug_bounds("chat-final-action-bar")
+            .expect("final bar slot rendered");
+        let final_bubble = cx
+            .debug_bounds("chat-final-bubble")
+            .expect("final bubble rendered");
+
+        // Moving pointer onto the final bubble preserves exact fixed bar height and emits Quote on click.
+        cx.simulate_mouse_move(
+            final_bubble.center(),
+            None,
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let final_bar_hovered = cx
+            .debug_bounds("chat-final-action-bar")
+            .expect("final bar still rendered on hover");
+        assert_eq!(
+            final_bar_before.size.height, final_bar_hovered.size.height,
+            "hover must not change virtual row action slot height"
+        );
+        assert_eq!(
+            user_bar_before.size.height, final_bar_before.size.height,
+            "user and assistant action slots share compact height"
+        );
+
+        let assistant_quote_btn = cx
+            .debug_bounds("chat-quote-reply")
+            .expect("assistant quote button rendered");
+        cx.simulate_click(
+            assistant_quote_btn.center(),
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        // Quoting the User bubble strips its stored `> ❝` header so nested quotes never stack.
+        let user_quote_btn = cx
+            .debug_bounds("chat-user-quote")
+            .expect("user quote button rendered");
+        cx.simulate_click(user_quote_btn.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[
+                QuoteMessage {
+                    role: crate::composer::QuoteRole::Assistant,
+                    text: "已完成最新汇总结论。".into(),
+                },
+                QuoteMessage {
+                    role: crate::composer::QuoteRole::User,
+                    text: "请基于上文继续核对".into(),
+                },
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn dot_bubbles_bound_wide_content_inside_narrow_viewport(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed =
+                ChatFeed::new(ui, i18n.clone(), Some("narrow".into()), cx);
+            feed.sync_history(
+                Some("narrow".into()),
+                ChatHistory {
+                    rows: vec![
+                        ChatLine::User {
+                            text: format!(
+                                "> \u{275d} Flowy: {}\n\n请总结一下这个长表格与多列宽数据的输出效果",
+                                "超级长的中文单行引用摘要预览文本不应该撑破窄窗口圆角用户气泡宽度"
+                                    .repeat(2)
+                            ),
+                        },
+                        ChatLine::Assistant {
+                            text: "好的".into(),
+                        },
+                        ChatLine::ToolCall {
+                            name: "read".into(),
+                            target: "report.md".into(),
+                            call_id: "n1".into(),
+                            running: false,
+                        },
+                        ChatLine::ToolResult {
+                            text: "ok".into(),
+                            is_error: false,
+                        },
+                        ChatLine::Assistant {
+                            text: "| ColumnOneVeryWideHeader | ColumnTwoVeryWideHeader | ColumnThreeVeryWideHeader | ColumnFourVeryWideHeader |\n| --- | --- | --- | --- |\n| value_one_unbroken_token_1234567890 | value_two_unbroken_token_1234567890 | value_three_unbroken_token_1234567890 | value_four_unbroken_token_1234567890 |"
+                                .into(),
+                        },
+                    ],
+                    streaming: None,
+                    status: TurnStatus::Completed,
+                },
+                cx,
+            );
+            feed
+        });
+        cx.simulate_resize(gpui::size(px(360.), px(640.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let user_b = cx
+            .debug_bounds("chat-user-bubble")
+            .expect("user bubble rendered in narrow viewport");
+        let ack_b = cx
+            .debug_bounds("chat-ack-bubble")
+            .expect("short ack bubble rendered in narrow viewport");
+        let final_b = cx
+            .debug_bounds("chat-final-bubble")
+            .expect("wide final bubble rendered in narrow viewport");
+
+        assert!(
+            user_b.size.width <= px(360.),
+            "user bubble with long quote must stay within 360px viewport: {:?}",
+            user_b.size.width
+        );
+        assert!(
+            ack_b.size.width < px(200.),
+            "short ack bubble must stay compact instead of stretching full width: {:?}",
+            ack_b.size.width
+        );
+        assert!(
+            final_b.size.width <= px(360.),
+            "wide markdown final bubble must stay bounded within 360px viewport: {:?}",
+            final_b.size.width
+        );
+        let _ = feed;
+    }
+
+    #[test]
+    fn contextual_action_label_distinguishes_bubbles_with_utf8_snippets() {
+        let first = ChatFeed::contextual_action_label(
+            "引用回复".into(),
+            "## 深圳今日天气摘要：多云间晴，气温 20°C – 26°C，微风舒适",
+        );
+        let second = ChatFeed::contextual_action_label(
+            "引用回复".into(),
+            "明天深圳仍以多云为主，早晚微凉建议备外套",
+        );
+        assert_ne!(first, second);
+        assert!(first.starts_with("引用回复 \u{00b7} ## 深圳今日天气摘要"));
+        assert!(first.ends_with('\u{2026}'));
+        assert_eq!(
+            ChatFeed::contextual_action_label("引用回复".into(), "   "),
+            "引用回复"
+        );
     }
 }

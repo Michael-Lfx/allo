@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "Jak wyszedł ten wynik?",
-  "chat.rate_thanks": "Dziękujemy za ocenę.",
   "chat.status_completed": "Zadanie ukończone",
   "chat.status_error": "Coś poszło nie tak",
   "chat.status_idle": "Gotowy",
@@ -667,7 +665,6 @@
   "ui.next": "Następny",
   "ui.play": "Odtwórz",
   "ui.previous": "Poprzedni",
-  "ui.rating": "{n} gwiazdek",
   "ui.remove": "Usuń",
   "ui.volume": "Głośność",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "Zadanie zostało przerwane. Otwórz {product}, aby sprawdzić szczegóły.",
   "settings.local_data": "Dane lokalne i kopie zapasowe",
   "settings.local_data_help": "Historia rozmów i migawki sprzed uruchomienia są zapisywane lokalnie w sessions i backups.",
-  "settings.open_folder": "Otwórz folder"
+  "settings.open_folder": "Otwórz folder",
+  "chat.quote_reply": "Cytuj odpowiedź",
+  "composer.quote_clear": "Usuń cytat",
+  "chat.quoted_label": "Cytat"
 }

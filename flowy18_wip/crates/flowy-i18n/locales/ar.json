@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "ما رأيك في هذه النتيجة؟",
-  "chat.rate_thanks": "شكرًا على التقييم.",
   "chat.status_completed": "اكتملت المهمة",
   "chat.status_error": "حدث خطأ",
   "chat.status_idle": "جاهز",
@@ -667,7 +665,6 @@
   "ui.next": "التالي",
   "ui.play": "تشغيل",
   "ui.previous": "السابق",
-  "ui.rating": "{n} نجوم",
   "ui.remove": "إزالة",
   "ui.volume": "مستوى الصوت",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "حدث خطأ أثناء التنفيذ. افتح {product} للمراجعة.",
   "settings.local_data": "البيانات المحلية والنسخ الاحتياطية",
   "settings.local_data_help": "يتم حفظ سجل المحادثات واللقطات قبل التشغيل محليًا ضمن sessions وbackups.",
-  "settings.open_folder": "فتح المجلد"
+  "settings.open_folder": "فتح المجلد",
+  "chat.quote_reply": "اقتباس للرد",
+  "composer.quote_clear": "إلغاء الاقتباس",
+  "chat.quoted_label": "مقتبس"
 }

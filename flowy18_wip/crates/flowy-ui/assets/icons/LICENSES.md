@@ -12,8 +12,8 @@ The project sidebar additions `briefcase-business.svg`, `folder-pen.svg`,
 [`2ba961714cfa1a753e9d32a7b0458ae14fe4f50e`](https://github.com/lucide-icons/lucide/tree/2ba961714cfa1a753e9d32a7b0458ae14fe4f50e).
 
 The workspace chrome additions `panel-right.svg`, `file-text.svg`,
-`arrow-up.svg`, `plug.svg`, and `archive.svg` are selected from Lucide under
-the same ISC License below.
+`arrow-up.svg`, `plug.svg`, `archive.svg`, and `quote.svg` are selected from
+Lucide under the same ISC License below.
 
 Lucide Icons and Contributors — ISC License:
 

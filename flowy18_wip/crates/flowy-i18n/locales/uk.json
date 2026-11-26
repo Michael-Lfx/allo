@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "Як вам цей результат?",
-  "chat.rate_thanks": "Дякуємо за оцінку.",
   "chat.status_completed": "Завдання виконано",
   "chat.status_error": "Щось пішло не так",
   "chat.status_idle": "Готово",
@@ -667,7 +665,6 @@
   "ui.next": "Наступний",
   "ui.play": "Відтворити",
   "ui.previous": "Попередній",
-  "ui.rating": "{n} зірок",
   "ui.remove": "Видалити",
   "ui.volume": "Гучність",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "Завдання перервано помилкою. Відкрийте {product} для перевірки.",
   "settings.local_data": "Локальні дані та резервні копії",
   "settings.local_data_help": "Історія розмов і передзапускові знімки зберігаються локально у теках sessions та backups.",
-  "settings.open_folder": "Відкрити теку"
+  "settings.open_folder": "Відкрити теку",
+  "chat.quote_reply": "Цитувати відповідь",
+  "composer.quote_clear": "Прибрати цитату",
+  "chat.quoted_label": "Цитата"
 }

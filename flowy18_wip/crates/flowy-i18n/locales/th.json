@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "ผลลัพธ์นี้เป็นอย่างไร",
-  "chat.rate_thanks": "ขอบคุณที่ให้คะแนน",
   "chat.status_completed": "งานเสร็จแล้ว",
   "chat.status_error": "มีบางอย่างผิดพลาด",
   "chat.status_idle": "พร้อม",
@@ -667,7 +665,6 @@
   "ui.next": "ถัดไป",
   "ui.play": "เล่น",
   "ui.previous": "ก่อนหน้า",
-  "ui.rating": "{n} ดาว",
   "ui.remove": "นำออก",
   "ui.volume": "ระดับเสียง",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "มีข้อผิดพลาดระหว่างทำงาน เปิด {product} เพื่อตรวจสอบ",
   "settings.local_data": "ข้อมูลในเครื่องและไฟล์สำรอง",
   "settings.local_data_help": "ประวัติการสนทนาและสแนปช็อตก่อนเริ่มจะถูกบันทึกไว้ในเครื่องที่ sessions และ backups",
-  "settings.open_folder": "เปิดโฟลเดอร์"
+  "settings.open_folder": "เปิดโฟลเดอร์",
+  "chat.quote_reply": "อ้างอิงคำตอบ",
+  "composer.quote_clear": "ล้างการอ้างอิง",
+  "chat.quoted_label": "อ้างอิง"
 }

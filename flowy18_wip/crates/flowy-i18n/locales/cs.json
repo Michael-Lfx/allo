@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "Jaký byl tento výsledek?",
-  "chat.rate_thanks": "Díky za hodnocení.",
   "chat.status_completed": "Úkol dokončen",
   "chat.status_error": "Něco se pokazilo",
   "chat.status_idle": "Připraveno",
@@ -667,7 +665,6 @@
   "ui.next": "Další",
   "ui.play": "Přehrát",
   "ui.previous": "Předchozí",
-  "ui.rating": "{n} hvězdiček",
   "ui.remove": "Odebrat",
   "ui.volume": "Hlasitost",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "Úkol byl přerušen. Otevřete {product} pro kontrolu.",
   "settings.local_data": "Místní data a zálohy",
   "settings.local_data_help": "Historie konverzací a snímky před spuštěním se ukládají místně do sessions a backups.",
-  "settings.open_folder": "Otevřít složku"
+  "settings.open_folder": "Otevřít složku",
+  "chat.quote_reply": "Citovat odpověď",
+  "composer.quote_clear": "Zrušit citaci",
+  "chat.quoted_label": "Citace"
 }

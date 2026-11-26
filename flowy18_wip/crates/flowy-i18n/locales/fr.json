@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "Que pensez-vous de ce résultat ?",
-  "chat.rate_thanks": "Merci pour votre note.",
   "chat.status_completed": "Tâche terminée",
   "chat.status_error": "Une erreur s'est produite",
   "chat.status_idle": "Prêt",
@@ -667,7 +665,6 @@
   "ui.next": "Suivant",
   "ui.play": "Lire",
   "ui.previous": "Précédent",
-  "ui.rating": "{n} étoiles",
   "ui.remove": "Supprimer",
   "ui.volume": "Volume",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "La tâche a été interrompue. Ouvrez {product} pour inspecter.",
   "settings.local_data": "Données locales et sauvegardes",
   "settings.local_data_help": "L’historique et les instantanés pré-démarrage sont enregistrés localement sous sessions et backups.",
-  "settings.open_folder": "Ouvrir le dossier"
+  "settings.open_folder": "Ouvrir le dossier",
+  "chat.quote_reply": "Citer et répondre",
+  "composer.quote_clear": "Effacer la citation",
+  "chat.quoted_label": "Citation"
 }

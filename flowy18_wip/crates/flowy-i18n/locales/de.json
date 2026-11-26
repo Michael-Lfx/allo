@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "Wie war dieses Ergebnis?",
-  "chat.rate_thanks": "Danke für die Bewertung.",
   "chat.status_completed": "Aufgabe erledigt",
   "chat.status_error": "Etwas ist schiefgelaufen",
   "chat.status_idle": "Bereit",
@@ -667,7 +665,6 @@
   "ui.next": "Weiter",
   "ui.play": "Abspielen",
   "ui.previous": "Zurück",
-  "ui.rating": "{n} Sterne",
   "ui.remove": "Entfernen",
   "ui.volume": "Lautstärke",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "Ein Fehler hat die Aufgabe unterbrochen. Öffne {product} zur Prüfung.",
   "settings.local_data": "Lokale Daten & Backups",
   "settings.local_data_help": "Gesprächsverläufe und Vorab-Snapshots werden lokal unter sessions und backups gespeichert.",
-  "settings.open_folder": "Ordner öffnen"
+  "settings.open_folder": "Ordner öffnen",
+  "chat.quote_reply": "Zitieren",
+  "composer.quote_clear": "Zitat entfernen",
+  "chat.quoted_label": "Zitat"
 }

@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "यह परिणाम कैसा रहा?",
-  "chat.rate_thanks": "रेटिंग के लिए धन्यवाद।",
   "chat.status_completed": "कार्य पूरा",
   "chat.status_error": "कुछ गड़बड़ हो गई",
   "chat.status_idle": "तैयार",
@@ -667,7 +665,6 @@
   "ui.next": "अगला",
   "ui.play": "चलाएँ",
   "ui.previous": "पिछला",
-  "ui.rating": "{n} सितारे",
   "ui.remove": "हटाएँ",
   "ui.volume": "आवाज़",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "कार्य बाधित हो गया। जांचने के लिए {product} खोलें।",
   "settings.local_data": "स्थानीय डेटा और बैकअप",
   "settings.local_data_help": "वार्तालाप इतिहास और स्टार्टअप से पहले के स्नैपशॉट स्थानीय रूप से sessions और backups में सहेजे जाते हैं।",
-  "settings.open_folder": "फ़ोल्डर खोलें"
+  "settings.open_folder": "फ़ोल्डर खोलें",
+  "chat.quote_reply": "उद्धृत करें",
+  "composer.quote_clear": "उद्धरण हटाएं",
+  "chat.quoted_label": "उद्धृत"
 }

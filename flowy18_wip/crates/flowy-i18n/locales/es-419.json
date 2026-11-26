@@ -59,8 +59,6 @@
   "chat.plan_lite": "Lite",
   "chat.plan_max": "Max",
   "chat.plan_standard": "Standard",
-  "chat.rate_prompt": "¿Qué te pareció este resultado?",
-  "chat.rate_thanks": "Gracias por la valoración.",
   "chat.status_completed": "Tarea completada",
   "chat.status_error": "Algo salió mal",
   "chat.status_idle": "Listo",
@@ -667,7 +665,6 @@
   "ui.next": "Siguiente",
   "ui.play": "Reproducir",
   "ui.previous": "Anterior",
-  "ui.rating": "{n} estrellas",
   "ui.remove": "Eliminar",
   "ui.volume": "Volumen",
   "home.starter.website.launch.title": "Product launch page",
@@ -941,5 +938,8 @@
   "shell.notify_task_error_body": "Algo interrumpió la tarea. Abre {product} para revisarla.",
   "settings.local_data": "Datos locales y respaldos",
   "settings.local_data_help": "El historial y las capturas previas al inicio se guardan localmente en sessions y backups.",
-  "settings.open_folder": "Abrir carpeta"
+  "settings.open_folder": "Abrir carpeta",
+  "chat.quote_reply": "Citar respuesta",
+  "composer.quote_clear": "Quitar cita",
+  "chat.quoted_label": "Cita"
 }
