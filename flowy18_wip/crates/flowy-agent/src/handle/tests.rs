@@ -2195,3 +2195,880 @@ mod guard_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[cfg(test)]
+mod s4_concurrency_tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    struct PromptGate {
+        inner: Mutex<GateState>,
+        cv: Condvar,
+    }
+
+    #[derive(Default)]
+    struct GateState {
+        arrived: Vec<String>,
+        released: HashSet<String>,
+        release_all: bool,
+    }
+
+    impl PromptGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: Mutex::new(GateState::default()),
+                cv: Condvar::new(),
+            })
+        }
+
+        fn enter_and_wait(&self, key: &str) {
+            let mut guard = self.inner.lock().unwrap();
+            guard.arrived.push(key.to_owned());
+            self.cv.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !guard.release_all && !guard.released.contains(key) {
+                let remaining =
+                    deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let (next, _) = self.cv.wait_timeout(guard, remaining).unwrap();
+                guard = next;
+            }
+            drop(guard);
+        }
+
+        fn wait_for_arrivals(&self, expected: usize, timeout: Duration) {
+            let mut guard = self.inner.lock().unwrap();
+            let deadline = Instant::now() + timeout;
+            while guard.arrived.len() < expected {
+                let remaining =
+                    deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "timed out waiting for {expected} prompt arrivals; saw {:?}",
+                    guard.arrived
+                );
+                let (next, _) = self.cv.wait_timeout(guard, remaining).unwrap();
+                guard = next;
+            }
+            drop(guard);
+        }
+
+        fn release(&self, key: &str) {
+            self.inner.lock().unwrap().released.insert(key.to_owned());
+            self.cv.notify_all();
+        }
+
+        fn release_all(&self) {
+            self.inner.lock().unwrap().release_all = true;
+            self.cv.notify_all();
+        }
+
+        fn arrived_count(&self) -> usize {
+            self.inner.lock().unwrap().arrived.len()
+        }
+    }
+
+    struct ConcurrentSseServer {
+        address: SocketAddr,
+        stopped: Arc<AtomicBool>,
+        gate: Arc<PromptGate>,
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+        accept_thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl ConcurrentSseServer {
+        fn start(
+            gate: Arc<PromptGate>,
+            held_prompts: Vec<&'static str>,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stopped = Arc::new(AtomicBool::new(false));
+            let in_flight = Arc::new(AtomicUsize::new(0));
+            let max_in_flight = Arc::new(AtomicUsize::new(0));
+            let held: Arc<HashSet<String>> =
+                Arc::new(held_prompts.into_iter().map(str::to_owned).collect());
+
+            let stopped_c = Arc::clone(&stopped);
+            let gate_c = Arc::clone(&gate);
+            let in_flight_c = Arc::clone(&in_flight);
+            let max_in_flight_c = Arc::clone(&max_in_flight);
+            let accept_thread = thread::spawn(move || {
+                while !stopped_c.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            if stopped_c.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let _ = socket.set_nonblocking(false);
+                            let gate_w = Arc::clone(&gate_c);
+                            let in_flight_w = Arc::clone(&in_flight_c);
+                            let max_w = Arc::clone(&max_in_flight_c);
+                            let held_w = Arc::clone(&held);
+                            thread::spawn(move || {
+                                let Some(req) = read_http_json(&mut socket)
+                                else {
+                                    return;
+                                };
+                                let has_tools = req["tools"]
+                                    .as_array()
+                                    .is_some_and(|t| !t.is_empty());
+                                if !has_tools {
+                                    let _ = write_sse_text(
+                                        &mut socket,
+                                        "Sidecar title",
+                                    );
+                                    return;
+                                }
+                                let prompt = extract_last_user_text(&req);
+                                let current = in_flight_w
+                                    .fetch_add(1, Ordering::SeqCst)
+                                    + 1;
+                                max_w.fetch_max(current, Ordering::SeqCst);
+                                if held_w.contains(&prompt) {
+                                    gate_w.enter_and_wait(&prompt);
+                                }
+                                let _ = write_sse_text(
+                                    &mut socket,
+                                    &format!("done:{prompt}"),
+                                );
+                                in_flight_w.fetch_sub(1, Ordering::SeqCst);
+                            });
+                        }
+                        Err(err)
+                            if err.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            Self {
+                address,
+                stopped,
+                gate,
+                in_flight,
+                max_in_flight,
+                accept_thread: Some(accept_thread),
+            }
+        }
+
+        fn config(&self) -> LlmConfig {
+            LlmConfig {
+                api_key: Some("s4-concurrency-test-token".into()),
+                provider: "openai".into(),
+                model: "s4-test-model".into(),
+                base_url: format!("http://{}/v1", self.address),
+                ..LlmConfig::default()
+            }
+        }
+    }
+
+    impl Drop for ConcurrentSseServer {
+        fn drop(&mut self) {
+            self.stopped.store(true, Ordering::SeqCst);
+            self.gate.release_all();
+            let _ = TcpStream::connect(self.address);
+            if let Some(handle) = self.accept_thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn read_http_json(socket: &mut TcpStream) -> Option<serde_json::Value> {
+        socket.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            if let Some(idx) =
+                bytes.windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                break idx + 4;
+            }
+            let mut buf = [0_u8; 4096];
+            let n = socket.read(&mut buf).ok()?;
+            if n == 0 {
+                return None;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+        };
+        let headers = std::str::from_utf8(&bytes[..header_end]).ok()?;
+        let content_len = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })?;
+        while bytes.len() < header_end + content_len {
+            let mut buf = [0_u8; 4096];
+            let n = socket.read(&mut buf).ok()?;
+            if n == 0 {
+                return None;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+        }
+        serde_json::from_slice(&bytes[header_end..header_end + content_len])
+            .ok()
+    }
+
+    fn extract_last_user_text(req: &serde_json::Value) -> String {
+        req["messages"]
+            .as_array()
+            .and_then(|msgs| {
+                msgs.iter().rev().find_map(|msg| {
+                    (msg["role"].as_str() == Some("user"))
+                        .then(|| msg["content"].as_str())
+                        .flatten()
+                        .map(str::to_owned)
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn write_sse_text(
+        socket: &mut TcpStream,
+        text: &str,
+    ) -> std::io::Result<()> {
+        let chunk = serde_json::json!({
+            "id": "s4-chunk",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "s4-test-model",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": text },
+                "finish_reason": null
+            }]
+        });
+        let finish = serde_json::json!({
+            "id": "s4-chunk",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "s4-test-model",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        });
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {chunk}\n\ndata: {finish}\n\ndata: [DONE]\n\n"
+        )?;
+        socket.flush()
+    }
+
+    fn create_project_session(
+        handle: &AgentHandle,
+        project_id: &str,
+        dir: PathBuf,
+    ) -> String {
+        std::fs::create_dir_all(&dir).unwrap();
+        handle.set_workspace_for_new_sessions(Some(AgentWorkspace {
+            project_id: project_id.to_owned(),
+            root: dir,
+        }));
+        handle.set_origin_for_new_sessions(SessionOrigin::Project {
+            project_id: Some(project_id.to_owned()),
+        });
+        handle.create_session().expect("create project session")
+    }
+
+    fn wait_receipt_state(
+        handle: &AgentHandle,
+        receipt_id: &str,
+        expected: ReceiptState,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if handle.receipt_state(receipt_id) == Some(expected) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(15));
+        }
+        panic!(
+            "receipt {receipt_id} did not reach {expected:?}; current={:?}",
+            handle.receipt_state(receipt_id)
+        );
+    }
+
+    #[test]
+    fn concurrent_different_workspaces_run_simultaneously_without_blocking() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-diff-ws-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(
+            Arc::clone(&gate),
+            vec!["work-alpha", "work-beta"],
+        );
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+        assert_eq!(handle.max_concurrent_works(), 3);
+
+        let sid_a = create_project_session(&handle, "p-a", root.join("proj-a"));
+        let r_a = handle.accept_deferred("work-alpha").unwrap();
+        let sid_b = create_project_session(&handle, "p-b", root.join("proj-b"));
+        let r_b = handle.accept_deferred("work-beta").unwrap();
+
+        handle.set_autonomous_drain(true);
+        // Both distinct workspaces must enter the provider concurrently!
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        assert!(
+            server.max_in_flight.load(Ordering::SeqCst) >= 2,
+            "two distinct workspaces must execute simultaneously, max_in_flight={}",
+            server.max_in_flight.load(Ordering::SeqCst)
+        );
+        assert_eq!(handle.active_claim_count(), 2);
+        let claimed = handle.active_claimed_session_ids();
+        assert!(claimed.contains(&sid_a));
+        assert!(claimed.contains(&sid_b));
+
+        gate.release_all();
+        wait_receipt_state(
+            &handle,
+            &r_a.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        wait_receipt_state(
+            &handle,
+            &r_b.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+        assert!(!handle.has_active_claim());
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn same_workspace_two_sessions_serialize_writes_and_second_runs_after_first_releases()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-same-ws-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let shared = root.join("shared-proj");
+        std::fs::create_dir_all(&shared).unwrap();
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(
+            Arc::clone(&gate),
+            vec!["shared-1", "shared-2"],
+        );
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let _sid_a =
+            create_project_session(&handle, "p-shared", shared.clone());
+        let r1 = handle.accept_deferred("shared-1").unwrap();
+        // Use an alternate spelling of the exact same directory to prove path
+        // normalization enforces mutual exclusion.
+        let _sid_b =
+            create_project_session(&handle, "p-shared", shared.join("."));
+        let r2 = handle.accept_deferred("shared-2").unwrap();
+
+        handle.set_autonomous_drain(true);
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+        // Give autonomous drain ample time to attempt starting R2 if broken.
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            server.max_in_flight.load(Ordering::SeqCst),
+            1,
+            "same-workspace sessions must strictly serialize writes"
+        );
+        assert_eq!(handle.active_claim_count(), 1);
+        assert_eq!(handle.receipt_state(&r2.id), Some(ReceiptState::Queued));
+        assert_eq!(
+            handle.receipt_by_id(&r2.id).unwrap().attempts,
+            0,
+            "waiting on a locked workspace must not inflate receipt attempts"
+        );
+
+        gate.release("shared-1");
+        wait_receipt_state(
+            &handle,
+            &r1.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        // Releasing R1's WorkspaceLease must immediately wake R2!
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        assert_eq!(server.max_in_flight.load(Ordering::SeqCst), 1);
+        gate.release("shared-2");
+        wait_receipt_state(
+            &handle,
+            &r2.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn head_of_line_locked_workspace_does_not_starve_independent_workspace_receipt()
+     {
+        let root =
+            std::env::temp_dir().join(format!("flowy-s4-hol-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let proj_a = root.join("proj-a");
+        let proj_b = root.join("proj-b");
+        let gate = PromptGate::new();
+        let server =
+            ConcurrentSseServer::start(Arc::clone(&gate), vec!["holder-a"]);
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let sid_a1 = create_project_session(&handle, "p-a", proj_a.clone());
+        let sid_a2 = create_project_session(&handle, "p-a", proj_a);
+        let sid_b = create_project_session(&handle, "p-b", proj_b);
+
+        // Hold proj-a via sid_a1.
+        handle.select_session(&sid_a1).unwrap();
+        let r_hold = handle.accept_deferred("holder-a").unwrap();
+        handle.set_autonomous_drain(true);
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+
+        // Enqueue R_blocked (head-of-line, same locked proj-a) BEFORE R_free (proj-b).
+        handle.select_session(&sid_a2).unwrap();
+        let r_blocked = handle.accept_deferred("blocked-a2").unwrap();
+        handle.select_session(&sid_b).unwrap();
+        let r_free = handle.accept_deferred("free-b").unwrap();
+
+        // R_free must finish promptly even while holder-a still locks proj-a!
+        wait_receipt_state(
+            &handle,
+            &r_free.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            handle.receipt_state(&r_blocked.id),
+            Some(ReceiptState::Queued),
+            "blocked head-of-line receipt must remain queued while proj-a is locked"
+        );
+        assert_eq!(
+            handle.receipt_by_id(&r_blocked.id).unwrap().attempts,
+            0,
+            "skipped head-of-line receipt must suffer zero attempt inflation"
+        );
+
+        gate.release("holder-a");
+        wait_receipt_state(
+            &handle,
+            &r_hold.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        wait_receipt_state(
+            &handle,
+            &r_blocked.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.receipt_by_id(&r_blocked.id).unwrap().attempts, 1);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancel_one_concurrent_work_leaves_sibling_work_running_to_completion() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-cancel-sib-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(
+            Arc::clone(&gate),
+            vec!["cancel-slot-a", "keep-slot-b"],
+        );
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let _sid_a = handle.create_home_session().unwrap();
+        let r_a = handle.accept_deferred("cancel-slot-a").unwrap();
+        let sid_b = handle.create_home_session().unwrap();
+        let r_b = handle.accept_deferred("keep-slot-b").unwrap();
+
+        handle.set_autonomous_drain(true);
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        assert_eq!(handle.active_claim_count(), 2);
+
+        let cancel_outcome = handle
+            .cancel_task(TaskTarget::Receipt(r_a.id.clone()))
+            .expect("cancel receipt A");
+        assert_eq!(cancel_outcome, CancelOutcome::Cancelled);
+        assert_eq!(
+            handle.receipt_state(&r_a.id),
+            Some(ReceiptState::Cancelled)
+        );
+        assert_eq!(
+            handle.active_claim_count(),
+            1,
+            "cancelling slot A must preserve sibling claim B"
+        );
+        assert_eq!(handle.active_claimed_session_ids(), vec![sid_b.clone()]);
+        assert_eq!(handle.session_status(&sid_b), TurnStatus::Running);
+
+        gate.release("keep-slot-b");
+        wait_receipt_state(
+            &handle,
+            &r_b.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+        assert!(handle.session_lines(&sid_b).iter().any(|line| matches!(
+            line,
+            ChatLine::Assistant { text } if text.contains("done:keep-slot-b")
+        )));
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn backoff_receipt_in_free_workspace_wakes_while_long_task_holds_other_slot()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-backoff-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gate = PromptGate::new();
+        let server =
+            ConcurrentSseServer::start(Arc::clone(&gate), vec!["long-slot-a"]);
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+        handle.set_max_concurrent_works_for_test(2);
+
+        let sid_a = create_project_session(&handle, "p-a", root.join("proj-a"));
+        let sid_b = create_project_session(&handle, "p-b", root.join("proj-b"));
+
+        // Seed a Retrying receipt on free proj-b with a 180ms backoff window.
+        let queue = AcceptanceQueue::new(root.clone());
+        let now = now_ms();
+        let r_backoff =
+            queue.accept(Some(&sid_b), "backoff-slot-b", now).unwrap();
+        let _ = queue
+            .take(&r_backoff.id, "att-prev", now, 5_000)
+            .unwrap()
+            .unwrap();
+        assert!(queue.release(&r_backoff.id, "att-prev", now, 180).unwrap());
+        assert_eq!(
+            handle.receipt_state(&r_backoff.id),
+            Some(ReceiptState::Retrying)
+        );
+
+        // Start a long-running task occupying slot 1 in proj-a.
+        handle.select_session(&sid_a).unwrap();
+        let r_long = handle.accept_deferred("long-slot-a").unwrap();
+        handle.set_autonomous_drain(true);
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+        assert_eq!(handle.active_claim_count(), 1);
+
+        // While long-slot-a STILL holds slot 1, backoff-slot-b MUST wake up
+        // on its own timer and complete in slot 2 without starvation!
+        wait_receipt_state(
+            &handle,
+            &r_backoff.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            handle.receipt_state(&r_long.id),
+            Some(ReceiptState::Running),
+            "long task on slot 1 should still be running when backoff task finishes"
+        );
+        assert_eq!(server.in_flight.load(Ordering::SeqCst), 1);
+
+        gate.release("long-slot-a");
+        wait_receipt_state(
+            &handle,
+            &r_long.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn direct_submit_and_queued_receipt_share_same_workspace_lock() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-direct-queue-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let shared = root.join("shared-direct");
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(
+            Arc::clone(&gate),
+            vec!["direct-writer", "queued-writer"],
+        );
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let sid_direct =
+            create_project_session(&handle, "p-shared", shared.clone());
+        let sid_queued = create_project_session(&handle, "p-shared", shared);
+
+        // Launch a direct foreground submit_chat on sid_direct.
+        handle.select_session(&sid_direct).unwrap();
+        handle.submit_chat(701, "direct-writer").unwrap();
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+
+        // Direct submit_chat on a second session sharing the same directory
+        // must be refused fail-closed while the first holds the write lock.
+        handle.select_session(&sid_queued).unwrap();
+        assert_eq!(
+            handle.submit_chat(702, "direct-contender"),
+            Err("notice.agent_busy")
+        );
+
+        // Queue a receipt for sid_queued and enable autonomous drain: it must
+        // respect the direct turn's WorkspaceLease and NOT run concurrently!
+        let r_queued = handle.accept_deferred("queued-writer").unwrap();
+        handle.set_autonomous_drain(true);
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            gate.arrived_count(),
+            1,
+            "queued receipt must wait while direct submit_chat holds workspace lock"
+        );
+        assert_eq!(
+            handle.receipt_state(&r_queued.id),
+            Some(ReceiptState::Queued)
+        );
+        assert_eq!(handle.receipt_by_id(&r_queued.id).unwrap().attempts, 0);
+        assert_eq!(server.max_in_flight.load(Ordering::SeqCst), 1);
+
+        // Once the direct turn completes and drops its WorkspaceLease, it must
+        // kick autonomous drain and start queued-writer immediately.
+        gate.release("direct-writer");
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        assert_eq!(
+            server.max_in_flight.load(Ordering::SeqCst),
+            1,
+            "direct and queued writers on the same workspace must never overlap"
+        );
+        gate.release("queued-writer");
+        wait_receipt_state(
+            &handle,
+            &r_queued.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_parent_and_child_workspaces_serialize_writes_while_sibling_prefixes_run_concurrently()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-nested-ws-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let parent = root.join("monorepo");
+        let child = parent.join("packages").join("app");
+        let sibling = root.join("monorepo-2");
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(
+            Arc::clone(&gate),
+            vec!["parent-write", "child-write"],
+        );
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let sid_parent = create_project_session(&handle, "p-root", parent);
+        let sid_child = create_project_session(&handle, "p-child", child);
+        let sid_sibling = create_project_session(&handle, "p-sib", sibling);
+
+        handle.select_session(&sid_parent).unwrap();
+        let r_parent = handle.accept_deferred("parent-write").unwrap();
+        handle.set_autonomous_drain(true);
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+
+        // Enqueue nested child BEFORE sibling prefix `monorepo-2`.
+        handle.select_session(&sid_child).unwrap();
+        let r_child = handle.accept_deferred("child-write").unwrap();
+        handle.select_session(&sid_sibling).unwrap();
+        let r_sibling = handle.accept_deferred("sibling-free").unwrap();
+
+        // Sibling prefix `monorepo-2` must run concurrently and finish while
+        // `monorepo` still holds its write lock, whereas nested child MUST wait
+        // with zero attempt inflation.
+        wait_receipt_state(
+            &handle,
+            &r_sibling.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert!(
+            server.max_in_flight.load(Ordering::SeqCst) >= 2,
+            "sibling prefix must execute in parallel with parent directory"
+        );
+        assert_eq!(
+            handle.receipt_state(&r_child.id),
+            Some(ReceiptState::Queued)
+        );
+        assert_eq!(handle.receipt_by_id(&r_child.id).unwrap().attempts, 0);
+
+        // Release parent -> nested child immediately wakes and completes.
+        gate.release("parent-write");
+        wait_receipt_state(
+            &handle,
+            &r_parent.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        gate.release("child-write");
+        wait_receipt_state(
+            &handle,
+            &r_child.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn immediate_follow_up_submit_after_completed_queued_turn_never_fails_agent_busy()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-back2back-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gate = PromptGate::new();
+        let server = ConcurrentSseServer::start(Arc::clone(&gate), Vec::new());
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+        let sid = handle.create_home_session().unwrap();
+        handle.set_autonomous_drain(true);
+
+        // Tightly alternate queued turn -> immediate direct submit as soon as
+        // `session_status` flips out of busy (before waiting for receipt
+        // settlement), attacking the `_dispatch` vs `workspace_lease` window.
+        for round in 0..10_u128 {
+            let queued_prompt = format!("queued-round-{round}");
+            let receipt = handle.accept_deferred(&queued_prompt).unwrap();
+            // Wait until the queued turn actually entered `submit_message_targeted`
+            // (projected its User row), NOT merely `queue.take()`, before polling
+            // for `!is_busy()`.
+            let started = Instant::now() + Duration::from_secs(5);
+            while !handle.session_lines(&sid).iter().any(|line| {
+                matches!(line, ChatLine::User { text } if text == &queued_prompt)
+            }) && Instant::now() < started
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while handle.session_status(&sid).is_busy()
+                && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert!(
+                !handle.session_status(&sid).is_busy(),
+                "round {round} stayed busy"
+            );
+            handle
+                .submit_chat(900 + round, &format!("direct-followup-{round}"))
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "round {round} back-to-back submit must never fail with spurious busy: {err}"
+                    )
+                });
+            let deadline2 = Instant::now() + Duration::from_secs(5);
+            while handle.session_status(&sid).is_busy()
+                && Instant::now() < deadline2
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            wait_receipt_state(
+                &handle,
+                &receipt.id,
+                ReceiptState::Completed,
+                Duration::from_secs(5),
+            );
+        }
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn max_concurrent_works_counts_foreground_direct_turns_against_background_queue()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-cap-fg-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let gate = PromptGate::new();
+        let server =
+            ConcurrentSseServer::start(Arc::clone(&gate), vec!["fg-a", "fg-c"]);
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+        handle.set_max_concurrent_works_for_test(1);
+
+        let sid_a = create_project_session(&handle, "p-a", root.join("proj-a"));
+        let sid_b = create_project_session(&handle, "p-b", root.join("proj-b"));
+        let sid_c = create_project_session(&handle, "p-c", root.join("proj-c"));
+
+        // Occupy the single concurrency slot with a foreground direct turn in proj-a.
+        handle.select_session(&sid_a).unwrap();
+        handle.submit_chat(801, "fg-a").unwrap();
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+
+        // Background queued receipt in independent proj-b must yield to the
+        // `max_concurrent_works = 1` cap while `fg-a` runs.
+        handle.select_session(&sid_b).unwrap();
+        let r_bg = handle.accept_deferred("bg-b").unwrap();
+        handle.set_autonomous_drain(true);
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            handle.receipt_state(&r_bg.id),
+            Some(ReceiptState::Queued),
+            "background queue must respect total in-flight work cap including foreground turns"
+        );
+        assert_eq!(handle.receipt_by_id(&r_bg.id).unwrap().attempts, 0);
+
+        // Foreground direct submit in independent proj-c must STILL succeed
+        // (foreground user / Router turns are never starved by background slot caps).
+        handle.select_session(&sid_c).unwrap();
+        handle.submit_chat(802, "fg-c").unwrap();
+        gate.wait_for_arrivals(2, Duration::from_secs(5));
+        assert_eq!(handle.receipt_state(&r_bg.id), Some(ReceiptState::Queued));
+
+        // Release both foreground turns -> background receipt wakes automatically.
+        gate.release_all();
+        wait_receipt_state(
+            &handle,
+            &r_bg.id,
+            ReceiptState::Completed,
+            Duration::from_secs(5),
+        );
+        assert_eq!(handle.active_claim_count(), 0);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

@@ -958,15 +958,9 @@ impl AgentHandle {
                 session.updated_at = now_ms();
             }
         }
-        let matching_claim = {
-            let mut slot = lock(&self.inner.state.accepted_claim);
-            if slot.as_ref().is_some_and(|claim| claim.session_id == id) {
-                slot.take()
-            } else {
-                None
-            }
-        };
-        if let Some(claim) = matching_claim {
+        let matching_claims =
+            super::take_session_claims(&self.inner.state.active_claims, id);
+        for claim in matching_claims {
             claim.heartbeat_cancel.cancel();
             let queue = AcceptanceQueue::new(self.inner.state.root.clone());
             if queue.cancel(&claim.receipt_id, now_ms()).unwrap_or(false) {
@@ -998,9 +992,8 @@ impl AgentHandle {
         &self,
         receipt_id: &str,
     ) -> Result<(CancelOutcome, Option<ReapTarget>), &'static str> {
-        let active_session = lock(&self.inner.state.accepted_claim)
-            .as_ref()
-            .filter(|claim| claim.receipt_id == receipt_id)
+        let active_session = lock(&self.inner.state.active_claims)
+            .get(receipt_id)
             .map(|claim| claim.session_id.clone());
         if let Some(session_id) = active_session {
             return self.cancel_session_locked(&session_id);
