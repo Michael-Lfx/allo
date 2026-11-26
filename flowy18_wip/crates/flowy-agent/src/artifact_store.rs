@@ -27,6 +27,8 @@ const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCANNED_ENTRIES: usize = 10_000;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const PREPARED_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const VIEW_COPY_RETENTION_MS: u64 = 3 * 24 * 60 * 60 * 1_000;
+const MAX_RETAINED_VIEW_COPIES: usize = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -139,6 +141,15 @@ struct PreferencesFile {
     entries: BTreeMap<String, ArtifactPreference>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ViewCopyMeta {
+    request_id: String,
+    artifact_id: String,
+    file_name: String,
+    sha256: String,
+    created_at_ms: u64,
+}
+
 #[derive(Debug)]
 struct Snapshot {
     digest: String,
@@ -165,6 +176,7 @@ impl ArtifactStore {
             "items",
             "deliveries",
             "views",
+            "views-meta",
             "session-deletions",
             "sources-deleted",
         ] {
@@ -184,6 +196,9 @@ impl ArtifactStore {
         }
         if let Err(error) = store.prune_superseded_conversation_imports() {
             tracing::warn!(%error, "superseded conversation artifacts retained for retry");
+        }
+        if let Err(error) = store.cleanup_stale_view_copies() {
+            tracing::warn!(%error, "stale view copies retained for retry");
         }
         Ok(store)
     }
@@ -1512,7 +1527,7 @@ impl ArtifactStore {
         );
         file.take(MAX_ARTIFACT_BYTES.saturating_add(1))
             .read_to_end(&mut bytes)?;
-        let digest = hex(&Sha256::digest(&bytes));
+        let digest = sha256_hex(&bytes);
         if bytes.len() as u64 != manifest.receipt.size_bytes
             || digest != manifest.receipt.sha256
         {
@@ -1676,6 +1691,12 @@ impl ArtifactStore {
         {
             return Err(invalid("artifact library storage limit reached"));
         }
+        let digest = sha256_hex(&bytes);
+        let created_at_ms = self
+            .max_view_copy_timestamp_locked()
+            .map_or_else(now_ms, |previous| {
+                now_ms().max(previous.saturating_add(1))
+            });
         let request_id = random_id()?;
         let dir = self.inner.root.join("views").join(&request_id);
         fs::create_dir(&dir)?;
@@ -1687,13 +1708,43 @@ impl ArtifactStore {
                     && extension.chars().all(|c| c.is_ascii_alphanumeric())
             })
             .unwrap_or("bin");
-        let path = dir.join(format!("artifact.{extension}"));
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        output.write_all(&bytes)?;
-        output.sync_all()?;
+        let file_name = format!("artifact.{extension}");
+        let path = dir.join(&file_name);
+        if let Err(error) = write_new_synced(&path, &bytes) {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        let meta_dir = self.inner.root.join("views-meta");
+        if let Err(error) =
+            fs::create_dir_all(&meta_dir).and_then(|()| reject_link(&meta_dir))
+        {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        let meta = ViewCopyMeta {
+            request_id: request_id.clone(),
+            artifact_id: artifact_id.to_owned(),
+            file_name,
+            sha256: digest,
+            created_at_ms,
+        };
+        let meta_bytes = match serde_json::to_vec(&meta) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(io::Error::other(error));
+            }
+        };
+        if let Err(error) =
+            atomic_write(&self.view_meta_path(&request_id), &meta_bytes)
+        {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        if let Err(error) = self.cleanup_stale_view_copies_locked(created_at_ms)
+        {
+            tracing::warn!(%error, "stale view copy cleanup deferred");
+        }
         Ok(ViewCopy { request_id, path })
     }
 
@@ -1702,10 +1753,217 @@ impl ArtifactStore {
         let _guard = self.lock();
         let path = self.inner.root.join("views").join(request_id);
         match fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
+        remove_file_if_exists(&self.view_meta_path(request_id))
+    }
+
+    /// Garbage-collect unmodified view copies outside the newest
+    /// `MAX_RETAINED_VIEW_COPIES` within `VIEW_COPY_RETENTION_MS`, along with
+    /// orphaned sidecar metadata files. Modified, legacy, or locked view
+    /// copies are preserved untouched. Returns the number of evicted view
+    /// directories.
+    pub fn cleanup_stale_view_copies(&self) -> io::Result<usize> {
+        let _guard = self.lock();
+        self.cleanup_stale_view_copies_locked(now_ms())
+    }
+
+    #[cfg(test)]
+    fn cleanup_stale_view_copies_at(&self, now_ms: u64) -> io::Result<usize> {
+        let _guard = self.lock();
+        self.cleanup_stale_view_copies_locked(now_ms)
+    }
+
+    fn cleanup_stale_view_copies_locked(
+        &self,
+        now_ms: u64,
+    ) -> io::Result<usize> {
+        let views_dir = self.inner.root.join("views");
+        let meta_dir = self.inner.root.join("views-meta");
+        reject_link(&views_dir)?;
+        if meta_dir.exists() {
+            reject_link(&meta_dir)?;
+        }
+
+        let mut managed = Vec::new();
+        for entry in fs::read_dir(&views_dir)? {
+            let entry = entry?;
+            let dir = entry.path();
+            let Ok(dir_meta) = fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if dir_meta.file_type().is_symlink()
+                || is_windows_reparse_point(&dir_meta)
+                || !dir_meta.is_dir()
+            {
+                continue;
+            }
+            let Some(dir_name) = entry.file_name().to_str().map(str::to_owned)
+            else {
+                continue;
+            };
+            if validate_identifier(&dir_name).is_err() {
+                continue;
+            }
+            let meta_path = self.view_meta_path(&dir_name);
+            let Ok(meta) = read_limited_json::<ViewCopyMeta>(
+                &meta_path,
+                MAX_MANIFEST_BYTES,
+            ) else {
+                continue;
+            };
+            if meta.request_id != dir_name
+                || validate_identifier(&meta.request_id).is_err()
+                || validate_identifier(&meta.artifact_id).is_err()
+                || !is_single_file_name(&meta.file_name)
+            {
+                continue;
+            }
+            let Some(file_path) =
+                inspect_managed_view_dir(&dir, &meta.file_name)
+            else {
+                continue;
+            };
+            managed.push(ManagedViewCopy {
+                meta,
+                dir,
+                file_path,
+                meta_path,
+            });
+        }
+
+        managed.sort_by(|a, b| {
+            b.meta
+                .created_at_ms
+                .cmp(&a.meta.created_at_ms)
+                .then_with(|| b.meta.request_id.cmp(&a.meta.request_id))
+        });
+
+        let mut removed = 0_usize;
+        for (rank, candidate) in managed.into_iter().enumerate() {
+            let within_count = rank < MAX_RETAINED_VIEW_COPIES;
+            let within_age = now_ms
+                .saturating_sub(candidate.meta.created_at_ms)
+                < VIEW_COPY_RETENTION_MS;
+            if within_count && within_age {
+                continue;
+            }
+            let Ok(file_meta) = fs::symlink_metadata(&candidate.file_path)
+            else {
+                continue;
+            };
+            if file_meta.file_type().is_symlink()
+                || is_windows_reparse_point(&file_meta)
+                || !file_meta.is_file()
+            {
+                continue;
+            }
+            let mut file = match File::open(&candidate.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %candidate.file_path.display(),
+                        %error,
+                        "stale view copy could not be opened for verification"
+                    );
+                    continue;
+                }
+            };
+            let snapshot = match snapshot_file(&mut file) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %candidate.file_path.display(),
+                        %error,
+                        "stale view copy could not be hashed; preserving"
+                    );
+                    continue;
+                }
+            };
+            drop(file);
+            if snapshot.digest != candidate.meta.sha256 {
+                continue;
+            }
+            if let Err(error) = reject_link(&candidate.dir)
+                .and_then(|()| fs::remove_dir_all(&candidate.dir))
+            {
+                tracing::warn!(
+                    path = %candidate.dir.display(),
+                    %error,
+                    "stale view copy could not be removed; retaining"
+                );
+                continue;
+            }
+            if let Err(error) = remove_file_if_exists(&candidate.meta_path) {
+                tracing::warn!(
+                    path = %candidate.meta_path.display(),
+                    %error,
+                    "evicted view copy metadata could not be removed"
+                );
+            }
+            removed = removed.saturating_add(1);
+        }
+
+        if meta_dir.exists() {
+            for entry in fs::read_dir(&meta_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                let Ok(metadata) = fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if metadata.file_type().is_symlink()
+                    || is_windows_reparse_point(&metadata)
+                    || !metadata.is_file()
+                {
+                    continue;
+                }
+                let Some(file_name) =
+                    entry.file_name().to_str().map(str::to_owned)
+                else {
+                    continue;
+                };
+                let Some(request_id) = file_name.strip_suffix(".json") else {
+                    continue;
+                };
+                if validate_identifier(request_id).is_err() {
+                    continue;
+                }
+                if matches!(
+                    fs::symlink_metadata(views_dir.join(request_id)),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound
+                ) && let Err(error) = remove_file_if_exists(&path)
+                {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "orphaned view copy metadata could not be removed"
+                    );
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
+    fn max_view_copy_timestamp_locked(&self) -> Option<u64> {
+        let entries = fs::read_dir(self.inner.root.join("views-meta")).ok()?;
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.path().extension().and_then(|ext| ext.to_str())
+                    == Some("json")
+            })
+            .filter_map(|entry| {
+                read_limited_json::<ViewCopyMeta>(
+                    &entry.path(),
+                    MAX_MANIFEST_BYTES,
+                )
+                .ok()
+                .map(|meta| meta.created_at_ms)
+            })
+            .max()
     }
 
     fn commit_delivery(&self, commit: &DeliveryCommit) -> io::Result<()> {
@@ -2277,6 +2535,19 @@ impl ArtifactStore {
             .join("sources-deleted")
             .join(format!("{session_id}.json"))
     }
+    fn view_meta_path(&self, request_id: &str) -> PathBuf {
+        self.inner
+            .root
+            .join("views-meta")
+            .join(format!("{request_id}.json"))
+    }
+}
+
+struct ManagedViewCopy {
+    meta: ViewCopyMeta,
+    dir: PathBuf,
+    file_path: PathBuf,
+    meta_path: PathBuf,
 }
 
 #[derive(Default)]
@@ -2647,6 +2918,50 @@ fn random_id() -> io::Result<String> {
     Ok(hex(&bytes))
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn is_single_file_name(name: &str) -> bool {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(char::is_control)
+        || name.contains(['/', '\\'])
+    {
+        return false;
+    }
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn inspect_managed_view_dir(
+    dir: &Path,
+    expected_file_name: &str,
+) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut matched: Option<PathBuf> = None;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if metadata.file_type().is_symlink()
+            || is_windows_reparse_point(&metadata)
+            || !metadata.is_file()
+        {
+            return None;
+        }
+        if entry.file_name().to_str() != Some(expected_file_name)
+            || matched.is_some()
+        {
+            return None;
+        }
+        matched = Some(path);
+    }
+    matched
+}
+
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -2706,7 +3021,9 @@ mod tests {
     const NO_DIAGNOSTICS: [String; 0] = [];
 
     use super::{
-        ArtifactStore, PREPARED_RETENTION_MS, PrepareArtifact, PublicationState,
+        ArtifactStore, MAX_RETAINED_VIEW_COPIES, PREPARED_RETENTION_MS,
+        PrepareArtifact, PublicationState, VIEW_COPY_RETENTION_MS,
+        ViewCopyMeta,
     };
     use flowy_agent_core::{DeliveryCommit, SessionOrigin};
     use std::fs;
@@ -3916,5 +4233,393 @@ mod tests {
         drop(occupied);
         store.cleanup_uncommitted(&[], true).unwrap();
         assert_eq!(store.usage().unwrap().staging_bytes, 0);
+    }
+
+    fn prepare_and_commit_markdown(
+        scratch: &Path,
+        store: &ArtifactStore,
+        name: &str,
+        body: &[u8],
+    ) -> flowy_agent_core::ArtifactReceipt {
+        let rel = format!("outputs/{name}");
+        fs::write(scratch.join("workspace").join(&rel), body).unwrap();
+        let receipt = store.prepare(request(scratch, &rel, name)).unwrap();
+        store.commit_delivery(&commit(&receipt)).unwrap();
+        receipt
+    }
+
+    fn read_view_meta(store: &ArtifactStore, request_id: &str) -> ViewCopyMeta {
+        let bytes = fs::read(store.view_meta_path(request_id)).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn view_copy_gc_retains_newest_five_and_evicts_oldest_two() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "report.md",
+            b"# report\n",
+        );
+
+        let mut copies = Vec::new();
+        for _ in 0..7 {
+            copies.push(store.create_view_copy(&receipt.artifact_id).unwrap());
+        }
+
+        for evicted in &copies[..2] {
+            assert!(
+                !store
+                    .root()
+                    .join("views")
+                    .join(&evicted.request_id)
+                    .exists()
+            );
+            assert!(!store.view_meta_path(&evicted.request_id).exists());
+        }
+        for retained in &copies[2..] {
+            assert!(retained.path.is_file());
+            assert!(store.view_meta_path(&retained.request_id).is_file());
+        }
+
+        let pending = store.pending_views().unwrap();
+        assert_eq!(pending.len(), MAX_RETAINED_VIEW_COPIES);
+        let pending_ids = pending
+            .iter()
+            .map(|copy| copy.request_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_ids = copies[2..]
+            .iter()
+            .map(|copy| copy.request_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(pending_ids, expected_ids);
+        assert!(
+            pending
+                .iter()
+                .all(|copy| copy.path.starts_with(store.root().join("views")))
+        );
+
+        // Manually seed 2 older valid managed copies directly on disk and
+        // verify deterministic GC evicts exactly 2 and keeps the newest 5.
+        let oldest_retained_ts =
+            read_view_meta(&store, &copies[2].request_id).created_at_ms;
+        for (offset, req_id) in
+            [(10_u64, "manual-old-1"), (5_u64, "manual-old-2")]
+        {
+            let dir = store.root().join("views").join(req_id);
+            fs::create_dir_all(&dir).unwrap();
+            let file_path = dir.join("artifact.md");
+            fs::write(&file_path, b"# report\n").unwrap();
+            let meta = ViewCopyMeta {
+                request_id: req_id.to_owned(),
+                artifact_id: receipt.artifact_id.clone(),
+                file_name: "artifact.md".to_owned(),
+                sha256: super::sha256_hex(b"# report\n"),
+                created_at_ms: oldest_retained_ts.saturating_sub(offset),
+            };
+            fs::write(
+                store.view_meta_path(req_id),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(oldest_retained_ts + 1)
+                .unwrap(),
+            2
+        );
+        assert!(!store.root().join("views/manual-old-1").exists());
+        assert!(!store.root().join("views/manual-old-2").exists());
+        assert!(!store.view_meta_path("manual-old-1").exists());
+        assert!(!store.view_meta_path("manual-old-2").exists());
+        assert_eq!(
+            store.pending_views().unwrap().len(),
+            MAX_RETAINED_VIEW_COPIES
+        );
+    }
+
+    #[test]
+    fn view_copy_gc_evicts_copies_at_or_beyond_three_days_under_cap() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "summary.md",
+            b"summary body",
+        );
+
+        let first = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let second = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let first_ts = read_view_meta(&store, &first.request_id).created_at_ms;
+        let second_ts =
+            read_view_meta(&store, &second.request_id).created_at_ms;
+
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(
+                    first_ts + VIEW_COPY_RETENTION_MS - 1
+                )
+                .unwrap(),
+            0
+        );
+        assert!(first.path.is_file());
+        assert!(second.path.is_file());
+
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(
+                    second_ts + VIEW_COPY_RETENTION_MS
+                )
+                .unwrap(),
+            2
+        );
+        assert!(!store.root().join("views").join(&first.request_id).exists());
+        assert!(!store.root().join("views").join(&second.request_id).exists());
+        assert!(!store.view_meta_path(&first.request_id).exists());
+        assert!(!store.view_meta_path(&second.request_id).exists());
+        assert_eq!(store.pending_views().unwrap().as_slice(), []);
+    }
+
+    #[test]
+    fn view_copy_gc_preserves_tampered_copies_even_when_stale() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "notes.md",
+            b"original bytes",
+        );
+
+        let edited = store.create_view_copy(&receipt.artifact_id).unwrap();
+        fs::write(&edited.path, b"user modified bytes").unwrap();
+
+        let mut others = Vec::new();
+        for _ in 0..6 {
+            others.push(store.create_view_copy(&receipt.artifact_id).unwrap());
+        }
+
+        // Oldest unmodified copy (others[0]) was evicted at rank 5, while the
+        // older user-modified copy is preserved along with its sidecar.
+        assert!(
+            !store
+                .root()
+                .join("views")
+                .join(&others[0].request_id)
+                .exists()
+        );
+        assert!(!store.view_meta_path(&others[0].request_id).exists());
+        assert_eq!(fs::read(&edited.path).unwrap(), b"user modified bytes");
+        assert!(store.view_meta_path(&edited.request_id).is_file());
+
+        // Even past 3 days, the modified copy is preserved while the 5 remaining
+        // unmodified copies are evicted.
+        let latest_ts =
+            read_view_meta(&store, &others[5].request_id).created_at_ms;
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(
+                    latest_ts + VIEW_COPY_RETENTION_MS + 1_000
+                )
+                .unwrap(),
+            5
+        );
+        assert_eq!(fs::read(&edited.path).unwrap(), b"user modified bytes");
+        assert!(store.view_meta_path(&edited.request_id).is_file());
+        for copy in &others[1..] {
+            assert!(
+                !store.root().join("views").join(&copy.request_id).exists()
+            );
+            assert!(!store.view_meta_path(&copy.request_id).exists());
+        }
+    }
+
+    #[test]
+    fn view_copy_gc_preserves_legacy_and_corrupt_entries_and_runs_on_open() {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "deck.md",
+            b"deck bytes",
+        );
+
+        // Legacy view copy without sidecar.
+        let legacy_dir = store.root().join("views/legacy-copy");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy_file = legacy_dir.join("artifact.md");
+        fs::write(&legacy_file, b"legacy view").unwrap();
+
+        // Managed copy with an extra user-placed file in its directory.
+        let with_extra = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let extra_file = with_extra.path.parent().unwrap().join("notes.txt");
+        fs::write(&extra_file, b"extra user file").unwrap();
+        let mut with_extra_meta =
+            read_view_meta(&store, &with_extra.request_id);
+        with_extra_meta.created_at_ms = super::now_ms()
+            .saturating_sub(VIEW_COPY_RETENTION_MS.saturating_add(10_000));
+        fs::write(
+            store.view_meta_path(&with_extra.request_id),
+            serde_json::to_vec(&with_extra_meta).unwrap(),
+        )
+        .unwrap();
+
+        // Corrupt sidecar and mismatched-ID sidecar.
+        let corrupt_dir = store.root().join("views/corrupt-copy");
+        fs::create_dir_all(&corrupt_dir).unwrap();
+        fs::write(corrupt_dir.join("artifact.md"), b"deck bytes").unwrap();
+        fs::write(store.view_meta_path("corrupt-copy"), b"{broken json")
+            .unwrap();
+
+        let mismatch_dir = store.root().join("views/mismatch-copy");
+        fs::create_dir_all(&mismatch_dir).unwrap();
+        fs::write(mismatch_dir.join("artifact.md"), b"deck bytes").unwrap();
+        fs::write(
+            store.view_meta_path("mismatch-copy"),
+            serde_json::to_vec(&ViewCopyMeta {
+                request_id: "other-id".to_owned(),
+                artifact_id: receipt.artifact_id.clone(),
+                file_name: "artifact.md".to_owned(),
+                sha256: super::sha256_hex(b"deck bytes"),
+                created_at_ms: 1,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Orphaned sidecar without a directory under views/.
+        fs::write(
+            store.view_meta_path("orphan-copy"),
+            serde_json::to_vec(&ViewCopyMeta {
+                request_id: "orphan-copy".to_owned(),
+                artifact_id: receipt.artifact_id.clone(),
+                file_name: "artifact.md".to_owned(),
+                sha256: super::sha256_hex(b"deck bytes"),
+                created_at_ms: 1,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Expired unmodified managed copy that should be evicted on open().
+        let expired = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let mut expired_meta = read_view_meta(&store, &expired.request_id);
+        expired_meta.created_at_ms = super::now_ms()
+            .saturating_sub(VIEW_COPY_RETENTION_MS.saturating_add(10_000));
+        fs::write(
+            store.view_meta_path(&expired.request_id),
+            serde_json::to_vec(&expired_meta).unwrap(),
+        )
+        .unwrap();
+
+        drop(store);
+        let reopened =
+            ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
+
+        assert!(
+            !reopened
+                .root()
+                .join("views")
+                .join(&expired.request_id)
+                .exists()
+        );
+        assert!(!reopened.view_meta_path(&expired.request_id).exists());
+        assert!(!reopened.view_meta_path("orphan-copy").exists());
+
+        assert_eq!(fs::read(&legacy_file).unwrap(), b"legacy view");
+        assert!(with_extra.path.is_file());
+        assert_eq!(fs::read(&extra_file).unwrap(), b"extra user file");
+        assert!(corrupt_dir.join("artifact.md").is_file());
+        assert!(mismatch_dir.join("artifact.md").is_file());
+    }
+
+    #[test]
+    fn remove_view_copy_removes_dir_and_sidecar_and_pending_views_ignores_meta()
+    {
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "brief.md",
+            b"brief content",
+        );
+
+        let view = store.create_view_copy(&receipt.artifact_id).unwrap();
+        assert!(view.path.is_file());
+        assert!(store.view_meta_path(&view.request_id).is_file());
+
+        let pending = store.pending_views().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, view.request_id);
+        assert_eq!(pending[0].path, view.path);
+
+        store.remove_view_copy(&view.request_id).unwrap();
+        assert!(!store.root().join("views").join(&view.request_id).exists());
+        assert!(!store.view_meta_path(&view.request_id).exists());
+        assert_eq!(store.pending_views().unwrap().as_slice(), []);
+
+        // Idempotent second removal.
+        store.remove_view_copy(&view.request_id).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn occupied_stale_view_copy_is_skipped_without_blocking_other_evictions() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let scratch = Scratch::new();
+        let store = store(&scratch.0);
+        let receipt = prepare_and_commit_markdown(
+            &scratch.0,
+            &store,
+            "locked.md",
+            b"locked bytes",
+        );
+
+        let locked = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let unlocked = store.create_view_copy(&receipt.artifact_id).unwrap();
+        let latest_ts =
+            read_view_meta(&store, &unlocked.request_id).created_at_ms;
+
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&locked.path)
+            .unwrap();
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(
+                    latest_ts + VIEW_COPY_RETENTION_MS + 1_000
+                )
+                .unwrap(),
+            1
+        );
+        assert!(locked.path.is_file());
+        assert!(store.view_meta_path(&locked.request_id).is_file());
+        assert!(
+            !store
+                .root()
+                .join("views")
+                .join(&unlocked.request_id)
+                .exists()
+        );
+        assert!(!store.view_meta_path(&unlocked.request_id).is_file());
+
+        drop(handle);
+        assert_eq!(
+            store
+                .cleanup_stale_view_copies_at(
+                    latest_ts + VIEW_COPY_RETENTION_MS + 1_000
+                )
+                .unwrap(),
+            1
+        );
+        assert!(!store.root().join("views").join(&locked.request_id).exists());
+        assert!(!store.view_meta_path(&locked.request_id).is_file());
     }
 }
