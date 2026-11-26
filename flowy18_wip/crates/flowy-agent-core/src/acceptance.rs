@@ -486,37 +486,7 @@ impl AcceptanceQueue {
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
-        let lock = self.queue_lock();
-        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let id = new_receipt_id(now_ms);
-        let entry = JournalEntry::Accepted {
-            id: id.clone(),
-            session_hint: session_hint.map(str::to_owned),
-            text: text.to_owned(),
-            at_ms: now_ms,
-            strict_target: false,
-            dispatch_request_id: None,
-        };
-        self.append_locked(&entry)?;
-        Ok(AcceptedMessage {
-            id,
-            session_hint: session_hint.map(str::to_owned),
-            text: text.to_owned(),
-            created_at_ms: now_ms,
-            taken_at_ms: None,
-            lease: None,
-            completed_at_ms: None,
-            available_at_ms: None,
-            attempts: 0,
-            dead: false,
-            cancelled: false,
-            quarantined: false,
-            last_attempt_id: None,
-            target_session_id: None,
-            submission_id: None,
-            strict_target: false,
-            dispatch_request_id: None,
-        })
+        self.accept_inner(session_hint, text, false, None, now_ms)
     }
 
     /// Accept `text` strictly bound to an existing Worker `worker_id`.
@@ -531,22 +501,40 @@ impl AcceptanceQueue {
         dispatch_request_id: Option<&str>,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
+        self.accept_inner(
+            Some(worker_id),
+            text,
+            true,
+            dispatch_request_id,
+            now_ms,
+        )
+    }
+
+    fn accept_inner(
+        &self,
+        session_hint: Option<&str>,
+        text: &str,
+        strict_target: bool,
+        dispatch_request_id: Option<&str>,
+        now_ms: u64,
+    ) -> io::Result<AcceptedMessage> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let id = new_receipt_id(now_ms);
+        let hint = session_hint.map(str::to_owned);
         let request_id = dispatch_request_id.map(str::to_owned);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
-            session_hint: Some(worker_id.to_owned()),
+            session_hint: hint.clone(),
             text: text.to_owned(),
             at_ms: now_ms,
-            strict_target: true,
+            strict_target,
             dispatch_request_id: request_id.clone(),
         };
         self.append_locked(&entry)?;
         Ok(AcceptedMessage {
             id,
-            session_hint: Some(worker_id.to_owned()),
+            session_hint: hint.clone(),
             text: text.to_owned(),
             created_at_ms: now_ms,
             taken_at_ms: None,
@@ -558,9 +546,9 @@ impl AcceptanceQueue {
             cancelled: false,
             quarantined: false,
             last_attempt_id: None,
-            target_session_id: Some(worker_id.to_owned()),
+            target_session_id: if strict_target { hint } else { None },
             submission_id: None,
-            strict_target: true,
+            strict_target,
             dispatch_request_id: request_id,
         })
     }

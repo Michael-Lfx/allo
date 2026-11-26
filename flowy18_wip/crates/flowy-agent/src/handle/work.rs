@@ -388,11 +388,15 @@ impl AgentHandle {
         revision_brief: &str,
         request_id: &str,
     ) -> Result<DispatchWorkResult, &'static str> {
+        let req_id = request_id.trim();
+        if req_id.is_empty() {
+            return Err("INVALID_ARGS");
+        }
         self.inner.revise_work(
             root_session_id,
             worker_id,
             revision_brief,
-            request_id,
+            Some(req_id),
         )
     }
 
@@ -589,17 +593,13 @@ impl AgentHandle {
                         previous_contract: None,
                         visible_prompt: &resume_prompt,
                         resumed: ResumedSubmission {
-                            contract: None,
                             skip_contract_evolve: true,
                             model_prompt_override: Some(resume_prompt.clone()),
-                            model_prompt_suffix: None,
                             display_text_override: Some(String::new()),
                             skip_push_user_line: true,
-                            preserve_turn_denial: false,
-                            preserve_tool_approval: false,
                             prompt_source: MessageSource::CardResume,
-                            is_router_announcement: false,
                             bypass_busy_queue: true,
+                            ..ResumedSubmission::default()
                         },
                         approval_grant: None,
                         denial_rollback: DenialRollback::Unchanged,
@@ -647,16 +647,10 @@ impl AgentHandle {
                     visible_prompt: &prompt,
                     resumed: ResumedSubmission {
                         contract: Some(updated_brief),
-                        skip_contract_evolve: false,
-                        model_prompt_override: None,
                         model_prompt_suffix: Some(suffix),
-                        display_text_override: None,
                         skip_push_user_line: true,
-                        preserve_turn_denial: false,
-                        preserve_tool_approval: false,
-                        prompt_source: MessageSource::User,
-                        is_router_announcement: false,
                         bypass_busy_queue: true,
+                        ..ResumedSubmission::default()
                     },
                     approval_grant: None,
                     denial_rollback: DenialRollback::Unchanged,
@@ -701,17 +695,14 @@ impl AgentHandle {
                     previous_contract: None,
                     visible_prompt: &resume_prompt,
                     resumed: ResumedSubmission {
-                        contract: None,
                         skip_contract_evolve: true,
                         model_prompt_override: Some(resume_prompt.clone()),
-                        model_prompt_suffix: None,
                         display_text_override: Some(String::new()),
                         skip_push_user_line: true,
-                        preserve_turn_denial: false,
                         preserve_tool_approval: true,
                         prompt_source: MessageSource::CardResume,
-                        is_router_announcement: false,
                         bypass_busy_queue: true,
+                        ..ResumedSubmission::default()
                     },
                     approval_grant: Some((tool_name, args_hash)),
                     denial_rollback: DenialRollback::Unchanged,
@@ -756,17 +747,14 @@ impl AgentHandle {
                     previous_contract: None,
                     visible_prompt: &deny_prompt,
                     resumed: ResumedSubmission {
-                        contract: None,
                         skip_contract_evolve: true,
                         model_prompt_override: Some(deny_prompt.clone()),
-                        model_prompt_suffix: None,
                         display_text_override: Some(String::new()),
                         skip_push_user_line: true,
                         preserve_turn_denial: true,
-                        preserve_tool_approval: false,
                         prompt_source: MessageSource::CardResume,
-                        is_router_announcement: false,
                         bypass_busy_queue: true,
+                        ..ResumedSubmission::default()
                     },
                     approval_grant: None,
                     denial_rollback: DenialRollback::Restore(previous_denial),
@@ -1137,14 +1125,14 @@ impl Harness {
         root_session_id: &str,
         worker_id: &str,
         revision_brief: &str,
-        request_id: &str,
+        request_id: Option<&str>,
     ) -> Result<DispatchWorkResult, &'static str> {
         if self.state.shutdown_requested.load(Ordering::Acquire) {
             return Err("HOST_SHUTTING_DOWN");
         }
         let brief = revision_brief.trim();
-        let req_id = request_id.trim();
-        if brief.is_empty() || req_id.is_empty() {
+        let req_id = request_id.map(str::trim).filter(|s| !s.is_empty());
+        if brief.is_empty() {
             return Err("INVALID_ARGS");
         }
         let fingerprint =
@@ -1155,24 +1143,14 @@ impl Harness {
                 lock(&self.engine).clone().ok_or("notice.agent_failed")?;
             let worker =
                 verify_child_ownership(&engine, root_session_id, worker_id)?;
-            if let Some(existing) =
-                engine.lookup_dispatch_request(root_session_id, req_id)
-            {
-                if existing.fingerprint != fingerprint {
-                    return Err("IDEMPOTENCY_CONFLICT");
-                }
-                let status = self
-                    .child_works(root_session_id)
-                    .into_iter()
-                    .find(|w| w.work_id == existing.worker_id)
-                    .map_or_else(|| "queued".to_owned(), |w| w.state);
-                return Ok(DispatchWorkResult {
-                    work_id: existing.worker_id,
-                    receipt_id: existing.receipt_id,
-                    status,
-                    access_mode: worker.access_mode,
-                    deduplicated: true,
-                });
+            if let Some(dedup) = self.lookup_idempotent_dispatch(
+                &engine,
+                root_session_id,
+                req_id,
+                &fingerprint,
+                Some(worker.access_mode),
+            )? {
+                return Ok(dedup);
             }
             let _ = super::observer::cancel_receipts_for_sessions(
                 &self.state,
@@ -1212,19 +1190,14 @@ impl Harness {
             }
             let worker =
                 verify_child_ownership(&engine, root_session_id, worker_id)?;
-            if let Some(existing) =
-                engine.lookup_dispatch_request(root_session_id, req_id)
-            {
-                if existing.fingerprint != fingerprint {
-                    return Err("IDEMPOTENCY_CONFLICT");
-                }
-                return Ok(DispatchWorkResult {
-                    work_id: existing.worker_id,
-                    receipt_id: existing.receipt_id,
-                    status: "queued".to_owned(),
-                    access_mode: worker.access_mode,
-                    deduplicated: true,
-                });
+            if let Some(dedup) = self.lookup_idempotent_dispatch(
+                &engine,
+                root_session_id,
+                req_id,
+                &fingerprint,
+                Some(worker.access_mode),
+            )? {
+                return Ok(dedup);
             }
             let _ = super::observer::cancel_receipts_for_sessions(
                 &self.state,
@@ -1243,23 +1216,24 @@ impl Harness {
             let now = now_ms();
             let queue = AcceptanceQueue::new(self.state.root.clone());
             let receipt = queue
-                .accept_strict(worker_id, brief, Some(req_id), now)
+                .accept_strict(worker_id, brief, req_id, now)
                 .map_err(|_| {
                     self.state.report_storage_error();
                     "notice.session_storage_failed"
                 })?;
-            if engine
-                .record_dispatch_request(
-                    root_session_id,
-                    DispatchRecord {
-                        request_id: req_id.to_owned(),
-                        fingerprint,
-                        worker_id: worker_id.to_owned(),
-                        receipt_id: receipt.id.clone(),
-                        created_at_ms: now,
-                    },
-                )
-                .is_err()
+            if let Some(explicit_id) = req_id
+                && engine
+                    .record_dispatch_request(
+                        root_session_id,
+                        DispatchRecord {
+                            request_id: explicit_id.to_owned(),
+                            fingerprint,
+                            worker_id: worker_id.to_owned(),
+                            receipt_id: receipt.id.clone(),
+                            created_at_ms: now,
+                        },
+                    )
+                    .is_err()
             {
                 let _ = queue.cancel(&receipt.id, now_ms());
                 self.state.report_storage_error();

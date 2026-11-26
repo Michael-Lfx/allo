@@ -203,6 +203,18 @@ fn next_choice_card_id(now: u64) -> String {
     format!("choice-{now}-{}", next_stamp())
 }
 
+fn arg_str<'a>(args: &'a Value, key: &str) -> &'a str {
+    args.get(key).and_then(Value::as_str).map_or("", str::trim)
+}
+
+fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// Build the Router's dedicated [`PreToolHook`] intercepting `ask_user_choice`
 /// and suspending the turn immediately (`PreToolDecision::SuspendWithCard`).
 pub(super) fn build_router_pre_tool_hook(
@@ -213,22 +225,16 @@ pub(super) fn build_router_pre_tool_hook(
         if tool_name != "ask_user_choice" {
             return PreToolDecision::Allow;
         }
-        let prompt = args
-            .get("prompt")
-            .and_then(Value::as_str)
-            .map_or("", str::trim);
+        let prompt = arg_str(args, "prompt");
         if prompt.is_empty() {
             return PreToolDecision::Deny {
                 reason: "INVALID_ARGS: ask_user_choice requires a non-empty `prompt`".to_owned(),
             };
         }
-        let impact_boundary = args
-            .get("impact_boundary")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("仅执行你确认的选项，未选对象保持原样")
-            .to_owned();
+        let impact_boundary = arg_opt_str(args, "impact_boundary")
+            .unwrap_or_else(|| {
+                "仅执行你确认的选项，未选对象保持原样".to_owned()
+            });
         let allow_multi = args
             .get("allow_multi")
             .and_then(Value::as_bool)
@@ -250,14 +256,8 @@ pub(super) fn build_router_pre_tool_hook(
         let mut seen_ids = BTreeSet::new();
         let mut options = Vec::with_capacity(raw_options.len());
         for raw in raw_options {
-            let object_id = raw
-                .get("object_id")
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
-            let label = raw
-                .get("label")
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
+            let object_id = arg_str(raw, "object_id");
+            let label = arg_str(raw, "label");
             if object_id.is_empty() || label.is_empty() {
                 return PreToolDecision::Deny {
                     reason: "INVALID_ARGS: each option requires non-empty `object_id` and `label`".to_owned(),
@@ -371,12 +371,7 @@ fn dispatch_work_tool(
                         "agent host is shutting down",
                     );
                 };
-                let brief = args
-                    .arguments
-                    .get("brief")
-                    .and_then(Value::as_str)
-                    .map_or("", str::trim)
-                    .to_owned();
+                let brief = arg_str(&args.arguments, "brief").to_owned();
                 if brief.is_empty() {
                     return ToolExecutionResult::error(
                         "INVALID_ARGS",
@@ -394,13 +389,8 @@ fn dispatch_work_tool(
                         );
                     }
                 };
-                let target_work_id = args
-                    .arguments
-                    .get("target_work_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
+                let target_work_id =
+                    arg_opt_str(&args.arguments, "target_work_id");
                 let target_object_ids: Vec<String> = args
                     .arguments
                     .get("target_object_ids")
@@ -413,13 +403,7 @@ fn dispatch_work_tool(
                             .map(str::to_owned)
                             .collect()
                     });
-                let request_id = args
-                    .arguments
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
+                let request_id = arg_opt_str(&args.arguments, "request_id");
                 let req = DispatchWorkRequest {
                     brief,
                     requested_mode,
@@ -427,14 +411,24 @@ fn dispatch_work_tool(
                     target_object_ids,
                     request_id,
                 };
-                match harness.dispatch_work_from_router(&router_id, req) {
-                    Ok(result) => ToolExecutionResult::success_value(
+                let h = Arc::clone(&harness);
+                let rid = router_id.clone();
+                match tokio::task::spawn_blocking(move || {
+                    h.dispatch_work_from_router(&rid, req)
+                })
+                .await
+                {
+                    Ok(Ok(result)) => ToolExecutionResult::success_value(
                         serde_json::to_value(result)
                             .unwrap_or_else(|_| json!({})),
                     ),
-                    Err(code) => ToolExecutionResult::error(
+                    Ok(Err(code)) => ToolExecutionResult::error(
                         code,
                         format!("dispatch_work rejected: {code}"),
+                    ),
+                    Err(err) => ToolExecutionResult::error(
+                        "INTERNAL_ERROR",
+                        err.to_string(),
                     ),
                 }
             })
@@ -465,44 +459,57 @@ fn query_work_status_tool(
                         "agent host is shutting down",
                     );
                 };
-                let filter_work_id = args
-                    .arguments
-                    .get("work_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
-                if let Some(work_id) = filter_work_id.as_deref() {
-                    let engine = lock(&harness.engine).clone();
-                    let Some(engine) = engine else {
-                        return ToolExecutionResult::error(
-                            "HOST_UNAVAILABLE",
-                            "engine unavailable",
-                        );
-                    };
-                    if let Err(code) =
-                        verify_child_ownership(&engine, &router_id, work_id)
-                    {
-                        return ToolExecutionResult::error(
-                            code,
-                            format!("cannot query work `{work_id}`: {code}"),
-                        );
+                let filter_work_id = arg_opt_str(&args.arguments, "work_id");
+                let h = Arc::clone(&harness);
+                let rid = router_id.clone();
+                let res = tokio::task::spawn_blocking(
+                    move || -> Result<Vec<Value>, (&'static str, String)> {
+                        if let Some(work_id) = filter_work_id.as_deref() {
+                            let engine =
+                                lock(&h.engine).clone().ok_or_else(|| {
+                                    (
+                                        "HOST_UNAVAILABLE",
+                                        "engine unavailable".to_owned(),
+                                    )
+                                })?;
+                            verify_child_ownership(&engine, &rid, work_id)
+                                .map_err(|code| {
+                                    (
+                                        code,
+                                        format!(
+                                            "cannot query work `{work_id}`: {code}"
+                                        ),
+                                    )
+                                })?;
+                        }
+                        let works = h.child_works(&rid);
+                        Ok(works
+                            .into_iter()
+                            .filter(|w| {
+                                filter_work_id
+                                    .as_deref()
+                                    .is_none_or(|id| w.work_id == id)
+                            })
+                            .map(child_work_to_json)
+                            .collect())
+                    },
+                )
+                .await;
+                match res {
+                    Ok(Ok(filtered)) => {
+                        ToolExecutionResult::success_value(json!({
+                            "root_session_id": router_id,
+                            "works": filtered,
+                        }))
                     }
+                    Ok(Err((code, msg))) => {
+                        ToolExecutionResult::error(code, msg)
+                    }
+                    Err(err) => ToolExecutionResult::error(
+                        "INTERNAL_ERROR",
+                        err.to_string(),
+                    ),
                 }
-                let works = harness.child_works(&router_id);
-                let filtered: Vec<Value> = works
-                    .into_iter()
-                    .filter(|w| {
-                        filter_work_id
-                            .as_deref()
-                            .is_none_or(|id| w.work_id == id)
-                    })
-                    .map(child_work_to_json)
-                    .collect();
-                ToolExecutionResult::success_value(json!({
-                    "root_session_id": router_id,
-                    "works": filtered,
-                }))
             })
         },
     ))
@@ -535,18 +542,8 @@ fn control_work_tool(
                         "agent host is shutting down",
                     );
                 };
-                let work_id = args
-                    .arguments
-                    .get("work_id")
-                    .and_then(Value::as_str)
-                    .map_or("", str::trim)
-                    .to_owned();
-                let action = args
-                    .arguments
-                    .get("action")
-                    .and_then(Value::as_str)
-                    .map_or("", str::trim)
-                    .to_owned();
+                let work_id = arg_str(&args.arguments, "work_id").to_owned();
+                let action = arg_str(&args.arguments, "action").to_owned();
                 if work_id.is_empty() {
                     return ToolExecutionResult::error(
                         "INVALID_ARGS",
@@ -578,11 +575,7 @@ fn control_work_tool(
                         }
                     }
                     "revise" => {
-                        let brief = args
-                            .arguments
-                            .get("revision_brief")
-                            .and_then(Value::as_str)
-                            .map_or("", str::trim)
+                        let brief = arg_str(&args.arguments, "revision_brief")
                             .to_owned();
                         if brief.is_empty() {
                             return ToolExecutionResult::error(
@@ -590,21 +583,18 @@ fn control_work_tool(
                                 "`revision_brief` is required for `revise`",
                             );
                         }
-                        let request_id = args
-                            .arguments
-                            .get("request_id")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map_or_else(
-                                || format!("revise-{}", next_stamp()),
-                                str::to_owned,
-                            );
+                        let request_id =
+                            arg_opt_str(&args.arguments, "request_id");
                         let h = Arc::clone(&harness);
                         let rid = router_id.clone();
                         let wid = work_id.clone();
                         let res = tokio::task::spawn_blocking(move || {
-                            h.revise_work(&rid, &wid, &brief, &request_id)
+                            h.revise_work(
+                                &rid,
+                                &wid,
+                                &brief,
+                                request_id.as_deref(),
+                            )
                         })
                         .await;
                         match res {
@@ -827,6 +817,46 @@ pub(super) fn build_router_system_prompt(
 }
 
 impl Harness {
+    /// Check whether an explicit `request_id` already exists on `router_id`.
+    /// Returns `Ok(Some(result))` for an idempotent replay, `Err("IDEMPOTENCY_CONFLICT")`
+    /// on payload fingerprint mismatch, or `Ok(None)` when absent.
+    pub(super) fn lookup_idempotent_dispatch(
+        &self,
+        engine: &Engine,
+        router_id: &str,
+        request_id: Option<&str>,
+        fingerprint: &str,
+        fallback_access_mode: Option<WorkAccessMode>,
+    ) -> Result<Option<DispatchWorkResult>, &'static str> {
+        let Some(req_id) = request_id else {
+            return Ok(None);
+        };
+        let Some(existing) = engine.lookup_dispatch_request(router_id, req_id)
+        else {
+            return Ok(None);
+        };
+        if existing.fingerprint != fingerprint {
+            return Err("IDEMPOTENCY_CONFLICT");
+        }
+        let access_mode = fallback_access_mode.unwrap_or_else(|| {
+            engine
+                .with_session(&existing.worker_id, |r| r.access_mode)
+                .unwrap_or(WorkAccessMode::ReadWrite)
+        });
+        let status = self
+            .child_works(router_id)
+            .into_iter()
+            .find(|w| w.work_id == existing.worker_id)
+            .map_or_else(|| "queued".to_owned(), |w| w.state);
+        Ok(Some(DispatchWorkResult {
+            work_id: existing.worker_id,
+            receipt_id: existing.receipt_id,
+            status,
+            access_mode,
+            deduplicated: true,
+        }))
+    }
+
     pub(super) fn dispatch_work_from_router(
         self: &Arc<Self>,
         router_id: &str,
@@ -867,28 +897,14 @@ impl Harness {
             {
                 return Err("ROUTER_DELETING");
             }
-            if let Some(req_id) = req.request_id.as_deref()
-                && let Some(existing) =
-                    engine.lookup_dispatch_request(router_id, req_id)
-            {
-                if existing.fingerprint != fingerprint {
-                    return Err("IDEMPOTENCY_CONFLICT");
-                }
-                let access_mode = engine
-                    .with_session(&existing.worker_id, |r| r.access_mode)
-                    .unwrap_or(WorkAccessMode::ReadWrite);
-                let status = self
-                    .child_works(router_id)
-                    .into_iter()
-                    .find(|w| w.work_id == existing.worker_id)
-                    .map_or_else(|| "queued".to_owned(), |w| w.state);
-                return Ok(DispatchWorkResult {
-                    work_id: existing.worker_id,
-                    receipt_id: existing.receipt_id,
-                    status,
-                    access_mode,
-                    deduplicated: true,
-                });
+            if let Some(dedup) = self.lookup_idempotent_dispatch(
+                &engine,
+                router_id,
+                req.request_id.as_deref(),
+                &fingerprint,
+                None,
+            )? {
+                return Ok(dedup);
             }
 
             // Resolve optional `target_object_ids` strictly within owned child Workers.
@@ -914,113 +930,130 @@ impl Harness {
             }
 
             let now = now_ms();
-            let (worker_id, access_mode, created_new) = if let Some(target_id) =
-                effective_target
-            {
-                let worker =
-                    verify_child_ownership(&engine, router_id, &target_id)?;
-                if !lock(&self.state.live).contains_key(&target_id) {
-                    return Err("WORK_NOT_FOUND");
-                }
-                if worker.access_mode == WorkAccessMode::ReadOnly
-                    && req.requested_mode == Some(WorkAccessMode::ReadWrite)
-                {
-                    return Err("ACCESS_MODE_ESCALATION_DENIED");
-                }
-                (target_id, worker.access_mode, false)
-            } else {
-                let mode =
-                    req.requested_mode.unwrap_or(WorkAccessMode::ReadWrite);
-                let worker_id = format!("w-{}", next_stamp());
-                let parent_workspace = lock(&self.state.live)
-                    .get(router_id)
-                    .and_then(|s| s.workspace.clone());
-                let origin = parent.origin.clone();
-                let session_workspace = match &origin {
-                    SessionOrigin::Home => {
-                        let root = self
-                            .state
-                            .root
-                            .join("sessions")
-                            .join("workspaces")
-                            .join(&worker_id);
-                        std::fs::create_dir_all(&root).map_err(|error| {
-                            log_storage_io_error(
-                                "create worker workspace",
-                                &root,
-                                &error,
-                            );
-                            "STORAGE_ERROR"
-                        })?;
-                        Some(SessionWorkspace { root })
+            let (worker_id, access_mode, created_new, created_home_workspace) =
+                if let Some(target_id) = effective_target {
+                    let worker =
+                        verify_child_ownership(&engine, router_id, &target_id)?;
+                    if !lock(&self.state.live).contains_key(&target_id) {
+                        return Err("WORK_NOT_FOUND");
                     }
-                    SessionOrigin::Project { .. } => {
-                        parent.workspace.or_else(|| {
-                            parent_workspace.as_ref().map(|ws| {
-                                SessionWorkspace {
-                                    root: ws.root.clone(),
-                                }
-                            })
-                        })
+                    if worker.access_mode == WorkAccessMode::ReadOnly
+                        && req.requested_mode == Some(WorkAccessMode::ReadWrite)
+                    {
+                        return Err("ACCESS_MODE_ESCALATION_DENIED");
                     }
-                    SessionOrigin::Unknown => None,
-                };
-                engine
-                    .create_session_with_role(
-                        worker_id.clone(),
-                        now,
-                        origin.clone(),
-                        session_workspace.clone(),
-                        SessionRole::Worker,
-                        Some(router_id.to_owned()),
-                        mode,
-                    )
-                    .map_err(|_| "STORAGE_ERROR")?;
-                lock(&self.state.live).insert(
-                    worker_id.clone(),
-                    Live {
-                        projection: ChatProjection::new(),
-                        title: crate::title::clamp_title(
-                            &crate::title::fallback_title(
-                                brief,
-                                crate::title::TITLE_MAX_CHARS,
-                            ),
-                            crate::title::TITLE_MAX_CHARS,
+                    (target_id, worker.access_mode, false, None)
+                } else {
+                    let mode =
+                        req.requested_mode.unwrap_or(WorkAccessMode::ReadWrite);
+                    let worker_id = format!("w-{}", next_stamp());
+                    let parent_workspace = lock(&self.state.live)
+                        .get(router_id)
+                        .and_then(|s| s.workspace.clone());
+                    let origin = parent.origin.clone();
+                    let (session_workspace, home_dir) = match &origin {
+                        SessionOrigin::Home => {
+                            let root = self
+                                .state
+                                .root
+                                .join("sessions")
+                                .join("workspaces")
+                                .join(&worker_id);
+                            std::fs::create_dir_all(&root).map_err(
+                                |error| {
+                                    log_storage_io_error(
+                                        "create worker workspace",
+                                        &root,
+                                        &error,
+                                    );
+                                    "STORAGE_ERROR"
+                                },
+                            )?;
+                            (
+                                Some(SessionWorkspace { root: root.clone() }),
+                                Some(root),
+                            )
+                        }
+                        SessionOrigin::Project { .. } => (
+                            parent.workspace.or_else(|| {
+                                parent_workspace.as_ref().map(|ws| {
+                                    SessionWorkspace {
+                                        root: ws.root.clone(),
+                                    }
+                                })
+                            }),
+                            None,
                         ),
-                        titled: true,
-                        pinned: false,
-                        archived: false,
-                        auto_title_pending: false,
-                        auto_title_in_flight: false,
-                        auto_title_attempts: 0,
-                        title_signal: CancelToken::new(),
-                        status: TurnStatus::Idle,
-                        updated_at: now,
-                        turn_started_at: None,
-                        workspace: parent_workspace,
-                        origin,
-                        session_workspace,
-                        heartbeat: None,
-                        role: SessionRole::Worker,
-                        root_session_id: Some(router_id.to_owned()),
-                        access_mode: mode,
-                    },
-                );
-                let _ = engine.set_session_title(
-                    &worker_id,
-                    crate::title::clamp_title(
+                        SessionOrigin::Unknown => (None, None),
+                    };
+                    if engine
+                        .create_session_with_role(
+                            worker_id.clone(),
+                            now,
+                            origin.clone(),
+                            session_workspace.clone(),
+                            SessionRole::Worker,
+                            Some(router_id.to_owned()),
+                            mode,
+                        )
+                        .is_err()
+                    {
+                        if let Some(dir) = home_dir.as_deref() {
+                            let _ = std::fs::remove_dir_all(dir);
+                        }
+                        return Err("STORAGE_ERROR");
+                    }
+                    let worker_title = crate::title::clamp_title(
                         &crate::title::fallback_title(
                             brief,
                             crate::title::TITLE_MAX_CHARS,
                         ),
                         crate::title::TITLE_MAX_CHARS,
-                    ),
-                    true,
-                );
-                if persist_index(&self.state).is_err() {
-                    self.state.report_storage_error();
+                    );
+                    lock(&self.state.live).insert(
+                        worker_id.clone(),
+                        Live {
+                            projection: ChatProjection::new(),
+                            title: worker_title.clone(),
+                            titled: true,
+                            pinned: false,
+                            archived: false,
+                            auto_title_pending: false,
+                            auto_title_in_flight: false,
+                            auto_title_attempts: 0,
+                            title_signal: CancelToken::new(),
+                            status: TurnStatus::Idle,
+                            updated_at: now,
+                            turn_started_at: None,
+                            workspace: parent_workspace,
+                            origin,
+                            session_workspace,
+                            heartbeat: None,
+                            role: SessionRole::Worker,
+                            root_session_id: Some(router_id.to_owned()),
+                            access_mode: mode,
+                        },
+                    );
+                    let _ = engine.set_session_title(
+                        &worker_id,
+                        worker_title,
+                        true,
+                    );
+                    if persist_index(&self.state).is_err() {
+                        self.state.report_storage_error();
+                    }
+                    (worker_id, mode, true, home_dir)
+                };
+
+            let rollback_new_worker = || {
+                if created_new {
+                    let _ = engine.remove_session(&worker_id);
+                    lock(&self.state.live).remove(&worker_id);
+                    if let Some(dir) = created_home_workspace.as_deref() {
+                        let _ = std::fs::remove_dir_all(dir);
+                    }
+                    let _ = persist_index(&self.state);
                 }
-                (worker_id, mode, true)
             };
 
             #[cfg(test)]
@@ -1030,53 +1063,39 @@ impl Harness {
                 if let Some(hook) = hook
                     && let Err(injected) = hook(router_id, &worker_id)
                 {
-                    if created_new {
-                        let _ = engine.remove_session(&worker_id);
-                        lock(&self.state.live).remove(&worker_id);
-                        let _ = persist_index(&self.state);
-                    }
+                    rollback_new_worker();
                     return Err(injected);
                 }
             }
 
-            let effective_request_id = req
-                .request_id
-                .clone()
-                .unwrap_or_else(|| format!("dispatch-{}", next_stamp()));
+            let explicit_request_id = req.request_id.as_deref();
             let queue = AcceptanceQueue::new(self.state.root.clone());
             let Ok(receipt) = queue.accept_strict(
                 &worker_id,
                 brief,
-                Some(&effective_request_id),
+                explicit_request_id,
                 now,
             ) else {
-                if created_new {
-                    let _ = engine.remove_session(&worker_id);
-                    lock(&self.state.live).remove(&worker_id);
-                    let _ = persist_index(&self.state);
-                }
+                rollback_new_worker();
                 self.state.report_storage_error();
                 return Err("STORAGE_ERROR");
             };
-            if engine
-                .record_dispatch_request(
-                    router_id,
-                    DispatchRecord {
-                        request_id: effective_request_id,
-                        fingerprint,
-                        worker_id: worker_id.clone(),
-                        receipt_id: receipt.id.clone(),
-                        created_at_ms: now,
-                    },
-                )
-                .is_err()
+            if let Some(req_id) = explicit_request_id
+                && engine
+                    .record_dispatch_request(
+                        router_id,
+                        DispatchRecord {
+                            request_id: req_id.to_owned(),
+                            fingerprint,
+                            worker_id: worker_id.clone(),
+                            receipt_id: receipt.id.clone(),
+                            created_at_ms: now,
+                        },
+                    )
+                    .is_err()
             {
                 let _ = queue.cancel(&receipt.id, now_ms());
-                if created_new {
-                    let _ = engine.remove_session(&worker_id);
-                    lock(&self.state.live).remove(&worker_id);
-                    let _ = persist_index(&self.state);
-                }
+                rollback_new_worker();
                 self.state.report_storage_error();
                 return Err("STORAGE_ERROR");
             }

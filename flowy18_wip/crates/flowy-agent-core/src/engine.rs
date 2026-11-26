@@ -170,6 +170,10 @@ impl std::fmt::Debug for Engine {
     }
 }
 
+/// Maximum durable dispatch idempotency records retained per Router session
+/// (oldest entries by `created_at_ms` are evicted to keep `history.json` bounded).
+pub const MAX_DISPATCH_REQUESTS: usize = 128;
+
 impl Engine {
     pub fn open(
         root: PathBuf,
@@ -302,7 +306,10 @@ impl Engine {
 
     /// Create a session with explicit Router/Worker role, root binding, and
     /// immutable workspace access mode.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit Router/Worker session constructor persists all immutable creation-time fields in one atomic write"
+    )]
     pub fn create_session_with_role(
         &self,
         id: String,
@@ -409,7 +416,8 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// Atomically persist an idempotency record for a Router dispatch request.
+    /// Atomically persist an idempotency record for a Router dispatch request,
+    /// evicting oldest entries once [`MAX_DISPATCH_REQUESTS`] is exceeded.
     pub fn record_dispatch_request(
         &self,
         router_id: &str,
@@ -427,12 +435,31 @@ impl Engine {
         })?;
         let key = record.request_id.clone();
         let previous = session.dispatch_requests.insert(key.clone(), record);
+        let mut evicted: Vec<(String, DispatchRecord)> = Vec::new();
+        while session.dispatch_requests.len() > MAX_DISPATCH_REQUESTS {
+            let Some(oldest_key) = session
+                .dispatch_requests
+                .iter()
+                .filter(|(k, _)| *k != &key)
+                .min_by_key(|(k, rec)| (rec.created_at_ms, k.as_str()))
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = session.dispatch_requests.remove(&oldest_key)
+            {
+                evicted.push((oldest_key, removed));
+            }
+        }
         if let Err(error) = inner.index.save(&self.root) {
             if let Some(session) = inner.index.get_mut(router_id) {
                 if let Some(old) = previous {
                     session.dispatch_requests.insert(key, old);
                 } else {
                     session.dispatch_requests.remove(&key);
+                }
+                for (old_k, old_v) in evicted {
+                    session.dispatch_requests.insert(old_k, old_v);
                 }
             }
             drop(inner);

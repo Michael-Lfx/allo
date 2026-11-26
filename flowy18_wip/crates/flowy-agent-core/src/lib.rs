@@ -276,6 +276,86 @@ mod router_core_tests {
     }
 
     #[test]
+    fn record_dispatch_request_bounds_capacity_and_evicts_oldest() {
+        let scratch = Scratch::new("dispatch-cap");
+        let config = EngineConfig {
+            route: ModelRoute::default(),
+            api_key: None,
+            system: String::new(),
+            registry: tools::ToolRegistry::new(),
+            cwd: None,
+            todos: None,
+            delivery_committer: None,
+            work_contract: None,
+            pre_tool_hook: None,
+        };
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config.clone(),
+                Arc::new(NoopObserver),
+            )
+            .unwrap(),
+        );
+        engine
+            .create_session_with_role(
+                "r-cap".into(),
+                1,
+                SessionOrigin::Home,
+                None,
+                SessionRole::Router,
+                None,
+                WorkAccessMode::ReadWrite,
+            )
+            .unwrap();
+        let total = engine::MAX_DISPATCH_REQUESTS + 5;
+        for idx in 0..total {
+            engine
+                .record_dispatch_request(
+                    "r-cap",
+                    DispatchRecord {
+                        request_id: format!("req-{idx:04}"),
+                        fingerprint: format!("fp-{idx:04}"),
+                        worker_id: format!("w-{idx:04}"),
+                        receipt_id: format!("rcpt-{idx:04}"),
+                        created_at_ms: 1_000 + idx as u64,
+                    },
+                )
+                .unwrap();
+        }
+        let reopened =
+            Engine::open(scratch.0.clone(), config, Arc::new(NoopObserver))
+                .unwrap();
+        let persisted = reopened.session("r-cap").unwrap();
+        assert_eq!(
+            persisted.dispatch_requests.len(),
+            engine::MAX_DISPATCH_REQUESTS
+        );
+        for evicted in 0..5 {
+            assert!(
+                reopened
+                    .lookup_dispatch_request(
+                        "r-cap",
+                        &format!("req-{evicted:04}")
+                    )
+                    .is_none(),
+                "oldest dispatch record req-{evicted:04} should be evicted"
+            );
+        }
+        for retained in 5..total {
+            assert!(
+                reopened
+                    .lookup_dispatch_request(
+                        "r-cap",
+                        &format!("req-{retained:04}")
+                    )
+                    .is_some(),
+                "newest dispatch record req-{retained:04} should remain"
+            );
+        }
+    }
+
+    #[test]
     fn suspend_with_card_halts_tool_batch_and_persists_disambiguation_card() {
         let scratch = Scratch::new("suspend-card");
         let second_tool_runs = Arc::new(AtomicUsize::new(0));

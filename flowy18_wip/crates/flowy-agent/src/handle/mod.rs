@@ -257,6 +257,24 @@ struct ResumedSubmission {
     pub(super) bypass_busy_queue: bool,
 }
 
+impl Default for ResumedSubmission {
+    fn default() -> Self {
+        Self {
+            contract: None,
+            skip_contract_evolve: false,
+            model_prompt_override: None,
+            model_prompt_suffix: None,
+            display_text_override: None,
+            skip_push_user_line: false,
+            preserve_turn_denial: false,
+            preserve_tool_approval: false,
+            prompt_source: MessageSource::User,
+            is_router_announcement: false,
+            bypass_busy_queue: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct AcceptedClaim {
     receipt_id: String,
@@ -1739,16 +1757,17 @@ impl AgentHandle {
 
     /// Create an explicit Home-origin [`SessionRole::Router`] root conversation.
     pub fn create_router_session(&self) -> Result<String, &'static str> {
-        *lock(&self.inner.state.workspace_for_new_sessions) = None;
-        self.set_origin_for_new_sessions(SessionOrigin::Home);
-        self.inner.create_session_with_role_inner(
+        let id = self.inner.create_session_with_role_inner(
             SessionOrigin::Home,
             None,
             true,
             SessionRole::Router,
             None,
             WorkAccessMode::ReadWrite,
-        )
+        )?;
+        *lock(&self.inner.state.workspace_for_new_sessions) = None;
+        *lock(&self.inner.state.origin_for_new_sessions) = SessionOrigin::Home;
+        Ok(id)
     }
 
     /// Create an explicit Project-origin [`SessionRole::Router`] root
@@ -1761,17 +1780,17 @@ impl AgentHandle {
         let origin = SessionOrigin::Project {
             project_id: Some(workspace.project_id.clone()),
         };
-        *lock(&self.inner.state.workspace_for_new_sessions) =
-            Some(workspace.clone());
-        self.set_origin_for_new_sessions(origin.clone());
-        self.inner.create_session_with_role_inner(
-            origin,
-            Some(workspace),
+        let id = self.inner.create_session_with_role_inner(
+            origin.clone(),
+            Some(workspace.clone()),
             true,
             SessionRole::Router,
             None,
             WorkAccessMode::ReadWrite,
-        )
+        )?;
+        *lock(&self.inner.state.workspace_for_new_sessions) = Some(workspace);
+        *lock(&self.inner.state.origin_for_new_sessions) = origin;
+        Ok(id)
     }
 
     /// Submit one durable user message directly to an explicit `router_id`
@@ -1782,6 +1801,12 @@ impl AgentHandle {
         submission: u128,
         text: &str,
     ) -> Result<String, &'static str> {
+        if self.inner.is_initializing() {
+            return Err("library.loading");
+        }
+        if self.inner.session_role(router_id) != SessionRole::Router {
+            return Err("notice.agent_failed");
+        }
         self.inner.submit_message_targeted(
             Some(router_id),
             text,
@@ -2481,7 +2506,10 @@ impl Harness {
         Ok(id)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "thin lock wrapper forwarding all dispatch arguments to submit_message_targeted_locked"
+    )]
     pub(super) fn submit_message_targeted(
         self: &Arc<Self>,
         explicit_session_id: Option<&str>,

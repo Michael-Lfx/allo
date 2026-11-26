@@ -1069,18 +1069,26 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
 - **Mutation Check 实证（红转绿）**：
   - 临时关闭 `handle/queue.rs` 两层 `strict_target` 护栏（`strict_target_missing` 与 `take` 后 `claimed.strict_target`）→ 运行 `fault_injection_delete_parent_between_worker_create_and_enqueue_terminates_strict_receipt` → **RED**（`router_tests.rs:951: strict receipt for missing worker must not be claimed or fallback-forked`）；
   - 恢复护栏后重跑 → **GREEN**（同时印证双层 TOCTOU 纵深防御均独立有效）。
+- **深度 `/code-review` + `/laoyeye`（`carl-idea-king` / `kaz-neat-freak`）+ `/ponytail` 审查加固与清理减脂（2026-11-26）**：
+  - **5 项 `[Required]` + 1 项失败原子性修复**：
+    1. `engine.rs::record_dispatch_request` 新增容量硬上限 `MAX_DISPATCH_REQUESTS = 128`（按 `(created_at_ms, request_id)` 确定性淘汰最旧条目，且写盘失败时完整回滚新增与被淘汰条目）；`router.rs` 与 `work.rs` 停止为省略 `request_id` 的模型调用合成 `"dispatch-*"` / `"revise-*"` 写入 `history.json`，彻底消除长生命周期 Router 历史账本污染。
+    2. `dispatch_work_tool` 与 `query_work_status_tool` 对齐 `control_work_tool`，统一经 `tokio::task::spawn_blocking` 卸载同步互斥锁与磁盘 I/O，杜绝阻塞 Tokio async worker 线程。
+    3. `AgentHandle::submit_router_message` 补齐 `is_initializing()` 与 `SessionRole::Router` 强校验（显式拒绝隐藏 `Worker` 与 `Standard` 会话，返回 `Err("notice.agent_failed")`）。
+    4. `engine.rs::create_session_with_role` 与 `handle/mod.rs::submit_message_targeted` 两处裸 `#[allow(clippy::too_many_arguments)]` 全部收敛为带 `reason` 的 `#[expect(...)]`（PR #496 新增 0 处裸 `#[allow]`）。
+    5. `dispatch_work_from_router` 收拢 3 处重复回滚为单一闭包，并在新建 Home Worker 回滚时同步 `remove_dir_all` 清除空 `sessions/workspaces/<worker_id>` 目录；同步修复 `create_router_session` / `create_router_project_session` 在失败时不提前篡改全局 `workspace_for_new_sessions` / `origin_for_new_sessions` 且消除双重 `context_generation` 递增。
+  - **7 项死代码与冗余代码清理**：移除 `flowy-agent/src/lib.rs` 零引用公开重导出 `DispatchRecord`；合并 `AcceptanceQueue::accept`/`accept_strict` 为 `accept_inner`；抽取 `Harness::lookup_idempotent_dispatch` 消除 3 处幂等查找重复；抽取 `arg_str` / `arg_opt_str` 简化 12 处 JSON 取参；为 `ResumedSubmission` 实现 `Default` 精简 6 处 11 字段构造；`router_tests.rs` 全面切换 RAII `ScratchDir`（消除断言失败 `%TEMP%` 泄漏）与 `wait_idle`（样板净减 `-127` 行），并新增 2 条回归单测（`record_dispatch_request_bounds_capacity_and_evicts_oldest`、`review_hardening_guards_reject_non_router_submit_and_skip_auto_id_pollution`）及回滚空目录断言。
 - **最终串行全量验证矩阵（`origin/main@feb010a56`，`CARGO_BUILD_BUILD_DIR=%LOCALAPPDATA%\Temp\flowy18-router-build`）**：
   ```text
   cargo fmt --all -- --check                                         : 0 diff
-  cargo clippy -p flowy-agent-core -p flowy-agent -p flowy-studio
-               --all-targets -- -D warnings                          : 0 error, 0 warning
-  cargo test --locked -p flowy-agent-core                            : 116 passed, 0 failed, 2 ignored (0.35s)
-  cargo test --locked -p flowy-agent -- --test-threads=1             : 245 passed, 0 failed, 3 ignored (70.18s)
-    (含 handle::router_tests 16/16 全绿：纵向主干、槽位隔离、双只读并发、幂等重派、3 项故障注入、
+  cargo clippy --locked -p flowy-agent-core -p flowy-agent
+               -p flowy-studio --all-targets -- -D warnings          : 0 error, 0 warning (19.75s)
+  cargo test --locked -p flowy-agent-core                            : 117 passed, 0 failed, 2 ignored (2.81s)
+  cargo test --locked -p flowy-agent -- --test-threads=1             : 246 passed, 0 failed, 3 ignored (97.40s)
+    (含 handle::router_tests 17/17 全绿：纵向主干、槽位隔离、双只读并发、幂等重派、3 项故障注入与回滚目录清理、
      双 Router 跨根隔离、FIFO/SystemEvent 优先级、播报防重试风暴、无契约选卡、取消/修订矩阵、
      不可变权限/环境、Home vs Project 交付门、青禾 5 步真 create_deck→verify_deck→publish_file E2E、
-     以及 PR #495 耦合护栏全覆盖)
-  cargo test --locked -p flowy-studio                                : 112 passed, 0 failed, 0 ignored (1.45s)
-  cargo check --locked -p flowy-desktop                              : 0 error, 0 warning (15.61s)
+     PR #495 耦合护栏与深度审查加固回归全覆盖)
+  cargo test --locked -p flowy-studio                                : 112 passed, 0 failed, 0 ignored (2.71s)
+  cargo check --locked -p flowy-desktop                              : 0 error, 0 warning (27.19s)
   ```
-- **范围与零冲突核验**：仅修改/新增 `flowy-agent-core`（6 文件）、`flowy-agent`（15 文件）与 `PROGRESS.md`；主工作区 `D:\workSpace\git_clone_test\allo` 保持 100% 干净；等待用户确认后再执行本地 commit / push / 开 PR。
+- **范围与发布状态**：PR #496（`feat/flowy-router-kernel`，open / 待合流）仅触及 `flowy-agent-core`（6 文件）、`flowy-agent`（15 文件）与 `flowy18_wip/docs/architecture/flowy-v0/`（7 份同步文档）；零触碰 `flowy-studio` / `flowy-app` / `flowy-ui` / `flowy-i18n` / 根 workspace；主工作区 `D:\workSpace\git_clone_test\allo` 保持 100% 干净。

@@ -445,11 +445,35 @@ fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool, msg: &str) {
     panic!("timed out waiting for: {msg}");
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
+fn wait_idle(handle: &AgentHandle, sid: &str, msg: &str) {
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(sid).is_busy(),
+        msg,
+    );
+}
+
+struct ScratchDir(PathBuf);
+
+impl std::ops::Deref for ScratchDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(tag: &str) -> ScratchDir {
     let root = std::env::temp_dir()
         .join(format!("flowy-router-{tag}-{}", next_stamp()));
     std::fs::create_dir_all(&root).unwrap();
-    root
+    ScratchDir(root)
 }
 
 fn is_router_req(req: &RecordedRequest) -> bool {
@@ -511,7 +535,7 @@ fn router_dispatches_write_worker_takes_second_message_durably_and_reconciles_ac
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle
         .create_router_project_session(AgentWorkspace {
             project_id: "proj-alpha".into(),
@@ -526,11 +550,7 @@ fn router_dispatches_write_worker_takes_second_message_durably_and_reconciles_ac
         .submit_router_message(&router_id, 1001, "heavy-write task 1")
         .unwrap();
     gate.wait_for_key("worker-heavy-write", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router turn 1 idle",
-    );
+    wait_idle(&handle, &router_id, "router turn 1 idle");
     // Worker is hidden from `list_sessions()` while visible in `child_works`.
     assert_eq!(handle.list_sessions().len(), 1);
     assert_eq!(handle.child_works(&router_id).len(), 1);
@@ -565,11 +585,7 @@ fn router_dispatches_write_worker_takes_second_message_durably_and_reconciles_ac
         },
         "heavy worker completed",
     );
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router idle after announcement",
-    );
+    wait_idle(&handle, &router_id, "router idle after announcement");
 
     // Start Turn 3 (held while streaming) and enqueue durable Turn 4, then simulate crash!
     handle
@@ -588,7 +604,8 @@ fn router_dispatches_write_worker_takes_second_message_durably_and_reconciles_ac
     gate.release("router-turn3");
     drop(handle);
 
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     reopened.set_autonomous_drain(true);
     gate.wait_for_key("fourth-ran", Duration::from_secs(5));
     wait_until(
@@ -614,10 +631,6 @@ fn router_dispatches_write_worker_takes_second_message_durably_and_reconciles_ac
         }),
         "Router turns must inject bounded [ChildWorksReadOnlySnapshot] read-only status header"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -650,7 +663,7 @@ fn max_slots_1_worker_starts_before_router_finishes_first_reply() {
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_max_concurrent_works_for_test(1);
     handle.set_autonomous_drain(true);
     let router_id = handle.create_router_session().unwrap();
@@ -670,14 +683,7 @@ fn max_slots_1_worker_starts_before_router_finishes_first_reply() {
     );
 
     gate.release_all();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router settled",
-    );
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
+    wait_idle(&handle, &router_id, "router settled");
 }
 
 // =========================================================================
@@ -754,7 +760,7 @@ fn two_readonly_workers_reach_barrier_concurrently_on_same_project_while_writer_
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let proj_router = handle
         .create_router_project_session(AgentWorkspace {
@@ -832,10 +838,6 @@ fn two_readonly_workers_reach_barrier_concurrently_on_same_project_while_writer_
             "ReadOnly worker `{key}` must expose strictly glob/grep/read_file"
         );
     }
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -887,7 +889,7 @@ fn dispatch_work_idempotent_retry_returns_same_work_and_rejects_conflicting_payl
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
 
     for (sub, prompt) in [
@@ -927,10 +929,6 @@ fn dispatch_work_idempotent_retry_returns_same_work_and_rejects_conflicting_payl
         "conflicting payload must fail with IDEMPOTENCY_CONFLICT; got {}",
         results[2]
     );
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -956,20 +954,26 @@ fn fault_injection_delete_parent_between_worker_create_and_enqueue_terminates_st
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
 
     // Part A: Inject failure right between worker creation and accept_strict ->
-    // dispatch rolls back the newly created empty worker cleanly.
+    // dispatch rolls back the newly created empty worker AND removes its
+    // freshly created Home workspace directory cleanly.
+    let rolled_back_worker = Arc::new(Mutex::new(None::<String>));
+    let rolled_back_c = Arc::clone(&rolled_back_worker);
     handle.set_before_worker_strict_enqueue_hook(Some(Arc::new(
-        |_router, _worker| Err("INJECTED_ENQUEUE_FAILURE"),
+        move |_router, worker| {
+            *rolled_back_c.lock().unwrap() = Some(worker.to_owned());
+            Err("INJECTED_ENQUEUE_FAILURE")
+        },
     )));
     handle
         .submit_router_message(&router_id, 5001, "trigger fault")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
+    wait_idle(
+        &handle,
+        &router_id,
         "router finished after injected enqueue error",
     );
     handle.set_before_worker_strict_enqueue_hook(None);
@@ -977,11 +981,24 @@ fn fault_injection_delete_parent_between_worker_create_and_enqueue_terminates_st
         handle.child_works(&router_id).is_empty(),
         "failed strict enqueue must roll back freshly created worker"
     );
+    let aborted_wid = rolled_back_worker
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("fault hook observed rolled-back worker id");
+    assert!(
+        !root
+            .join("sessions")
+            .join("workspaces")
+            .join(&aborted_wid)
+            .exists(),
+        "rollback must delete empty Home workspace directory for `{aborted_wid}`"
+    );
 
     // Part B: Simulate a stale strict_target receipt pointing to a deleted worker
     // (e.g. parent + worker deleted concurrently or after crash).
     let before_sessions = handle.list_sessions().len();
-    let queue = AcceptanceQueue::new(root.clone());
+    let queue = AcceptanceQueue::new(root.to_path_buf());
     let orphan_strict = queue
         .accept_strict(
             "w-deleted-ghost",
@@ -1025,15 +1042,12 @@ fn fault_injection_delete_parent_between_worker_create_and_enqueue_terminates_st
     drop(engine);
     drop(handle);
 
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     assert!(
         reopened.child_works(&router_id).is_empty(),
         "boot() must reconcile and prune empty unqueued crashed worker"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1062,7 +1076,7 @@ fn fault_injection_crash_after_second_user_message_accepted_resumes_fifo_exactly
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
     handle
         .submit_router_message(&router_id, 6001, "turn-1-hold")
@@ -1112,7 +1126,8 @@ fn fault_injection_crash_after_second_user_message_accepted_resumes_fifo_exactly
     drop(handle);
 
     // Reopen fresh handle -> durable FIFO follow-ups resume automatically in exact order!
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     gate.wait_for_key("ran:followup-final", Duration::from_secs(5));
     wait_until(
         Duration::from_secs(5),
@@ -1132,10 +1147,6 @@ fn fault_injection_crash_after_second_user_message_accepted_resumes_fifo_exactly
         ],
         "follow-ups must resume in exact FIFO order and execute strictly once"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1168,16 +1179,12 @@ fn fault_injection_crash_after_first_child_deleted_finishes_cascade_cleanup_on_b
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
     handle
         .submit_router_message(&router_id, 7001, "spawn two children")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router spawned 2 children",
-    );
+    wait_idle(&handle, &router_id, "router spawned 2 children");
     let children = handle.child_works(&router_id);
     assert_eq!(children.len(), 2);
     let child_2_id = children[1].work_id.clone();
@@ -1231,7 +1238,8 @@ fn fault_injection_crash_after_first_child_deleted_finishes_cascade_cleanup_on_b
     drop(handle);
 
     // Reopen fresh handle -> boot() MUST roll forward cascade deletion!
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     assert!(
         reopened.list_sessions().is_empty(),
         "parent router must be deleted on boot recovery"
@@ -1248,10 +1256,6 @@ fn fault_injection_crash_after_first_child_deleted_finishes_cascade_cleanup_on_b
         reopened.pending_acceptances().is_empty(),
         "queued worker receipts must be cancelled on cascade recovery"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1340,18 +1344,14 @@ fn two_routers_cross_root_query_dispatch_control_and_card_routing_all_rejected()
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_a = handle.create_router_session().unwrap();
     let router_b = handle.create_router_session().unwrap();
 
     handle
         .submit_router_message(&router_a, 8001, "spawn-a")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_a).is_busy(),
-        "router_a spawned worker",
-    );
+    wait_idle(&handle, &router_a, "router_a spawned worker");
     let worker_a = handle.child_works(&router_a)[0].work_id.clone();
     *foreign_work_slot.lock().unwrap() = worker_a.clone();
 
@@ -1444,10 +1444,6 @@ fn two_routers_cross_root_query_dispatch_control_and_card_routing_all_rejected()
     assert_eq!(handle.root_pending_cards(&router_b).len(), 0);
     assert_eq!(handle.root_pending_cards(&router_a).len(), 1);
     assert_eq!(handle.session_pending_cards(&router_b).len(), 0);
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1496,7 +1492,7 @@ fn router_fifo_followups_persist_in_order_beat_work_events_and_announcement_uses
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let router_id = handle.create_router_session().unwrap();
 
@@ -1526,11 +1522,7 @@ fn router_fifo_followups_persist_in_order_beat_work_events_and_announcement_uses
     gate.release("hold-router-turn1");
     gate.wait_for_key("user-ran:urgent-user-followup", Duration::from_secs(5));
     gate.wait_for_key("announcement-ran", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "announcement completed",
-    );
+    wait_idle(&handle, &router_id, "announcement completed");
 
     let turns = router_turns.lock().unwrap().clone();
     assert_eq!(
@@ -1569,7 +1561,8 @@ fn router_fifo_followups_persist_in_order_beat_work_events_and_announcement_uses
 
     // Reopen fresh handle -> still zero `[WorkEventBatch]` user bubbles, next turn works!
     drop(handle);
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     assert!(
         !reopened.session_lines(&router_id).iter().any(|l| matches!(l, ChatLine::User { text } if text.contains("[WorkEventBatch]")))
     );
@@ -1585,10 +1578,6 @@ fn router_fifo_followups_persist_in_order_beat_work_events_and_announcement_uses
         }),
         "Router turns must inject bounded [ChildWorksReadOnlySnapshot] read-only status header"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1635,7 +1624,7 @@ fn work_event_announcement_strips_dispatch_tool_blocking_retry_storm() {
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let router_id = handle.create_router_session().unwrap();
 
@@ -1643,11 +1632,7 @@ fn work_event_announcement_strips_dispatch_tool_blocking_retry_storm() {
         .submit_router_message(&router_id, 10001, "run-failing-work")
         .unwrap();
     gate.wait_for_key("announce-settled", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "announcement settled",
-    );
+    wait_idle(&handle, &router_id, "announcement settled");
 
     assert_eq!(
         *announcement_tools.lock().unwrap(),
@@ -1659,10 +1644,6 @@ fn work_event_announcement_strips_dispatch_tool_blocking_retry_storm() {
         1,
         "stripped dispatch_work must block retry storm (still 1 worker)"
     );
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1716,7 +1697,7 @@ fn contractless_router_ask_user_choice_halts_turn_survives_restart_and_resumes_o
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
 
     handle
@@ -1742,7 +1723,8 @@ fn contractless_router_ask_user_choice_halts_turn_survives_restart_and_resumes_o
 
     // Restart host -> card and WaitingForUser persist on disk!
     drop(handle);
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     assert_eq!(
         reopened.session_status(&router_id),
         TurnStatus::WaitingForUser
@@ -1767,11 +1749,7 @@ fn contractless_router_ask_user_choice_halts_turn_survives_restart_and_resumes_o
         }
     );
     gate.wait_for_key("choice-resumed", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !reopened.session_status(&router_id).is_busy(),
-        "router resumed turn settled",
-    );
+    wait_idle(&reopened, &router_id, "router resumed turn settled");
     assert_eq!(resume_prompts.lock().unwrap().len(), 1);
     assert!(resume_prompts.lock().unwrap()[0].contains("opt-formal"));
 
@@ -1794,10 +1772,6 @@ fn contractless_router_ask_user_choice_halts_turn_survives_restart_and_resumes_o
         m.source == MessageSource::CardResume
             && m.text().contains("[CardChoiceConfirmed]")
     }));
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -1855,17 +1829,13 @@ fn control_work_cancel_queued_running_finalizing_and_idempotent_revise_never_dup
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
 
     handle
         .submit_router_message(&router_id, 12001, "spawn-3")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router spawned 3 workers",
-    );
+    wait_idle(&handle, &router_id, "router spawned 3 workers");
     let works = handle.child_works(&router_id);
     assert_eq!(works.len(), 3);
     let w_queued = works
@@ -1931,11 +1901,7 @@ fn control_work_cancel_queued_running_finalizing_and_idempotent_revise_never_dup
         "{stop_r:?}"
     );
     gate.release("hold-router-stop");
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router stopped",
-    );
+    wait_idle(&handle, &router_id, "router stopped");
     assert_eq!(
         handle.session_status(&w_running),
         TurnStatus::Running,
@@ -1980,10 +1946,6 @@ fn control_work_cancel_queued_running_finalizing_and_idempotent_revise_never_dup
     // 5. Terminal worker cancel -> already_settled.
     let c_term = handle.cancel_work(&router_id, &w_running).unwrap();
     assert_eq!(c_term.outcome, "already_settled");
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -2045,7 +2007,7 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let router_id = handle
         .create_router_project_session(AgentWorkspace {
@@ -2077,11 +2039,7 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
     handle
         .submit_router_message(&router_id, 13002, "try-escalate")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "escalation attempt finished",
-    );
+    wait_idle(&handle, &router_id, "escalation attempt finished");
     assert!(
         tool_outputs
             .lock()
@@ -2120,10 +2078,6 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
         handle.child_works(&router_id)[0].workspace_root.as_deref(),
         Some(project.as_path())
     );
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -2166,7 +2120,7 @@ fn home_worker_full_delivery_gate_vs_project_worker_directory_tools() {
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let home_router = handle.create_router_session().unwrap();
     let proj_router = handle
@@ -2219,10 +2173,6 @@ fn home_worker_full_delivery_gate_vs_project_worker_directory_tools() {
         "Project ReadWrite worker must NOT expose Home-only publish_file; got {:?}",
         proj_req.tool_names
     );
-
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -2484,7 +2434,7 @@ fn qinghe_e2e_approval_isolation_record_preservation_disambiguation_revision_gat
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     handle.set_autonomous_drain(true);
     let router_id = handle.create_router_session().unwrap();
 
@@ -2526,11 +2476,7 @@ fn qinghe_e2e_approval_isolation_record_preservation_disambiguation_revision_gat
     *ppt_work_slot.lock().unwrap() = ppt_wid.clone();
 
     // Wait for any initial announcement to settle before Step 2.
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router idle after step 1",
-    );
+    wait_idle(&handle, &router_id, "router idle after step 1");
 
     // --- Step 2: Interject "会上提了 35 万，先记下来暂不改" ---
     // Persist the 35万 meeting note as a Record (PendingProposal) on ppt worker
@@ -2686,11 +2632,7 @@ fn qinghe_e2e_approval_isolation_record_preservation_disambiguation_revision_gat
         Some(1),
     );
     gate.wait_for_key("stale-batch-seen", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "stale batch announcement settled",
-    );
+    wait_idle(&handle, &router_id, "stale batch announcement settled");
     assert!(
         seen_work_batches.lock().unwrap().iter().any(|b| b
             .contains("stale_event_superseded(event_rev=v1,current_rev=v2)")),
@@ -2706,7 +2648,8 @@ fn qinghe_e2e_approval_isolation_record_preservation_disambiguation_revision_gat
 
     // --- Step 5: Restart host, approve Quote ToolApproval card strictly once ---
     drop(handle);
-    let reopened = AgentHandle::with_config(root.clone(), server.config());
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
     reopened.set_autonomous_drain(true);
 
     let routed_cards = reopened.root_pending_cards(&router_id);
@@ -2785,10 +2728,6 @@ fn qinghe_e2e_approval_isolation_record_preservation_disambiguation_revision_gat
         }),
         "Router turns must inject bounded [ChildWorksReadOnlySnapshot] read-only status header"
     );
-
-    drop(reopened);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // =========================================================================
@@ -2863,7 +2802,7 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
         }),
     );
 
-    let handle = AgentHandle::with_config(root.clone(), server.config());
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
     let router_id = handle.create_router_session().unwrap();
 
     // Part A: With autonomous drain OFF, dispatch a queued-only strict worker ->
@@ -2871,11 +2810,7 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
     handle
         .submit_router_message(&router_id, 16001, "launch-queued-only")
         .unwrap();
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
-        "router queued-only turn settled",
-    );
+    wait_idle(&handle, &router_id, "router queued-only turn settled");
     let queued_wid = handle.child_works(&router_id)[0].work_id.clone();
     assert_eq!(
         handle.set_session_archived(&router_id, true),
@@ -2891,9 +2826,9 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
         .submit_router_message(&router_id, 16002, "launch-nebula-research")
         .unwrap();
     gate.wait_for_key("worker-nebula-running", Duration::from_secs(5));
-    wait_until(
-        Duration::from_secs(5),
-        || !handle.session_status(&router_id).is_busy(),
+    wait_idle(
+        &handle,
+        &router_id,
         "router turn 2 idle while worker still running",
     );
     let worker_id = handle
@@ -3026,8 +2961,110 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
         !lock(&handle.inner.state.router_inboxes).contains_key(&router_id),
         "delete_session must clean router_inboxes entry"
     );
+}
 
-    drop(handle);
-    drop(server);
-    let _ = std::fs::remove_dir_all(&root);
+// =========================================================================
+// Test 17: Deep code-review hardening guards:
+// - `submit_router_message` rejects hidden `Worker` and `Standard` sessions;
+// - `dispatch_work` and `control_work(action="revise")` without caller-supplied
+//   `request_id` never pollute `SessionRecord::dispatch_requests`.
+// =========================================================================
+#[test]
+fn review_hardening_guards_reject_non_router_submit_and_skip_auto_id_pollution()
+{
+    let root = temp_dir("review-guards");
+    let gate = PromptGate::new();
+    let seen_wid = Arc::new(Mutex::new(None::<String>));
+    let seen_wid_c = Arc::clone(&seen_wid);
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, _| {
+            if is_router_req(req) {
+                if req.last_user == "dispatch-without-req-id" {
+                    if req.last_tool_result.is_none() {
+                        return MockReply::ToolCalls(vec![(
+                            "c-no-id".into(),
+                            "dispatch_work".into(),
+                            json!({
+                                "brief": "ephemeral worker without request_id",
+                                "mode": "read_only"
+                            }),
+                        )]);
+                    }
+                    if let Some(res) = &req.last_tool_result
+                        && let Ok(val) = serde_json::from_str::<Value>(res)
+                        && let Some(wid) = val["work_id"].as_str()
+                    {
+                        *seen_wid_c.lock().unwrap() = Some(wid.to_owned());
+                    }
+                    return MockReply::Text("dispatched-no-id".into());
+                }
+                if req.last_user == "revise-without-req-id" {
+                    if req.last_tool_result.is_none() {
+                        let wid = seen_wid_c
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("worker id captured");
+                        return MockReply::ToolCalls(vec![(
+                            "c-rev-no-id".into(),
+                            "control_work".into(),
+                            json!({
+                                "work_id": wid,
+                                "action": "revise",
+                                "revision_brief": "revised without request_id"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("revised-no-id".into());
+                }
+                return MockReply::Text("ok".into());
+            }
+            MockReply::Text("worker-ok".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    let standard_id = handle.create_home_session().unwrap();
+    let router_id = handle.create_router_session().unwrap();
+
+    // `submit_router_message` strictly rejects Standard sessions.
+    assert_eq!(
+        handle.submit_router_message(&standard_id, 17001, "nope"),
+        Err("notice.agent_failed"),
+        "submit_router_message must reject Standard sessions"
+    );
+
+    // Dispatch and revise WITHOUT `request_id` (spawn_blocking path exercised).
+    handle
+        .submit_router_message(&router_id, 17002, "dispatch-without-req-id")
+        .unwrap();
+    wait_idle(&handle, &router_id, "dispatch without request_id settled");
+    let worker_id = seen_wid
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("worker created without request_id");
+
+    // `submit_router_message` strictly rejects hidden child Worker sessions.
+    assert_eq!(
+        handle.submit_router_message(&worker_id, 17003, "bypass router"),
+        Err("notice.agent_failed"),
+        "submit_router_message must reject hidden Worker sessions"
+    );
+
+    handle
+        .submit_router_message(&router_id, 17004, "revise-without-req-id")
+        .unwrap();
+    wait_idle(&handle, &router_id, "revise without request_id settled");
+
+    // Neither auto-generated dispatch nor revise may pollute `dispatch_requests`.
+    let engine = lock(&handle.inner.engine).clone().unwrap();
+    let persisted = engine.session(&router_id).unwrap();
+    assert!(
+        persisted.dispatch_requests.is_empty(),
+        "omitting request_id must not pollute SessionRecord::dispatch_requests: {:?}",
+        persisted.dispatch_requests
+    );
 }

@@ -222,17 +222,10 @@ pub(super) fn schedule_router_inbox_flush(
                 None,
                 followup.reply_to_object_id.as_deref(),
                 Some(ResumedSubmission {
-                    contract: None,
                     skip_contract_evolve: true,
-                    model_prompt_override: None,
-                    model_prompt_suffix: None,
-                    display_text_override: None,
                     skip_push_user_line: true,
-                    preserve_turn_denial: false,
-                    preserve_tool_approval: false,
-                    prompt_source: MessageSource::User,
-                    is_router_announcement: false,
                     bypass_busy_queue: true,
+                    ..ResumedSubmission::default()
                 }),
             );
             if let Err(err) = res {
@@ -278,19 +271,16 @@ pub(super) fn schedule_router_inbox_flush(
             None,
             None,
             Some(ResumedSubmission {
-                contract: None,
                 skip_contract_evolve: true,
                 model_prompt_override: Some(batch_text.clone()),
-                model_prompt_suffix: None,
                 display_text_override: Some(String::new()),
                 skip_push_user_line: true,
-                preserve_turn_denial: false,
-                preserve_tool_approval: false,
                 prompt_source: MessageSource::SystemEvent {
                     event_kind: "work_event_batch".to_owned(),
                 },
                 is_router_announcement: true,
                 bypass_busy_queue: true,
+                ..ResumedSubmission::default()
             }),
         );
         if res.is_err() {
