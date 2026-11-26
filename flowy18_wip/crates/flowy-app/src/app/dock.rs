@@ -604,13 +604,17 @@ impl FlowyApp {
             let menu_open =
                 self.project_menu.as_deref() == Some(project_id.as_str());
             let project_busy = sessions.iter().any(|session| {
-                session.project_id.as_deref() == Some(project_id.as_str())
+                !session.archived
+                    && session.project_id.as_deref()
+                        == Some(project_id.as_str())
                     && busy_ids.contains(&session.id)
             });
             // Never mask a pending approval / failed verification behind another
             // running session in the same project.
             let project_attention = sessions.iter().any(|session| {
-                session.project_id.as_deref() == Some(project_id.as_str())
+                !session.archived
+                    && session.project_id.as_deref()
+                        == Some(project_id.as_str())
                     && attention_ids.contains(&session.id)
             });
             let flip_offset = flip.read(cx).offset_for(&project_id);
@@ -1330,6 +1334,11 @@ impl FlowyApp {
             panel.close_all_popovers();
             cx.notify();
         });
+        self.task_menu = None;
+        self.project_menu = None;
+        self.ui
+            .overlays
+            .update(cx, flowy_ui::OverlayHost::clear_point_anchors);
         self.user_menu = !self.user_menu;
         cx.notify();
     }

@@ -520,8 +520,10 @@ impl StudioPanel {
             .sessions
             .iter()
             .filter(|group| {
-                proj_filter
-                    .is_none_or(|pid| group.project_id.as_deref() == Some(pid))
+                !group.archived
+                    && proj_filter.is_none_or(|pid| {
+                        group.project_id.as_deref() == Some(pid)
+                    })
             })
             .find_map(|group| {
                 group

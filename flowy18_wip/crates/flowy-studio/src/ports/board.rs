@@ -274,6 +274,9 @@ pub struct SessionBoardGroup {
     pub branches: Vec<WorkBranchSummary>,
     /// Total branch count before visual truncation (`MAX_DISPLAY_BRANCHES`).
     pub total_branch_count: usize,
+    /// Total non-idle / file deliverable count before visual truncation so
+    /// compact row `+N` badges never under-report sessions with >6 files.
+    pub total_file_count: usize,
     pub session_contract: Option<WorkContractProgress>,
     pub has_blocker: bool,
     pub has_delivered: bool,
@@ -554,6 +557,13 @@ impl BoardDataSource for AgentHandle {
                 }
             }
             let total_branch_count = branches.len();
+            let total_file_count = branches
+                .iter()
+                .filter(|b| {
+                    b.deliverable_path.is_some()
+                        || !matches!(b.phase, BranchPhase::Idle)
+                })
+                .count();
             branches.sort_by_key(|branch| {
                 if branch.phase.is_blocker() {
                     0_u8
@@ -588,6 +598,7 @@ impl BoardDataSource for AgentHandle {
                 preview,
                 branches,
                 total_branch_count,
+                total_file_count,
                 session_contract,
                 has_blocker,
                 has_delivered,
@@ -670,6 +681,7 @@ impl BoardDataSource for AgentHandle {
                     preview: None,
                     branches,
                     total_branch_count,
+                    total_file_count: total_branch_count,
                     session_contract: None,
                     has_blocker,
                     has_delivered: false,
@@ -1010,7 +1022,8 @@ where
             .rev()
             .find_map(|line| match line {
                 ChatLine::Assistant { text } | ChatLine::User { text } => {
-                    let trimmed = text.trim();
+                    let stripped = flowy_agent::strip_markdown_inline(text);
+                    let trimmed = stripped.trim();
                     (!trimmed.is_empty()).then(|| {
                         let safe = super::redact_trace_text(trimmed);
                         clip_label(&safe, 48)
@@ -1059,46 +1072,56 @@ where
     branches
 }
 
-/// Disambiguates duplicate deliverable basenames (e.g., `src/tokens.css` vs
-/// `dist/tokens.css` -> `src/tokens.css`, `dist/tokens.css`) and removes
-/// remaining identical display labels so rows never show `tokens.css · tokens.css`.
-fn disambiguate_deliverable_names(branches: &mut Vec<WorkBranchSummary>) {
-    let mut name_counts: HashMap<String, usize> = HashMap::new();
-    for branch in branches.iter() {
-        if branch.deliverable_path.is_some() {
-            *name_counts
-                .entry(branch.deliverable_name.to_ascii_lowercase())
-                .or_insert(0) += 1;
-        }
-    }
-    for branch in branches.iter_mut() {
-        if let Some(path) = branch.deliverable_path.as_deref() {
-            let key = branch.deliverable_name.to_ascii_lowercase();
-            if name_counts.get(&key).copied().unwrap_or(0) > 1
-                && let Some(parent_label) = parent_and_basename(path)
-            {
-                branch.deliverable_name = parent_label;
+/// Progressively disambiguates colliding deliverable basenames across all file
+/// branches (including monorepo `crates/a/src/lib.rs` vs `crates/b/src/lib.rs`,
+/// cross-drive `C:\report.xlsx` vs `D:\report.xlsx`, and blocker+delivered
+/// pairs) without ever dropping distinct real deliverables before KPI totals.
+fn disambiguate_deliverable_names(branches: &mut [WorkBranchSummary]) {
+    let mut depth: usize = 1;
+    loop {
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, branch) in branches.iter().enumerate() {
+            if branch.deliverable_path.is_some() {
+                groups
+                    .entry(branch.deliverable_name.to_ascii_lowercase())
+                    .or_default()
+                    .push(idx);
             }
         }
-    }
-    let mut seen_labels: HashSet<String> = HashSet::new();
-    branches.retain(|branch| {
-        if branch.deliverable_path.is_none() || branch.phase.is_blocker() {
-            return true;
+        let mut widened_any = false;
+        for indices in groups.into_values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+            for idx in indices {
+                if let Some(path) = branches[idx].deliverable_path.as_deref()
+                    && let Some(wider) = path_suffix_label(path, depth + 1)
+                    && wider != branches[idx].deliverable_name
+                {
+                    branches[idx].deliverable_name = wider;
+                    widened_any = true;
+                }
+            }
         }
-        seen_labels.insert(branch.deliverable_name.to_ascii_lowercase())
-    });
+        depth += 1;
+        if !widened_any || depth >= 6 {
+            break;
+        }
+    }
 }
 
-fn parent_and_basename(path: &str) -> Option<String> {
-    let trimmed = path.trim_end_matches(['/', '\\']);
-    let mut parts = trimmed.rsplit(['/', '\\']).filter(|p| !p.is_empty());
-    let file = parts.next()?;
-    let parent = parts.next()?;
-    if parent.ends_with(':') {
+fn path_suffix_label(path: &str, segments: usize) -> Option<String> {
+    let clean = display_path_str(path);
+    let trimmed = clean.trim_end_matches(['/', '\\']);
+    let parts: Vec<&str> = trimmed
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() <= 1 {
         return None;
     }
-    Some(format!("{parent}/{file}"))
+    let take = segments.min(parts.len());
+    Some(parts[parts.len() - take..].join("/"))
 }
 
 fn infer_skill_label(
@@ -1538,6 +1561,7 @@ mod tests {
                     preview: None,
                     branches: Vec::new(),
                     total_branch_count: 0,
+                    total_file_count: 0,
                     session_contract: None,
                     has_blocker: false,
                     has_delivered: false,
@@ -1597,7 +1621,8 @@ mod tests {
                 removed: 0,
                 binary: false,
             },
-            // Same parent+basename across two roots should collapse cleanly.
+            // Monorepo same-parent paths & cross-drive files must both be
+            // preserved and disambiguated without dropping real deliverables.
             ChatLine::FileChange {
                 path: r"D:\Backup\dist\tokens.css".into(),
                 change: flowy_agent::FileChangeKind::Add,
@@ -1606,7 +1631,14 @@ mod tests {
                 binary: false,
             },
             ChatLine::FileChange {
-                path: r"D:\Site\index.html".into(),
+                path: r"C:\index.html".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 20,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::FileChange {
+                path: r"D:\index.html".into(),
                 change: flowy_agent::FileChangeKind::Add,
                 added: 20,
                 removed: 0,
@@ -1628,14 +1660,16 @@ mod tests {
             .iter()
             .map(|b| b.deliverable_name.as_str())
             .collect();
-        assert!(names.contains(&"styles/tokens.css"), "{names:?}");
-        assert!(names.contains(&"dist/tokens.css"), "{names:?}");
-        assert!(names.contains(&"index.html"), "{names:?}");
         assert_eq!(
-            names.iter().filter(|&&n| n == "dist/tokens.css").count(),
-            1,
-            "identical parent/basename must be deduplicated: {names:?}"
+            branches.len(),
+            5,
+            "no distinct deliverable may be dropped: {names:?}"
         );
+        assert!(names.contains(&"styles/tokens.css"), "{names:?}");
+        assert!(names.contains(&"Site/dist/tokens.css"), "{names:?}");
+        assert!(names.contains(&"Backup/dist/tokens.css"), "{names:?}");
+        assert!(names.contains(&"C:/index.html"), "{names:?}");
+        assert!(names.contains(&"D:/index.html"), "{names:?}");
         assert!(
             branches
                 .iter()
@@ -1646,7 +1680,7 @@ mod tests {
         for b in &branches {
             accumulate_kpi(&mut kpi, b);
         }
-        assert_eq!(kpi.code_count, 3);
+        assert_eq!(kpi.code_count, 5);
         assert_eq!(kpi.other_count, 0);
     }
 }

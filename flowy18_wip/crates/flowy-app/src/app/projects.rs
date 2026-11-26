@@ -80,6 +80,10 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         self.user_menu = false;
+        self.task_menu = None;
+        self.ui
+            .overlays
+            .update(cx, flowy_ui::OverlayHost::clear_point_anchors);
         self.project_menu =
             (self.project_menu.as_deref() != Some(id)).then(|| id.to_owned());
         cx.notify();

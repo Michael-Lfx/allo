@@ -132,6 +132,7 @@ impl OverlayHost {
             return;
         }
         self.popup = None;
+        self.anchors.retain(|_, anchor| !anchor.sticky);
         let old = self.modal.take();
         if let Some(id) = scope {
             let restore = old
@@ -247,8 +248,8 @@ impl OverlayHost {
     }
 
     /// Registers a sticky 1x1px anchor at an explicit window coordinate (for
-    /// pointer-triggered context menus). Cleared automatically when the active
-    /// popup closes.
+    /// pointer-triggered context menus). Replaces any previous sticky anchor
+    /// and is cleared automatically when the active popup closes or a modal opens.
     pub fn set_point_anchor(
         &mut self,
         id: impl Into<SharedString>,
@@ -260,6 +261,7 @@ impl OverlayHost {
             origin: position,
             size: size(px(1.), px(1.)),
         };
+        self.anchors.retain(|_, anchor| !anchor.sticky);
         self.anchors.insert(
             id,
             MeasuredAnchor {
@@ -269,6 +271,16 @@ impl OverlayHost {
             },
         );
         cx.notify();
+    }
+
+    /// Purges any sticky point anchors (called when opening a trigger-anchored
+    /// popover so previous right-click anchors never linger).
+    pub fn clear_point_anchors(&mut self, cx: &mut Context<'_, Self>) {
+        let before = self.anchors.len();
+        self.anchors.retain(|_, anchor| !anchor.sticky);
+        if self.anchors.len() != before {
+            cx.notify();
+        }
     }
 
     fn measure_anchor(
@@ -1364,6 +1376,28 @@ mod tests {
             host.read_with(cx, |host, _| host.anchor_bounds(&anchor_id))
                 .is_none()
         );
+        // Repeated set_point_anchor replaces prior sticky anchors, and
+        // transitioning directly to a modal purges them cleanly too.
+        let second_anchor: SharedString = "context-point-2".into();
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.set_point_anchor(
+                    anchor_id.clone(),
+                    point(px(10.), px(20.)),
+                    cx,
+                );
+                host.set_point_anchor(
+                    second_anchor.clone(),
+                    point(px(30.), px(40.)),
+                    cx,
+                );
+                assert!(host.anchor_bounds(&anchor_id).is_none());
+                assert!(host.anchor_bounds(&second_anchor).is_some());
+                host.set_popup(Some(scope.clone()), window, cx);
+                host.set_modal(Some("rename-dialog".into()), window, cx);
+                assert!(host.anchor_bounds(&second_anchor).is_none());
+            });
+        });
         drop(subscription);
     }
 }

@@ -1051,33 +1051,38 @@ impl StudioPanel {
                     .child(theme::icons::workflow().size(px(13.))),
                 )
             })
-            .child(
-                theme::interactive(
-                    ("board-row-menu", index),
-                    more_label,
-                    &self.theme,
-                )
-                .size(px(24.))
-                .rounded_md()
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(self.theme.muted())
-                .hover(|s| {
-                    s.bg(self.theme.dock_hover()).text_color(self.theme.ink())
-                })
-                .on_click(cx.listener(
-                    move |_panel, event: &gpui::ClickEvent, _, cx| {
+            .child({
+                let anchor_id = format!("board-row-menu-{sid_menu}");
+                let anchor_emit = anchor_id.clone();
+                theme::anchor_trigger(
+                    theme::interactive(
+                        ("board-row-menu", index),
+                        more_label,
+                        &self.theme,
+                    )
+                    .size(px(24.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(self.theme.muted())
+                    .hover(|s| {
+                        s.bg(self.theme.dock_hover())
+                            .text_color(self.theme.ink())
+                    })
+                    .on_click(cx.listener(move |_panel, _, _, cx| {
                         cx.stop_propagation();
-                        cx.emit(StudioEvent::OpenSessionMenu {
+                        cx.emit(StudioEvent::ToggleSessionMenu {
                             session_id: sid_menu.clone(),
-                            position: event.position(),
+                            anchor_id: anchor_emit.clone(),
                         });
-                    },
-                ))
-                .child(theme::icons::ellipsis().size(px(13.))),
-            )
+                    }))
+                    .child(theme::icons::ellipsis().size(px(13.))),
+                    anchor_id,
+                    &self.ui,
+                )
+            })
             .into_any_element()
     }
 
@@ -1102,7 +1107,8 @@ impl StudioPanel {
                         || !matches!(b.phase, BranchPhase::Idle)
                 })
                 .collect();
-            let total_files = all_file_branches.len();
+            let total_files =
+                group.total_file_count.max(all_file_branches.len());
             let shown_files: Vec<_> =
                 all_file_branches.into_iter().take(3).collect();
             let overflow_files = total_files.saturating_sub(shown_files.len());
@@ -1562,6 +1568,14 @@ impl StudioPanel {
                                 ))
                             },
                         )
+                        .when(group.archived, |row| {
+                            row.child(status_pill(
+                                self.theme.soft(),
+                                self.theme.muted(),
+                                self.t("chat.archived_badge"),
+                                None,
+                            ))
+                        })
                         .child(status_pill(
                             badge_bg, badge_fg, badge_text, None,
                         )),

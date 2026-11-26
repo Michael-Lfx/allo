@@ -227,10 +227,6 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         if self.section == section {
-            if section == Section::Search {
-                self.sync_studio_surface(cx);
-                cx.notify();
-            }
             return;
         }
         self.nav_back.push(self.section);

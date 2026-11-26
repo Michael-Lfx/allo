@@ -3229,4 +3229,75 @@ mod s4_concurrency_tests {
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn archive_blocks_busy_s4_session_search_redacts_secrets_and_manual_rename_keeps_symbols()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s4-archive-search-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        const SECRET_PROMPT: &str = "secret-turn check Bearer tok_supersecret999 and api_key=sk-live1234567890";
+        let gate = PromptGate::new();
+        let server =
+            ConcurrentSseServer::start(Arc::clone(&gate), vec![SECRET_PROMPT]);
+        let handle = AgentHandle::with_config(root.clone(), server.config());
+
+        let sid =
+            create_project_session(&handle, "p-sec", root.join("proj-sec"));
+        handle.select_session(&sid).unwrap();
+        handle.submit_chat(901, SECRET_PROMPT).unwrap();
+        gate.wait_for_arrivals(1, Duration::from_secs(5));
+
+        // S4 concurrency guard: cannot archive a running session holding a turn/lease.
+        assert_eq!(
+            handle.set_session_archived(&sid, true),
+            Err("notice.agent_busy")
+        );
+
+        gate.release_all();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while handle.session_status(&sid).is_busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "session did not settle in time"
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+
+        // Quick Search must redact secrets before matching and in empty previews.
+        assert!(
+            handle.search_sessions("sk-live1234567890", 5).is_empty(),
+            "plaintext API key must never be probeable via search"
+        );
+        assert!(
+            handle.search_sessions("tok_supersecret999", 5).is_empty(),
+            "plaintext Bearer token must never be probeable via search"
+        );
+        let recent = handle.search_sessions("", 5);
+        let snippet = recent
+            .iter()
+            .find(|h| h.session_id == sid)
+            .and_then(|h| h.snippet.as_deref())
+            .unwrap_or("");
+        assert!(!snippet.contains("sk-live1234567890"), "{snippet}");
+        assert!(!snippet.contains("tok_supersecret999"), "{snippet}");
+
+        // Manual rename preserves literal Markdown/punctuation tokens.
+        handle.rename_session(&sid, "foo__bar #1 [Q3](v2)").unwrap();
+        let summary = handle
+            .list_sessions()
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        assert_eq!(summary.title, "foo__bar #1 [Q3](v2)");
+
+        // Archiving an active idle session clears active_session_id.
+        assert_eq!(handle.active_session_id().as_deref(), Some(sid.as_str()));
+        handle.set_session_archived(&sid, true).unwrap();
+        assert_eq!(handle.active_session_id(), None);
+
+        drop(handle);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -104,10 +104,16 @@ pub enum StudioEvent {
         stars: u32,
     },
     /// Requests the host's unified session context menu at an explicit pointer
-    /// position (e.g. right-click or row action button on the Progress Board).
+    /// position (right-click on Progress Board session rows).
     OpenSessionMenu {
         session_id: String,
         position: gpui::Point<gpui::Pixels>,
+    },
+    /// Requests the host to toggle the unified session context menu anchored
+    /// to a measured `anchor_trigger` button on a Progress Board session row.
+    ToggleSessionMenu {
+        session_id: String,
+        anchor_id: String,
     },
 }
 
@@ -1203,7 +1209,17 @@ impl StudioPanel {
     /// calmly on the Home stage ready for a fresh instruction.
     pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
         self.close_all_popovers();
-        if self.agent.active_session_id().is_some()
+        let sessions = self.agent.list_sessions();
+        let active_is_live_default = self
+            .agent
+            .active_session_id()
+            .as_deref()
+            .is_some_and(|active_id| {
+                sessions.iter().any(|s| {
+                    s.id == active_id && !s.archived && s.project_id.is_none()
+                })
+            });
+        if active_is_live_default
             && self.active_project_id.is_none()
             && self.agent.has_messages()
         {
@@ -1212,11 +1228,9 @@ impl StudioPanel {
             cx.notify();
             return;
         }
-        let latest_default = self
-            .agent
-            .list_sessions()
+        let latest_default = sessions
             .into_iter()
-            .find(|session| session.project_id.is_none());
+            .find(|session| session.project_id.is_none() && !session.archived);
         if let Some(session) = latest_default {
             self.open_session(&session.id, cx);
         } else {
@@ -3729,6 +3743,7 @@ mod tests {
                         work_progress: None,
                     }],
                     total_branch_count: 1,
+                    total_file_count: 0,
                     session_contract: None,
                     has_blocker: false,
                     has_delivered: false,

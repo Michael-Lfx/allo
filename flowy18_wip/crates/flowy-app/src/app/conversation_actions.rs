@@ -1,8 +1,8 @@
 use super::{FlowyApp, state::ActiveDialog};
 use flowy_ui as ui;
 use gpui::{
-    Context, Entity, Focusable, IntoElement, ParentElement, Pixels, Point,
-    Window, div, prelude::*, px,
+    Context, Entity, IntoElement, ParentElement, Pixels, Point, Window, div,
+    prelude::*, px,
 };
 use gpui_kit::base::input::InputState;
 
@@ -27,7 +27,6 @@ pub(super) struct ConversationRenameState {
     pub(super) id: Option<String>,
     pub(super) input: Entity<InputState>,
     pub(super) error: Option<&'static str>,
-    pub(super) focus_pending: bool,
 }
 
 impl ConversationRenameState {
@@ -36,7 +35,6 @@ impl ConversationRenameState {
             id: None,
             input,
             error: None,
-            focus_pending: false,
         }
     }
 }
@@ -104,19 +102,34 @@ impl FlowyApp {
         session_id: &str,
         cx: &mut Context<'_, Self>,
     ) {
+        self.toggle_task_menu_anchored(
+            session_id,
+            format!("task-menu-trigger-{session_id}"),
+            cx,
+        );
+    }
+
+    pub(super) fn toggle_task_menu_anchored(
+        &mut self,
+        session_id: &str,
+        anchor_id: String,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.conversation_delete.busy {
             return;
         }
         let id = session_id.to_owned();
         self.user_menu = false;
         self.project_menu = None;
-        let same = self
-            .task_menu
-            .as_ref()
-            .is_some_and(|menu| menu.session_id == id);
-        self.task_menu = (!same).then(|| TaskMenuState {
-            anchor_id: format!("task-menu-trigger-{id}"),
+        self.ui
+            .overlays
+            .update(cx, flowy_ui::OverlayHost::clear_point_anchors);
+        let same = self.task_menu.as_ref().is_some_and(|menu| {
+            menu.session_id == id && menu.anchor_id == anchor_id
+        });
+        self.task_menu = (!same).then_some(TaskMenuState {
             session_id: id,
+            anchor_id,
         });
         cx.notify();
     }
@@ -269,6 +282,9 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         self.task_menu = None;
+        let was_active =
+            self.studio.read(cx).agent.active_session_id().as_deref()
+                == Some(session_id);
         let result = self
             .studio
             .read(cx)
@@ -277,8 +293,12 @@ impl FlowyApp {
         if let Err(key) = result {
             self.studio.update(cx, |panel, cx| panel.note(key, cx));
         } else {
-            self.studio
-                .update(cx, flowy_studio::StudioPanel::refresh_board_now);
+            self.studio.update(cx, |panel, cx| {
+                if archived && was_active {
+                    panel.new_task(cx);
+                }
+                panel.refresh_board_now(cx);
+            });
         }
         cx.notify();
     }
@@ -298,7 +318,6 @@ impl FlowyApp {
             .map_or_default(|s| s.title);
         self.conversation_rename.id = Some(session_id.to_owned());
         self.conversation_rename.error = None;
-        self.conversation_rename.focus_pending = true;
         self.set_input_text(
             &self.conversation_rename.input,
             &current_title,
@@ -334,16 +353,10 @@ impl FlowyApp {
     }
 
     pub(super) fn conversation_rename_layer(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        if self.conversation_rename.focus_pending {
-            self.conversation_rename.focus_pending = false;
-            let focus =
-                self.conversation_rename.input.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-        }
         let frame = self.theme.modal_size(window.viewport_size());
         let value = self.conversation_rename.input.read(cx).value();
         let can_save = !value.trim().is_empty();

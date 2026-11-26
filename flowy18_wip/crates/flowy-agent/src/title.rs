@@ -189,6 +189,146 @@ pub fn clamp_title(raw: &str, max_chars: usize) -> String {
         .to_owned()
 }
 
+/// Normalizes whitespace and clamps length for manually entered titles while
+/// preserving literal punctuation/Markdown tokens (`__`, `#`, `-`, `[a](b)`).
+#[must_use]
+pub fn clamp_manual_title(raw: &str, max_chars: usize) -> String {
+    let mut collapsed = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for c in raw.chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                collapsed.push(' ');
+                prev_space = true;
+            }
+        } else if !c.is_control() {
+            collapsed.push(c);
+            prev_space = false;
+        }
+    }
+    collapsed
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// Scrubs credential-like substrings before in-memory search matching and
+/// snippet extraction so plaintext secrets cannot be probed or exposed via
+/// Quick Search.
+#[must_use]
+pub fn redact_search_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_was_auth_scheme = false;
+    for part in raw.split_inclusive(char::is_whitespace) {
+        let trimmed = part.trim_end_matches(char::is_whitespace);
+        let ws = &part[trimmed.len()..];
+        let scrubbed = if prev_was_auth_scheme {
+            prev_was_auth_scheme = false;
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                "[REDACTED]".to_owned()
+            }
+        } else {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower == "bearer" || lower == "basic" {
+                prev_was_auth_scheme = true;
+                trimmed.to_owned()
+            } else {
+                scrub_token(trimmed)
+            }
+        };
+        out.push_str(&scrubbed);
+        out.push_str(ws);
+    }
+    out
+}
+
+fn scrub_token(token: &str) -> String {
+    // Strip URL userinfo (`https://user:pass@host` -> `https://[REDACTED]@host`).
+    if let Some(scheme_end) = token.find("://") {
+        let rest = &token[scheme_end + 3..];
+        if let Some(at_pos) = rest.find('@')
+            && rest[..at_pos].contains(':')
+            && !rest[..at_pos].contains('/')
+        {
+            let mut out = String::with_capacity(token.len());
+            out.push_str(&token[..scheme_end + 3]);
+            out.push_str("[REDACTED]");
+            out.push_str(&rest[at_pos..]);
+            return out;
+        }
+    }
+    // Redact `key=value` or `key:value` for secret-bearing keys.
+    for sep in ['=', ':'] {
+        if let Some(idx) = token.find(sep) {
+            let key = token[..idx]
+                .trim_matches(|c: char| {
+                    !c.is_ascii_alphanumeric() && c != '_' && c != '-'
+                })
+                .to_ascii_lowercase();
+            let val = token[idx + 1..].trim_matches(|c: char| {
+                matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}')
+            });
+            if !val.is_empty() && is_secret_key(&key) {
+                return format!("{}{}[REDACTED]", &token[..=idx], "");
+            }
+        }
+    }
+    // Redact standalone token prefixes / JWT shapes.
+    let core = token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+        )
+    });
+    if is_secret_literal(core) {
+        return "[REDACTED]".to_owned();
+    }
+    token.to_owned()
+}
+
+fn is_secret_key(key: &str) -> bool {
+    matches!(
+        key,
+        "api_key"
+            | "apikey"
+            | "api-key"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "auth_token"
+            | "secret"
+            | "client_secret"
+            | "password"
+            | "passwd"
+            | "pwd"
+            | "authorization"
+            | "x-api-key"
+            | "private_key"
+    ) || key.ends_with("_api_key")
+        || key.ends_with("_token")
+        || key.ends_with("_secret")
+        || key.ends_with("_password")
+}
+
+fn is_secret_literal(core: &str) -> bool {
+    let lower = core.to_ascii_lowercase();
+    (lower.starts_with("sk-") && core.len() >= 10)
+        || (lower.starts_with("ghp_") && core.len() >= 12)
+        || (lower.starts_with("gho_") && core.len() >= 12)
+        || (lower.starts_with("glpat-") && core.len() >= 12)
+        || (core.starts_with("AIza") && core.len() >= 16)
+        || (core.starts_with("AKIA") && core.len() >= 16)
+        || (core.starts_with("eyJ")
+            && core.len() >= 24
+            && core.matches('.').count() >= 2)
+}
+
 #[must_use]
 pub const fn title_system_prompt() -> &'static str {
     TITLE_SYSTEM

@@ -511,11 +511,14 @@ pub(super) async fn generate_title(
         }
         return;
     }
-    if engine.set_session_title(&id, title.clone(), true).is_ok() {
-        sync_artifact_title(&state, &engine, &id);
-    } else {
+    if engine.set_session_title(&id, title.clone(), true).is_err() {
+        if let Some(session) = lock(&state.live).get_mut(&id) {
+            session.auto_title_in_flight = false;
+        }
         state.report_storage_error();
+        return;
     }
+    sync_artifact_title(&state, &engine, &id);
     if let Some(session) = lock(&state.live).get_mut(&id) {
         session.title = title;
         session.titled = true;

@@ -250,6 +250,8 @@ impl FlowyApp {
                 self.active_dialog = state::ActiveDialog::None;
                 self.settings.picker = settings::Picker::None;
                 self.flex.provider_menu = false;
+                self.conversation_rename.id = None;
+                self.conversation_rename.error = None;
             }
             _ => {}
         }
@@ -262,6 +264,7 @@ impl FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        let app_window_id = window.window_handle().window_id();
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::new",
@@ -461,25 +464,39 @@ impl FlowyApp {
             cx.subscribe(&skills_query, |app, _, _: &InputEvent, cx| {
                 app.touch_skills_query(cx);
             }),
-            cx.subscribe(&quick_search_query, |app, _, _: &InputEvent, cx| {
-                app.quick_search.selected = 0;
-                cx.notify();
-            }),
+            cx.subscribe(
+                &quick_search_query,
+                |app, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        app.quick_search.selected = 0;
+                        cx.notify();
+                    }
+                },
+            ),
             cx.subscribe(
                 &conversation_rename_input,
-                |app, _, _: &InputEvent, cx| {
-                    app.conversation_rename.error = None;
-                    cx.notify();
+                |app, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        app.conversation_rename.error = None;
+                        cx.notify();
+                    }
                 },
             ),
             {
                 let weak = cx.entity().downgrade();
-                cx.intercept_keystrokes(move |event, _window, cx| {
+                cx.intercept_keystrokes(move |event, window, cx| {
+                    if window.window_handle().window_id() != app_window_id
+                        || event.input_preference
+                            == gpui::InputPreference::CharacterInput
+                    {
+                        return;
+                    }
                     let ks = &event.keystroke;
                     if ks.modifiers.control
                         || ks.modifiers.alt
                         || ks.modifiers.platform
                         || ks.modifiers.shift
+                        || ks.modifiers.function
                     {
                         return;
                     }
@@ -1705,6 +1722,16 @@ impl FlowyApp {
                 position,
             } => {
                 self.open_task_menu_at(session_id, *position, cx);
+            }
+            StudioEvent::ToggleSessionMenu {
+                session_id,
+                anchor_id,
+            } => {
+                self.toggle_task_menu_anchored(
+                    session_id,
+                    anchor_id.clone(),
+                    cx,
+                );
             }
         }
     }

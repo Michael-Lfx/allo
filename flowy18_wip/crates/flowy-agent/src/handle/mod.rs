@@ -961,14 +961,15 @@ impl AgentHandle {
         rows
     }
 
-    /// Manually rename a session, persisting to both `history.json` and
-    /// `index.json` and locking out any subsequent automatic title overwrite.
+    /// Manually rename a session, persisting atomically to both `history.json`
+    /// and `index.json` (rolling back on error) and locking out any subsequent
+    /// automatic title overwrite.
     pub fn rename_session(
         &self,
         session_id: &str,
         new_title: &str,
     ) -> Result<(), &'static str> {
-        let cleaned = title::clamp_title(new_title, TITLE_MAX_CHARS);
+        let cleaned = title::clamp_manual_title(new_title, TITLE_MAX_CHARS);
         if cleaned.is_empty() {
             return Err("chat.rename_empty");
         }
@@ -976,12 +977,18 @@ impl AgentHandle {
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
-        if !lock(&self.inner.state.live).contains_key(session_id) {
-            return Err("notice.session_storage_failed");
-        }
-        if let Some(live) = lock(&self.inner.state.live).get(session_id) {
-            live.title_signal.cancel();
-        }
+        let previous = lock(&self.inner.state.live)
+            .get(session_id)
+            .map(|session| {
+                session.title_signal.cancel();
+                (
+                    session.title.clone(),
+                    session.titled,
+                    session.auto_title_pending,
+                    session.auto_title_in_flight,
+                )
+            })
+            .ok_or("notice.session_storage_failed")?;
         ensure_engine_session(&engine, session_id)
             .and_then(|()| {
                 engine.set_session_title(session_id, cleaned.clone(), true)
@@ -997,7 +1004,6 @@ impl AgentHandle {
                 self.inner.state.report_storage_error();
                 "notice.session_storage_failed"
             })?;
-        observer::sync_artifact_title(&self.inner.state, &engine, session_id);
         if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
         {
             session.title = cleaned;
@@ -1005,9 +1011,21 @@ impl AgentHandle {
             session.auto_title_pending = false;
             session.auto_title_in_flight = false;
         }
-        persist_index(&self.inner.state).inspect_err(|_| {
+        if let Err(err) = persist_index(&self.inner.state) {
+            let (old_title, old_titled, old_pending, old_in_flight) = previous;
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.title.clone_from(&old_title);
+                session.titled = old_titled;
+                session.auto_title_pending = old_pending;
+                session.auto_title_in_flight = old_in_flight;
+            }
+            let _ = engine.set_session_title(session_id, old_title, old_titled);
             self.inner.state.report_storage_error();
-        })?;
+            return Err(err);
+        }
+        observer::sync_artifact_title(&self.inner.state, &engine, session_id);
         self.inner.state.push_update(AgentUpdate::Session {
             id: session_id.to_owned(),
         });
@@ -1016,7 +1034,8 @@ impl AgentHandle {
     }
 
     /// Pin or unpin a session durably across both `history.json` and
-    /// `index.json` without changing its activity timestamp.
+    /// `index.json` (rolling back on error) without changing its activity
+    /// timestamp.
     pub fn set_session_pinned(
         &self,
         session_id: &str,
@@ -1026,9 +1045,10 @@ impl AgentHandle {
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
-        if !lock(&self.inner.state.live).contains_key(session_id) {
-            return Err("notice.session_storage_failed");
-        }
+        let old_pinned = lock(&self.inner.state.live)
+            .get(session_id)
+            .map(|session| session.pinned)
+            .ok_or("notice.session_storage_failed")?;
         ensure_engine_session(&engine, session_id)
             .and_then(|()| engine.set_session_pinned(session_id, pinned))
             .map_err(|error| {
@@ -1046,9 +1066,16 @@ impl AgentHandle {
         {
             session.pinned = pinned;
         }
-        persist_index(&self.inner.state).inspect_err(|_| {
+        if let Err(err) = persist_index(&self.inner.state) {
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.pinned = old_pinned;
+            }
+            let _ = engine.set_session_pinned(session_id, old_pinned);
             self.inner.state.report_storage_error();
-        })?;
+            return Err(err);
+        }
         self.inner.state.push_update(AgentUpdate::Session {
             id: session_id.to_owned(),
         });
@@ -1057,7 +1084,9 @@ impl AgentHandle {
     }
 
     /// Archive or unarchive a session durably across both `history.json` and
-    /// `index.json` without deleting history or artifacts.
+    /// `index.json` (rolling back on error) without deleting history or
+    /// artifacts. Active/running sessions cannot be archived until settled so
+    /// S4 background workers and directory leases are never hidden from view.
     pub fn set_session_archived(
         &self,
         session_id: &str,
@@ -1067,9 +1096,23 @@ impl AgentHandle {
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
-        if !lock(&self.inner.state.live).contains_key(session_id) {
-            return Err("notice.session_storage_failed");
-        }
+        let old_archived = {
+            let live = lock(&self.inner.state.live);
+            let Some(session) = live.get(session_id) else {
+                return Err("notice.session_storage_failed");
+            };
+            let prev = session.archived;
+            let busy = session.status.is_busy();
+            let claimed = archived
+                && lock(&self.inner.state.active_claims)
+                    .values()
+                    .any(|claim| claim.session_id == session_id);
+            drop(live);
+            if archived && (busy || engine.is_active(session_id) || claimed) {
+                return Err("notice.agent_busy");
+            }
+            prev
+        };
         ensure_engine_session(&engine, session_id)
             .and_then(|()| engine.set_session_archived(session_id, archived))
             .map_err(|error| {
@@ -1083,13 +1126,33 @@ impl AgentHandle {
                 self.inner.state.report_storage_error();
                 "notice.session_storage_failed"
             })?;
+        let cleared_active = if archived {
+            let mut active = lock(&self.inner.state.active);
+            if active.as_deref() == Some(session_id) {
+                active.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
         {
             session.archived = archived;
         }
-        persist_index(&self.inner.state).inspect_err(|_| {
+        if let Err(err) = persist_index(&self.inner.state) {
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.archived = old_archived;
+            }
+            if let Some(prev_active) = cleared_active {
+                *lock(&self.inner.state.active) = Some(prev_active);
+            }
+            let _ = engine.set_session_archived(session_id, old_archived);
             self.inner.state.report_storage_error();
-        })?;
+            return Err(err);
+        }
         self.inner.state.push_update(AgentUpdate::Session {
             id: session_id.to_owned(),
         });
@@ -1097,8 +1160,9 @@ impl AgentHandle {
         Ok(())
     }
 
-    /// Zero-dependency in-memory search across session titles and projected
-    /// message lines. Empty queries return the most recent active sessions.
+    /// Zero-dependency in-memory search across redacted session titles and
+    /// projected message lines. Empty queries return the most recent active
+    /// sessions.
     #[must_use]
     pub fn search_sessions(
         &self,
@@ -1119,24 +1183,28 @@ impl AgentHandle {
         for (id, session) in live.iter() {
             let project_id =
                 session.workspace.as_ref().map(|ws| ws.project_id.clone());
+            let safe_title = title::redact_search_text(&session.title);
             if tokens.is_empty() {
                 if session.archived {
                     continue;
                 }
                 let score = if session.pinned { 20 } else { 10 };
+                let safe_preview =
+                    extract_session_preview(&session.projection.lines)
+                        .map(|text| title::redact_search_text(&text));
                 hits.push(SessionSearchHit {
                     session_id: id.clone(),
-                    title: session.title.clone(),
+                    title: safe_title,
                     project_id,
                     updated_at: session.updated_at,
                     pinned: session.pinned,
                     archived: session.archived,
-                    snippet: extract_session_preview(&session.projection.lines),
+                    snippet: safe_preview,
                     score,
                 });
                 continue;
             }
-            let title_lower = session.title.to_lowercase();
+            let title_lower = safe_title.to_lowercase();
             let mut best_score = score_text_match(
                 &title_lower,
                 &tokens,
@@ -1154,7 +1222,9 @@ impl AgentHandle {
                     }
                     _ => continue,
                 };
-                let cleaned = title::strip_markdown_inline(raw_text);
+                let cleaned = title::redact_search_text(
+                    &title::strip_markdown_inline(raw_text),
+                );
                 if cleaned.is_empty() {
                     continue;
                 }
@@ -1192,11 +1262,12 @@ impl AgentHandle {
             }
             if best_snippet.is_none() {
                 best_snippet =
-                    extract_session_preview(&session.projection.lines);
+                    extract_session_preview(&session.projection.lines)
+                        .map(|text| title::redact_search_text(&text));
             }
             hits.push(SessionSearchHit {
                 session_id: id.clone(),
-                title: session.title.clone(),
+                title: safe_title,
                 project_id,
                 updated_at: session.updated_at,
                 pinned: session.pinned,
@@ -2106,7 +2177,30 @@ impl Harness {
             prompt.model.push_str(suffix);
         }
         let pre_resolved_contract = resumed.and_then(|item| item.contract);
-        let title_prompt = text.to_owned();
+        let title_prompt = if is_resumed
+            || text.starts_with("[UserApproved]")
+            || text.starts_with("[UserDenied]")
+        {
+            lock(&state.live)
+                .get(&id)
+                .and_then(|session| {
+                    session.projection.lines.iter().find_map(
+                        |line| match line {
+                            ChatLine::User { text }
+                                if !text.trim().is_empty()
+                                    && !text.starts_with("[UserApproved]")
+                                    && !text.starts_with("[UserDenied]") =>
+                            {
+                                Some(text.clone())
+                            }
+                            _ => None,
+                        },
+                    )
+                })
+                .unwrap_or_else(|| text.to_owned())
+        } else {
+            text.to_owned()
+        };
         let stream = config
             .api_key
             .is_none()
@@ -2323,6 +2417,7 @@ impl Harness {
                     && session.auto_title_attempts < MAX_AUTO_TITLE_ATTEMPTS
                     && config.api_key.is_some()
                 {
+                    session.title_signal.cancel();
                     let signal = CancelToken::new();
                     session.title_signal = signal.clone();
                     Some(signal)
@@ -2339,6 +2434,7 @@ impl Harness {
                 session.auto_title_pending = true;
                 let signal = config.api_key.is_some().then(CancelToken::new);
                 if let Some(signal) = &signal {
+                    session.title_signal.cancel();
                     session.title_signal = signal.clone();
                 }
                 (Some(session.title.clone()), signal)

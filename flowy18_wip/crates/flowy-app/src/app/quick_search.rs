@@ -10,7 +10,7 @@
 use super::{FlowyApp, Section, state::ActiveDialog};
 use flowy_ui as ui;
 use gpui::{
-    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, Window,
+    AnyElement, Context, Entity, FontWeight, IntoElement, ScrollHandle, Window,
     div, prelude::*, px,
 };
 use gpui_kit::base::input::InputState;
@@ -23,15 +23,15 @@ const MAX_SKILL_HITS: usize = 4;
 pub(super) struct QuickSearchState {
     pub(super) query: Entity<InputState>,
     pub(super) selected: usize,
-    pub(super) focus_pending: bool,
+    pub(super) scroll: ScrollHandle,
 }
 
 impl QuickSearchState {
-    pub(super) const fn new(query: Entity<InputState>) -> Self {
+    pub(super) fn new(query: Entity<InputState>) -> Self {
         Self {
             query,
             selected: 0,
-            focus_pending: false,
+            scroll: ScrollHandle::new(),
         }
     }
 }
@@ -99,7 +99,7 @@ pub(super) fn score_fields(query: &str, fields: &[&str]) -> u32 {
 impl FlowyApp {
     pub(super) fn open_quick_search(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         if self.active_dialog == ActiveDialog::QuickSearch {
@@ -108,11 +108,12 @@ impl FlowyApp {
             return;
         }
         self.quick_search.selected = 0;
-        self.quick_search.focus_pending = true;
         self.set_input_text(&self.quick_search.query, "", cx);
+        // Do NOT manually focus `query` before `OverlayHost::set_modal` runs in
+        // `render`: `OverlayHost` captures the prior focus handle for Escape
+        // restore and automatically focuses the dialog's first input via
+        // `focus_after_paint -> cycle_within`.
         self.activate_dialog(ActiveDialog::QuickSearch, cx);
-        let focus = self.quick_search.query.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
     }
 
     pub(super) fn move_quick_search_selection(
@@ -120,7 +121,8 @@ impl FlowyApp {
         delta: isize,
         cx: &mut Context<'_, Self>,
     ) {
-        let count = self.quick_search_results(cx).len();
+        let rows = self.quick_search_results(cx);
+        let count = rows.len();
         if count == 0 {
             self.quick_search.selected = 0;
             return;
@@ -132,6 +134,21 @@ impl FlowyApp {
             (current + 1) % count
         };
         self.quick_search.selected = next;
+        // Count preceding section headers so `scroll_to_item` targets the
+        // actual child index inside `quick-search-list`.
+        let mut child_idx = 0_usize;
+        let mut last_section: Option<&'static str> = None;
+        for (idx, row) in rows.iter().enumerate() {
+            if last_section != Some(row.section_key) {
+                last_section = Some(row.section_key);
+                child_idx += 1;
+            }
+            if idx == next {
+                break;
+            }
+            child_idx += 1;
+        }
+        self.quick_search.scroll.scroll_to_item(child_idx);
         cx.notify();
     }
 
@@ -201,13 +218,17 @@ impl FlowyApp {
                 let title = if hit.title.trim().is_empty() {
                     self.t("dock.new_task")
                 } else {
-                    hit.title
+                    flowy_studio::ports::redact_trace_text(&hit.title)
                 };
+                let subtitle = hit
+                    .snippet
+                    .as_deref()
+                    .map(flowy_studio::ports::redact_trace_text);
                 let badge = hit.pinned.then(|| self.t("chat.pinned_badge"));
                 rows.push(QuickSearchRow {
                     section_key: "search.group_recent",
                     title,
-                    subtitle: hit.snippet,
+                    subtitle,
                     badge,
                     target: SearchTarget::Session(hit.session_id),
                     score: hit.score,
@@ -240,13 +261,17 @@ impl FlowyApp {
             return rows;
         }
 
-        // 1. Sessions (titles + body message snippets)
+        // 1. Sessions (titles + body message snippets, defense-in-depth redacted)
         for hit in studio.agent.search_sessions(&query, MAX_SESSION_HITS) {
             let title = if hit.title.trim().is_empty() {
                 self.t("dock.new_task")
             } else {
-                hit.title
+                flowy_studio::ports::redact_trace_text(&hit.title)
             };
+            let subtitle = hit
+                .snippet
+                .as_deref()
+                .map(flowy_studio::ports::redact_trace_text);
             let badge = if hit.archived {
                 Some(self.t("chat.archived_badge"))
             } else if hit.pinned {
@@ -257,7 +282,7 @@ impl FlowyApp {
             rows.push(QuickSearchRow {
                 section_key: "search.group_sessions",
                 title,
-                subtitle: hit.snippet,
+                subtitle,
                 badge,
                 target: SearchTarget::Session(hit.session_id),
                 score: hit.score,
@@ -357,14 +382,9 @@ impl FlowyApp {
 
     pub(super) fn quick_search_layer(
         &mut self,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
+        window: &Window,
+        cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        if self.quick_search.focus_pending {
-            self.quick_search.focus_pending = false;
-            let focus = self.quick_search.query.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
-        }
         let rows = self.quick_search_results(cx);
         let selected = if rows.is_empty() {
             0
@@ -379,6 +399,7 @@ impl FlowyApp {
             .w_full()
             .max_h(px(360.))
             .overflow_y_scroll()
+            .track_scroll(&self.quick_search.scroll)
             .flex()
             .flex_col()
             .gap(px(2.))
