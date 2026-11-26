@@ -1,40 +1,18 @@
 //! Multi-object work-contract resolution, proposal/record isolation, and
-//! hybrid on-demand `complete_structured` disambiguation (`最终方案.md` §12.5 A2).
+//! deterministic disambiguation (`最终方案.md` §12.5 A2).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use flowy_agent_core::{
-    CancelToken, DisambiguationOption, FactEntry, FactStatus, ModelRoute,
-    ObjectVerifyState, PendingCard, StructuredRequest, TrackedObject,
-    TrackedObjectKind, WorkContract, complete_structured,
+    DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
+    PendingCard, TrackedObject, TrackedObjectKind, WorkContract,
 };
-use serde_json::{Value, json};
 
 use super::contract::{
-    BriefContract, extract_date_fact, extract_quote_fact, is_rename_prompt,
+    BriefContract, contains_deck_role_word, extract_date_fact,
+    extract_quote_fact, is_rename_prompt,
 };
-
-pub const PROPOSE_CONTRACT_DELTA_TOOL: &str = "propose_contract_delta";
-
-const RESOLVER_TIMEOUT: Duration = Duration::from_secs(20);
-
-const RESOLVER_SYSTEM_PROMPT: &str = "\
-你是工作契约消歧解析器。你只接收当前会话已存在的对象列表和用户新消息。\
-规则：\
-1. 只能引用对象列表中真实存在的 object_id，禁止编造对象，禁止修改 kind=record 的归档记录。\
-2. 若用户只是记录会议纪要、口头提议或含「尚待确认 / 先别改正式文件 / 可考虑」，则 action 必须为 record_proposal，不得修改任何 deliverable 的已确认事实。\
-3. 若会话存在多个可写 deliverable 且用户未明确指明修改哪一份（如「把刚才那份的报价改成 32 万」），action 必须为 disambiguate，由宿主弹出消歧卡让用户选择。\
-4. 仅当用户明确指明唯一目标对象（或明确要求修改全部交付物）时，才返回 action=update 并列出目标 object_ids。\
-请调用 propose_contract_delta 提交结构化结果。";
-
-/// Live LLM route configuration for on-demand structured contract resolution.
-#[derive(Clone, Debug)]
-pub struct ResolverLlmConfig {
-    pub route: ModelRoute,
-    pub api_key: String,
-}
 
 /// Output of resolving a user prompt against an optional existing [`WorkContract`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,36 +27,9 @@ pub enum ResolveOutcome {
     Ambiguous { card: PendingCard, used_llm: bool },
 }
 
-#[must_use]
-pub fn contract_delta_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["update", "disambiguate", "record_proposal", "noop"]
-            },
-            "target_object_ids": {
-                "type": "array",
-                "items": { "type": "string" }
-            },
-            "quote": { "type": "string" },
-            "date": { "type": "string" },
-            "fact_status": {
-                "type": "string",
-                "enum": ["confirmed", "pending_proposal"]
-            },
-            "reason": { "type": "string" }
-        },
-        "required": ["action"],
-        "additionalProperties": false
-    })
-}
-
 /// Populate initial [`TrackedObject`] entries for a fresh [`BriefContract`].
 pub(super) fn build_initial_objects(
     contract: &BriefContract,
-    now_ms: u64,
 ) -> Vec<TrackedObject> {
     let mut objects = Vec::with_capacity(contract.required_items.len());
     for (idx, item) in contract.required_items.iter().enumerate() {
@@ -94,7 +45,6 @@ pub(super) fn build_initial_objects(
         };
         obj.anchor_summary =
             format_anchor_summary(&obj, &contract.pinned_facts);
-        let _ = now_ms;
         objects.push(obj);
     }
     objects
@@ -148,26 +98,12 @@ fn refresh_anchor_summaries(
     }
 }
 
-fn ensure_objects_seeded(
-    prev: &WorkContract,
-    now_ms: u64,
-) -> Vec<TrackedObject> {
+fn ensure_objects_seeded(prev: &WorkContract) -> Vec<TrackedObject> {
     if !prev.objects.is_empty() {
         return prev.objects.clone();
     }
-    let synthetic = BriefContract {
-        revision: prev.revision,
-        min_slides: prev.min_slides,
-        expected_filenames: prev
-            .required_items
-            .iter()
-            .filter_map(|i| i.filename.clone())
-            .collect(),
-        required_items: prev.required_items.clone(),
-        pinned_facts: prev.pinned_facts.clone(),
-        objects: Vec::new(),
-    };
-    build_initial_objects(&synthetic, now_ms)
+    let synthetic = BriefContract::from_work_contract(prev);
+    build_initial_objects(&synthetic)
 }
 
 fn next_object_id(objects: &[TrackedObject], prefix: &str) -> String {
@@ -186,10 +122,46 @@ fn next_card_id(now_ms: u64) -> String {
     format!("card-{now_ms}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+fn record_object_ids(objects: &[TrackedObject]) -> Vec<String> {
+    objects
+        .iter()
+        .filter(|o| o.kind == TrackedObjectKind::Record)
+        .map(|o| o.object_id.clone())
+        .collect()
+}
+
+fn write_confirmed_overrides(
+    obj: &mut TrackedObject,
+    quote: Option<&str>,
+    date: Option<&str>,
+    now_ms: u64,
+) {
+    if let Some(quote) = quote {
+        obj.overrides.insert(
+            "quote".to_owned(),
+            FactEntry {
+                value: quote.to_owned(),
+                status: FactStatus::Confirmed,
+                updated_at_ms: now_ms,
+            },
+        );
+    }
+    if let Some(date) = date {
+        obj.overrides.insert(
+            "date".to_owned(),
+            FactEntry {
+                value: date.to_owned(),
+                status: FactStatus::Confirmed,
+                updated_at_ms: now_ms,
+            },
+        );
+    }
+}
+
 /// Detect whether `prompt` records a meeting note / pending proposal rather
 /// than an authoritative update to formal deliverables.
 #[must_use]
-pub(super) fn is_proposal_or_record_prompt(prompt: &str) -> bool {
+fn is_proposal_or_record_prompt(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     let strong_pending = [
         "尚待确认",
@@ -328,6 +300,10 @@ fn match_clause_deliverables(
     if !matched.is_empty() {
         return matched;
     }
+    // Never hijack an explicit all-objects clause via a loose role word.
+    if has_all_objects_scope_cue(clause) {
+        return matched;
+    }
     // 2. Role/extension cue only when it identifies a unique deliverable of that format.
     let role_ext = if clause.contains("报价表")
         || lower.contains("excel")
@@ -336,10 +312,7 @@ fn match_clause_deliverables(
         Some("xlsx")
     } else if lower.contains("word") || lower.contains(".docx") {
         Some("docx")
-    } else if lower.contains("ppt")
-        || clause.contains("幻灯片")
-        || clause.contains("汇报")
-    {
+    } else if contains_deck_role_word(clause) {
         Some("pptx")
     } else {
         None
@@ -422,7 +395,7 @@ fn apply_record_proposal(
     prompt: &str,
     now_ms: u64,
 ) -> BriefContract {
-    let mut objects = ensure_objects_seeded(prev, now_ms);
+    let mut objects = ensure_objects_seeded(prev);
     let mut proposal_overrides = BTreeMap::new();
     if let Some(quote) = extract_quote_fact(prompt) {
         proposal_overrides.insert(
@@ -469,19 +442,9 @@ fn apply_record_proposal(
             verify_state: ObjectVerifyState::Unverified,
         });
     }
-    let expected_filenames: Vec<String> = prev
-        .required_items
-        .iter()
-        .filter_map(|item| item.filename.clone())
-        .collect();
-    BriefContract {
-        revision: prev.revision.max(1),
-        min_slides: prev.min_slides,
-        expected_filenames,
-        required_items: prev.required_items.clone(),
-        pinned_facts: prev.pinned_facts.clone(),
-        objects,
-    }
+    let mut contract = BriefContract::from_work_contract(prev);
+    contract.objects = objects;
+    contract
 }
 
 fn sync_objects_with_required_items(
@@ -596,9 +559,10 @@ fn evolve_deliverable_structure(
                 *slot = item.clone();
                 if let Some(old_name) = old_name
                     && let Some(obj) = objects.iter_mut().find(|o| {
-                        o.filename
-                            .as_deref()
-                            .is_some_and(|f| f.eq_ignore_ascii_case(&old_name))
+                        o.kind == TrackedObjectKind::Deliverable
+                            && o.filename.as_deref().is_some_and(|f| {
+                                f.eq_ignore_ascii_case(&old_name)
+                            })
                     })
                 {
                     obj.filename.clone_from(&item.filename);
@@ -684,7 +648,9 @@ fn evolve_deliverable_structure(
     {
         pinned_facts.remove("date");
         for obj in objects.iter_mut() {
-            obj.overrides.remove("date");
+            if obj.kind == TrackedObjectKind::Deliverable {
+                obj.overrides.remove("date");
+            }
         }
     }
     if [
@@ -700,7 +666,9 @@ fn evolve_deliverable_structure(
     {
         pinned_facts.remove("quote");
         for obj in objects.iter_mut() {
-            obj.overrides.remove("quote");
+            if obj.kind == TrackedObjectKind::Deliverable {
+                obj.overrides.remove("quote");
+            }
         }
     }
 
@@ -730,16 +698,16 @@ fn apply_scoped_facts_or_disambiguate(
         .filter(|obj| obj.kind == TrackedObjectKind::Deliverable)
         .count();
 
-    // Per-clause object-scoped fact targeting (handles Case 4 & Case 6).
+    // Per-clause, per-key fact scoping: cleanly separate targeted clause facts
+    // from unscoped facts so mixed clauses never silently drop unscoped edits.
     let clauses = split_clauses(prompt);
     let mut clause_targets: BTreeSet<String> = BTreeSet::new();
-    let mut scoped_any_fact = false;
+    let mut targeted_by_key: BTreeMap<&'static str, BTreeSet<String>> =
+        BTreeMap::new();
+    let mut unscoped_facts: BTreeMap<String, String> = BTreeMap::new();
+
     for clause in &clauses {
         if clause_is_untouched_marker(clause) {
-            continue;
-        }
-        let targets = match_clause_deliverables(clause, &objects);
-        if targets.is_empty() {
             continue;
         }
         let clause_quote = extract_quote_fact(clause);
@@ -747,38 +715,53 @@ fn apply_scoped_facts_or_disambiguate(
         if clause_quote.is_none() && clause_date.is_none() {
             continue;
         }
-        scoped_any_fact = true;
+        let targets = match_clause_deliverables(clause, &objects);
+        if targets.is_empty() {
+            if let Some(q) = clause_quote {
+                unscoped_facts.insert("quote".to_owned(), q);
+            }
+            if let Some(d) = clause_date {
+                unscoped_facts.insert("date".to_owned(), d);
+            }
+            continue;
+        }
         for target_id in targets {
             clause_targets.insert(target_id.clone());
+            if clause_quote.is_some() {
+                targeted_by_key
+                    .entry("quote")
+                    .or_default()
+                    .insert(target_id.clone());
+            }
+            if clause_date.is_some() {
+                targeted_by_key
+                    .entry("date")
+                    .or_default()
+                    .insert(target_id.clone());
+            }
             if let Some(obj) =
                 objects.iter_mut().find(|o| o.object_id == target_id)
             {
-                if let Some(quote) = &clause_quote {
-                    obj.overrides.insert(
-                        "quote".to_owned(),
-                        FactEntry {
-                            value: quote.clone(),
-                            status: FactStatus::Confirmed,
-                            updated_at_ms: now_ms,
-                        },
-                    );
-                }
-                if let Some(date) = &clause_date {
-                    obj.overrides.insert(
-                        "date".to_owned(),
-                        FactEntry {
-                            value: date.clone(),
-                            status: FactStatus::Confirmed,
-                            updated_at_ms: now_ms,
-                        },
-                    );
-                }
+                write_confirmed_overrides(
+                    obj,
+                    clause_quote.as_deref(),
+                    clause_date.as_deref(),
+                    now_ms,
+                );
             }
         }
     }
 
-    // Detect multi-object ambiguity when NO explicit object was targeted.
-    let mutates_facts = !delta.pinned_facts.is_empty();
+    // Catch any whole-prompt fact that spanned clause punctuation without
+    // landing in a clause-level bucket.
+    for (key, value) in delta.pinned_facts {
+        if !targeted_by_key.contains_key(key.as_str())
+            && !unscoped_facts.contains_key(&key)
+        {
+            unscoped_facts.insert(key, value);
+        }
+    }
+
     let same_ext_duplicates = {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for obj in &objects {
@@ -790,41 +773,48 @@ fn apply_scoped_facts_or_disambiguate(
         }
         counts.values().any(|&count| count >= 2)
     };
-    let ambiguous = !scoped_any_fact
+    let ambiguous = !unscoped_facts.is_empty()
         && deliverable_count >= 2
-        && mutates_facts
         && !has_all_objects_scope_cue(prompt)
         && (has_demonstrative_ambiguity_cue(prompt) || same_ext_duplicates);
 
     if ambiguous {
-        let mut snapshot = prev.clone();
-        snapshot.objects = objects;
-        refresh_anchor_summaries(&mut snapshot.objects, &snapshot.pinned_facts);
+        // Build the disambiguation card strictly from persisted `prev`
+        // deliverables so every presented `object_id` is guaranteed to pass
+        // `apply_disambiguation_selection` when the user clicks an option.
+        let mut persisted_snapshot = prev.clone();
+        persisted_snapshot.objects = ensure_objects_seeded(prev);
+        refresh_anchor_summaries(
+            &mut persisted_snapshot.objects,
+            &persisted_snapshot.pinned_facts,
+        );
         return ResolveOutcome::Ambiguous {
-            card: build_disambiguation_card(&snapshot, prompt, now_ms),
+            card: build_disambiguation_card(
+                &persisted_snapshot,
+                prompt,
+                now_ms,
+            ),
             used_llm: false,
         };
     }
 
-    // Global fact update when single deliverable or explicitly unscoped/all-files.
-    if !scoped_any_fact {
-        for (key, value) in delta.pinned_facts {
-            pinned_facts.insert(key.clone(), value);
-            if has_all_objects_scope_cue(prompt) {
-                for obj in &mut objects {
-                    if obj.kind == TrackedObjectKind::Deliverable {
-                        obj.overrides.remove(&key);
-                    }
-                }
+    // Apply unambiguous unscoped facts globally and clear stale per-object
+    // overrides on deliverables not explicitly targeted in this turn so old
+    // overrides never shadow newer session-wide updates.
+    for (key, value) in unscoped_facts {
+        let explicitly_targeted = targeted_by_key.get(key.as_str());
+        pinned_facts.insert(key.clone(), value);
+        for obj in &mut objects {
+            if obj.kind == TrackedObjectKind::Deliverable
+                && explicitly_targeted
+                    .is_none_or(|ids| !ids.contains(&obj.object_id))
+            {
+                obj.overrides.remove(&key);
             }
         }
     }
 
     refresh_anchor_summaries(&mut objects, &pinned_facts);
-    let expected_filenames: Vec<String> = required_items
-        .iter()
-        .filter_map(|item| item.filename.clone())
-        .collect();
     let target_object_ids: Vec<String> = if clause_targets.is_empty() {
         objects
             .iter()
@@ -835,15 +825,15 @@ fn apply_scoped_facts_or_disambiguate(
         clause_targets.into_iter().collect()
     };
 
+    let work = WorkContract {
+        revision: prev.revision.saturating_add(1).max(1),
+        min_slides: delta.min_slides.or(inherited_min_slides),
+        required_items,
+        pinned_facts,
+        objects,
+    };
     ResolveOutcome::Resolved {
-        contract: BriefContract {
-            revision: prev.revision.saturating_add(1).max(1),
-            min_slides: delta.min_slides.or(inherited_min_slides),
-            expected_filenames,
-            required_items,
-            pinned_facts,
-            objects,
-        },
+        contract: BriefContract::from_work_contract(&work),
         target_object_ids,
         used_llm: false,
     }
@@ -858,11 +848,22 @@ pub fn resolve_contract_sync(
     reply_to_object_id: Option<&str>,
     now_ms: u64,
 ) -> ResolveOutcome {
+    // 1. Meeting notes / pending proposals NEVER overwrite confirmed facts,
+    // including when they arrive on the very first turn.
+    if is_proposal_or_record_prompt(prompt) {
+        let empty = WorkContract::default();
+        let base = previous.unwrap_or(&empty);
+        let contract = apply_record_proposal(base, prompt, now_ms);
+        let record_ids = record_object_ids(&contract.objects);
+        return ResolveOutcome::Resolved {
+            contract,
+            target_object_ids: record_ids,
+            used_llm: false,
+        };
+    }
+
     let Some(prev) = previous else {
-        let mut contract = BriefContract::from_brief(prompt);
-        if contract.objects.is_empty() && !contract.required_items.is_empty() {
-            contract.objects = build_initial_objects(&contract, now_ms);
-        }
+        let contract = BriefContract::from_brief(prompt);
         let targets: Vec<String> = contract
             .objects
             .iter()
@@ -876,33 +877,26 @@ pub fn resolve_contract_sync(
         };
     };
 
-    // 1. Meeting notes / pending proposals NEVER overwrite confirmed deliverable facts.
-    if is_proposal_or_record_prompt(prompt) {
-        let contract = apply_record_proposal(prev, prompt, now_ms);
-        let record_ids = contract
-            .objects
-            .iter()
-            .filter(|o| o.kind == TrackedObjectKind::Record)
-            .map(|o| o.object_id.clone())
-            .collect();
-        return ResolveOutcome::Resolved {
-            contract,
-            target_object_ids: record_ids,
-            used_llm: false,
-        };
-    }
+    let mut objects = ensure_objects_seeded(prev);
 
-    let mut objects = ensure_objects_seeded(prev, now_ms);
-
-    // 2. Explicit `reply_to_object_id` fast-path (0ms, zero ambiguity).
-    if let Some(target_id) = reply_to_object_id
-        && objects.iter().any(|obj| {
+    // 2. Explicit `reply_to_object_id` fast-path (0ms, fail-closed on invalid/Record ID).
+    if let Some(target_id) = reply_to_object_id {
+        let valid = objects.iter().any(|obj| {
             obj.object_id == target_id
                 && obj.kind == TrackedObjectKind::Deliverable
-        })
-    {
+        });
         let mut prev_seeded = prev.clone();
         prev_seeded.objects.clone_from(&objects);
+        if !valid {
+            refresh_anchor_summaries(
+                &mut prev_seeded.objects,
+                &prev_seeded.pinned_facts,
+            );
+            return ResolveOutcome::Ambiguous {
+                card: build_disambiguation_card(&prev_seeded, prompt, now_ms),
+                used_llm: false,
+            };
+        }
         if let Ok(contract) = apply_disambiguation_selection(
             &prev_seeded,
             prompt,
@@ -954,7 +948,7 @@ fn apply_object_fact_updates(
     if selected_object_ids.is_empty() {
         return Err("notice.card_selection_empty");
     }
-    let mut objects = ensure_objects_seeded(previous, now_ms);
+    let mut objects = ensure_objects_seeded(previous);
     for id in selected_object_ids {
         let valid = objects.iter().any(|obj| {
             obj.object_id == *id && obj.kind == TrackedObjectKind::Deliverable
@@ -967,268 +961,275 @@ fn apply_object_fact_updates(
         if let Some(obj) =
             objects.iter_mut().find(|o| o.object_id == *target_id)
         {
-            if let Some(quote) = &quote {
-                obj.overrides.insert(
-                    "quote".to_owned(),
-                    FactEntry {
-                        value: quote.clone(),
-                        status: FactStatus::Confirmed,
-                        updated_at_ms: now_ms,
-                    },
-                );
-            }
-            if let Some(date) = &date {
-                obj.overrides.insert(
-                    "date".to_owned(),
-                    FactEntry {
-                        value: date.clone(),
-                        status: FactStatus::Confirmed,
-                        updated_at_ms: now_ms,
-                    },
-                );
-            }
+            write_confirmed_overrides(
+                obj,
+                quote.as_deref(),
+                date.as_deref(),
+                now_ms,
+            );
         }
     }
     refresh_anchor_summaries(&mut objects, &previous.pinned_facts);
-    let expected_filenames: Vec<String> = previous
-        .required_items
-        .iter()
-        .filter_map(|item| item.filename.clone())
-        .collect();
-    Ok(BriefContract {
+    let work = WorkContract {
         revision: previous.revision.saturating_add(1).max(1),
         min_slides: previous.min_slides,
-        expected_filenames,
         required_items: previous.required_items.clone(),
         pinned_facts: previous.pinned_facts.clone(),
         objects,
-    })
+    };
+    Ok(BriefContract::from_work_contract(&work))
 }
 
-/// Validate a raw structured proposal returned by `complete_structured` against
-/// the host's authoritative `previous.objects` table.
-#[must_use]
-pub fn validate_structured_proposal(
-    previous: &WorkContract,
-    prompt: &str,
-    proposal: &Value,
-    now_ms: u64,
-) -> ResolveOutcome {
-    let Some(action) = proposal.get("action").and_then(Value::as_str) else {
-        return ResolveOutcome::Ambiguous {
-            card: build_disambiguation_card(previous, prompt, now_ms),
+/// Test-only LLM contract-resolver probe (`complete_structured` validation and
+/// opt-in live cloud verification). Kept out of production exports because
+/// `resolve_contract_sync` already settles disambiguation at 0ms without
+/// risking model hallucination or holding dispatch locks across HTTP calls.
+#[cfg(test)]
+mod llm_probe {
+    use std::time::Duration;
+
+    use flowy_agent_core::{
+        CancelToken, ModelRoute, StructuredRequest, complete_structured,
+    };
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    const PROPOSE_CONTRACT_DELTA_TOOL: &str = "propose_contract_delta";
+    const RESOLVER_TIMEOUT: Duration = Duration::from_secs(20);
+
+    const RESOLVER_SYSTEM_PROMPT: &str = "\
+你是工作契约消歧解析器。你只接收当前会话已存在的对象列表和用户新消息。\
+规则：\
+1. 只能引用对象列表中真实存在的 object_id，禁止编造对象，禁止修改 kind=record 的归档记录。\
+2. 若用户只是记录会议纪要、口头提议或含「尚待确认 / 先别改正式文件 / 可考虑」，则 action 必须为 record_proposal，不得修改任何 deliverable 的已确认事实。\
+3. 若会话存在多个可写 deliverable 且用户未明确指明修改哪一份（如「把刚才那份的报价改成 32 万」），action 必须为 disambiguate，由宿主弹出消歧卡让用户选择。\
+4. 仅当用户明确指明唯一目标对象（或明确要求修改全部交付物）时，才返回 action=update 并列出目标 object_ids。\
+请调用 propose_contract_delta 提交结构化结果。";
+
+    #[derive(Clone, Debug)]
+    struct ResolverLlmConfig {
+        route: ModelRoute,
+        api_key: String,
+    }
+
+    fn contract_delta_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["update", "disambiguate", "record_proposal", "noop"]
+                },
+                "target_object_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "quote": { "type": "string" },
+                "date": { "type": "string" },
+                "fact_status": {
+                    "type": "string",
+                    "enum": ["confirmed", "pending_proposal"]
+                },
+                "reason": { "type": "string" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    /// Strictly fail-closed validator: rejects mixed valid+invalid/Record IDs,
+    /// deduplicates IDs, seeds legacy contracts, and blocks `"noop"` when the
+    /// prompt carries a concrete fact mutation.
+    fn validate_structured_proposal(
+        previous: &WorkContract,
+        prompt: &str,
+        proposal: &Value,
+        now_ms: u64,
+    ) -> ResolveOutcome {
+        let mut seeded = previous.clone();
+        seeded.objects = ensure_objects_seeded(previous);
+        let fallback = || ResolveOutcome::Ambiguous {
+            card: build_disambiguation_card(&seeded, prompt, now_ms),
             used_llm: true,
         };
-    };
-    match action {
-        "record_proposal" => {
-            let contract = apply_record_proposal(previous, prompt, now_ms);
-            let record_ids = contract
-                .objects
-                .iter()
-                .filter(|o| o.kind == TrackedObjectKind::Record)
-                .map(|o| o.object_id.clone())
-                .collect();
-            ResolveOutcome::Resolved {
-                contract,
-                target_object_ids: record_ids,
-                used_llm: true,
-            }
-        }
-        "update" => {
-            let fact_status = proposal
-                .get("fact_status")
-                .and_then(Value::as_str)
-                .unwrap_or("confirmed");
-            if fact_status == "pending_proposal" {
-                let contract = apply_record_proposal(previous, prompt, now_ms);
-                let record_ids = contract
-                    .objects
-                    .iter()
-                    .filter(|o| o.kind == TrackedObjectKind::Record)
-                    .map(|o| o.object_id.clone())
-                    .collect();
-                return ResolveOutcome::Resolved {
+        let Some(action) = proposal.get("action").and_then(Value::as_str)
+        else {
+            return fallback();
+        };
+        match action {
+            "record_proposal" => {
+                let contract = apply_record_proposal(&seeded, prompt, now_ms);
+                let record_ids = record_object_ids(&contract.objects);
+                ResolveOutcome::Resolved {
                     contract,
                     target_object_ids: record_ids,
                     used_llm: true,
+                }
+            }
+            "update" => {
+                let fact_status = proposal
+                    .get("fact_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("confirmed");
+                if fact_status == "pending_proposal" {
+                    let contract =
+                        apply_record_proposal(&seeded, prompt, now_ms);
+                    let record_ids = record_object_ids(&contract.objects);
+                    return ResolveOutcome::Resolved {
+                        contract,
+                        target_object_ids: record_ids,
+                        used_llm: true,
+                    };
+                }
+                let Some(raw_ids) =
+                    proposal.get("target_object_ids").and_then(Value::as_array)
+                else {
+                    return fallback();
                 };
+                let mut dedup: BTreeSet<String> = BTreeSet::new();
+                for entry in raw_ids {
+                    let Some(id) = entry.as_str() else {
+                        return fallback();
+                    };
+                    let valid = seeded.objects.iter().any(|obj| {
+                        obj.object_id == id
+                            && obj.kind == TrackedObjectKind::Deliverable
+                    });
+                    if !valid {
+                        return fallback();
+                    }
+                    dedup.insert(id.to_owned());
+                }
+                if dedup.is_empty() {
+                    return fallback();
+                }
+                let valid_ids: Vec<String> = dedup.into_iter().collect();
+                let quote = proposal
+                    .get("quote")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|raw| {
+                        extract_quote_fact(raw)
+                            .unwrap_or_else(|| raw.to_owned())
+                    })
+                    .or_else(|| extract_quote_fact(prompt));
+                let date = proposal
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|raw| {
+                        extract_date_fact(raw).unwrap_or_else(|| raw.to_owned())
+                    })
+                    .or_else(|| extract_date_fact(prompt));
+                match apply_object_fact_updates(
+                    &seeded, &valid_ids, quote, date, now_ms,
+                ) {
+                    Ok(contract) => ResolveOutcome::Resolved {
+                        contract,
+                        target_object_ids: valid_ids,
+                        used_llm: true,
+                    },
+                    Err(_) => fallback(),
+                }
             }
-            let valid_ids: Vec<String> = proposal
-                .get("target_object_ids")
-                .and_then(Value::as_array)
-                .map_or_default(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .filter(|id| {
-                            previous.objects.iter().any(|obj| {
-                                obj.object_id == *id
-                                    && obj.kind
-                                        == TrackedObjectKind::Deliverable
-                            })
-                        })
-                        .map(str::to_owned)
-                        .collect()
-                });
-            if valid_ids.is_empty() {
-                return ResolveOutcome::Ambiguous {
-                    card: build_disambiguation_card(previous, prompt, now_ms),
+            "noop" => {
+                if extract_quote_fact(prompt).is_some()
+                    || extract_date_fact(prompt).is_some()
+                {
+                    return fallback();
+                }
+                ResolveOutcome::Resolved {
+                    contract: BriefContract::from_work_contract(&seeded),
+                    target_object_ids: Vec::new(),
                     used_llm: true,
-                };
+                }
             }
-            let quote = proposal
-                .get("quote")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|raw| {
-                    extract_quote_fact(raw).unwrap_or_else(|| raw.to_owned())
-                })
-                .or_else(|| extract_quote_fact(prompt));
-            let date = proposal
-                .get("date")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|raw| {
-                    extract_date_fact(raw).unwrap_or_else(|| raw.to_owned())
-                })
-                .or_else(|| extract_date_fact(prompt));
-            match apply_object_fact_updates(
-                previous, &valid_ids, quote, date, now_ms,
-            ) {
-                Ok(contract) => ResolveOutcome::Resolved {
-                    contract,
-                    target_object_ids: valid_ids,
-                    used_llm: true,
-                },
-                Err(_) => ResolveOutcome::Ambiguous {
-                    card: build_disambiguation_card(previous, prompt, now_ms),
-                    used_llm: true,
-                },
-            }
+            _ => fallback(),
         }
-        "noop" => {
-            let expected_filenames: Vec<String> = previous
-                .required_items
-                .iter()
-                .filter_map(|item| item.filename.clone())
-                .collect();
-            ResolveOutcome::Resolved {
-                contract: BriefContract {
-                    revision: previous.revision.max(1),
-                    min_slides: previous.min_slides,
-                    expected_filenames,
-                    required_items: previous.required_items.clone(),
-                    pinned_facts: previous.pinned_facts.clone(),
-                    objects: previous.objects.clone(),
-                },
-                target_object_ids: Vec::new(),
-                used_llm: true,
-            }
-        }
-        _ => ResolveOutcome::Ambiguous {
-            card: build_disambiguation_card(previous, prompt, now_ms),
-            used_llm: true,
-        },
     }
-}
 
-/// Hybrid on-demand resolver:
-/// - Runs 0ms deterministic fast-path first whenever `reply_to_object_id` is
-///   present or the session has `<= 1` writable deliverable with no conflict.
-/// - On multi-object ambiguity with a live [`ResolverLlmConfig`], invokes a
-///   single `complete_structured` call (`propose_contract_delta`, no `strict`
-///   flag) and strictly validates the output against the host `objects` table.
-pub async fn resolve_contract_async(
-    previous: Option<&WorkContract>,
-    prompt: &str,
-    reply_to_object_id: Option<&str>,
-    llm: Option<&ResolverLlmConfig>,
-    signal: &CancelToken,
-    now_ms: u64,
-) -> ResolveOutcome {
-    let deterministic =
-        resolve_contract_sync(previous, prompt, reply_to_object_id, now_ms);
-    let ResolveOutcome::Ambiguous { card, .. } = &deterministic else {
-        return deterministic;
-    };
-    let (Some(prev), Some(llm_cfg)) = (previous, llm) else {
-        return deterministic;
-    };
-    if llm_cfg.api_key.trim().is_empty() {
-        return deterministic;
-    }
-    let mut seeded = prev.clone();
-    seeded.objects = ensure_objects_seeded(prev, now_ms);
-    let mut body = String::from("【当前会话对象表】\n");
-    for obj in &seeded.objects {
-        use std::fmt::Write as _;
-        let kind = match obj.kind {
-            TrackedObjectKind::Deliverable => "deliverable",
-            TrackedObjectKind::Record => "record",
+    async fn resolve_contract_async(
+        previous: Option<&WorkContract>,
+        prompt: &str,
+        reply_to_object_id: Option<&str>,
+        llm: Option<&ResolverLlmConfig>,
+        signal: &CancelToken,
+        now_ms: u64,
+    ) -> ResolveOutcome {
+        let deterministic =
+            resolve_contract_sync(previous, prompt, reply_to_object_id, now_ms);
+        let ResolveOutcome::Ambiguous { card, .. } = &deterministic else {
+            return deterministic;
         };
-        let facts = seeded.confirmed_facts_for(&obj.object_id);
-        let _ = writeln!(
-            body,
-            "- object_id={} kind={} file={} ext={} anchor=\"{}\" facts={facts:?}",
-            obj.object_id,
-            kind,
-            obj.filename.as_deref().unwrap_or("(unnamed)"),
-            obj.extension,
-            obj.anchor_summary,
-        );
-    }
-    body.push_str("\n【用户新消息】\n");
-    body.push_str(prompt);
-
-    let call_signal = signal.child_token();
-    let call = complete_structured(
-        StructuredRequest {
-            session_id: Some("contract-resolver".to_owned()),
-            system: RESOLVER_SYSTEM_PROMPT.to_owned(),
-            prompt: body,
-            tool_name: PROPOSE_CONTRACT_DELTA_TOOL.to_owned(),
-            tool_description:
-                "Propose a validated multi-object contract delta or request disambiguation."
-                    .to_owned(),
-            schema: contract_delta_schema(),
-            route: llm_cfg.route.clone(),
-            signal: call_signal.clone(),
-        },
-        Some(llm_cfg.api_key.clone()),
-    );
-    match tokio::time::timeout(RESOLVER_TIMEOUT, call).await {
-        Ok(Ok(value)) => {
-            validate_structured_proposal(&seeded, prompt, &value, now_ms)
+        let (Some(prev), Some(llm_cfg)) = (previous, llm) else {
+            return deterministic;
+        };
+        if llm_cfg.api_key.trim().is_empty() {
+            return deterministic;
         }
-        Ok(Err(error)) => {
-            tracing::warn!(
-                target: "flowy.verify",
-                %error,
-                "contract resolver LLM call failed; falling back to deterministic disambiguation"
+        let mut seeded = prev.clone();
+        seeded.objects = ensure_objects_seeded(prev);
+        let mut body = String::from("【当前会话对象表】\n");
+        for obj in &seeded.objects {
+            use std::fmt::Write as _;
+            let kind = match obj.kind {
+                TrackedObjectKind::Deliverable => "deliverable",
+                TrackedObjectKind::Record => "record",
+            };
+            let facts = seeded.confirmed_facts_for(&obj.object_id);
+            let _ = writeln!(
+                body,
+                "- object_id={} kind={} file={} ext={} anchor=\"{}\" facts={facts:?}",
+                obj.object_id,
+                kind,
+                obj.filename.as_deref().unwrap_or("(unnamed)"),
+                obj.extension,
+                obj.anchor_summary,
             );
-            ResolveOutcome::Ambiguous {
-                card: card.clone(),
-                used_llm: false,
-            }
         }
-        Err(_) => {
-            call_signal.cancel();
-            ResolveOutcome::Ambiguous {
+        body.push_str("\n【用户新消息】\n");
+        body.push_str(prompt);
+
+        let call_signal = signal.child_token();
+        let call = complete_structured(
+            StructuredRequest {
+                session_id: Some("contract-resolver".to_owned()),
+                system: RESOLVER_SYSTEM_PROMPT.to_owned(),
+                prompt: body,
+                tool_name: PROPOSE_CONTRACT_DELTA_TOOL.to_owned(),
+                tool_description:
+                    "Propose a validated multi-object contract delta or request disambiguation."
+                        .to_owned(),
+                schema: contract_delta_schema(),
+                route: llm_cfg.route.clone(),
+                signal: call_signal.clone(),
+            },
+            Some(llm_cfg.api_key.clone()),
+        );
+        match tokio::time::timeout(RESOLVER_TIMEOUT, call).await {
+            Ok(Ok(value)) => {
+                validate_structured_proposal(&seeded, prompt, &value, now_ms)
+            }
+            Ok(Err(_)) => ResolveOutcome::Ambiguous {
                 card: card.clone(),
                 used_llm: false,
+            },
+            Err(_) => {
+                call_signal.cancel();
+                ResolveOutcome::Ambiguous {
+                    card: card.clone(),
+                    used_llm: false,
+                }
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
-    fn host_validation_rejects_hallucinated_and_record_object_ids() {
+    fn host_validation_rejects_hallucinated_mixed_record_and_noop_on_mutations()
+    {
         let base = BriefContract::from_brief(
             "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
         );
@@ -1244,8 +1245,15 @@ mod tests {
             .unwrap()
             .object_id
             .clone();
+        let ppt_id = wc
+            .objects
+            .iter()
+            .find(|o| o.extension == "pptx")
+            .unwrap()
+            .object_id
+            .clone();
 
-        // Hallucinated object_id must fall back to Ambiguous card with host deliverables only.
+        // Hallucinated object_id must fall back to Ambiguous.
         let fake = validate_structured_proposal(
             &wc,
             "把刚才那份的报价改成 32 万元。",
@@ -1268,19 +1276,25 @@ mod tests {
         assert!(used_llm);
         assert!(allow_multi);
         assert!(impact_boundary.contains("只改所选"));
-        assert!(
-            options.iter().all(|opt| opt.object_id != record_id),
-            "Record must be filtered out of Disambiguation options"
-        );
+        assert!(options.iter().all(|opt| opt.object_id != record_id));
 
-        // Targeting a Record as an update target must also be rejected -> Ambiguous.
-        let hit_record = validate_structured_proposal(
+        // Mixed valid + Record / hallucinated IDs must fail-closed to Ambiguous.
+        let mixed = validate_structured_proposal(
             &wc,
             "把刚才那份的报价改成 32 万元。",
-            &json!({"action": "update", "target_object_ids": [record_id], "quote": "32万"}),
+            &json!({"action": "update", "target_object_ids": [ppt_id, record_id], "quote": "32万"}),
             501,
         );
-        assert!(matches!(hit_record, ResolveOutcome::Ambiguous { .. }));
+        assert!(matches!(mixed, ResolveOutcome::Ambiguous { .. }));
+
+        // `"noop"` on a concrete fact-mutating prompt must fail-closed to Ambiguous.
+        let noop = validate_structured_proposal(
+            &wc,
+            "把刚才那份的报价改成 32 万元。",
+            &json!({"action": "noop"}),
+            502,
+        );
+        assert!(matches!(noop, ResolveOutcome::Ambiguous { .. }));
     }
 
     #[tokio::test]
@@ -1352,11 +1366,7 @@ mod tests {
             panic!("ambiguous quote prompt must trigger Disambiguation card");
         };
         assert!(used_llm);
-        assert_eq!(
-            options.len(),
-            3,
-            "must list 2 PPTs + 1 XLSX, excluding Record"
-        );
+        assert_eq!(options.len(), 3);
         assert!(impact_boundary.contains("只改所选"));
     }
 }

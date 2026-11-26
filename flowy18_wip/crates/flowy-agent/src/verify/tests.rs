@@ -1213,3 +1213,177 @@ fn multi_object_per_path_isolation_and_reply_to_object_fast_path() {
         "sibling deliverable must stay untouched at 30万"
     );
 }
+
+#[test]
+fn contract_and_resolver_handle_utf8_dots_stale_overrides_all_scope_mixed_clauses_and_records()
+ {
+    // 1. Trailing dots before extension on multibyte UTF-8 stems must never panic.
+    let dotted =
+        BriefContract::from_brief("请做一份青禾方案..pptx 和 foo..pptx");
+    assert!(
+        dotted
+            .expected_filenames
+            .iter()
+            .any(|n| n == "青禾方案.pptx"),
+        "expected clean UTF-8 stem: {:?}",
+        dotted.expected_filenames
+    );
+    assert!(
+        dotted.expected_filenames.iter().any(|n| n == "foo.pptx"),
+        "expected clean ASCII stem: {:?}",
+        dotted.expected_filenames
+    );
+
+    // 2. First-turn pending proposal must stay isolated in a Record, not pinned_facts.
+    let first_proposal = resolve_contract_sync(
+        None,
+        "会议记录：客户口头提到报价 35 万元，尚待确认，先别改正式文件。",
+        None,
+        10,
+    );
+    let ResolveOutcome::Resolved {
+        contract: rec_only, ..
+    } = first_proposal
+    else {
+        panic!("first-turn proposal must resolve into a Record");
+    };
+    assert!(
+        rec_only.pinned_facts.is_empty(),
+        "pending proposal must not leak into pinned_facts on turn 1"
+    );
+    assert!(
+        rec_only
+            .objects
+            .iter()
+            .any(|o| o.kind == flowy_agent_core::TrackedObjectKind::Record)
+    );
+
+    // 3. Single-deliverable stale override must be cleared by subsequent global update.
+    let single = BriefContract::from_brief("做一份青禾汇报.pptx，报价 30 万元");
+    let targeted = BriefContract::evolve(
+        Some(&single.to_work_contract()),
+        "把青禾汇报.pptx 的报价改成 32 万元",
+    );
+    let global_next = BriefContract::evolve(
+        Some(&targeted.to_work_contract()),
+        "报价改成 35 万元",
+    );
+    let global_wc = global_next.to_work_contract();
+    let single_id = &global_wc.objects[0].object_id;
+    assert_eq!(
+        global_wc
+            .confirmed_facts_for(single_id)
+            .get("quote")
+            .map(String::as_str),
+        Some("35万"),
+        "stale per-object override must not shadow subsequent global update"
+    );
+
+    // 4. "全部文件的汇报日期..." must update BOTH xlsx and pptx (not get hijacked by "汇报").
+    let pair = BriefContract::from_brief(
+        "做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+    );
+    let all_date = BriefContract::evolve(
+        Some(&pair.to_work_contract()),
+        "全部文件的汇报日期都改成 2026-12-01",
+    );
+    let all_wc = all_date.to_work_contract();
+    for obj in all_wc.writable_deliverables() {
+        assert_eq!(
+            all_wc
+                .confirmed_facts_for(&obj.object_id)
+                .get("date")
+                .map(String::as_str),
+            Some("2026-12-01"),
+            "all-objects date update must reach {}",
+            obj.object_id
+        );
+    }
+
+    // 5. Mixed clause ("仅把 A 日期改 12-02，报价改成 32 万") must NOT silently drop the unscoped quote.
+    let mixed = resolve_contract_sync(
+        Some(&all_wc),
+        "仅把青禾项目报价汇报.pptx 的汇报日期改为 2026-12-02，报价改成 32 万元",
+        None,
+        20,
+    );
+    let ResolveOutcome::Resolved {
+        contract: mixed_c, ..
+    } = mixed
+    else {
+        panic!(
+            "mixed clause on 1 pptx + 1 xlsx should apply unscoped quote: {mixed:?}"
+        );
+    };
+    assert_eq!(
+        mixed_c.pinned_facts.get("quote").map(String::as_str),
+        Some("32万"),
+        "unscoped quote in second clause must not be dropped"
+    );
+
+    // 6. Ambiguous prompt that also introduces a new file must build options from persisted `prev`
+    //    so selecting any option succeeds instead of failing with `card_selection_invalid`.
+    let with_twin_ambig = resolve_contract_sync(
+        Some(&all_wc),
+        "另做一份青禾内部稿.pptx，把刚才那份的报价改成 32 万元",
+        None,
+        30,
+    );
+    if let ResolveOutcome::Ambiguous {
+        card: flowy_agent_core::PendingCard::Disambiguation { options, .. },
+        ..
+    } = with_twin_ambig
+    {
+        for opt in &options {
+            assert!(
+                super::apply_disambiguation_selection(
+                    &all_wc,
+                    "把刚才那份的报价改成 32 万元",
+                    std::slice::from_ref(&opt.object_id),
+                    31,
+                )
+                .is_ok(),
+                "every option on disambiguation card must be valid against persisted prev: {}",
+                opt.object_id
+            );
+        }
+    } else {
+        panic!("expected Ambiguous for demonstrative mutation");
+    }
+
+    // 7. Revoking date/quote must NOT touch Record archive overrides, and invalid
+    //    `reply_to_object_id` must fail closed to Ambiguous instead of overwriting globally.
+    let with_rec = BriefContract::evolve(
+        Some(&all_wc),
+        "会议记录：客户口头说报价 35 万元，日期 2026-12-05，尚待确认。",
+    );
+    let rec_wc = with_rec.to_work_contract();
+    let rec_id = rec_wc
+        .objects
+        .iter()
+        .find(|o| o.kind == flowy_agent_core::TrackedObjectKind::Record)
+        .unwrap()
+        .object_id
+        .clone();
+    let revoked = BriefContract::evolve(Some(&rec_wc), "去掉报价，去掉日期");
+    let rec_after = revoked
+        .objects
+        .iter()
+        .find(|o| o.object_id == rec_id)
+        .unwrap();
+    assert_eq!(
+        rec_after.overrides.get("quote").map(|f| f.value.as_str()),
+        Some("35万"),
+        "Record archive overrides must survive deliverable fact revocation"
+    );
+    let bad_reply = resolve_contract_sync(
+        Some(&rec_wc),
+        "把报价改成 32 万元",
+        Some(&rec_id),
+        40,
+    );
+    assert!(
+        matches!(bad_reply, ResolveOutcome::Ambiguous { .. }),
+        "targeting a Record via reply_to_object_id must fail closed to Ambiguous"
+    );
+}

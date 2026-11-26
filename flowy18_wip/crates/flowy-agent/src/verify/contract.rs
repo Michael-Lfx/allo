@@ -38,7 +38,7 @@ impl BriefContract {
             pinned_facts,
             objects: Vec::new(),
         };
-        contract.objects = build_initial_objects(&contract, 0);
+        contract.objects = build_initial_objects(&contract);
         contract
     }
 
@@ -280,13 +280,22 @@ impl BriefContract {
     }
 }
 
+pub(super) fn contains_deck_role_word(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("ppt")
+        || lower.contains("slide")
+        || lower.contains("deck")
+        || text.contains("幻灯片")
+    {
+        return true;
+    }
+    let scrubbed = text.replace("汇报日期", "").replace("汇报时间", "");
+    scrubbed.contains("汇报")
+}
+
 pub(super) fn extract_explicit_slide_count(brief: &str) -> Option<usize> {
     let brief_lower = brief.to_ascii_lowercase();
-    let mentions_deck_context = brief_lower.contains("ppt")
-        || brief_lower.contains("slide")
-        || brief_lower.contains("deck")
-        || brief.contains("幻灯片")
-        || brief.contains("汇报");
+    let mentions_deck_context = contains_deck_role_word(brief);
     let mentions_non_deck_doc = brief_lower.contains("word")
         || brief_lower.contains(".docx")
         || brief_lower.contains(".pdf");
@@ -757,14 +766,16 @@ pub(super) fn extract_explicit_filenames(brief: &str) -> Vec<String> {
             stem_start = idx;
         }
         let raw_stem = &brief[stem_start..ext_pos];
-        let clean_stem =
-            strip_chinese_filename_prefix(raw_stem).trim_matches('.');
+        let after_prefix = strip_chinese_filename_prefix(raw_stem);
+        let trimmed_start = after_prefix.trim_start_matches('.');
+        // Only strip from the left when locating `token_pos` so trailing dots
+        // (e.g. `青禾方案..pptx`) never shift `token_pos` inside a UTF-8 char.
+        let token_pos = ext_pos - trimmed_start.len();
+        let clean_stem = trimmed_start.trim_end_matches('.');
         if clean_stem.is_empty() {
             continue;
         }
-        let offset = raw_stem.len().saturating_sub(clean_stem.len());
-        let token_pos = stem_start + offset;
-        let candidate = &brief[token_pos..ext_end];
+        let candidate = format!("{clean_stem}{}", &brief[ext_pos..ext_end]);
         // Look back up to 40 chars before this filename (stopping at sentence
         // boundaries) to ignore input source files like "根据 source.csv 做 q3.pptx".
         let prefix_full = &brief[..token_pos];
@@ -785,9 +796,9 @@ pub(super) fn extract_explicit_filenames(brief: &str) -> Vec<String> {
         }
         if !out
             .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(candidate))
+            .any(|existing| existing.eq_ignore_ascii_case(&candidate))
         {
-            out.push(candidate.to_owned());
+            out.push(candidate);
         }
     }
     out
@@ -845,12 +856,7 @@ pub(super) fn extract_required_items(
     }
     if !has_ext("pptx", &items)
         && (min_slides.is_some()
-            || (has_production_intent
-                && (brief.contains("汇报")
-                    || brief.contains("幻灯片")
-                    || lower.contains("ppt")
-                    || lower.contains("deck")
-                    || lower.contains("slides"))))
+            || (has_production_intent && contains_deck_role_word(brief)))
     {
         items.push(RequiredDeliverable {
             filename: None,

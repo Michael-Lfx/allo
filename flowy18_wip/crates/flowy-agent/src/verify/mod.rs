@@ -113,8 +113,7 @@ use self::ooxml::{
 pub use self::provenance::PROVENANCE_INVALID;
 use self::provenance::ProvenanceClaim;
 pub use self::resolver::{
-    ResolveOutcome, ResolverLlmConfig, apply_disambiguation_selection,
-    resolve_contract_async, resolve_contract_sync,
+    ResolveOutcome, apply_disambiguation_selection, resolve_contract_sync,
 };
 
 fn next_action_for(report: &VerifyReport) -> &'static str {

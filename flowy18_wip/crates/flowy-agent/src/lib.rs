@@ -62,8 +62,8 @@ pub use projection::{
 };
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
 pub use verify::{
-    PROVENANCE_INVALID, ResolveOutcome, ResolverLlmConfig,
-    resolve_contract_async, resolve_contract_sync, ui_key as verify_ui_key,
+    PROVENANCE_INVALID, ResolveOutcome, resolve_contract_sync,
+    ui_key as verify_ui_key,
 };
 
 #[cfg(test)]
