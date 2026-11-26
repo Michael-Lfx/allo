@@ -879,6 +879,25 @@ impl ChatFeed {
             .into_any_element()
     }
 
+    fn assistant_card_bubble(
+        &self,
+        content: impl IntoElement,
+        max_width: f32,
+        pad_y: f32,
+    ) -> gpui::Div {
+        div()
+            .max_w(px(max_width))
+            .min_w_0()
+            .px(self.theme.space(16.))
+            .py(self.theme.space(pad_y))
+            .rounded(px(18.))
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
+            .shadow_xs()
+            .child(content)
+    }
+
     fn chat_line(
         &self,
         index: usize,
@@ -894,13 +913,18 @@ impl ChatFeed {
                 .justify_end()
                 .child(
                     div()
+                        .debug_selector(|| "chat-user-bubble".to_owned())
                         .max_w(px(560.))
                         .px(self.theme.space(16.))
                         .py(self.theme.space(10.))
                         .rounded(px(18.))
                         .border_1()
-                        .border_color(self.theme.line())
-                        .bg(self.theme.card())
+                        .border_color(self.theme.accent().opacity(
+                            if self.theme.dark { 0.36 } else { 0.24 },
+                        ))
+                        .bg(self.theme.accent().opacity(
+                            if self.theme.dark { 0.22 } else { 0.11 },
+                        ))
                         .shadow_xs()
                         .text_sm()
                         .text_color(self.theme.ink())
@@ -920,140 +944,122 @@ impl ChatFeed {
                 let muted = self.theme.muted();
                 let is_ack = self.projection.ack_rows.contains(&index);
                 let is_process = self.projection.process_rows.contains(&index);
-                let has_prior_visible_assistant_in_turn = (0..index)
-                    .rev()
-                    .take_while(|&prev| {
-                        !matches!(self.lines[prev], ChatLine::User { .. })
-                    })
-                    .any(|prev| {
-                        matches!(self.lines[prev], ChatLine::Assistant { .. })
-                            && !self.projection.process_rows.contains(&prev)
+                let markdown_body = div()
+                    .min_w_0()
+                    .text_sm()
+                    .whitespace_normal()
+                    .child(if is_streaming {
+                        markdown::render_streaming(
+                            text,
+                            self.theme,
+                            &self.i18n,
+                        )
+                    } else {
+                        markdown::render(text, self.theme, &self.i18n)
                     });
-                let show_identity =
-                    !is_process && !has_prior_visible_assistant_in_turn;
+                if is_process {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .py(self.theme.space(2.))
+                        .flex()
+                        .flex_col()
+                        .child(markdown_body)
+                        .into_any_element();
+                }
+                if is_ack {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .py(self.theme.space(4.))
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(
+                            self.assistant_card_bubble(markdown_body, 580., 10.)
+                                .debug_selector(|| {
+                                    "chat-ack-bubble".to_owned()
+                                }),
+                        )
+                        .into_any_element();
+                }
+                if is_streaming && text.trim().is_empty() {
+                    return div()
+                        .id(("chat-assistant", row_id))
+                        .w_full()
+                        .into_any_element();
+                }
                 div()
                     .id(("chat-assistant", row_id))
                     .w_full()
-                    .py(if is_process {
-                        self.theme.space(2.)
-                    } else {
-                        self.theme.space(6.)
-                    })
+                    .py(self.theme.space(6.))
                     .flex()
                     .flex_col()
-                    .gap(self.theme.space(6.))
-                    .when(show_identity, |col| {
+                    .items_start()
+                    .gap(self.theme.space(4.))
+                    .child(
+                        self.assistant_card_bubble(markdown_body, 640., 12.)
+                            .debug_selector(|| "chat-final-bubble".to_owned()),
+                    )
+                    .when(!is_streaming && !text.trim().is_empty(), |col| {
+                        let label = if is_copied {
+                            self.t("chat.copied")
+                        } else {
+                            self.t("chat.copy_reply")
+                        };
+                        let icon = if is_copied {
+                            theme::icons::check().size(px(13.))
+                        } else {
+                            theme::icons::copy().size(px(13.))
+                        };
+                        let hover_fg = if is_copied { verified } else { ink };
                         col.child(
                             div()
+                                .w_full()
+                                .h(px(26.))
+                                .pl(px(4.))
                                 .flex()
                                 .items_center()
-                                .gap(self.theme.space(8.))
                                 .child(
-                                    div()
-                                        .size(px(20.))
-                                        .flex_none()
-                                        .rounded_md()
-                                        .bg(self.theme.assistant_badge_bg())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            theme::icons::sparkles()
-                                                .size(px(11.))
-                                                .text_color(
-                                                    self.theme
-                                                        .assistant_badge_fg(),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(self.theme.ink())
-                                        .child(self.t("chat.router_name")),
+                                    theme::interactive(
+                                        ("chat-copy-reply", row_id),
+                                        label,
+                                        &self.theme,
+                                    )
+                                    .debug_selector(|| {
+                                        "chat-copy-reply".to_owned()
+                                    })
+                                    .size(px(24.))
+                                    .rounded_md()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_color(if is_copied {
+                                        verified
+                                    } else {
+                                        muted
+                                    })
+                                    .when(!is_copied, |btn| btn.opacity(0.45))
+                                    .hover(move |style| {
+                                        style
+                                            .opacity(1.0)
+                                            .bg(soft)
+                                            .text_color(hover_fg)
+                                    })
+                                    .child(icon)
+                                    .on_click(cx.listener(
+                                        move |feed, _, _, cx| {
+                                            feed.copy_assistant_row(
+                                                row_id,
+                                                copy_text.clone(),
+                                                cx,
+                                            );
+                                        },
+                                    )),
                                 ),
                         )
                     })
-                    .child(
-                        div()
-                            .w_full()
-                            .pl(if is_process { px(0.) } else { px(28.) })
-                            .text_sm()
-                            .whitespace_normal()
-                            .child(if is_streaming {
-                                markdown::render_streaming(
-                                    text, self.theme, &self.i18n,
-                                )
-                            } else {
-                                markdown::render(text, self.theme, &self.i18n)
-                            }),
-                    )
-                    .when(
-                        !is_streaming
-                            && !text.trim().is_empty()
-                            && !is_ack
-                            && !is_process,
-                        |col| {
-                            let label = if is_copied {
-                                self.t("chat.copied")
-                            } else {
-                                self.t("chat.copy_reply")
-                            };
-                            let icon = if is_copied {
-                                theme::icons::check().size(px(13.))
-                            } else {
-                                theme::icons::copy().size(px(13.))
-                            };
-                            let hover_fg =
-                                if is_copied { verified } else { ink };
-                            col.child(
-                                div()
-                                    .w_full()
-                                    .h(px(26.))
-                                    .pl(px(28.))
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        theme::interactive(
-                                            ("chat-copy-reply", row_id),
-                                            label,
-                                            &self.theme,
-                                        )
-                                        .size(px(24.))
-                                        .rounded_md()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .text_color(if is_copied {
-                                            verified
-                                        } else {
-                                            muted
-                                        })
-                                        .when(!is_copied, |btn| {
-                                            btn.opacity(0.45)
-                                        })
-                                        .hover(move |style| {
-                                            style
-                                                .opacity(1.0)
-                                                .bg(soft)
-                                                .text_color(hover_fg)
-                                        })
-                                        .child(icon)
-                                        .on_click(cx.listener(
-                                            move |feed, _, _, cx| {
-                                                feed.copy_assistant_row(
-                                                    row_id,
-                                                    copy_text.clone(),
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                    ),
-                            )
-                        },
-                    )
                     .into_any_element()
             }
             ChatLine::Reasoning {
@@ -3554,5 +3560,130 @@ mod tests {
             .expect("latest turn with deliverables surfaces only beta");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, r"C:\Work\beta.pptx");
+    }
+
+    #[gpui::test]
+    fn dot_bubbles_omit_legacy_header_and_restrict_actions_to_final_reply(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let mid_turn_rows = vec![
+            ChatLine::User {
+                text: "帮我汇总深圳天气".into(),
+            },
+            ChatLine::Assistant {
+                text: "我先核对天气源再整理结果。".into(),
+            },
+            ChatLine::Reasoning {
+                text: "Inspecting local weather adapter".into(),
+                duration_secs: 1,
+                live: false,
+            },
+            ChatLine::Assistant {
+                text: "中间补充：继续检索详情。".into(),
+            },
+            ChatLine::ToolCall {
+                name: "read".into(),
+                target: "weather.json".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let mut completed_rows = mid_turn_rows.clone();
+        completed_rows.push(ChatLine::Assistant {
+            text: "## 深圳天气结论\n今天晴朗，气温 24°C。".into(),
+        });
+
+        for dark in [false, true] {
+            let mut options = theme::ThemeOptions::default();
+            options.mode = if dark {
+                theme::ThemeMode::Dark
+            } else {
+                theme::ThemeMode::Light
+            };
+            let (feed, cx) = cx.add_window_view(|_, cx| {
+                let ui = UiContext::new(options, dark, cx);
+                let mut feed = ChatFeed::new(
+                    ui,
+                    i18n.clone(),
+                    Some("dot-bubbles".into()),
+                    cx,
+                );
+                feed.sync_history(
+                    Some("dot-bubbles".into()),
+                    ChatHistory {
+                        rows: mid_turn_rows.clone(),
+                        streaming: None,
+                        status: TurnStatus::Running,
+                    },
+                    cx,
+                );
+                feed
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            // Mid-turn ack + collapsed process fold never mount a copy button.
+            assert!(cx.debug_bounds("chat-user-bubble").is_some());
+            assert!(cx.debug_bounds("chat-ack-bubble").is_some());
+            assert!(cx.debug_bounds("chat-final-bubble").is_none());
+            assert!(cx.debug_bounds("chat-copy-reply").is_none());
+
+            // Expand process_rows mid-turn: still no card chrome or action bar on ack/process.
+            feed.update(cx, |feed, cx| {
+                let fold_key = feed
+                    .projection
+                    .folds
+                    .values()
+                    .next()
+                    .expect("process fold present")
+                    .key;
+                feed.set_turn_expanded(fold_key, true, cx);
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx.debug_bounds("chat-ack-bubble").is_some());
+            assert!(cx.debug_bounds("chat-final-bubble").is_none());
+            assert!(cx.debug_bounds("chat-copy-reply").is_none());
+
+            // Once final Assistant settles, both Dot bubbles and final action slot render cleanly.
+            feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some("dot-bubbles".into()),
+                    ChatHistory {
+                        rows: completed_rows.clone(),
+                        streaming: None,
+                        status: TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let user_b = cx
+                .debug_bounds("chat-user-bubble")
+                .expect("user pill rendered");
+            let ack_b = cx
+                .debug_bounds("chat-ack-bubble")
+                .expect("ack bubble rendered");
+            let final_b = cx
+                .debug_bounds("chat-final-bubble")
+                .expect("final assistant bubble rendered");
+            let copy_b = cx
+                .debug_bounds("chat-copy-reply")
+                .expect("final reply action button rendered");
+            assert!(
+                user_b.origin.x > ack_b.origin.x,
+                "user pill aligns right of assistant bubbles (dark={dark})"
+            );
+            assert!(
+                ack_b.bottom() < final_b.origin.y,
+                "ack bubble precedes final bubble (dark={dark})"
+            );
+            assert!(
+                copy_b.origin.y >= final_b.bottom(),
+                "action button renders beneath final bubble (dark={dark})"
+            );
+        }
     }
 }
