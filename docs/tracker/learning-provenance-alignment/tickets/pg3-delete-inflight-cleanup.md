@@ -163,6 +163,9 @@ learnhub #275（2026-11-26，票面自述「来源: allo t3 的同构面」）�
 
 ## Resolution（2026-11-26 施工）
 
+**结论**：删课收尾（任务/唤醒/草稿）与六张观测表 purge、四条迟到写
+守卫落地；在跑 lesson 任务仍不可远程取消，靠发布守卫可见失败。
+
 - `generation_tasks.rs` 新增 `cancel_for_course(course_id)`：按
   `{kind}:{course_id}:{node}` 取消在跑/排队的非 lesson 任务；在跑 lesson
   仍不可远程取消（发布路径有墓碑守卫），排队 lesson 可取。
@@ -170,14 +173,24 @@ learnhub #275（2026-11-26，票面自述「来源: allo t3 的同构面」）�
   `clear_course_wakes`（growth + repair follow-up 两表）；
   `lesson_draft.rs` 新增 `clear_lesson_drafts_for_course`（按课时 id 清
   draft 与 lesson→draft 映射）。
-- `delete_course`：存在性检查后取消任务/清唤醒；purge 清单 8 → 14，新增
-  growth batches / mounts / findings / repairs / maintenance_state /
-  system_actions；提交后 best-effort 清草稿并打一行 info（含取消数/草稿数）。
+- `delete_course`：存在性预检后、purge **之前**清课时草稿（purge 后
+  lesson→draft 反查会落空）；事务内取消任务/清唤醒；purge 清单 8 → 14，
+  新增 growth batches / mounts / findings / repairs / maintenance_state /
+  system_actions；提交后打一行 info（含取消数/草稿数）。
 - 迟到写守卫：`apply_batch` 入口查存活（删/归档 → 可见失败、零写）；
   结构快照两处 UPDATE 加 `deleted_at IS NULL AND enabled = 1` + rows_affected
   检查；挂载 upsert 前查存活；课时发布 UPDATE 加课程存活子查询 + 零行回滚。
-- 测试：`delete_course_purges_observation_tables_and_cancels_tasks`（新）、
+- 测试：`delete_course_purges_observation_tables_and_cancels_tasks`、
+  `delete_course_clears_lesson_drafts_before_purge`、
+  `apply_batch_refuses_deleted_course_before_any_write`（新）、
   `cancel_for_course` 2 项（新）、既有软/硬删零孤儿测试扩查六表；全量
-  1134/0。
+  1137/0。
+- Code-review 修复（2026-11-27）：草稿清点从 purge **后**挪到 purge
+  **前**（purge 删课时行后反查恒空，旧实现会漏清）；补
+  `delete_course_clears_lesson_drafts_before_purge` 与
+  `apply_batch_refuses_deleted_course_before_any_write`；`(bool,bool)`
+  存活旗收为 `CourseLiveness` 枚举；`cancel_for_course`/`cancel_running`
+  共用 `cancel_matching`；「跳过但未结算」SQL 片段收为
+  `skipped_not_settled_clause` 单源。
 - 欠账：在跑 lesson 任务无法取消是既有协议限制；它靠发布守卫失败可见，
   不再写回墓碑课。UI pill 未加删除事件，任务被取消后由快照显示终态。

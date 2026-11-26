@@ -426,17 +426,19 @@ export function progressDenominator(course: ProgressCountersLike): number {
   return Math.max(0, course.total_lessons - course.skipped_lessons);
 }
 
-/** 进度百分比：completed ÷ 可计分母，四舍五入取整；无可计课时（分母 0）
- * 返回 null——消费面呈「—」（em-dash）且不渲染进度条。 */
-export function progressPercent(completedLessons: number, denominator: number): number | null {
+/** 进度百分比：分子 ÷ 可计分母，四舍五入取整；无可计课时（分母 0）
+ * 返回 null——消费面呈「—」（em-dash）且不渲染进度条。pg4 起消费面统一
+ * 传 `settled_or_completed`（后端在结算账本为空时回退 completed_lessons），
+ * 文本与进度条同口径。 */
+export function progressPercent(numerator: number, denominator: number): number | null {
   if (denominator <= 0) return null;
-  return Math.round((completedLessons / denominator) * 100);
+  return Math.round((numerator / denominator) * 100);
 }
 
 /** S3 进度读数文本（共享展示面）：a/N 计数行，分母 0 → 「—」。分子作参数
- * ——CourseCard 计数行用 settled_or_completed、CourseWorkspace 用
- * completed_lessons（percent 一律 completed_lessons，调方各自组合）。尾缀
- * 供 CourseCard 追加课时单位词条，只在 a/N 臂拼（「—」臂不带）。 */
+ * ——CourseCard 与 CourseWorkspace 都传 `settled_or_completed`（pg4：与
+ * percent 同口径；后端在账本为空时回退 completed_lessons）。尾缀供
+ * CourseCard 追加课时单位词条，只在 a/N 臂拼（「—」臂不带）。 */
 export function progressReadoutText(
   numerator: number,
   denominator: number,

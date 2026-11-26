@@ -396,7 +396,8 @@ function main() {
 
   console.log("# pg0 出处门 Stage 0 只读读数\n");
   console.log(`生成时间：${new Date().toISOString()}`);
-  console.log(`登记表：${args.db}（活跃名 ${registry.names.size} 个）`);
+  // 只打库文件 basename：读数可能进仓库，不打本机绝对路径。
+  console.log(`登记表：${path.basename(args.db)}（活跃名 ${registry.names.size} 个）`);
   console.log(`档案：${unique.length} 个 calls.jsonl\n`);
   console.log("## 全量（含重试）\n");
   console.log(

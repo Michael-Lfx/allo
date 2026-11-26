@@ -610,19 +610,14 @@ impl GenerationTaskRegistry {
         Ok(Some(STATE_CANCELLED))
     }
 
-    /// 取消某课程的全部可取消任务（删课收尾；key = `{kind}:{course_id}:{node}`）。
-    /// 在跑 lesson 任务不可远程取消，保持原样（发布路径有墓碑守卫）；
-    /// 排队 lesson 安全可取。返回实际取消数。
-    pub(crate) fn cancel_for_course(&self, course_id: &str) -> usize {
+    /// 取消谓词命中的任务（`cancel_for_course` / `cancel_running` 共用锁→
+    /// 筛选→逐个 cancel 的同一形状）。
+    fn cancel_matching(&self, matches: impl Fn(&str, &TaskRecord) -> bool) -> usize {
         let keys: Vec<String> = {
             let tasks = self.tasks.lock().expect("generation task registry poisoned");
             tasks
                 .iter()
-                .filter(|(key, record)| {
-                    key.split(':').nth(1) == Some(course_id)
-                        && ((record.state == STATE_RUNNING && record.kind != KIND_LESSON)
-                            || record.state == STATE_QUEUED)
-                })
+                .filter(|(key, record)| matches(key, record))
                 .map(|(key, _)| key.clone())
                 .collect()
         };
@@ -635,27 +630,24 @@ impl GenerationTaskRegistry {
         cancelled
     }
 
+    /// 取消某课程的全部可取消任务（删课收尾；key = `{kind}:{course_id}:{node}`）。
+    /// 在跑 lesson 任务不可远程取消，保持原样（发布路径有墓碑守卫）；
+    /// 排队 lesson 安全可取。返回实际取消数。
+    pub(crate) fn cancel_for_course(&self, course_id: &str) -> usize {
+        self.cancel_matching(|key, record| {
+            key.split(':').nth(1) == Some(course_id)
+                && ((record.state == STATE_RUNNING && record.kind != KIND_LESSON)
+                    || record.state == STATE_QUEUED)
+        })
+    }
+
     /// 取消全部在跑/排队任务（legacy 全局取消端点的转发面；在跑 lesson 跳过，
     /// 排队 lesson 安全可取）。返回实际取消数。
     pub(crate) fn cancel_running(&self) -> usize {
-        let keys: Vec<String> = {
-            let tasks = self.tasks.lock().expect("generation task registry poisoned");
-            tasks
-                .iter()
-                .filter(|(_, record)| {
-                    (record.state == STATE_RUNNING && record.kind != KIND_LESSON)
-                        || record.state == STATE_QUEUED
-                })
-                .map(|(key, _)| key.clone())
-                .collect()
-        };
-        let mut cancelled = 0;
-        for key in keys {
-            if self.cancel(&key).ok().flatten().is_some() {
-                cancelled += 1;
-            }
-        }
-        cancelled
+        self.cancel_matching(|_, record| {
+            (record.state == STATE_RUNNING && record.kind != KIND_LESSON)
+                || record.state == STATE_QUEUED
+        })
     }
 
     /// 快照（活跃置顶、注册序倒序；终态随后同序）。活跃 = queued ∪ running

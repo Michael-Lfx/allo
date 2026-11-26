@@ -145,6 +145,9 @@ learnhub #286（2026-11-26，票面自述「来源: allo c1 的衍生问题」�
 
 ## Resolution（2026-11-26 施工）
 
+**结论**：已学完/已结算不可再置跳过；读侧 settled 优先（skipped 排除有
+node-completed 的节点），卡片分子分母同口径；「已跳过 K」拆读欠账。
+
 - `progress.rs`：置 `Skipped` 前查当前进度状态与 `learning_xp_events`
   的 `node-completed` 事件；已完成/已结算 → `Conflict("这个课时已经学完，
   不需要跳过")`，不覆盖 `completed_at`；撤销跳过不受限。
@@ -158,7 +161,7 @@ learnhub #286（2026-11-26，票面自述「来源: allo c1 的衍生问题」�
   存量 skipped 仍出「撤销跳过」。
 - 测试：新 `completed_lesson_cannot_be_skipped_and_legacy_overlap_reads_as_learned`；
   重写 `xp_reading_settled_nodes_follow_skip_denominator` 为新口径；全量
-  1134/0；UI 学习页 529/0 + typecheck。
+  1137/0；UI 学习页 529/0 + typecheck。
 - 欠账：「已跳过 K 个」拆读未做（需新增双语 i18n；当前 skipped 被静默
   从分母剔除）。传统课**无 XP 账本**时，存量「完成后再跳过」没有结算
   证据，读侧仍按 skipped 计；图/完成链路有 node-completed，按已学完算。

@@ -276,12 +276,12 @@ impl LearningService {
              {COURSE_ARRANGEMENT_JOIN} \
              WHERE e.user_id = ?"
         );
+        let skipped_clause = skipped_not_settled_clause("p");
         let skipped_scope = format!(
             "SELECT p.lesson_id \
              {SKIPPED_LESSON_FILTER} \
              WHERE e.user_id = ? AND p.status = 'skipped' \
-               AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
-                 WHERE x.user_id = ? AND x.node_id = p.lesson_id AND x.kind = 'node-completed')"
+               {skipped_clause}"
         );
         let total_nodes: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_lessons l \
@@ -458,8 +458,8 @@ impl LearningService {
         user_id: &UserId,
         course_id: &LearningCourseId,
     ) -> Result<QuizProgressView, AppError> {
-        let (live, enabled) = self.live_course_flags(course_id).await?;
-        if !live {
+        let liveness = self.course_liveness(course_id).await?;
+        if liveness == super::learning_graph::CourseLiveness::Missing {
             return Err(AppError::NotFound(format!("learning course {course_id}")));
         }
         let settled_count = self
@@ -469,7 +469,7 @@ impl LearningService {
         Ok(QuizProgressView {
             settled_count,
             trigger_count,
-            due: due && enabled,
+            due: due && liveness == super::learning_graph::CourseLiveness::Live,
         })
     }
 

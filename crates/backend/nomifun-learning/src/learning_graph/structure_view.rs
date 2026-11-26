@@ -641,6 +641,9 @@ fn terrain_rows(structure: &Value) -> Vec<TerrainRow> {
 /// 重复计，报出去容易被读成「有多少个节点已就位」；教练只需要知道哪些块
 /// 已覆盖。`note` = 清单前的说明行。无块 = 空串（整块省略）。纯结构事实的
 /// 读侧投影：不做块名↔概念名匹配，不参与任何判定。
+/// 测试兼容包装（仅测试构建）：空声明集、非首批 = 旧全量输出。生产走
+/// [`render_terrain_list_with_declared`]。
+#[cfg(test)]
 pub(crate) fn render_terrain_list(
     structure: &Value,
     covered: &HashMap<String, usize>,

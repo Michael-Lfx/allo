@@ -49,12 +49,12 @@ use super::{ExternalAnchor, ProposedBatch};
 pub(crate) const TERM_SOURCES: &[&str] = &["已教", "已会声明", "自教", "常识", "缺失"];
 
 /// 挂号表名词出处五值。词表与评审提示词、[`TERM_SOURCES`] 互钉，改词表须同步。
-/// 旧四值 `已教`/`常识` 保留 serde legacy（archived replay/存量录制可解析）。
+/// 旧四值 `已教`/`常识` 仍是主 rename（存量录制可解析）；`已会声明` 同时接受
+/// `declared` 别名。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub(crate) enum TermSource {
-    /// 图设计已教（跨课程 teaches 投影；`covered`；ref 必填）。旧值 `已教`
-    /// 继续解析为 Taught（legacy）。
-    #[serde(rename = "已教", alias = "taught")]
+    /// 图设计已教（跨课程 teaches 投影；`covered`；ref 必填）。
+    #[serde(rename = "已教")]
     Taught,
     /// 空间级已会声明（`basis.yaml` declared；`declared`；ref 必填）。
     #[serde(rename = "已会声明", alias = "declared")]
@@ -63,7 +63,7 @@ pub(crate) enum TermSource {
     #[serde(rename = "自教")]
     SelfTaught,
     /// 课程外通用日常语（不带 ref；term 不得命中名池/covered）。
-    #[serde(rename = "常识", alias = "plain")]
+    #[serde(rename = "常识")]
     CommonSense,
     /// 查无出处（不在已教/声明、本批不自教、也不属于课程外日常语）——**缺口本身**。
     /// 只有三源时模型只能把缺口洗成常识；有合法自认通道，机械层才可强制
@@ -88,8 +88,7 @@ impl TermSource {
 /// 与「已知」拆开——`covered` = 图设计已教 ∪ 空间级声明（`已教/已会声明`
 /// 的出处域），`declared` = 空间级声明（`已会声明` 的专有域），`pool` =
 /// 登记表活跃名+别名+本批名（只服务命名掩码/常识事实矛盾核/rs2 归一）。
-/// `canonical_of`/`names_of` = 活跃名 ↔ 概念正名的解析面（直接出处核与
-/// 自教同概念判定）。
+/// `canonical_of` = 活跃名 → 概念正名的解析面（直接出处核与自教同概念判定）。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProvenanceDomain {
     /// 已教 ∪ 已会声明概念正名（小写折叠；跨课程）。
@@ -100,8 +99,6 @@ pub(crate) struct ProvenanceDomain {
     pub(crate) pool: HashSet<String>,
     /// 活跃名（小写）→ 概念正名（小写）；未知名回退自身。
     pub(crate) canonical_of: HashMap<String, String>,
-    /// 概念正名（小写）→ 活跃名集（含正名本身；直接出处核）。
-    pub(crate) names_of: HashMap<String, HashSet<String>>,
 }
 
 impl ProvenanceDomain {
@@ -110,7 +107,6 @@ impl ProvenanceDomain {
             && self.declared.is_empty()
             && self.pool.is_empty()
             && self.canonical_of.is_empty()
-            && self.names_of.is_empty()
     }
 
     /// 回放/测试臂的兼容构造：把调用方折进来的 known_names 当作 covered ∪ pool
@@ -125,7 +121,6 @@ impl ProvenanceDomain {
             domain.covered.insert(key.clone());
             domain.pool.insert(key.clone());
             domain.canonical_of.entry(key.clone()).or_insert_with(|| key.clone());
-            domain.names_of.entry(key.clone()).or_default().insert(key);
         }
         domain
     }
@@ -158,7 +153,6 @@ impl ProvenanceDomain {
         self.canonical_of
             .entry(name.clone())
             .or_insert_with(|| canonical.clone());
-        self.names_of.entry(canonical).or_default().insert(name);
     }
 
     /// 只登记正名（未知名回退自身）；用于 covered/pool 里没有登记表条目的名字。
@@ -168,7 +162,6 @@ impl ProvenanceDomain {
             return;
         }
         self.canonical_of.entry(name.clone()).or_insert_with(|| name.clone());
-        self.names_of.entry(name.clone()).or_default().insert(name);
     }
 
     /// 直接出处核：term 与 ref 解析到同一概念（正名或活跃别名）。
@@ -217,6 +210,16 @@ impl Stage1Mode {
             enforce_same_node: false,
         }
     }
+
+    /// 日志/读数标签（执法档可观察；smoke 与 review 日志共用）。
+    pub(crate) fn label(self) -> &'static str {
+        match (self.enforce_covered, self.enforce_direct, self.enforce_same_node) {
+            (true, true, true) => "enforce-all",
+            (true, false, false) => "covered-enforce",
+            (false, false, false) => "report-all",
+            _ => "mixed",
+        }
+    }
 }
 
 /// 挂号表一行：某条提名（`concept`）定义里的领域名词（`term`）及其出处。
@@ -263,6 +266,9 @@ pub(crate) struct ProvenanceReadout {
     /// `自教` ref 在全批 teaches 但不在「教该 concept 的节点」交集的行数
     /// （兄弟供给；报告模式不挡门）。
     pub(crate) sibling_self_taught: usize,
+    /// Stage 1 执法档标签（`enforce-all` / `covered-enforce` / `report-all`；
+    /// 首轮写入，跨轮保持；smoke 读数与 review 日志同源）。
+    pub(crate) stage1_label: Option<&'static str>,
 }
 
 impl ProvenanceReadout {
@@ -277,6 +283,9 @@ impl ProvenanceReadout {
         self.registry_only_refs += other.registry_only_refs;
         self.direct_violations += other.direct_violations;
         self.sibling_self_taught += other.sibling_self_taught;
+        if self.stage1_label.is_none() {
+            self.stage1_label = other.stage1_label;
+        }
     }
 }
 
@@ -323,9 +332,10 @@ pub(crate) struct TableOutcome {
 /// 合法域 = 批内提名 ∪ 锚 canonical（小写折叠，对齐 known_names 风格）；
 /// 命中锚的行数进读数（A5）。
 ///
-/// 这是**回放/测试兼容入口**：把调用方折进来的 `known_names` 当作
+/// 测试兼容入口（仅测试构建）：把调用方折进来的 `known_names` 当作
 /// `covered ∪ pool`（无声明分层），Stage 1 新规则一律 report-only。
 /// 生产走 [`validate_term_provenance_domain`]（真三面域 + 分规则执法档）。
+#[cfg(test)]
 pub(crate) fn validate_term_provenance(
     rows: &mut [TermProvenance],
     pass: bool,
@@ -454,6 +464,10 @@ pub(crate) fn validate_term_provenance_domain(
     for row in rows.iter_mut() {
         let concept = row.concept.trim();
         let concept_key = key(concept);
+        // 同节点自教/循环自证按**概念身份**判：new_aliases 的提名名可能是
+        // 既有概念的别名，nodes[].teaches 也可能写正名/别名；raw key 会让
+        // 合法自教行误落兄弟臂（Spec 评审 R3）。
+        let concept_identity = domain.canonical(concept);
         // f1（A1）：行 concept 合法域 = 批内提名 ∪ 本批复用命中锚——canonical
         // 落锚集 = 复用登记表存量，合法（命中行数进读数）。空 concept 与
         // 「两域皆无」（提名、锚都不在）同罪同文：凭空/存量概念不得作为行
@@ -501,8 +515,8 @@ pub(crate) fn validate_term_provenance_domain(
                     .is_some_and(|definition| term_grounded(&row.term, definition));
                 let term = row.term.trim().to_owned();
                 let term_key = domain.canonical(&term);
-                let self_taught_here = allowed_for(&concept_key).contains(&term_key);
-                let candidate = if self_taught_here && term_key != concept_key && !nominees.contains(&term_key) {
+                let self_taught_here = allowed_for(&concept_identity).contains(&term_key);
+                let candidate = if self_taught_here && term_key != concept_identity && !nominees.contains(&term_key) {
                     Some(TermSource::SelfTaught)
                 } else if domain.is_declared(&term) && !nominees.contains(&term_key) {
                     Some(TermSource::Declared)
@@ -640,7 +654,7 @@ pub(crate) fn validate_term_provenance_domain(
                 let ref_key = domain.canonical(reference);
                 // 循环自证：概念自己的定义引用了某词，又说该词由本概念自教
                 // ——定义预设的词不可能由定义自身供给（折叠口径比对）。
-                if ref_key == concept_key {
+                if ref_key == concept_identity {
                     return Err(format!(
                         "自教行「{}」的 ref 指向提名概念自身（循环自证，该词仍无出处）",
                         row.term.trim()
@@ -652,7 +666,7 @@ pub(crate) fn validate_term_provenance_domain(
                         row.term.trim()
                     ));
                 }
-                if !allowed_for(&concept_key).contains(&ref_key) {
+                if !allowed_for(&concept_identity).contains(&ref_key) {
                     sibling_self_taught += 1;
                     if mode.enforce_same_node {
                         return Err(format!(
@@ -1479,6 +1493,35 @@ mod tests {
     }
 
     #[test]
+    fn stage1_self_taught_uses_canonical_identity_for_alias_nomination() {
+        // new_aliases 提名名是既有概念的别名：同节点判定必须按 canonical
+        // 身份折，而不是原始提名名（否则合法自教行误落兄弟臂）。
+        let mut batch = batch();
+        batch.nodes[0].teaches = vec![
+            ConceptRefInput { name: "借用".into(), tier: ConceptTier::Know },
+            ConceptRefInput { name: "引用".into(), tier: ConceptTier::Know },
+            ConceptRefInput { name: "所有权".into(), tier: ConceptTier::Know },
+        ];
+        let mut domain = stage1_domain(&["借用", "引用", "所有权"], &[], &[]);
+        domain.register_name("折引用", "引用");
+        let mut rows = vec![
+            row("折引用", "所有权", TermSource::SelfTaught, Some("所有权")),
+            row("借用", "所有权", TermSource::Taught, Some("所有权")),
+        ];
+        let read = validate_term_provenance_domain(
+            &mut rows,
+            true,
+            &batch,
+            &domain,
+            &[],
+            Stage1Mode::report_all(),
+        )
+        .unwrap();
+        assert_eq!(read.sibling_self_taught, 0, "{read:?}");
+        assert_eq!(read.direct_violations, 0, "{read:?}");
+    }
+
+    #[test]
     fn stage1_declared_source_requires_declared_ref() {
         let domain = stage1_domain(&["声明甲", "已教甲", "引用", "借用"], &["声明甲"], &[]);
         let mut rows = vec![
@@ -1522,21 +1565,21 @@ mod tests {
     }
 
     #[test]
-    fn serde_parses_declared_and_legacy_source_aliases() {
+    fn serde_parses_declared_source_and_declared_alias() {
         let declared: TermProvenance = serde_json::from_value(serde_json::json!({
             "concept": "甲", "term": "乙", "source": "已会声明", "ref": "乙"
         }))
         .unwrap();
         assert_eq!(declared.source, TermSource::Declared);
+        let alias: TermProvenance = serde_json::from_value(serde_json::json!({
+            "concept": "甲", "term": "乙", "source": "declared", "ref": "乙"
+        }))
+        .unwrap();
+        assert_eq!(alias.source, TermSource::Declared);
         let legacy: TermProvenance = serde_json::from_value(serde_json::json!({
-            "concept": "甲", "term": "乙", "source": "taught", "ref": "乙"
+            "concept": "甲", "term": "乙", "source": "已教", "ref": "乙"
         }))
         .unwrap();
         assert_eq!(legacy.source, TermSource::Taught);
-        let plain: TermProvenance = serde_json::from_value(serde_json::json!({
-            "concept": "甲", "term": "乙", "source": "plain"
-        }))
-        .unwrap();
-        assert_eq!(plain.source, TermSource::CommonSense);
     }
 }

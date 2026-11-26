@@ -1853,8 +1853,17 @@ pub(crate) async fn concept_review(
         &gate.provenance_domain
     };
     let stage1_mode = review_provenance_stage1_mode(!domain.covered.is_empty());
+    // 执法档可观察（pg1 方案 §3）：review 日志 + smoke 读数同源。
+    tracing::info!(
+        stage1 = stage1_mode.label(),
+        covered_nonempty = !domain.covered.is_empty(),
+        "provenance stage1 mode"
+    );
     let mut feedback = String::new();
     let mut readout = provenance::ProvenanceReadout::default();
+    if provenance_on {
+        readout.stage1_label = Some(stage1_mode.label());
+    }
     let mut frag_readout = fragment_verdict::FragmentReadout::default();
     // 重试按失败原因分账（u02）：契约违约面（挂号表/碎片/回包形状——真机
     // 病历的死因缝）沿用恰一次；传输失败（超时/网关/流中断）另计一次额度，
@@ -4070,7 +4079,7 @@ mod tests {
         );
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0, normalized: 0, ..Default::default() }
+            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0, normalized: 0, stage1_label: Some("covered-enforce"), ..Default::default() }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
@@ -4480,7 +4489,7 @@ mod tests {
         assert!(review.findings.is_empty(), "恢复则不留痕：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, ..Default::default() }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, stage1_label: Some("covered-enforce"), ..Default::default() }
         );
     }
 
@@ -4552,7 +4561,7 @@ mod tests {
         assert!(review.findings.is_empty(), "次轮干净结论恢复：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, ..Default::default() }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, stage1_label: Some("covered-enforce"), ..Default::default() }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(

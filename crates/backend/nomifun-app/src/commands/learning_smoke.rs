@@ -1555,7 +1555,7 @@ async fn run_grow(
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
-                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={} normalized={} declared={} registry_only={} direct={} sibling={}]  \
+                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={} normalized={} declared={} registry_only={} direct={} sibling={} stage1={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [names: name_hints={}]  \
                  [redraft_spliced={}]  \
@@ -1572,6 +1572,7 @@ async fn run_grow(
                 stats.review_provenance_registry_only,
                 stats.review_provenance_direct_violations,
                 stats.review_provenance_sibling_self_taught,
+                stats.review_provenance_stage1,
                 stats.review_fragments_total,
                 stats.review_fragments_rows,
                 stats.review_fragments_unhandled,

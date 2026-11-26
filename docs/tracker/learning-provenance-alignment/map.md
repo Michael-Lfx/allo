@@ -7,7 +7,7 @@
       （#275/#278/#286）照出了本仓 t1/t3/c1 没收掉的衍生缺口。已按影响面
       复核立 pg0–pg5 六票并全部关票：Stage 0/1/1c + 三个衍生
       小修；Stage 2 先量后裁（pg0 样本 0 翻转），Stage 3 不搬。后端
-      1134/0、UI 学习页 529/0、typecheck/check 绿；pg1/pg2/pg4 的真机
+      1137/0、UI 学习页 529/0、typecheck/check 绿；pg1/pg2/pg4 的真机
       校准与拆读欠账见各票 Resolution。 -->
 
 ## 一、隔壁这波是什么（2026-11-26 复核）
@@ -191,3 +191,23 @@ XP gauge 剔 skipped（`xp.rs:284-301`），quiz 触发计数不剔（`:428-446`
   attempt；growth 只 set 一次 `draft`（`learning_graph.rs:2066-2068`），
   无「已装配 k/N」。learnhub #282 的形制可参照，但本仓 pill 没有逐节点
   重复句的问题。
+
+## 八、Decisions so far
+
+- **pg0**：真机 64 次评审 / 673 行——直出违规 63.2%、在册未教 0.3%、
+  兄弟供给 7/9、翻转 0；Stage 2 账本不因本样本开票。
+- **pg1**：三面已知域落地；`covered` enforce、直出/同节点 report-only
+  （`stage1-enforce` 可一键全执法）；真机校准欠账；回放臂无法量
+  `registry_only`（`from_known_names` 把 known 全放 covered），已在票面
+  记录。
+- **pg2**：首批参考面减声明块（slug 精确、不级联）；真首批 = 课时表空，
+  不是花名册空（后者含「无就绪候选」的中途态）。
+- **pg3**：删课取消可取消任务/清草稿与唤醒、purge 六张观测表；四条
+  迟到写守卫；在跑 lesson 任务仍不可取消（发布守卫兜底）。
+- **pg4**：已结算不可再跳过；读侧 settled 优先；UI 分子分母同口径；
+  「已跳过 K」拆读另票。
+- **pg5**：归档课 `due=false`、start 409；恢复后自然回来。
+- **双轴评审（2026-11-27）**：修复读数里的本机绝对路径、草稿清点时机
+  （purge 前）、Stage 1 档位可观察（review 日志 + smoke `stage1=`）、
+  `pool` 收窄到登记表+本批、别名概念身份判定、`CourseLiveness` 枚举、
+  skipped 片段/取消遍历单源；详见 pg1/pg3 Resolution。

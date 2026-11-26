@@ -74,6 +74,18 @@ pub(super) const COURSE_ARRANGEMENT_JOIN: &str = "JOIN learning_courses c \
 pub(super) const SKIPPED_LESSON_FILTER: &str = "FROM learning_lesson_progress p \
      JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id";
 
+/// 「跳过但未结算」排除片段（pg4 单源）：已结算/已完成课时的历史 skipped
+/// 状态不算 skipped（已学完优先）。参数 = 课时 id 的 SQL 别名（course 查询
+/// 用 `l`，xp 用 `p`）；片段自带一个 `?`（user_id），绑定顺序紧跟 skipped
+/// 子查询的 `e.user_id = ?` 之后。
+pub(super) fn skipped_not_settled_clause(lesson_alias: &str) -> String {
+    format!(
+        " AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
+         WHERE x.user_id = ? AND x.node_id = {lesson_alias}.lesson_id \
+           AND x.kind = 'node-completed')"
+    )
+}
+
 /// 大纲建课的落库快照：蓝图与采样维持旧形状（`blueprint_json` /
 /// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
 /// （`learning_goal` / `samples_meta_json`，t1/t2）。无目标路径的
@@ -197,6 +209,9 @@ pub struct GrowthRunStats {
     pub review_provenance_registry_only: usize,
     pub review_provenance_direct_violations: usize,
     pub review_provenance_sibling_self_taught: usize,
+    /// Stage 1 执法档标签（enforce-all / covered-enforce / report-all；off 表
+    /// 时缺席 = `off`）。
+    pub review_provenance_stage1: String,
     /// 碎片裁决机械读数（m9 补接）：点名片段数 / 评审裁决行数 / 未处置片段
     /// 数（report-only 降 findings / enforce 合成打回）/ 两连败 Degraded。
     pub review_fragments_total: usize,

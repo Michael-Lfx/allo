@@ -3815,6 +3815,57 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(state, "cancelled", "在途生长任务随删课取消");
     }
 
+    /// pg3：课时草稿在 purge 之前清（purge 后 lesson→draft 反查会落空）。
+    #[tokio::test]
+    async fn delete_course_clears_lesson_drafts_before_purge() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let (course_id, lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        let context = crate::lesson_draft::LessonGenerationContext {
+            lesson_id: lesson_a.clone(),
+            course_title: "图课程".into(),
+            course_description: String::new(),
+            module_title: "学习图".into(),
+            module_index: 0,
+            lesson_title: "课时一".into(),
+            lesson_index: 0,
+            total_lessons: 2,
+            next_lesson_title: None,
+            purpose: "p".into(),
+            excerpt: None,
+            excerpts: Vec::new(),
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
+            graph: None,
+            goal: None,
+            forbidden_concepts: String::new(),
+            usage: None,
+            retry_feedback: None,
+        };
+        let draft = crate::lesson_draft::LessonDraft::new(context);
+        service
+            .lesson_drafts
+            .write()
+            .unwrap()
+            .insert("draft-a".into(), (draft, std::time::Instant::now()));
+        service
+            .lesson_draft_ids
+            .lock()
+            .unwrap()
+            .insert(lesson_a.clone(), "draft-a".into());
+
+        service.delete_course(&course, &owner_id).await.unwrap();
+
+        assert!(
+            service.lesson_drafts.read().unwrap().is_empty(),
+            "草稿表随删课清空"
+        );
+        assert!(
+            service.live_lesson_draft_for_lesson(&lesson_a).is_none(),
+            "lesson→draft 映射随删课清空"
+        );
+    }
+
     /// 硬删零孤儿（t2 R1+R2）：教程种子替换按同一张 purge 清单清八张内容
     /// 表再硬删课程行。清单此前缺 lesson_sections / lesson_concepts /
     /// basis_declarations——课程行一删这些孤儿边永远无主，比软删更糟。

@@ -125,6 +125,9 @@ part_of: map.md
 
 ## Resolution（2026-11-26 施工）
 
+**结论**：首批地形参考面减已会声明块落地，不级联、空集逐字节同旧；
+真机两臂欠账。
+
 - `service/learning_graph.rs` 新增 `declared_block_slugs(course_id)`：读本课
   `learning_basis_declarations.blocks_json` 并集，空串滤掉，坏档走
   `parse_anchor_row` 如实上抛。
@@ -137,5 +140,5 @@ part_of: map.md
   为空是更宽的「无就绪候选」，不等于首批），只首批读声明块、零非首批
   开销。
 - 测试：`structure_view` 3 项（剔除/反级联、首批限定/空集逐字节、无 slug
-  不误删）；`basis_tests` 加声明块 slug 可读断言；全量 1134/0。
+  不误删）；`basis_tests` 加声明块 slug 可读断言；全量 1137/0。
 - 欠账：真机两臂（勾声明 vs 不勾）未跑；单测已覆盖渲染面与读取面。

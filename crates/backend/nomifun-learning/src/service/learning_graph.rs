@@ -13,6 +13,15 @@ pub(crate) const GRAPH_MODULE_TITLE: &str = "学习图";
 /// 「下一步推荐学习的节点」一次最多同时展示的数量。
 pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 
+/// 课程存活态（pg3/pg5 单源）：`Live` / `Archived` / `Missing`。比
+/// `(live, enabled)` 少一个非法组合；调用方按自己的动作映射错误句。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CourseLiveness {
+    Live,
+    Archived,
+    Missing,
+}
+
 /// 概念登记表邻近切片的行数上限（防上下文爆炸；登记表远超该值时教练以
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
@@ -887,14 +896,16 @@ impl LearningService {
         );
         let payload = mounting::entries_json(&merged);
         // pg3 迟到写守卫：墓碑/归档课不再写挂载（挂载是导航事实，删课会清）。
-        let (live, enabled) = self.live_course_flags(course_id).await?;
-        if !live {
-            return Err(AppError::NotFound(format!("course {course_id}")));
-        }
-        if !enabled {
-            return Err(AppError::Conflict(
-                "课程已归档，挂载不再写回".into(),
-            ));
+        match self.course_liveness(course_id).await? {
+            CourseLiveness::Live => {}
+            CourseLiveness::Missing => {
+                return Err(AppError::NotFound(format!("course {course_id}")));
+            }
+            CourseLiveness::Archived => {
+                return Err(AppError::Conflict(
+                    "课程已归档，挂载不再写回".into(),
+                ));
+            }
         }
         sqlx::query(
             "INSERT INTO learning_structure_mounts \
@@ -1910,14 +1921,11 @@ impl LearningService {
         Ok(report)
     }
 
-    /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
-    /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
-    /// 课程存活/启用两旗（quiz 读面与 start 守卫共用；不区分课程类型）：
-    /// 返回 `(live, enabled)`——墓碑/不存在 = `(false, false)`。
-    pub(super) async fn live_course_flags(
+    /// 课程存活态（quiz 读面/start 与删课守卫共用；不区分课程类型）。
+    pub(super) async fn course_liveness(
         &self,
         course_id: &LearningCourseId,
-    ) -> Result<(bool, bool), AppError> {
+    ) -> Result<CourseLiveness, AppError> {
         let row: Option<(Option<i64>, i64)> = sqlx::query_as(
             "SELECT deleted_at, enabled FROM learning_courses WHERE course_id = ?",
         )
@@ -1926,11 +1934,14 @@ impl LearningService {
         .await
         .map_err(internal)?;
         Ok(match row {
-            Some((None, enabled)) => (true, enabled != 0),
-            _ => (false, false),
+            Some((None, enabled)) if enabled != 0 => CourseLiveness::Live,
+            Some((None, _)) => CourseLiveness::Archived,
+            _ => CourseLiveness::Missing,
         })
     }
 
+    /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
+    /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
         let row: Option<(String, Option<i64>, i64)> = sqlx::query_as(
             "SELECT course_kind, deleted_at, enabled FROM learning_courses WHERE course_id = ?",
@@ -3267,6 +3278,10 @@ impl LearningService {
                 review_provenance_registry_only: provenance.registry_only_refs,
                 review_provenance_direct_violations: provenance.direct_violations,
                 review_provenance_sibling_self_taught: provenance.sibling_self_taught,
+                review_provenance_stage1: provenance
+                    .stage1_label
+                    .unwrap_or("off")
+                    .to_owned(),
                 review_fragments_total: fragments.fragments,
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,
@@ -3927,12 +3942,18 @@ impl LearningService {
             }
         }
         // Stage 1 已知域三面：covered（已教 ∪ 已会声明）/ declared（已会
-        // 声明）/ pool（命名面）；名字↔正名解析面从登记表 + 本批 + 已教账
-        // 装配。covered 只认知识面，pool 在册 ≠ 已知。
+        // 声明）/ pool（登记表活跃名+别名 ∪ 本批名）；名字↔正名解析面从
+        // 登记表 + 本批 + 已教账装配。covered 只认知识面，pool 在册 ≠ 已知；
+        // 命名面仍用上面的 provenance_pool（含已教账，保持掩码零变化）。
+        let domain_pool: HashSet<String> = provenance_pool
+            .iter()
+            .filter(|name| !coverage.contains_key(*name) || registry_names.contains(*name))
+            .cloned()
+            .collect();
         let mut provenance_domain = crate::learning_graph::provenance::ProvenanceDomain {
             covered: coverage.keys().cloned().collect(),
             declared: declared_canonicals,
-            pool: provenance_pool.clone(),
+            pool: domain_pool,
             ..Default::default()
         };
         for entry in &registry_entries {
@@ -4028,14 +4049,16 @@ impl LearningService {
         use crate::learning_graph::alias_records::{register_alias_tx, AliasSpec};
         // pg3 迟到写守卫：删课/归档后不再落批（可见失败、零写）。放在读
         // module/position 之前——墓碑课的模块行已被 purge，先读会报内部错。
-        let (live, enabled) = self.live_course_flags(course_id).await?;
-        if !live {
-            return Err(AppError::NotFound(format!("course {course_id}")));
-        }
-        if !enabled {
-            return Err(AppError::Conflict(
-                "课程已归档，本批不再落库".into(),
-            ));
+        match self.course_liveness(course_id).await? {
+            CourseLiveness::Live => {}
+            CourseLiveness::Missing => {
+                return Err(AppError::NotFound(format!("course {course_id}")));
+            }
+            CourseLiveness::Archived => {
+                return Err(AppError::Conflict(
+                    "课程已归档，本批不再落库".into(),
+                ));
+            }
         }
         // 模块与下一 position。
         let module_id: String = sqlx::query_scalar(
@@ -7151,5 +7174,51 @@ mod growth_running_scope_tests {
             "本课 growth 终态（guard drop = failed 留痕）→ 读数回落 false"
         );
         drop(lesson_b);
+    }
+}
+
+#[cfg(test)]
+mod delete_write_guard_tests {
+    use super::*;
+    use crate::service::tests::{job_test_service, seed_graph_course};
+
+    /// pg3：apply_batch 在删课后入口即拒，零写（批行也不落）。
+    #[tokio::test]
+    async fn apply_batch_refuses_deleted_course_before_any_write() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        service.delete_course(&course, &owner).await.unwrap();
+
+        let engine = crate::learning_graph::GrowthRunner {
+            course_id: course.clone(),
+            user_id: owner.clone(),
+            model_override: None,
+            trigger: crate::learning_graph::system_action::SystemActionTrigger::Manual,
+            ready_count: 0,
+        };
+        let pending = PendingBatch {
+            batch_id: LearningGrowthBatchId::new().into_string(),
+        };
+        let result = service
+            .apply_batch(
+                &course,
+                &engine,
+                &pending,
+                &crate::learning_graph::ProposedBatch::default(),
+                &HashMap::new(),
+            )
+            .await;
+        assert!(result.is_err(), "墓碑课必须在入口拒绝");
+        let error = result.err().expect("checked is_err");
+        assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+        let batches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert_eq!(batches, 0, "墓碑课不得落批");
     }
 }

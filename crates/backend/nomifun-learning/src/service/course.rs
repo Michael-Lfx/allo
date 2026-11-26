@@ -218,6 +218,7 @@ impl LearningService {
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
         // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
+        let skipped_clause = skipped_not_settled_clause("l");
         let rows = sqlx::query(&format!(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
@@ -235,8 +236,7 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped' \
-                       AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
-                         WHERE x.user_id = ? AND x.node_id = l.lesson_id AND x.kind = 'node-completed')) AS skipped_lessons, \
+                       {skipped_clause}) AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -280,6 +280,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
         // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
+        let skipped_clause = skipped_not_settled_clause("l");
         let row = sqlx::query(&format!(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
@@ -297,8 +298,7 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped' \
-                       AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
-                         WHERE x.user_id = ? AND x.node_id = l.lesson_id AND x.kind = 'node-completed')) AS skipped_lessons, \
+                       {skipped_clause}) AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -759,6 +759,18 @@ impl LearningService {
         course_id: &LearningCourseId,
         _user_id: &UserId,
     ) -> Result<(), AppError> {
+        // pg3：草稿清点在 purge 之前做——purge 删掉课时行后，lesson→draft
+        // 反查会落空。先做一次存在性预检，避免给不存在的课清草稿。
+        let exists: Option<String> =
+            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        let cleared_drafts = self.clear_lesson_drafts_for_course(course_id).await?;
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         let exists: Option<String> =
             sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE course_id = ?")
@@ -820,22 +832,12 @@ impl LearningService {
         .await
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
-        // 草稿清理在提交后做（需要读课时表；避免与事务共用连接）；失败只
-        // 留 warn——课已删，草稿发布路径有墓碑守卫，不会落库。
-        match self.clear_lesson_drafts_for_course(course_id).await {
-            Ok(cleared) => tracing::info!(
-                course = course_id.as_str(),
-                cancelled_tasks,
-                cleared_drafts = cleared,
-                "course deleted; in-flight tasks/wakes/drafts cleaned"
-            ),
-            Err(error) => tracing::warn!(
-                course = course_id.as_str(),
-                cancelled_tasks,
-                %error,
-                "course deleted; lesson draft cleanup failed (publish is tombstone-guarded)"
-            ),
-        }
+        tracing::info!(
+            course = course_id.as_str(),
+            cancelled_tasks,
+            cleared_drafts,
+            "course deleted; in-flight tasks/wakes/drafts cleaned"
+        );
         Ok(())
     }
 

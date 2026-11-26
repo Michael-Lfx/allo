@@ -206,6 +206,10 @@ part_of: map.md
 
 ## Resolution（2026-11-26 施工）
 
+**结论**：两面容差拆分落地；`covered` 规则 enforce，直接出处/自教同节点
+先 report-only（pg0 实测直出 63.2%）；`stage1-enforce` 可一键全执法；
+真机校准欠账。
+
 ### 落地
 
 - `provenance.rs`：`TermSource` 增 `已会声明`（serde `declared`；旧 `已教`
@@ -231,12 +235,30 @@ part_of: map.md
 
 ### 验证
 
-- `cargo test -p nomifun-learning --lib`：**1134 / 0**。
+- `cargo test -p nomifun-learning --lib`：**1137 / 0**。
 - `cargo check -p nomifun-app`：通过。
 - `bun run typecheck` + learning UI 测试：529 / 0。
 - `bun run check`：全绿。
 - `NOMI_LEARNING_REVIEW_PROVENANCE=off` 行为不变；默认 = staged
   （pg0 实测直出 63.2%，covered 0.3%）。
+
+### Code-review 修复（2026-11-27）
+
+- 执法档可观察：`concept_review` 每次评审打一行
+  `provenance stage1 mode`（stage1/covered_nonempty）；smoke 读数行加
+  `stage1=`（`covered-enforce` / `report-all` / `enforce-all`）。
+- `ProvenanceDomain.pool` 只含登记表活跃名+本批名（不再混入 coverage-only
+  名；命名面仍用 `provenance_pool`，掩码零变化）。
+- 同节点自教/循环自证按**概念身份**（canonical）判：`new_aliases` 提名名
+  是既有概念别名时不再误落兄弟臂；新增回归测试。
+- 收窄实现面：删掉未读的 `names_of`；`taught`/`plain` 英文 alias 删除
+  （无生产者，只留 `declared` alias）；`validate_term_provenance` 与
+  `render_terrain_list` 标 `#[cfg(test)]`（生产只走 domain / with_declared
+  入口）。
+- 回放臂限制：`replay_concept_review` 用 `GateOutcome::default()` +
+  known_names，`from_known_names` 把 known 全放 covered ∪ pool，故
+  `registry_only_refs` 在回放里结构上不可测；covered 规则的真机校准只能走
+  live 档案/真机冒烟（已记入欠账）。
 
 ### 欠账
 
