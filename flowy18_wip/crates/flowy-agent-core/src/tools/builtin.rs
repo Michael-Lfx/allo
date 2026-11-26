@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::tools::matcher::glob_match;
 use crate::tools::registry::{ToolDefinition, ToolRegistry};
@@ -218,17 +218,150 @@ fn resolve_path(run_ctx: &ToolRunContext, raw: &str) -> PathBuf {
 #[derive(Deserialize)]
 struct ReadArgs {
     path: String,
+    #[serde(default)]
+    offset_line: Option<usize>,
+    #[serde(default)]
+    max_lines: Option<usize>,
+}
+
+struct SlicedRead {
+    content: String,
+    returned_lines: usize,
+    has_more: bool,
+    byte_capped: bool,
+}
+
+async fn read_file_slice(
+    file: tokio::fs::File,
+    start_line: usize,
+    max_lines: Option<usize>,
+    max_bytes: usize,
+) -> Result<SlicedRead, String> {
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut skip_remaining = start_line.saturating_sub(1);
+    while skip_remaining > 0 {
+        let chunk = reader.fill_buf().await.map_err(|err| err.to_string())?;
+        if chunk.is_empty() {
+            return Ok(SlicedRead {
+                content: String::new(),
+                returned_lines: 0,
+                has_more: false,
+                byte_capped: false,
+            });
+        }
+        let mut consumed = chunk.len();
+        for (idx, &byte) in chunk.iter().enumerate() {
+            if byte == b'\n' {
+                skip_remaining -= 1;
+                if skip_remaining == 0 {
+                    consumed = idx + 1;
+                    break;
+                }
+            }
+        }
+        reader.consume(consumed);
+    }
+
+    let line_limit = max_lines.unwrap_or(usize::MAX);
+    let cap = max_bytes.saturating_add(1);
+    let mut buf = Vec::new();
+    let mut completed_lines = 0_usize;
+    let mut byte_capped = false;
+    let mut hit_line_limit = false;
+
+    loop {
+        if completed_lines >= line_limit {
+            hit_line_limit = true;
+            break;
+        }
+        if buf.len() >= cap {
+            byte_capped = true;
+            break;
+        }
+        let chunk = reader.fill_buf().await.map_err(|err| err.to_string())?;
+        if chunk.is_empty() {
+            break;
+        }
+        let remaining_budget = cap - buf.len();
+        let take_limit = chunk.len().min(remaining_budget);
+        let mut consumed = take_limit;
+        for (idx, &byte) in chunk[..take_limit].iter().enumerate() {
+            if byte == b'\n' {
+                completed_lines += 1;
+                if completed_lines >= line_limit {
+                    consumed = idx + 1;
+                    hit_line_limit = true;
+                    break;
+                }
+            }
+        }
+        buf.extend_from_slice(&chunk[..consumed]);
+        reader.consume(consumed);
+        if buf.len() >= cap {
+            byte_capped = true;
+            break;
+        }
+        if hit_line_limit {
+            break;
+        }
+    }
+
+    let has_more = if byte_capped {
+        true
+    } else if hit_line_limit {
+        let next = reader.fill_buf().await.map_err(|err| err.to_string())?;
+        !next.is_empty()
+    } else {
+        false
+    };
+
+    if byte_capped {
+        buf.truncate(max_bytes);
+    }
+
+    if let Err(err) = std::str::from_utf8(&buf) {
+        if byte_capped && err.error_len().is_none() {
+            buf.truncate(err.valid_up_to());
+        } else {
+            return Err(err.to_string());
+        }
+    }
+
+    let mut content = String::from_utf8(buf).map_err(|err| err.to_string())?;
+    let returned_lines = content.lines().count();
+    if byte_capped {
+        content.push_str(READ_TRUNCATION_SUFFIX);
+    }
+
+    Ok(SlicedRead {
+        content,
+        returned_lines,
+        has_more,
+        byte_capped,
+    })
 }
 
 fn read_file_tool() -> Arc<ToolDefinition> {
     let parameters = json!({
         "type": "object",
-        "properties": { "path": { "type": "string", "description": "Path of the file to read." } },
+        "properties": {
+            "path": { "type": "string", "description": "Path of the file to read." },
+            "offset_line": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional 1-based line number to start reading from."
+            },
+            "max_lines": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional maximum number of lines to return from offset_line."
+            }
+        },
         "required": ["path"]
     });
     Arc::new(ToolDefinition::new(
         "read_file",
-        "Read a text file and return its full contents.",
+        "Read a text file and return its full contents, or a 1-based line slice via offset_line and max_lines.",
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
@@ -242,6 +375,13 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                             );
                         }
                     };
+                if parsed.offset_line == Some(0) || parsed.max_lines == Some(0)
+                {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        "offset_line and max_lines must be >= 1",
+                    );
+                }
                 let path = resolve_path(&run_ctx, &parsed.path);
                 if has_reserved_device_component(&path) {
                     return ToolExecutionResult::error(
@@ -280,6 +420,50 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                         );
                     }
                 };
+                if parsed.offset_line.is_some() || parsed.max_lines.is_some() {
+                    let start_line = parsed.offset_line.unwrap_or(1);
+                    let max_bytes = usize::try_from(MAX_READ_FILE_BYTES)
+                        .unwrap_or(usize::MAX);
+                    return match read_file_slice(
+                        file,
+                        start_line,
+                        parsed.max_lines,
+                        max_bytes,
+                    )
+                    .await
+                    {
+                        Ok(sliced) => {
+                            let next_offset_line = sliced.has_more.then(|| {
+                                start_line.saturating_add(sliced.returned_lines)
+                            });
+                            let mut value = json!({
+                                "path": path.display().to_string(),
+                                "content": &sliced.content,
+                                "offset_line": start_line,
+                                "returned_lines": sliced.returned_lines,
+                                "has_more": sliced.has_more,
+                                "next_offset_line": next_offset_line,
+                                "truncated": sliced.has_more || sliced.byte_capped,
+                            });
+                            if sliced.byte_capped
+                                && let Some(obj) = value.as_object_mut()
+                            {
+                                obj.insert(
+                                    "max_bytes".to_owned(),
+                                    json!(MAX_READ_FILE_BYTES),
+                                );
+                            }
+                            ToolExecutionResult::success_text(
+                                sliced.content,
+                                value,
+                            )
+                        }
+                        Err(err) => ToolExecutionResult::error(
+                            "READ_FAILED",
+                            format!("cannot read {}: {err}", path.display()),
+                        ),
+                    };
+                }
                 let mut buf = Vec::new();
                 if let Err(err) = (&mut file)
                     .take(MAX_READ_FILE_BYTES.saturating_add(1))
@@ -1069,6 +1253,417 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("exceeds 2 MiB host read limit"));
         assert!(text.len() < payload.len());
+        match result {
+            ToolExecutionResult::Success { value, .. } => {
+                assert_eq!(value["truncated"], true);
+                assert_eq!(value["max_bytes"], super::MAX_READ_FILE_BYTES);
+                assert!(value.get("offset_line").is_none());
+                assert!(value.get("returned_lines").is_none());
+                assert!(value.get("has_more").is_none());
+                assert!(value.get("next_offset_line").is_none());
+            }
+            ToolExecutionResult::Error { .. } => {
+                panic!("expected success")
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let id = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "flowy-builtin-{tag}-{}-{id}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unwrap_success_value(result: ToolExecutionResult) -> serde_json::Value {
+        match result {
+            ToolExecutionResult::Success { value, .. } => value,
+            ToolExecutionResult::Error { code, message, .. } => {
+                panic!("expected success, got error {code}: {message}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_file_legacy_full_read_json_shape_unchanged() {
+        let dir = TempDir::new("legacy-shape");
+        let file = dir.0.join("plain.txt");
+        std::fs::write(&file, "hello\nworld\n").unwrap();
+
+        let value = unwrap_success_value(
+            registry()
+                .execute(
+                    "c-legacy".into(),
+                    "read_file".into(),
+                    json!({ "path": file.display().to_string() }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(value["content"], "hello\nworld\n");
+        assert_eq!(value["truncated"], false);
+        assert!(value.get("max_bytes").is_none());
+        assert!(value.get("offset_line").is_none());
+        assert!(value.get("returned_lines").is_none());
+        assert!(value.get("has_more").is_none());
+        assert!(value.get("next_offset_line").is_none());
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_zero_offset_or_max_lines() {
+        let dir = TempDir::new("zero-args");
+        for args in [
+            json!({ "path": "missing.txt", "offset_line": 0 }),
+            json!({ "path": "missing.txt", "max_lines": 0 }),
+            json!({ "path": "missing.txt", "offset_line": 0, "max_lines": 2 }),
+        ] {
+            let result = registry()
+                .execute(
+                    "c-zero".into(),
+                    "read_file".into(),
+                    args,
+                    ctx(dir.0.clone()),
+                )
+                .await;
+            match result {
+                ToolExecutionResult::Error { code, .. } => {
+                    assert_eq!(code, "INVALID_ARGS");
+                }
+                ToolExecutionResult::Success { .. } => {
+                    panic!("zero offset_line or max_lines must fail")
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_file_slice_paginates_multiline_file() {
+        let dir = TempDir::new("paginate");
+        let file = dir.0.join("lines.txt");
+        std::fs::write(&file, "line-1\nline-2\nline-3\nline-4\nline-5")
+            .unwrap();
+
+        let p1 = unwrap_success_value(
+            registry()
+                .execute(
+                    "p1".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 1,
+                        "max_lines": 2
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(p1["content"], "line-1\nline-2\n");
+        assert_eq!(p1["offset_line"], 1);
+        assert_eq!(p1["returned_lines"], 2);
+        assert_eq!(p1["has_more"], true);
+        assert_eq!(p1["next_offset_line"], 3);
+        assert_eq!(p1["truncated"], true);
+        assert!(p1.get("max_bytes").is_none());
+
+        let p2 = unwrap_success_value(
+            registry()
+                .execute(
+                    "p2".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 3,
+                        "max_lines": 2
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(p2["content"], "line-3\nline-4\n");
+        assert_eq!(p2["offset_line"], 3);
+        assert_eq!(p2["returned_lines"], 2);
+        assert_eq!(p2["has_more"], true);
+        assert_eq!(p2["next_offset_line"], 5);
+        assert_eq!(p2["truncated"], true);
+
+        let p3 = unwrap_success_value(
+            registry()
+                .execute(
+                    "p3".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 5,
+                        "max_lines": 2
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(p3["content"], "line-5");
+        assert_eq!(p3["offset_line"], 5);
+        assert_eq!(p3["returned_lines"], 1);
+        assert_eq!(p3["has_more"], false);
+        assert!(p3["next_offset_line"].is_null());
+        assert_eq!(p3["truncated"], false);
+
+        // Trailing newline at EOF with exact max_lines has no remaining bytes.
+        let trailing = dir.0.join("trailing.txt");
+        std::fs::write(&trailing, "a\nb\n").unwrap();
+        let exact = unwrap_success_value(
+            registry()
+                .execute(
+                    "p-exact".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": trailing.display().to_string(),
+                        "max_lines": 2
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(exact["content"], "a\nb\n");
+        assert_eq!(exact["offset_line"], 1);
+        assert_eq!(exact["returned_lines"], 2);
+        assert_eq!(exact["has_more"], false);
+        assert!(exact["next_offset_line"].is_null());
+        assert_eq!(exact["truncated"], false);
+
+        // offset_line only (without max_lines) returns tail from start_line.
+        let tail = unwrap_success_value(
+            registry()
+                .execute(
+                    "p-tail".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 4
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(tail["content"], "line-4\nline-5");
+        assert_eq!(tail["offset_line"], 4);
+        assert_eq!(tail["returned_lines"], 2);
+        assert_eq!(tail["has_more"], false);
+        assert!(tail["next_offset_line"].is_null());
+    }
+
+    #[tokio::test]
+    async fn read_file_slice_offset_beyond_eof_returns_empty() {
+        let dir = TempDir::new("beyond-eof");
+        let file = dir.0.join("short.txt");
+        std::fs::write(&file, "alpha\nbeta\n").unwrap();
+
+        for offset in [3_usize, 10_usize] {
+            let value = unwrap_success_value(
+                registry()
+                    .execute(
+                        "eof".into(),
+                        "read_file".into(),
+                        json!({
+                            "path": file.display().to_string(),
+                            "offset_line": offset,
+                            "max_lines": 5
+                        }),
+                        ctx(dir.0.clone()),
+                    )
+                    .await,
+            );
+            assert_eq!(value["content"], "");
+            assert_eq!(value["offset_line"], offset);
+            assert_eq!(value["returned_lines"], 0);
+            assert_eq!(value["has_more"], false);
+            assert!(value["next_offset_line"].is_null());
+            assert_eq!(value["truncated"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn read_file_slice_handles_cjk_utf8_and_crlf() {
+        let dir = TempDir::new("cjk-utf8");
+        let file = dir.0.join("cjk.txt");
+        std::fs::write(&file, "第一行\r\n第二行 🚀\n第三行中文\n").unwrap();
+
+        let value = unwrap_success_value(
+            registry()
+                .execute(
+                    "cjk".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 2,
+                        "max_lines": 1
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(value["content"], "第二行 🚀\n");
+        assert_eq!(value["offset_line"], 2);
+        assert_eq!(value["returned_lines"], 1);
+        assert_eq!(value["has_more"], true);
+        assert_eq!(value["next_offset_line"], 3);
+        assert_eq!(value["truncated"], true);
+
+        let first = unwrap_success_value(
+            registry()
+                .execute(
+                    "crlf".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 1,
+                        "max_lines": 1
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(first["content"], "第一行\r\n");
+        assert_eq!(first["returned_lines"], 1);
+        assert_eq!(first["has_more"], true);
+    }
+
+    #[tokio::test]
+    async fn read_file_slice_caps_giant_single_line_without_oom() {
+        let dir = TempDir::new("giant-line");
+        let file = dir.0.join("giant.txt");
+        // Shift by 1 ASCII byte so the 2 MiB boundary splits a 4-byte emoji.
+        let mut payload = String::from("x");
+        payload.push_str(&"🚀".repeat(524_295));
+        assert!(payload.len() > super::MAX_READ_FILE_BYTES as usize);
+        std::fs::write(&file, &payload).unwrap();
+
+        let value = unwrap_success_value(
+            registry()
+                .execute(
+                    "giant".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": file.display().to_string(),
+                        "offset_line": 1,
+                        "max_lines": 10
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(value["offset_line"], 1);
+        assert_eq!(value["returned_lines"], 1);
+        assert_eq!(value["has_more"], true);
+        assert_eq!(value["next_offset_line"], 2);
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["max_bytes"], super::MAX_READ_FILE_BYTES);
+        let content = value["content"].as_str().unwrap();
+        assert!(content.ends_with(super::READ_TRUNCATION_SUFFIX));
+        let prefix =
+            content.strip_suffix(super::READ_TRUNCATION_SUFFIX).unwrap();
+        assert!(prefix.len() <= super::MAX_READ_FILE_BYTES as usize);
+        assert!(prefix.len() >= (super::MAX_READ_FILE_BYTES as usize) - 3);
+        assert!(prefix.starts_with("x🚀"));
+
+        // Also verify skipping over a >2 MiB line to read line 2 works cleanly.
+        let two_lines = dir.0.join("two-lines-giant.txt");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&two_lines).unwrap();
+            let chunk = vec![b'a'; 64 * 1024];
+            for _ in 0..48 {
+                f.write_all(&chunk).unwrap();
+            }
+            f.write_all(b"\nline-after-giant\n").unwrap();
+        }
+        let line2 = unwrap_success_value(
+            registry()
+                .execute(
+                    "skip-giant".into(),
+                    "read_file".into(),
+                    json!({
+                        "path": two_lines.display().to_string(),
+                        "offset_line": 2,
+                        "max_lines": 1
+                    }),
+                    ctx(dir.0.clone()),
+                )
+                .await,
+        );
+        assert_eq!(line2["content"], "line-after-giant\n");
+        assert_eq!(line2["offset_line"], 2);
+        assert_eq!(line2["returned_lines"], 1);
+        assert_eq!(line2["has_more"], false);
+        assert!(line2["next_offset_line"].is_null());
+        assert_eq!(line2["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn read_file_slice_rejects_invalid_utf8_binary() {
+        let dir = TempDir::new("invalid-utf8");
+        let small_bin = dir.0.join("small.bin");
+        std::fs::write(&small_bin, [0xff_u8, 0xfe, 0x00, 0x01]).unwrap();
+        let res1 = registry()
+            .execute(
+                "bin1".into(),
+                "read_file".into(),
+                json!({
+                    "path": small_bin.display().to_string(),
+                    "offset_line": 1,
+                    "max_lines": 1
+                }),
+                ctx(dir.0.clone()),
+            )
+            .await;
+        match res1 {
+            ToolExecutionResult::Error { code, .. } => {
+                assert_eq!(code, "READ_FAILED");
+            }
+            ToolExecutionResult::Success { .. } => {
+                panic!("binary file must fail UTF-8 validation")
+            }
+        }
+
+        let large_bin = dir.0.join("large.bin");
+        let mut bytes = vec![0xff_u8, 0xfe, 0x00];
+        bytes.resize((super::MAX_READ_FILE_BYTES as usize) + 64, b'a');
+        std::fs::write(&large_bin, &bytes).unwrap();
+        let res2 = registry()
+            .execute(
+                "bin2".into(),
+                "read_file".into(),
+                json!({
+                    "path": large_bin.display().to_string(),
+                    "offset_line": 1,
+                    "max_lines": 1
+                }),
+                ctx(dir.0.clone()),
+            )
+            .await;
+        match res2 {
+            ToolExecutionResult::Error { code, .. } => {
+                assert_eq!(code, "READ_FAILED");
+            }
+            ToolExecutionResult::Success { .. } => {
+                panic!("oversized binary file must fail UTF-8 validation")
+            }
+        }
     }
 }
