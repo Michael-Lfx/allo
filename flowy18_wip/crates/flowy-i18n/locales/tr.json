@@ -437,7 +437,6 @@
   "section.library": "Oluşturulan görseller, videolar ve belgeler burada duracak.",
   "section.more": "Hesap ve yerel ayarlar burada duracak.",
   "section.plugins": "Yüklü araçlar burada listelenecek.",
-  "section.search": "Oturumlar, projeler ve varlıklar arasında arama buraya bağlanacak.",
   "settings.about": "Hakkında",
   "settings.account": "Hesap",
   "settings.appearance": "Görünüm",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "Arşivlendi",
   "search.placeholder": "Oturum, kütüphane, proje veya beceri ara…",
   "search.empty": "Eşleşen sonuç yok",
-  "search.footer_hint": "↑↓ Seç · Enter Aç · Esc Kapat",
+  "search.footer_hint": "↑↓ Gezin · Tab Kapsam · Enter Aç · Esc Kapat",
   "search.group_recent": "Son oturumlar",
   "search.group_actions": "Hızlı geçişler",
   "search.group_sessions": "Oturumlar",
@@ -918,5 +917,10 @@
   "time.just_now": "Az önce",
   "time.mins_ago": "{n} dk önce",
   "time.hours_ago": "{n} sa önce",
-  "time.days_ago": "{n} gün önce"
+  "time.days_ago": "{n} gün önce",
+  "board.day_summary": "{date} · {active} etkin · {done} tamamlandı",
+  "board.clear_day_filter": "Tarih filtresini temizle",
+  "search.scope_all": "Tümü",
+  "chat.archived_toast": "\"{title}\" arşivlendi",
+  "chat.undo": "Geri al"
 }

@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
 hayro = { workspace = true }
 oxml-opc = { workspace = true }
 rpptx = { workspace = true }

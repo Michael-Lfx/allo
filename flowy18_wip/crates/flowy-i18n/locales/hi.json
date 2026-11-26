@@ -437,7 +437,6 @@
   "section.library": "बनाई गई छवियाँ, वीडियो और दस्तावेज़ यहाँ रहेंगे।",
   "section.more": "खाता और स्थानीय सेटिंग यहाँ रहेंगे।",
   "section.plugins": "इंस्टॉल किए गए उपकरण यहाँ सूचीबद्ध होंगे।",
-  "section.search": "सत्रों, प्रोजेक्टों और सामग्री की खोज यहाँ जुड़ेगी।",
   "settings.about": "परिचय",
   "settings.account": "खाता",
   "settings.appearance": "दिखावट",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "आर्काइव",
   "search.placeholder": "सत्र, लाइब्रेरी फ़ाइलें, प्रोजेक्ट या स्किल खोजें…",
   "search.empty": "कोई मिलान परिणाम नहीं",
-  "search.footer_hint": "↑↓ चुनें · Enter खोलें · Esc बंद करें",
+  "search.footer_hint": "↑↓ चुनें · Tab श्रेणी · Enter खोलें · Esc बंद करें",
   "search.group_recent": "हाल के सत्र",
   "search.group_actions": "त्वरित लिंक",
   "search.group_sessions": "सत्र",
@@ -918,5 +917,10 @@
   "time.just_now": "अभी",
   "time.mins_ago": "{n} मि पहले",
   "time.hours_ago": "{n} घं पहले",
-  "time.days_ago": "{n} दिन पहले"
+  "time.days_ago": "{n} दिन पहले",
+  "board.day_summary": "{date} · {active} सक्रिय · {done} पूर्ण",
+  "board.clear_day_filter": "तिथि फ़िल्टर हटाएँ",
+  "search.scope_all": "सभी",
+  "chat.archived_toast": "\"{title}\" संग्रहीत किया गया",
+  "chat.undo": "पूर्ववत करें"
 }

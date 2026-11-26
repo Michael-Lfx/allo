@@ -437,7 +437,6 @@
   "section.library": "Las imágenes, videos y documentos generados estarán aquí.",
   "section.more": "La cuenta y la configuración local estarán aquí.",
   "section.plugins": "Las herramientas instaladas se listarán aquí.",
-  "section.search": "La búsqueda de sesiones, proyectos y medios se conectará aquí.",
   "settings.about": "Acerca de",
   "settings.account": "Cuenta",
   "settings.appearance": "Apariencia",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "Archivado",
   "search.placeholder": "Buscar sesiones, biblioteca, proyectos o habilidades…",
   "search.empty": "No se encontraron resultados",
-  "search.footer_hint": "↑↓ Elegir · Enter Abrir · Esc Cerrar",
+  "search.footer_hint": "↑↓ Navegar · Tab Categoría · Enter Abrir · Esc Cerrar",
   "search.group_recent": "Sesiones recientes",
   "search.group_actions": "Accesos rápidos",
   "search.group_sessions": "Sesiones",
@@ -918,5 +917,10 @@
   "time.just_now": "Justo ahora",
   "time.mins_ago": "hace {n} min",
   "time.hours_ago": "hace {n} h",
-  "time.days_ago": "hace {n} d"
+  "time.days_ago": "hace {n} d",
+  "board.day_summary": "{date} · {active} activos · {done} hechos",
+  "board.clear_day_filter": "Quitar filtro de fecha",
+  "search.scope_all": "Todo",
+  "chat.archived_toast": "\"{title}\" archivada",
+  "chat.undo": "Deshacer"
 }

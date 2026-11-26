@@ -80,6 +80,7 @@ impl StudioPanel {
         self.credits = crate::CreditsViewState::Unavailable;
         self.selected_skill = None;
         self.board_project_filter = None;
+        self.board_day_filter = None;
         self.retrying_receipts.clear();
         self.pending_card_selected.clear();
         self.resolving_cards.clear();
@@ -381,6 +382,15 @@ impl StudioPanel {
             &unassigned_title,
             self.board_generation,
         );
+        if let Some(selected_day) = self.board_day_filter
+            && !self
+                .board_snapshot
+                .daily_7d
+                .iter()
+                .any(|bucket| bucket.date_key == selected_day)
+        {
+            self.board_day_filter = None;
+        }
         if let Some(open_sid) = self.flow_modal.session.as_deref() {
             match self
                 .board_snapshot
@@ -424,6 +434,7 @@ impl StudioPanel {
     /// Opens the Global Visual Board (`StudioSurface::Board`).
     pub fn open_board(&mut self, cx: &mut Context<'_, Self>) {
         self.board_project_filter = None;
+        self.board_day_filter = None;
         self.flow_modal.close();
         self.clear_right_sheet();
         self.close_all_popovers();

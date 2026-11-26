@@ -437,7 +437,6 @@
   "section.library": "生成した画像、動画、文書は、ここに集まります。",
   "section.more": "アカウントとこのパソコンの設定は、ここにあります。",
   "section.plugins": "インストール済みのツールが、ここに並びます。",
-  "section.search": "セッション、プロジェクト、素材の検索は、ここに接続されます。",
   "settings.about": "情報",
   "settings.account": "アカウント",
   "settings.appearance": "外観",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "アーカイブ済み",
   "search.placeholder": "会話、ライブラリ、プロジェクト、スキルを検索…",
   "search.empty": "一致する結果がありません",
-  "search.footer_hint": "↑↓ 選択 · Enter 開く · Esc 閉じる",
+  "search.footer_hint": "↑↓ 選択 · Tab 範囲 · Enter 開く · Esc 閉じる",
   "search.group_recent": "最近の会話",
   "search.group_actions": "クイック移動",
   "search.group_sessions": "会話",
@@ -918,5 +917,10 @@
   "time.just_now": "たった今",
   "time.mins_ago": "{n}分前",
   "time.hours_ago": "{n}時間前",
-  "time.days_ago": "{n}日前"
+  "time.days_ago": "{n}日前",
+  "board.day_summary": "{date} · 進行 {active} · 完了 {done}",
+  "board.clear_day_filter": "日付フィルターを解除",
+  "search.scope_all": "すべて",
+  "chat.archived_toast": "「{title}」をアーカイブしました",
+  "chat.undo": "元に戻す"
 }

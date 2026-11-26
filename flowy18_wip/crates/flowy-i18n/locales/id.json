@@ -437,7 +437,6 @@
   "section.library": "Gambar, video, dan dokumen yang dihasilkan akan ada di sini.",
   "section.more": "Akun dan pengaturan lokal akan ada di sini.",
   "section.plugins": "Alat yang terpasang akan tercantum di sini.",
-  "section.search": "Pencarian sesi, proyek, dan aset akan tersambung di sini.",
   "settings.about": "Tentang",
   "settings.account": "Akun",
   "settings.appearance": "Tampilan",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "Diarsipkan",
   "search.placeholder": "Cari sesi, file pustaka, proyek, atau skill…",
   "search.empty": "Tidak ada hasil yang cocok",
-  "search.footer_hint": "↑↓ Pilih · Enter Buka · Esc Tutup",
+  "search.footer_hint": "↑↓ Pilih · Tab Cakupan · Enter Buka · Esc Tutup",
   "search.group_recent": "Sesi terbaru",
   "search.group_actions": "Pintasan",
   "search.group_sessions": "Sesi",
@@ -918,5 +917,10 @@
   "time.just_now": "Baru saja",
   "time.mins_ago": "{n} mnt lalu",
   "time.hours_ago": "{n} jam lalu",
-  "time.days_ago": "{n} hr lalu"
+  "time.days_ago": "{n} hr lalu",
+  "board.day_summary": "{date} · {active} aktif · {done} selesai",
+  "board.clear_day_filter": "Hapus filter tanggal",
+  "search.scope_all": "Semua",
+  "chat.archived_toast": "\"{title}\" diarsipkan",
+  "chat.undo": "Urungkan"
 }

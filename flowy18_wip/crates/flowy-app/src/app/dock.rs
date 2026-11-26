@@ -8,7 +8,6 @@ use gpui::{
 enum DockIcon {
     NewTask,
     Board,
-    // Search,
     Library,
     Create,
     Automation,
@@ -22,7 +21,6 @@ impl DockIcon {
         match self {
             Self::NewTask => theme::icons::square_pen(),
             Self::Board => theme::icons::layout_grid(),
-            // Self::Search => theme::icons::search(),
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
             Self::Automation => theme::icons::workflow(),
@@ -36,7 +34,6 @@ impl DockIcon {
 const USER_MENU_WIDTH: f32 = 288.0;
 
 const NAV: &[(&str, &str, Section, DockIcon)] = &[
-    // ("search", "dock.search", Section::Search, DockIcon::Search),
     (
         "library",
         "dock.library",

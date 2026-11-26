@@ -437,7 +437,6 @@
   "section.library": "Створені зображення, відео й документи будуть тут.",
   "section.more": "Обліковий запис і локальні налаштування будуть тут.",
   "section.plugins": "Установлені інструменти буде показано тут.",
-  "section.search": "Пошук сеансами, проєктами й матеріалами підключиться тут.",
   "settings.about": "Про програму",
   "settings.account": "Обліковий запис",
   "settings.appearance": "Оформлення",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "В архіві",
   "search.placeholder": "Пошук сесій, бібліотеки, проєктів або навичок…",
   "search.empty": "Збігів не знайдено",
-  "search.footer_hint": "↑↓ Вибрати · Enter Відкрити · Esc Закрити",
+  "search.footer_hint": "↑↓ Вибір · Tab Розділ · Enter Відкрити · Esc Закрити",
   "search.group_recent": "Нещодавні сесії",
   "search.group_actions": "Швидкі переходи",
   "search.group_sessions": "Сесії",
@@ -918,5 +917,10 @@
   "time.just_now": "Щойно",
   "time.mins_ago": "{n} хв тому",
   "time.hours_ago": "{n} год тому",
-  "time.days_ago": "{n} дн тому"
+  "time.days_ago": "{n} дн тому",
+  "board.day_summary": "{date} · {active} активні · {done} виконано",
+  "board.clear_day_filter": "Скинути фільтр дати",
+  "search.scope_all": "Усе",
+  "chat.archived_toast": "Архівовано «{title}»",
+  "chat.undo": "Скасувати"
 }

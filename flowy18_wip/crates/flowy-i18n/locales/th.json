@@ -437,7 +437,6 @@
   "section.library": "รูปภาพ วิดีโอ และเอกสารที่สร้างจะอยู่ที่นี่",
   "section.more": "บัญชีและการตั้งค่าในเครื่องจะอยู่ที่นี่",
   "section.plugins": "เครื่องมือที่ติดตั้งจะแสดงที่นี่",
-  "section.search": "การค้นหาข้ามเซสชัน โปรเจกต์ และสื่อจะเชื่อมต่อที่นี่",
   "settings.about": "เกี่ยวกับ",
   "settings.account": "บัญชี",
   "settings.appearance": "ลักษณะ",
@@ -902,7 +901,7 @@
   "chat.archived_badge": "เก็บถาวรแล้ว",
   "search.placeholder": "ค้นหาเซสชัน ไฟล์ในคลัง โปรเจกต์ หรือสกิล…",
   "search.empty": "ไม่พบผลลัพธ์ที่ตรงกัน",
-  "search.footer_hint": "↑↓ เลือก · Enter เปิด · Esc ปิด",
+  "search.footer_hint": "↑↓ เลือก · Tab หมวด · Enter เปิด · Esc ปิด",
   "search.group_recent": "เซสชันล่าสุด",
   "search.group_actions": "ทางลัด",
   "search.group_sessions": "เซสชัน",
@@ -918,5 +917,10 @@
   "time.just_now": "เมื่อสักครู่",
   "time.mins_ago": "{n} นาทีที่แล้ว",
   "time.hours_ago": "{n} ชม. ที่แล้ว",
-  "time.days_ago": "{n} วันที่แล้ว"
+  "time.days_ago": "{n} วันที่แล้ว",
+  "board.day_summary": "{date} · กำลังทำ {active} · เสร็จ {done}",
+  "board.clear_day_filter": "ล้างตัวกรองวันที่",
+  "search.scope_all": "ทั้งหมด",
+  "chat.archived_toast": "เก็บ \"{title}\" แล้ว",
+  "chat.undo": "เลิกทำ"
 }

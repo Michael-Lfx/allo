@@ -105,7 +105,6 @@ pub enum Section {
     Board,
     // Computer,
     // Agent,
-    Search,
     Library,
     Create,
     Automation,
@@ -151,6 +150,7 @@ pub struct FlowyApp {
     artifact_preview: artifact_preview::ArtifactPreviewState,
     artifact_cleanup: artifact_cleanup::ArtifactCleanupState,
     task_menu: Option<conversation_actions::TaskMenuState>,
+    archive_undo: conversation_actions::ArchiveUndoController,
     conversation_delete: conversation_actions::ConversationDeleteState,
     conversation_rename: conversation_actions::ConversationRenameState,
     quick_search: quick_search::QuickSearchState,
@@ -469,6 +469,7 @@ impl FlowyApp {
                 |app, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
                         app.quick_search.selected = 0;
+                        app.quick_search.scroll.scroll_to_item(0);
                         cx.notify();
                     }
                 },
@@ -495,14 +496,24 @@ impl FlowyApp {
                     if ks.modifiers.control
                         || ks.modifiers.alt
                         || ks.modifiers.platform
-                        || ks.modifiers.shift
                         || ks.modifiers.function
                     {
                         return;
                     }
-                    let delta = match ks.key.as_str() {
-                        "up" => -1_isize,
-                        "down" => 1_isize,
+                    enum QuickSearchKey {
+                        Move(isize),
+                        Scope(isize),
+                    }
+                    let action = match ks.key.as_str() {
+                        "up" if !ks.modifiers.shift => QuickSearchKey::Move(-1),
+                        "down" if !ks.modifiers.shift => {
+                            QuickSearchKey::Move(1)
+                        }
+                        "tab" => QuickSearchKey::Scope(if ks.modifiers.shift {
+                            -1
+                        } else {
+                            1
+                        }),
                         _ => return,
                     };
                     let handled = weak
@@ -512,7 +523,16 @@ impl FlowyApp {
                             {
                                 return false;
                             }
-                            app.move_quick_search_selection(delta, cx);
+                            match action {
+                                QuickSearchKey::Move(delta) => {
+                                    app.move_quick_search_selection(delta, cx);
+                                }
+                                QuickSearchKey::Scope(delta) => {
+                                    app.cycle_quick_search_scope(
+                                        delta, window, cx,
+                                    );
+                                }
+                            }
                             true
                         })
                         .unwrap_or(false);
@@ -561,6 +581,8 @@ impl FlowyApp {
             artifact_preview: artifact_preview::ArtifactPreviewState::default(),
             artifact_cleanup: artifact_cleanup::ArtifactCleanupState::default(),
             task_menu: None,
+            archive_undo: conversation_actions::ArchiveUndoController::default(
+            ),
             conversation_delete:
                 conversation_actions::ConversationDeleteState::default(),
             conversation_rename:
@@ -1470,6 +1492,7 @@ impl FlowyApp {
         self.nav_forward.clear();
         self.persona.status = None;
         self.user_menu = false;
+        self.archive_undo.clear();
         self.notice = None;
         self.studio
             .update(cx, flowy_studio::StudioPanel::reset_session);
@@ -1576,20 +1599,6 @@ impl FlowyApp {
                     panel.close_all_popovers();
                     panel.close_flow_modal(cx);
                     panel.set_surface(StudioSurface::Automation, cx);
-                    panel.set_notice(notice, cx);
-                });
-            }
-            Section::Search => {
-                self.studio.update(cx, |panel, cx| {
-                    panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
-                    panel.set_surface(
-                        StudioSurface::Placeholder {
-                            title_key: "dock.search",
-                            detail_key: "section.search",
-                        },
-                        cx,
-                    );
                     panel.set_notice(notice, cx);
                 });
             }
@@ -2152,6 +2161,12 @@ impl Render for FlowyApp {
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());
+        }
+        if self.screen == Screen::Main
+            && !self.ui.overlays.read(cx).modal_active()
+            && let Some(banner) = self.archive_undo_banner(cx)
+        {
+            root = root.child(banner);
         }
         if self.storage_error && self.screen == Screen::Main {
             let dismiss = self.t("model.got_it");
@@ -3881,7 +3896,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Opening Quick Search must NOT push Section::Search onto nav_back.
+        // Opening Quick Search must NOT push a placeholder section onto nav_back.
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.screen = Screen::Main;
