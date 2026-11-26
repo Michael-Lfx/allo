@@ -542,7 +542,6 @@ impl AgentHandle {
                             "notice.session_storage_failed"
                         })?
                         .ok_or("notice.card_not_found")?;
-                    let children = engine.child_sessions(session_id);
                     let mut details = Vec::with_capacity(object_ids.len());
                     for oid in &object_ids {
                         let label = options
@@ -553,12 +552,7 @@ impl AgentHandle {
                                 |opt| opt.label.clone(),
                             );
                         if let Some((owner_id, obj, confirmed)) =
-                            children.iter().find_map(|child| {
-                                let wc = child.work_contract.as_ref()?;
-                                let obj = wc.find_object(oid)?;
-                                let facts = wc.confirmed_facts_for(oid);
-                                Some((child.id.clone(), obj.clone(), facts))
-                            })
+                            engine.find_child_tracked_object(session_id, oid)
                         {
                             let facts_str = if confirmed.is_empty() {
                                 "none".to_owned()

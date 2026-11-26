@@ -22,10 +22,17 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const BOUNDARY_SLICE_BYTES: usize = 4096;
+const MAX_CACHE_ENTRIES: usize = 64;
+const COMPACT_MIN_LINES: usize = 512;
+const COMPACT_MIN_BYTES: u64 = 256 * 1024;
+const COMPACT_RETAIN_TERMINAL: usize = 200;
 
 use serde::{Deserialize, Serialize};
 
@@ -286,202 +293,210 @@ impl AcceptanceQueue {
     fn replay_detailed_locked(
         &self,
     ) -> io::Result<(Vec<AcceptedMessage>, usize)> {
-        let path = Self::path(&self.root);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        let raw_path = Self::path(&self.root);
+        let cache_key = normalize_cache_path(&raw_path);
+        let mut file = match fs::File::open(&raw_path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                cache_invalidate(&cache_key);
                 return Ok((Vec::new(), 0));
             }
             Err(error) => return Err(error),
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let lines: Vec<&str> = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        let mut receipts: Vec<AcceptedMessage> = Vec::new();
-        let mut index_by_id: HashMap<String, usize> = HashMap::new();
-        let mut last_taken_line: HashMap<String, usize> = HashMap::new();
-        let mut corrupt_interior = 0_usize;
-        let mut last_interior_corrupt_line: Option<usize> = None;
-        for (idx, line) in lines.iter().enumerate() {
-            let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
-                if idx + 1 < lines.len() {
-                    corrupt_interior = corrupt_interior.saturating_add(1);
-                    last_interior_corrupt_line = Some(idx);
+        let meta = file.metadata()?;
+        let file_len = meta.len();
+        let file_modified = meta.modified().ok();
+
+        if let Some(mut cached) = cache_get(&cache_key)
+            && file_len >= cached.parsed_len
+            && verify_boundary_slices(
+                &mut file,
+                cached.parsed_len,
+                &cached.head,
+                &cached.tail,
+            )?
+        {
+            if file_len == cached.parsed_len {
+                if file_modified.is_some() && file_modified == cached.modified {
+                    #[cfg(test)]
+                    record_replay_stat(ReplayStatKind::CacheHit);
+                    return Ok((cached.receipts, cached.corrupt_interior));
                 }
-                continue;
-            };
-            match entry {
-                JournalEntry::Accepted {
-                    id,
-                    session_hint,
-                    text,
-                    at_ms,
-                    strict_target,
-                    dispatch_request_id,
-                    draft_target,
-                } => {
-                    let pos = receipts.len();
-                    index_by_id.entry(id.clone()).or_insert(pos);
-                    let target_session_id =
-                        strict_target.then(|| session_hint.clone()).flatten();
-                    receipts.push(AcceptedMessage {
-                        id,
-                        session_hint,
-                        text,
-                        created_at_ms: at_ms,
-                        taken_at_ms: None,
-                        lease: None,
-                        completed_at_ms: None,
-                        available_at_ms: None,
-                        attempts: 0,
-                        dead: false,
-                        cancelled: false,
-                        quarantined: false,
-                        last_attempt_id: None,
-                        target_session_id,
-                        submission_id: None,
-                        strict_target,
-                        dispatch_request_id,
-                        draft_target,
-                    });
-                }
-                JournalEntry::Taken {
-                    id,
-                    attempt_id,
-                    lease_until_ms,
-                    at_ms,
-                } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        last_taken_line.insert(id, idx);
-                        receipt.taken_at_ms.get_or_insert(at_ms);
-                        receipt.available_at_ms = None;
-                        receipt.attempts = receipt.attempts.saturating_add(1);
-                        receipt.last_attempt_id = Some(attempt_id.clone());
-                        receipt.lease = Some(Box::new(Lease {
-                            attempt_id,
-                            expires_at_ms: lease_until_ms,
-                        }));
-                    }
-                }
-                JournalEntry::Bound {
-                    id,
-                    attempt_id,
-                    session_id,
-                    submission_id,
-                    ..
-                } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        if receipt.last_attempt_id.as_deref()
-                            == Some(attempt_id.as_str())
+            } else if !cached.has_unparseable {
+                file.seek(SeekFrom::Start(cached.parsed_len))?;
+                let mut tail_bytes = Vec::new();
+                file.read_to_end(&mut tail_bytes)?;
+                if !tail_bytes.is_empty() {
+                    let complete_len = tail_bytes
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                        .map_or(0, |idx| idx + 1);
+                    let complete_slice = &tail_bytes[..complete_len];
+                    let trailing_fragment = &tail_bytes[complete_len..];
+                    let complete_text = String::from_utf8_lossy(complete_slice);
+                    let mut parsed_entries = Vec::new();
+                    let mut all_valid = true;
+                    for line in complete_text
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                    {
+                        if let Ok(entry) =
+                            serde_json::from_str::<JournalEntry>(line)
                         {
-                            receipt.target_session_id = Some(session_id);
-                            receipt.submission_id = Some(submission_id);
+                            parsed_entries.push(entry);
+                        } else {
+                            all_valid = false;
+                            break;
                         }
                     }
-                }
-                JournalEntry::Renewed {
-                    id,
-                    attempt_id,
-                    lease_until_ms,
-                    ..
-                } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        if receipt.completed_at_ms.is_none()
-                            && !receipt.dead
-                            && !receipt.cancelled
-                            && let Some(lease) = &mut receipt.lease
-                            && lease.attempt_id == attempt_id
-                        {
-                            lease.expires_at_ms =
-                                lease.expires_at_ms.max(lease_until_ms);
+                    if all_valid {
+                        #[cfg(test)]
+                        record_replay_stat(ReplayStatKind::TailParse);
+                        if complete_len > 0 {
+                            for entry in parsed_entries {
+                                apply_journal_entry(
+                                    &mut cached.receipts,
+                                    &mut cached.index_by_id,
+                                    entry,
+                                );
+                            }
+                            cached.parsed_len = cached
+                                .parsed_len
+                                .saturating_add(complete_len as u64);
+                            advance_boundary_slices(
+                                &mut cached.head,
+                                &mut cached.tail,
+                                complete_slice,
+                            );
+                            cached.modified = if trailing_fragment.is_empty() {
+                                file.metadata()
+                                    .ok()
+                                    .filter(|m| m.len() == cached.parsed_len)
+                                    .and_then(|m| m.modified().ok())
+                            } else {
+                                None
+                            };
+                            cache_insert(cache_key, cached.clone());
                         }
-                    }
-                }
-                JournalEntry::Cancelled { id, .. } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        if receipt.completed_at_ms.is_none() && !receipt.dead {
-                            receipt.cancelled = true;
-                            receipt.lease = None;
+                        let mut receipts = cached.receipts;
+                        let mut index_by_id = cached.index_by_id;
+                        if !trailing_fragment.is_empty() {
+                            let trailing_text =
+                                String::from_utf8_lossy(trailing_fragment);
+                            let trimmed = trailing_text.trim();
+                            if !trimmed.is_empty()
+                                && let Ok(entry) =
+                                    serde_json::from_str::<JournalEntry>(
+                                        trimmed,
+                                    )
+                            {
+                                apply_journal_entry(
+                                    &mut receipts,
+                                    &mut index_by_id,
+                                    entry,
+                                );
+                            }
                         }
-                    }
-                }
-                JournalEntry::Completed { id, at_ms, .. } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        receipt.completed_at_ms = Some(at_ms);
-                        receipt.lease = None;
-                    }
-                }
-                JournalEntry::Released {
-                    id,
-                    retry_after_ms,
-                    at_ms,
-                    ..
-                } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        receipt.lease = None;
-                        receipt.available_at_ms =
-                            Some(at_ms.saturating_add(retry_after_ms));
-                    }
-                }
-                JournalEntry::Dead { id, attempt_id, .. } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        // Only the attempt holding the current lease may kill
-                        // the receipt; a stale dead line from a crashed attempt
-                        // must not bury the retry that replaced it.
-                        let owned =
-                            receipt.lease.as_ref().is_some_and(|lease| {
-                                lease.attempt_id == attempt_id
-                            });
-                        if owned {
-                            receipt.dead = true;
-                            receipt.lease = None;
-                        }
-                    }
-                }
-                JournalEntry::Superseded { id, .. } => {
-                    if let Some(&pos) = index_by_id.get(&id) {
-                        let receipt = &mut receipts[pos];
-                        if receipt.completed_at_ms.is_none()
-                            && receipt.dead
-                            && !receipt.cancelled
-                        {
-                            receipt.cancelled = true;
-                            receipt.lease = None;
-                        }
+                        return Ok((receipts, cached.corrupt_interior));
                     }
                 }
             }
         }
+
+        // Fail-closed fallback: invalidate cache and replay from offset 0.
+        #[cfg(test)]
+        record_replay_stat(ReplayStatKind::FullReplay);
+        cache_invalidate(&cache_key);
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let after_modified = file
+            .metadata()
+            .ok()
+            .filter(|m| m.len() == bytes.len() as u64)
+            .and_then(|m| m.modified().ok());
+        let committed_len = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |idx| idx + 1);
+        let trailing_fragment = &bytes[committed_len..];
+        let trailing_non_empty =
+            !String::from_utf8_lossy(trailing_fragment).trim().is_empty();
+
+        let (
+            mut receipts,
+            mut index_by_id,
+            last_taken_line,
+            corrupt_interior,
+            last_interior_corrupt_line,
+            has_unparseable_committed,
+        ) = replay_bytes(&bytes[..committed_len]);
+
+        if trailing_non_empty && has_unparseable_committed {
+            // An unparseable `\n`-terminated tail in the committed prefix
+            // becomes interior corruption when followed by non-empty trailing
+            // bytes; replay the whole buffer directly without caching.
+            let (
+                mut full_receipts,
+                _,
+                full_last_taken,
+                full_corrupt,
+                full_last_corrupt,
+                _,
+            ) = replay_bytes(&bytes);
+            if let Some(corrupt_idx) = full_last_corrupt {
+                quarantine_pre_corruption_receipts(
+                    &raw_path,
+                    &mut full_receipts,
+                    &full_last_taken,
+                    corrupt_idx,
+                    full_corrupt,
+                );
+            }
+            return Ok((full_receipts, full_corrupt));
+        }
+
         if let Some(corrupt_idx) = last_interior_corrupt_line {
-            tracing::error!(
-                target: "flowy.acceptance",
-                path = %path.display(),
+            quarantine_pre_corruption_receipts(
+                &raw_path,
+                &mut receipts,
+                &last_taken_line,
+                corrupt_idx,
                 corrupt_interior,
-                "interior journal corruption detected; quarantining pre-corruption in-flight receipts"
             );
-            for receipt in &mut receipts {
-                if receipt.completed_at_ms.is_none()
-                    && !receipt.dead
-                    && !receipt.cancelled
-                    && last_taken_line
-                        .get(&receipt.id)
-                        .is_some_and(|&taken_idx| taken_idx < corrupt_idx)
+        }
+
+        let committed_bytes = &bytes[..committed_len];
+        let (head, tail) = compute_boundary_slices(committed_bytes);
+        cache_insert(
+            cache_key,
+            AcceptanceCacheEntry {
+                parsed_len: committed_len as u64,
+                head,
+                tail,
+                modified: if trailing_non_empty || committed_len != bytes.len()
                 {
-                    receipt.quarantined = true;
-                    receipt.lease = None;
-                }
+                    None
+                } else {
+                    after_modified
+                },
+                has_unparseable: has_unparseable_committed,
+                receipts: receipts.clone(),
+                index_by_id: index_by_id.clone(),
+                corrupt_interior,
+                last_used_seq: 0,
+            },
+        );
+
+        if trailing_non_empty {
+            let trailing_text = String::from_utf8_lossy(trailing_fragment);
+            let trimmed = trailing_text.trim();
+            if let Ok(entry) = serde_json::from_str::<JournalEntry>(trimmed) {
+                apply_journal_entry(&mut receipts, &mut index_by_id, entry);
             }
         }
+
         Ok((receipts, corrupt_interior))
     }
 
@@ -841,6 +856,7 @@ impl AcceptanceQueue {
             id: id.to_owned(),
             at_ms: now_ms,
         })?;
+        self.maybe_compact_after_terminal();
         Ok(true)
     }
 
@@ -871,6 +887,7 @@ impl AcceptanceQueue {
             attempt_id: attempt_id.to_owned(),
             at_ms: now_ms,
         })?;
+        self.maybe_compact_after_terminal();
         Ok(true)
     }
 
@@ -952,6 +969,18 @@ impl AcceptanceQueue {
         self.finish(id, attempt_id, now_ms, false, 0, true)
     }
 
+    /// Compact excessive terminal history once the journal exceeds `min_lines`
+    /// lines or `min_bytes` bytes. Exposed for deterministic tests.
+    pub fn compact_with_thresholds(
+        &self,
+        min_lines: usize,
+        min_bytes: u64,
+    ) -> io::Result<bool> {
+        let lock = self.queue_lock();
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.compact_locked(min_lines, min_bytes)
+    }
+
     fn finish(
         &self,
         id: &str,
@@ -1004,7 +1033,23 @@ impl AcceptanceQueue {
             }
         };
         self.append_locked(&entry)?;
+        if completed || dead {
+            self.maybe_compact_after_terminal();
+        }
         Ok(true)
+    }
+
+    fn maybe_compact_after_terminal(&self) {
+        if let Err(error) =
+            self.compact_locked(COMPACT_MIN_LINES, COMPACT_MIN_BYTES)
+        {
+            tracing::warn!(
+                target: "flowy.acceptance",
+                path = %Self::path(&self.root).display(),
+                %error,
+                "acceptance journal terminal compaction failed; retaining uncompacted journal"
+            );
+        }
     }
 
     /// One mutex per journal path. The desktop is single-instance, so an
@@ -1014,8 +1059,9 @@ impl AcceptanceQueue {
         static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
             OnceLock::new();
         let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = normalize_cache_path(&Self::path(&self.root));
         let mut locks = registry.lock().unwrap_or_else(PoisonError::into_inner);
-        locks.entry(Self::path(&self.root)).or_default().clone()
+        locks.entry(key).or_default().clone()
     }
 
     fn append_locked(&self, entry: &JournalEntry) -> io::Result<()> {
@@ -1023,7 +1069,11 @@ impl AcceptanceQueue {
     }
 
     fn append_batch_locked(&self, entries: &[JournalEntry]) -> io::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
         let path = Self::path(&self.root);
+        let cache_key = normalize_cache_path(&path);
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::other("missing acceptance directory"))?;
@@ -1037,14 +1087,777 @@ impl AcceptanceQueue {
         // Repair a crash-truncated trailing line in place (truncate unparseable
         // partial bytes, or terminate a complete JSON record) so a torn tail
         // never gets promoted into an interior corrupt line on the next append.
-        repair_torn_tail_locked(&path)?;
-        let mut handle = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        handle.write_all(&buf)?;
-        handle.flush()?;
-        handle.sync_all()
+        let repaired = repair_torn_tail_locked(&path, &cache_key)?;
+        let pre_len = fs::metadata(&path).map_or(0, |m| m.len());
+        let write_result = (|| {
+            let mut handle = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            handle.write_all(&buf)?;
+            handle.flush()?;
+            handle.sync_all()?;
+            Ok::<Option<SystemTime>, io::Error>(
+                handle
+                    .metadata()
+                    .ok()
+                    .filter(|m| {
+                        m.len() == pre_len.saturating_add(buf.len() as u64)
+                    })
+                    .and_then(|m| m.modified().ok()),
+            )
+        })();
+        match write_result {
+            Ok(post_modified) => {
+                if !repaired
+                    && let Some(mut cached) = cache_get(&cache_key)
+                    && !cached.has_unparseable
+                    && pre_len == cached.parsed_len
+                    && buf.ends_with(b"\n")
+                {
+                    for entry in entries {
+                        apply_journal_entry(
+                            &mut cached.receipts,
+                            &mut cached.index_by_id,
+                            entry.clone(),
+                        );
+                    }
+                    cached.parsed_len =
+                        cached.parsed_len.saturating_add(buf.len() as u64);
+                    advance_boundary_slices(
+                        &mut cached.head,
+                        &mut cached.tail,
+                        &buf,
+                    );
+                    cached.modified = post_modified;
+                    cache_insert(cache_key, cached);
+                } else {
+                    cache_invalidate(&cache_key);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                cache_invalidate(&cache_key);
+                Err(error)
+            }
+        }
+    }
+
+    fn compact_locked(
+        &self,
+        min_lines: usize,
+        min_bytes: u64,
+    ) -> io::Result<bool> {
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        static REPLACE: Mutex<()> = Mutex::new(());
+
+        let path = Self::path(&self.root);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        let file_len = bytes.len() as u64;
+        if file_len < min_bytes && file_len < min_lines as u64 {
+            return Ok(false);
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.len() < min_lines && file_len < min_bytes {
+            return Ok(false);
+        }
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            return Ok(false);
+        }
+
+        let mut receipts: Vec<AcceptedMessage> = Vec::new();
+        let mut index_by_id: HashMap<String, usize> = HashMap::new();
+        let mut last_event_at_ms: Vec<u64> = Vec::new();
+        let mut last_event_seq: Vec<usize> = Vec::new();
+        let mut superseded_by: HashMap<String, (String, u64)> = HashMap::new();
+        let mut dead_at_ms: HashMap<String, u64> = HashMap::new();
+        let mut cancelled_at_ms: HashMap<String, u64> = HashMap::new();
+        let mut bound_at_ms: HashMap<String, u64> = HashMap::new();
+        let mut released_at_ms: HashMap<String, (u64, u64)> = HashMap::new();
+
+        for (seq, line) in lines.iter().enumerate() {
+            let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+                // Fail-closed: preserve corrupt journals untouched so forensic
+                // evidence and quarantine invariants remain intact.
+                return Ok(false);
+            };
+            let entry_id = entry.id().to_owned();
+            let entry_at = entry.at_ms();
+            let superseded_info = match &entry {
+                JournalEntry::Superseded {
+                    id,
+                    replaced_by,
+                    at_ms,
+                } => Some((id.clone(), replaced_by.clone(), *at_ms)),
+                _ => None,
+            };
+            let pre_dead = index_by_id
+                .get(&entry_id)
+                .is_some_and(|&pos| receipts[pos].dead);
+            let pre_cancelled = index_by_id
+                .get(&entry_id)
+                .is_some_and(|&pos| receipts[pos].cancelled);
+            let pre_bound = index_by_id.get(&entry_id).map(|&pos| {
+                (
+                    receipts[pos].target_session_id.clone(),
+                    receipts[pos].submission_id.clone(),
+                )
+            });
+
+            match &entry {
+                JournalEntry::Released {
+                    id,
+                    retry_after_ms,
+                    at_ms,
+                    ..
+                } => {
+                    released_at_ms
+                        .insert(id.clone(), (*at_ms, *retry_after_ms));
+                }
+                JournalEntry::Taken { id, .. } => {
+                    released_at_ms.remove(id);
+                }
+                _ => {}
+            }
+
+            apply_journal_entry(&mut receipts, &mut index_by_id, entry);
+
+            if let Some(&pos) = index_by_id.get(&entry_id) {
+                if pos == last_event_at_ms.len() {
+                    last_event_at_ms.push(entry_at);
+                    last_event_seq.push(seq);
+                } else {
+                    last_event_at_ms[pos] = entry_at;
+                    last_event_seq[pos] = seq;
+                }
+                let rec = &receipts[pos];
+                if !pre_dead && rec.dead {
+                    dead_at_ms.insert(entry_id.clone(), entry_at);
+                }
+                if !pre_cancelled && rec.cancelled {
+                    if let Some((sid, rep, sup_at)) = superseded_info {
+                        superseded_by.insert(sid, (rep, sup_at));
+                    } else {
+                        cancelled_at_ms.insert(entry_id.clone(), entry_at);
+                    }
+                }
+                if let Some((prev_sid, prev_sub)) = pre_bound
+                    && (rec.target_session_id != prev_sid
+                        || rec.submission_id != prev_sub)
+                {
+                    bound_at_ms.insert(entry_id, entry_at);
+                }
+            }
+        }
+
+        let mut keep_indices: Vec<usize> = Vec::new();
+        let mut terminal_indices: Vec<usize> = Vec::new();
+        for (pos, receipt) in receipts.iter().enumerate() {
+            if receipt.dead
+                || (receipt.completed_at_ms.is_none() && !receipt.cancelled)
+            {
+                keep_indices.push(pos);
+            } else {
+                terminal_indices.push(pos);
+            }
+        }
+        terminal_indices.sort_by(|&a, &b| {
+            last_event_at_ms[b]
+                .cmp(&last_event_at_ms[a])
+                .then_with(|| last_event_seq[b].cmp(&last_event_seq[a]))
+        });
+        terminal_indices.truncate(COMPACT_RETAIN_TERMINAL);
+        keep_indices.extend(terminal_indices);
+        keep_indices.sort_unstable();
+        keep_indices.dedup();
+
+        let mut compacted_entries: Vec<JournalEntry> = Vec::new();
+        for pos in keep_indices {
+            let r = &receipts[pos];
+            let fallback_at = last_event_at_ms[pos];
+            compacted_entries.push(JournalEntry::Accepted {
+                id: r.id.clone(),
+                session_hint: r.session_hint.clone(),
+                text: r.text.clone(),
+                at_ms: r.created_at_ms,
+                strict_target: r.strict_target,
+                dispatch_request_id: r.dispatch_request_id.clone(),
+                draft_target: r.draft_target.clone(),
+            });
+            if r.attempts > 0 {
+                let taken_at = r.taken_at_ms.unwrap_or(r.created_at_ms);
+                let final_attempt = r
+                    .lease
+                    .as_ref()
+                    .map(|l| l.attempt_id.clone())
+                    .or_else(|| r.last_attempt_id.clone())
+                    .unwrap_or_default();
+                for attempt_idx in 0..r.attempts {
+                    if attempt_idx + 1 < r.attempts {
+                        compacted_entries.push(JournalEntry::Taken {
+                            id: r.id.clone(),
+                            attempt_id: format!(
+                                "compacted-attempt-{}",
+                                attempt_idx + 1
+                            ),
+                            lease_until_ms: 0,
+                            at_ms: taken_at,
+                        });
+                    } else {
+                        compacted_entries.push(JournalEntry::Taken {
+                            id: r.id.clone(),
+                            attempt_id: final_attempt.clone(),
+                            lease_until_ms: r
+                                .lease
+                                .as_ref()
+                                .map_or(0, |l| l.expires_at_ms),
+                            at_ms: taken_at,
+                        });
+                    }
+                }
+                if let (Some(sid), Some(sub_id)) =
+                    (&r.target_session_id, &r.submission_id)
+                {
+                    compacted_entries.push(JournalEntry::Bound {
+                        id: r.id.clone(),
+                        attempt_id: final_attempt.clone(),
+                        session_id: sid.clone(),
+                        submission_id: sub_id.clone(),
+                        at_ms: bound_at_ms
+                            .get(&r.id)
+                            .copied()
+                            .unwrap_or(taken_at),
+                    });
+                }
+                if let Some(avail) = r.available_at_ms {
+                    let (rel_at, rel_retry) = released_at_ms
+                        .get(&r.id)
+                        .copied()
+                        .filter(|(at, retry)| {
+                            at.saturating_add(*retry) == avail
+                        })
+                        .unwrap_or((avail, 0));
+                    compacted_entries.push(JournalEntry::Released {
+                        id: r.id.clone(),
+                        attempt_id: final_attempt.clone(),
+                        retry_after_ms: rel_retry,
+                        at_ms: rel_at,
+                    });
+                }
+                if r.dead {
+                    compacted_entries.push(JournalEntry::Dead {
+                        id: r.id.clone(),
+                        attempt_id: final_attempt,
+                        at_ms: dead_at_ms
+                            .get(&r.id)
+                            .copied()
+                            .unwrap_or(fallback_at),
+                    });
+                    if r.cancelled {
+                        let (replaced_by, sup_at) =
+                            superseded_by.get(&r.id).cloned().unwrap_or_else(
+                                || ("compacted".to_owned(), fallback_at),
+                            );
+                        compacted_entries.push(JournalEntry::Superseded {
+                            id: r.id.clone(),
+                            replaced_by,
+                            at_ms: sup_at,
+                        });
+                    }
+                } else if let Some(done_at) = r.completed_at_ms {
+                    compacted_entries.push(JournalEntry::Completed {
+                        id: r.id.clone(),
+                        attempt_id: final_attempt,
+                        at_ms: done_at,
+                    });
+                } else if r.cancelled {
+                    compacted_entries.push(JournalEntry::Cancelled {
+                        id: r.id.clone(),
+                        at_ms: cancelled_at_ms
+                            .get(&r.id)
+                            .copied()
+                            .unwrap_or(fallback_at),
+                    });
+                }
+            } else if r.cancelled {
+                compacted_entries.push(JournalEntry::Cancelled {
+                    id: r.id.clone(),
+                    at_ms: cancelled_at_ms
+                        .get(&r.id)
+                        .copied()
+                        .unwrap_or(fallback_at),
+                });
+            }
+        }
+
+        if compacted_entries.len() >= lines.len() {
+            return Ok(false);
+        }
+
+        let mut out_buf = Vec::new();
+        for entry in &compacted_entries {
+            let line = serde_json::to_vec(entry).map_err(io::Error::other)?;
+            out_buf.extend_from_slice(&line);
+            out_buf.push(b'\n');
+        }
+
+        let dir = path
+            .parent()
+            .ok_or_else(|| io::Error::other("missing acceptance directory"))?;
+        let (tmp, mut tmp_file) = loop {
+            let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let tmp = dir.join(format!(
+                ".journal.jsonl.{}.{}.tmp",
+                std::process::id(),
+                number
+            ));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+            {
+                Ok(file) => break (tmp, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        };
+        let replace_result = (|| {
+            tmp_file.write_all(&out_buf)?;
+            tmp_file.flush()?;
+            tmp_file.sync_all()?;
+            drop(tmp_file);
+            let _replace =
+                REPLACE.lock().unwrap_or_else(PoisonError::into_inner);
+            fs::rename(&tmp, &path)
+        })();
+        if replace_result.is_err() {
+            let _ = fs::remove_file(&tmp);
+            return replace_result.map(|()| false);
+        }
+        cache_invalidate(&normalize_cache_path(&path));
+        Ok(true)
+    }
+}
+
+impl JournalEntry {
+    const fn id(&self) -> &str {
+        match self {
+            Self::Accepted { id, .. }
+            | Self::Taken { id, .. }
+            | Self::Bound { id, .. }
+            | Self::Renewed { id, .. }
+            | Self::Cancelled { id, .. }
+            | Self::Completed { id, .. }
+            | Self::Released { id, .. }
+            | Self::Dead { id, .. }
+            | Self::Superseded { id, .. } => id.as_str(),
+        }
+    }
+
+    const fn at_ms(&self) -> u64 {
+        match self {
+            Self::Accepted { at_ms, .. }
+            | Self::Taken { at_ms, .. }
+            | Self::Bound { at_ms, .. }
+            | Self::Renewed { at_ms, .. }
+            | Self::Cancelled { at_ms, .. }
+            | Self::Completed { at_ms, .. }
+            | Self::Released { at_ms, .. }
+            | Self::Dead { at_ms, .. }
+            | Self::Superseded { at_ms, .. } => *at_ms,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AcceptanceCacheEntry {
+    parsed_len: u64,
+    head: Vec<u8>,
+    tail: Vec<u8>,
+    modified: Option<SystemTime>,
+    has_unparseable: bool,
+    receipts: Vec<AcceptedMessage>,
+    index_by_id: HashMap<String, usize>,
+    corrupt_interior: usize,
+    last_used_seq: u64,
+}
+
+fn cache_registry() -> &'static Mutex<HashMap<PathBuf, AcceptanceCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, AcceptanceCacheEntry>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_get(key: &Path) -> Option<AcceptanceCacheEntry> {
+    static CACHE_TOUCH: AtomicU64 = AtomicU64::new(1);
+    let mut map = cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let cloned = if let Some(entry) = map.get_mut(key) {
+        entry.last_used_seq = CACHE_TOUCH.fetch_add(1, Ordering::Relaxed);
+        Some(entry.clone())
+    } else {
+        None
+    };
+    drop(map);
+    cloned
+}
+
+fn cache_insert(key: PathBuf, mut entry: AcceptanceCacheEntry) {
+    static CACHE_SEQ: AtomicU64 = AtomicU64::new(1);
+    let mut map = cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if !map.contains_key(&key)
+        && map.len() >= MAX_CACHE_ENTRIES
+        && let Some(evict_key) = map
+            .iter()
+            .min_by_key(|(_, val)| val.last_used_seq)
+            .map(|(k, _)| k.clone())
+    {
+        map.remove(&evict_key);
+    }
+    entry.last_used_seq = CACHE_SEQ.fetch_add(1, Ordering::Relaxed);
+    map.insert(key, entry);
+}
+
+fn cache_invalidate(key: &Path) {
+    cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(key);
+}
+
+fn normalize_cache_path(path: &Path) -> PathBuf {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut clean = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other.as_os_str()),
+        }
+    }
+    let mut tail = Vec::new();
+    let mut probe = clean.as_path();
+    loop {
+        if let Ok(canon) = fs::canonicalize(probe) {
+            let mut out = canon;
+            for seg in tail.into_iter().rev() {
+                out.push(seg);
+            }
+            return out;
+        }
+        match (probe.parent(), probe.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                probe = parent;
+            }
+            _ => return clean,
+        }
+    }
+}
+
+fn compute_boundary_slices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let head_len = bytes.len().min(BOUNDARY_SLICE_BYTES);
+    let tail_start = bytes.len().saturating_sub(BOUNDARY_SLICE_BYTES);
+    (bytes[..head_len].to_vec(), bytes[tail_start..].to_vec())
+}
+
+fn advance_boundary_slices(
+    head: &mut Vec<u8>,
+    tail: &mut Vec<u8>,
+    appended: &[u8],
+) {
+    if head.len() < BOUNDARY_SLICE_BYTES {
+        let need = BOUNDARY_SLICE_BYTES - head.len();
+        head.extend_from_slice(&appended[..appended.len().min(need)]);
+    }
+    if appended.len() >= BOUNDARY_SLICE_BYTES {
+        *tail = appended[appended.len() - BOUNDARY_SLICE_BYTES..].to_vec();
+    } else {
+        let mut combined = Vec::with_capacity(
+            (tail.len() + appended.len()).min(BOUNDARY_SLICE_BYTES * 2),
+        );
+        combined.extend_from_slice(tail);
+        combined.extend_from_slice(appended);
+        let start = combined.len().saturating_sub(BOUNDARY_SLICE_BYTES);
+        *tail = combined[start..].to_vec();
+    }
+}
+
+fn verify_boundary_slices(
+    file: &mut fs::File,
+    parsed_len: u64,
+    expected_head: &[u8],
+    expected_tail: &[u8],
+) -> io::Result<bool> {
+    if parsed_len == 0 {
+        return Ok(expected_head.is_empty() && expected_tail.is_empty());
+    }
+    let head_len = usize::try_from(parsed_len.min(BOUNDARY_SLICE_BYTES as u64))
+        .unwrap_or(BOUNDARY_SLICE_BYTES);
+    if expected_head.len() != head_len {
+        return Ok(false);
+    }
+    let mut head_buf = vec![0_u8; head_len];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut head_buf)?;
+    if head_buf != expected_head {
+        return Ok(false);
+    }
+    if parsed_len <= BOUNDARY_SLICE_BYTES as u64 {
+        return Ok(head_buf == expected_tail);
+    }
+    if expected_tail.len() != BOUNDARY_SLICE_BYTES {
+        return Ok(false);
+    }
+    let tail_start = parsed_len - BOUNDARY_SLICE_BYTES as u64;
+    let mut tail_buf = vec![0_u8; BOUNDARY_SLICE_BYTES];
+    file.seek(SeekFrom::Start(tail_start))?;
+    file.read_exact(&mut tail_buf)?;
+    Ok(tail_buf == expected_tail)
+}
+
+type ReplayParseOutput = (
+    Vec<AcceptedMessage>,
+    HashMap<String, usize>,
+    HashMap<String, usize>,
+    usize,
+    Option<usize>,
+    bool,
+);
+
+fn replay_bytes(bytes: &[u8]) -> ReplayParseOutput {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut receipts: Vec<AcceptedMessage> = Vec::new();
+    let mut index_by_id: HashMap<String, usize> = HashMap::new();
+    let mut last_taken_line: HashMap<String, usize> = HashMap::new();
+    let mut corrupt_interior = 0_usize;
+    let mut last_interior_corrupt_line: Option<usize> = None;
+    let mut has_unparseable = false;
+    for (idx, line) in lines.iter().enumerate() {
+        let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+            has_unparseable = true;
+            if idx + 1 < lines.len() {
+                corrupt_interior = corrupt_interior.saturating_add(1);
+                last_interior_corrupt_line = Some(idx);
+            }
+            continue;
+        };
+        if let JournalEntry::Taken { id, .. } = &entry
+            && index_by_id.contains_key(id)
+        {
+            last_taken_line.insert(id.clone(), idx);
+        }
+        apply_journal_entry(&mut receipts, &mut index_by_id, entry);
+    }
+    (
+        receipts,
+        index_by_id,
+        last_taken_line,
+        corrupt_interior,
+        last_interior_corrupt_line,
+        has_unparseable,
+    )
+}
+
+fn apply_journal_entry(
+    receipts: &mut Vec<AcceptedMessage>,
+    index_by_id: &mut HashMap<String, usize>,
+    entry: JournalEntry,
+) {
+    match entry {
+        JournalEntry::Accepted {
+            id,
+            session_hint,
+            text,
+            at_ms,
+            strict_target,
+            dispatch_request_id,
+            draft_target,
+        } => {
+            let pos = receipts.len();
+            index_by_id.entry(id.clone()).or_insert(pos);
+            let target_session_id =
+                strict_target.then(|| session_hint.clone()).flatten();
+            receipts.push(AcceptedMessage {
+                id,
+                session_hint,
+                text,
+                created_at_ms: at_ms,
+                taken_at_ms: None,
+                lease: None,
+                completed_at_ms: None,
+                available_at_ms: None,
+                attempts: 0,
+                dead: false,
+                cancelled: false,
+                quarantined: false,
+                last_attempt_id: None,
+                target_session_id,
+                submission_id: None,
+                strict_target,
+                dispatch_request_id,
+                draft_target,
+            });
+        }
+        JournalEntry::Taken {
+            id,
+            attempt_id,
+            lease_until_ms,
+            at_ms,
+        } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                receipt.taken_at_ms.get_or_insert(at_ms);
+                receipt.available_at_ms = None;
+                receipt.attempts = receipt.attempts.saturating_add(1);
+                receipt.last_attempt_id = Some(attempt_id.clone());
+                receipt.lease = Some(Box::new(Lease {
+                    attempt_id,
+                    expires_at_ms: lease_until_ms,
+                }));
+            }
+        }
+        JournalEntry::Bound {
+            id,
+            attempt_id,
+            session_id,
+            submission_id,
+            ..
+        } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                if receipt.last_attempt_id.as_deref()
+                    == Some(attempt_id.as_str())
+                {
+                    receipt.target_session_id = Some(session_id);
+                    receipt.submission_id = Some(submission_id);
+                }
+            }
+        }
+        JournalEntry::Renewed {
+            id,
+            attempt_id,
+            lease_until_ms,
+            ..
+        } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                if receipt.completed_at_ms.is_none()
+                    && !receipt.dead
+                    && !receipt.cancelled
+                    && let Some(lease) = &mut receipt.lease
+                    && lease.attempt_id == attempt_id
+                {
+                    lease.expires_at_ms =
+                        lease.expires_at_ms.max(lease_until_ms);
+                }
+            }
+        }
+        JournalEntry::Cancelled { id, .. } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                if receipt.completed_at_ms.is_none() && !receipt.dead {
+                    receipt.cancelled = true;
+                    receipt.lease = None;
+                }
+            }
+        }
+        JournalEntry::Completed { id, at_ms, .. } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                receipt.completed_at_ms = Some(at_ms);
+                receipt.lease = None;
+            }
+        }
+        JournalEntry::Released {
+            id,
+            retry_after_ms,
+            at_ms,
+            ..
+        } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                receipt.lease = None;
+                receipt.available_at_ms =
+                    Some(at_ms.saturating_add(retry_after_ms));
+            }
+        }
+        JournalEntry::Dead { id, attempt_id, .. } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                // Only the attempt holding the current lease may kill
+                // the receipt; a stale dead line from a crashed attempt
+                // must not bury the retry that replaced it.
+                let owned = receipt
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.attempt_id == attempt_id);
+                if owned {
+                    receipt.dead = true;
+                    receipt.lease = None;
+                }
+            }
+        }
+        JournalEntry::Superseded { id, .. } => {
+            if let Some(&pos) = index_by_id.get(&id) {
+                let receipt = &mut receipts[pos];
+                if receipt.completed_at_ms.is_none()
+                    && receipt.dead
+                    && !receipt.cancelled
+                {
+                    receipt.cancelled = true;
+                    receipt.lease = None;
+                }
+            }
+        }
+    }
+}
+
+fn quarantine_pre_corruption_receipts(
+    path: &Path,
+    receipts: &mut [AcceptedMessage],
+    last_taken_line: &HashMap<String, usize>,
+    corrupt_idx: usize,
+    corrupt_interior: usize,
+) {
+    tracing::error!(
+        target: "flowy.acceptance",
+        path = %path.display(),
+        corrupt_interior,
+        "interior journal corruption detected; quarantining pre-corruption in-flight receipts"
+    );
+    for receipt in receipts {
+        if receipt.completed_at_ms.is_none()
+            && !receipt.dead
+            && !receipt.cancelled
+            && last_taken_line
+                .get(&receipt.id)
+                .is_some_and(|&taken_idx| taken_idx < corrupt_idx)
+        {
+            receipt.quarantined = true;
+            receipt.lease = None;
+        }
     }
 }
 
@@ -1067,23 +1880,24 @@ fn now_ms() -> u64 {
 /// Repair a crash-truncated trailing line before the next append (caller holds
 /// `queue_lock`).
 ///
-/// - If the file already ends with `\n` (or is empty / missing), does nothing.
+/// - If the file already ends with `\n` (or is empty / missing), returns `Ok(false)`.
 /// - If the trailing non-newline fragment parses as a complete [`JournalEntry`],
-///   appends `\n` so that valid entry is preserved.
+///   appends `\n` so that valid entry is preserved, invalidates cache, and returns `Ok(true)`.
 /// - If the trailing fragment is unparseable (partial crash write), truncates
 ///   the file back to the end of the last complete newline-terminated line so
 ///   the torn bytes are never promoted into an interior corrupt line that would
-///   quarantine earlier healthy receipts.
-fn repair_torn_tail_locked(path: &Path) -> io::Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
+///   quarantine earlier healthy receipts, invalidates cache, and returns `Ok(true)`.
+fn repair_torn_tail_locked(path: &Path, cache_key: &Path) -> io::Result<bool> {
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
         Err(error) => return Err(error),
     };
     let len = file.seek(SeekFrom::End(0))?;
     if len == 0 {
-        return Ok(());
+        return Ok(false);
     }
     // Fast path: check only the final byte so normal appends never read the
     // whole journal into memory.
@@ -1091,13 +1905,13 @@ fn repair_torn_tail_locked(path: &Path) -> io::Result<()> {
     let mut last = [0_u8; 1];
     file.read_exact(&mut last)?;
     if last[0] == b'\n' {
-        return Ok(());
+        return Ok(false);
     }
     drop(file);
     // Rare crash-recovery path: the final line lacks a trailing newline.
     let bytes = fs::read(path)?;
     if bytes.is_empty() || bytes.ends_with(b"\n") {
-        return Ok(());
+        return Ok(false);
     }
     let cut = bytes
         .iter()
@@ -1111,12 +1925,54 @@ fn repair_torn_tail_locked(path: &Path) -> io::Result<()> {
         let mut handle = fs::OpenOptions::new().append(true).open(path)?;
         handle.write_all(b"\n")?;
         handle.flush()?;
-        handle.sync_all()
+        handle.sync_all()?;
     } else {
         let handle = fs::OpenOptions::new().write(true).open(path)?;
         handle.set_len(cut as u64)?;
-        handle.sync_all()
+        handle.sync_all()?;
     }
+    cache_invalidate(cache_key);
+    Ok(true)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum ReplayStatKind {
+    CacheHit,
+    TailParse,
+    FullReplay,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct ReplayStats {
+    cache_hits: usize,
+    tail_parses: usize,
+    full_replays: usize,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_REPLAY_STATS: std::cell::Cell<ReplayStats> =
+        const { std::cell::Cell::new(ReplayStats { cache_hits: 0, tail_parses: 0, full_replays: 0 }) };
+}
+
+#[cfg(test)]
+fn record_replay_stat(kind: ReplayStatKind) {
+    TEST_REPLAY_STATS.with(|cell| {
+        let mut stats = cell.get();
+        match kind {
+            ReplayStatKind::CacheHit => stats.cache_hits += 1,
+            ReplayStatKind::TailParse => stats.tail_parses += 1,
+            ReplayStatKind::FullReplay => stats.full_replays += 1,
+        }
+        cell.set(stats);
+    });
+}
+
+#[cfg(test)]
+fn take_replay_stats() -> ReplayStats {
+    TEST_REPLAY_STATS.with(|cell| cell.replace(ReplayStats::default()))
 }
 
 #[cfg(test)]
@@ -1969,6 +2825,486 @@ mod tests {
             reopened_again.get(&retried.id).unwrap().unwrap();
         assert_eq!(retried_replayed.draft_target.as_deref(), Some(&target));
 
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn tail_cache_hits_unchanged_and_incrementally_parses_appends_including_torn_tail()
+     {
+        let root = temp_root("tail-cache-incremental");
+        let queue = AcceptanceQueue::new(&root);
+        // Write enough entries so file exceeds 4096 bytes (exercises separate
+        // head and tail boundary slices).
+        let padding = "x".repeat(256);
+        for i in 0..24_u64 {
+            let _ = queue
+                .accept(Some("sess"), &format!("msg-{i}-{padding}"), 1_000 + i)
+                .expect("accept");
+        }
+        let path = AcceptanceQueue::path(&root);
+        assert!(fs::metadata(&path).unwrap().len() > 4096);
+
+        let _ = take_replay_stats();
+        let initial = queue.all().expect("initial replay");
+        assert_eq!(initial.len(), 24);
+        assert_eq!(
+            take_replay_stats(),
+            ReplayStats {
+                cache_hits: 0,
+                tail_parses: 0,
+                full_replays: 1
+            }
+        );
+
+        // Unchanged second read must hit cache directly without full replay.
+        let cached_read = queue.all().expect("cached replay");
+        assert_eq!(cached_read, initial);
+        assert_eq!(
+            take_replay_stats(),
+            ReplayStats {
+                cache_hits: 1,
+                tail_parses: 0,
+                full_replays: 0
+            }
+        );
+
+        // Append a torn trailing fragment without `\n`: parsed_len must NOT
+        // advance across the partial fragment, and incremental tail read must
+        // tolerate it cleanly.
+        let raw_before_torn = fs::read(&path).expect("read before torn");
+        {
+            let mut handle = fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open append");
+            handle
+                .write_all(br#"{"event":"accepted","id":"torn-"#)
+                .expect("write torn");
+        }
+        let with_torn = queue.all().expect("replay with torn");
+        assert_eq!(with_torn.len(), 24);
+        assert_eq!(
+            take_replay_stats(),
+            ReplayStats {
+                cache_hits: 0,
+                tail_parses: 1,
+                full_replays: 0
+            }
+        );
+
+        // Complete the torn fragment externally into a valid `\n`-terminated
+        // line; incremental tail parse must pick up ONLY from previous
+        // `parsed_len` (`raw_before_torn.len()`).
+        let completed_line = JournalEntry::Accepted {
+            id: "ext-completed".into(),
+            session_hint: Some("sess".into()),
+            text: "completed externally".into(),
+            at_ms: 2_000,
+            strict_target: false,
+            dispatch_request_id: None,
+            draft_target: None,
+        };
+        let mut repaired_bytes = raw_before_torn;
+        repaired_bytes
+            .extend_from_slice(&serde_json::to_vec(&completed_line).unwrap());
+        repaired_bytes.push(b'\n');
+        fs::write(&path, &repaired_bytes).expect("write completed");
+
+        let after_complete = queue.all().expect("replay after external line");
+        assert_eq!(after_complete.len(), 25);
+        assert_eq!(after_complete[24].id, "ext-completed");
+        assert_eq!(
+            take_replay_stats(),
+            ReplayStats {
+                cache_hits: 0,
+                tail_parses: 1,
+                full_replays: 0
+            }
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn tail_cache_fails_closed_on_truncation_and_same_length_head_or_tail_rewrite()
+     {
+        let root = temp_root("tail-cache-fail-closed");
+        let queue = AcceptanceQueue::new(&root);
+        let padding = "p".repeat(256);
+        for i in 0..30_u64 {
+            queue
+                .accept(
+                    Some("home"),
+                    &format!("item-{i:02}-{padding}"),
+                    1_000 + i,
+                )
+                .expect("accept");
+        }
+        let path = AcceptanceQueue::path(&root);
+        let original = fs::read(&path).expect("read original");
+        assert!(original.len() > 8192);
+
+        let _ = take_replay_stats();
+        let first = queue.all().expect("prime cache");
+        assert_eq!(first.len(), 30);
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // 1) Same-length external rewrite inside head (first 4096 bytes) must
+        //    fail closed via boundary mismatch and fall back to full replay.
+        let mut head_mutated = original.clone();
+        let needle = b"item-00-p";
+        let head_pos = head_mutated
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("needle in head");
+        assert!(head_pos < 4096);
+        head_mutated[head_pos..head_pos + needle.len()]
+            .copy_from_slice(b"item-00-Q");
+        assert_eq!(head_mutated.len(), original.len());
+        fs::write(&path, &head_mutated).expect("write head mutated");
+
+        let after_head_rewrite =
+            queue.all().expect("replay after head rewrite");
+        assert_eq!(take_replay_stats().full_replays, 1);
+        assert!(after_head_rewrite[0].text.starts_with("item-00-Q"));
+
+        // 2) Same-length external rewrite inside tail (last 4096 bytes) must
+        //    also fail closed and re-read from offset 0.
+        let mut tail_mutated = head_mutated.clone();
+        let tail_needle = b"item-29-p";
+        let tail_pos = tail_mutated
+            .windows(tail_needle.len())
+            .position(|w| w == tail_needle)
+            .expect("needle in tail");
+        assert!(tail_pos + 4096 >= tail_mutated.len());
+        tail_mutated[tail_pos..tail_pos + tail_needle.len()]
+            .copy_from_slice(b"item-29-Z");
+        assert_eq!(tail_mutated.len(), head_mutated.len());
+        fs::write(&path, &tail_mutated).expect("write tail mutated");
+
+        let after_tail_rewrite =
+            queue.all().expect("replay after tail rewrite");
+        assert_eq!(take_replay_stats().full_replays, 1);
+        assert!(after_tail_rewrite[29].text.starts_with("item-29-Z"));
+
+        // 3) External truncation (`len < parsed_len`) must invalidate and fall
+        //    back to full offset-0 replay.
+        let first_line_end = tail_mutated
+            .iter()
+            .position(|&b| b == b'\n')
+            .expect("newline")
+            + 1;
+        fs::write(&path, &tail_mutated[..first_line_end])
+            .expect("truncate externally");
+        let after_truncate = queue.all().expect("replay after truncate");
+        assert_eq!(take_replay_stats().full_replays, 1);
+        assert_eq!(after_truncate.len(), 1);
+        assert!(after_truncate[0].text.starts_with("item-00-Q"));
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn tail_cache_stays_bounded_under_max_entries() {
+        let mut roots = Vec::new();
+        for i in 0..80_usize {
+            let root = temp_root(&format!("cache-bound-{i}"));
+            let queue = AcceptanceQueue::new(&root);
+            queue.accept(None, "bound", 1_000).expect("accept");
+            let _ = queue.all().expect("populate cache");
+            roots.push(root);
+        }
+        let len = cache_registry()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        assert!(
+            len <= MAX_CACHE_ENTRIES,
+            "cache size {len} exceeded bound {MAX_CACHE_ENTRIES}"
+        );
+        for root in roots {
+            fs::remove_dir_all(&root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn accept_never_compacts_while_terminal_transition_compacts_preserving_fidelity_across_reopen()
+     {
+        let root = temp_root("safe-compact");
+        let queue = AcceptanceQueue::new(&root);
+
+        // 1) Append 260 completed receipts -> total > 512 lines if completed,
+        //    but first test that `accept` alone NEVER compacts even > 512 lines.
+        for i in 0..520_u64 {
+            let _ = queue
+                .accept(Some("s-init"), &format!("queued-{i}"), 1_000 + i)
+                .expect("accept");
+        }
+        let path = AcceptanceQueue::path(&root);
+        let accept_only_bytes = fs::read_to_string(&path).expect("read");
+        assert_eq!(
+            accept_only_bytes.lines().count(),
+            520,
+            "accept() must never trigger compaction"
+        );
+
+        // 2) Now build a rich mixed-state journal in a second root:
+        //    - 250 completed receipts (various attempts, bindings, releases)
+        //    - 10 cancelled receipts
+        //    - 2 dead receipts (one un-superseded, one superseded via retry_dead)
+        //    - 3 non-terminal receipts (Queued, Running, Released-with-backoff)
+        let rich_root = temp_root("safe-compact-rich");
+        let rich = AcceptanceQueue::new(&rich_root);
+        let target = DraftTarget {
+            origin: SessionOrigin::Project {
+                project_id: Some("proj-compact".into()),
+            },
+            workspace: Some(SessionWorkspace {
+                root: PathBuf::from(r"C:\work\compact"),
+            }),
+            role: SessionRole::Worker,
+        };
+
+        let mut expected_kept_ids = BTreeSet::new();
+        for i in 0..250_u64 {
+            let r = rich
+                .accept_with_target(
+                    Some("hint-term"),
+                    &format!("done-{i}"),
+                    false,
+                    Some(target.clone()),
+                    Some(&format!("req-{i}")),
+                    10_000 + i * 10,
+                )
+                .expect("accept done");
+            rich.take(&r.id, "att-1", 10_001 + i * 10, 5_000)
+                .expect("take")
+                .expect("claimed");
+            if i % 3 == 0 {
+                // Multi-attempt with release + bind on attempt 2
+                rich.release(&r.id, "att-1", 10_002 + i * 10, 100)
+                    .expect("release");
+                rich.take(&r.id, "att-2", 10_200 + i * 10, 5_000)
+                    .expect("take 2")
+                    .expect("claimed 2");
+                rich.bind(
+                    &r.id,
+                    "att-2",
+                    &format!("sess-{i}"),
+                    &format!("sub-{i}"),
+                    10_201 + i * 10,
+                )
+                .expect("bind");
+                rich.complete(&r.id, "att-2", 10_205 + i * 10)
+                    .expect("complete");
+            } else {
+                rich.complete(&r.id, "att-1", 10_005 + i * 10)
+                    .expect("complete");
+            }
+        }
+        for i in 0..10_u64 {
+            let r = rich
+                .accept(Some("hint-cancel"), &format!("cancel-{i}"), 20_000 + i)
+                .expect("accept cancel");
+            assert!(rich.cancel(&r.id, 20_500 + i).expect("cancel"));
+            expected_kept_ids.insert(r.id);
+        }
+
+        // Dead (un-superseded)
+        let dead_keep = rich
+            .accept(Some("hint-dead"), "dead keep", 21_000)
+            .expect("dead keep");
+        rich.take(&dead_keep.id, "att-dead", 21_010, 5_000)
+            .expect("take dead")
+            .expect("claimed");
+        assert!(
+            rich.give_up(&dead_keep.id, "att-dead", 21_020)
+                .expect("give_up")
+        );
+        expected_kept_ids.insert(dead_keep.id.clone());
+
+        // Dead + Superseded (must stay dead & cancelled across compaction so
+        // retry_dead remains idempotent)
+        let dead_sup = rich
+            .accept(Some("hint-sup"), "dead superseded", 21_100)
+            .expect("dead sup");
+        rich.take(&dead_sup.id, "att-sup", 21_110, 5_000)
+            .expect("take sup")
+            .expect("claimed");
+        assert!(
+            rich.give_up(&dead_sup.id, "att-sup", 21_120)
+                .expect("give_up")
+        );
+        let retried_from_sup = rich
+            .retry_dead(&dead_sup.id, 21_130)
+            .expect("retry_dead")
+            .expect("requeued");
+        expected_kept_ids.insert(dead_sup.id.clone());
+        expected_kept_ids.insert(retried_from_sup.id);
+
+        // Non-terminal: Queued (strict_target = true), Running (bound + renewed),
+        // Released (with backoff)
+        let nt_queued = rich
+            .accept_strict(
+                "worker-strict",
+                "queued non-term",
+                Some("req-q"),
+                22_000,
+            )
+            .expect("accept strict");
+        expected_kept_ids.insert(nt_queued.id);
+
+        let nt_running = rich
+            .accept(Some("hint-run"), "running non-term", 22_100)
+            .expect("accept run");
+        rich.take(&nt_running.id, "att-run", 22_110, 5_000)
+            .expect("take run")
+            .expect("claimed");
+        rich.bind(&nt_running.id, "att-run", "sess-run", "sub-run", 22_115)
+            .expect("bind run");
+        rich.renew_lease(&nt_running.id, "att-run", 22_120, 15_000)
+            .expect("renew run");
+        expected_kept_ids.insert(nt_running.id);
+
+        let nt_released = rich
+            .accept(Some("hint-rel"), "released non-term", 22_200)
+            .expect("accept rel");
+        rich.take(&nt_released.id, "att-rel", 22_210, 5_000)
+            .expect("take rel")
+            .expect("claimed");
+        rich.release(&nt_released.id, "att-rel", 22_220, 3_000)
+            .expect("release rel");
+        expected_kept_ids.insert(nt_released.id);
+
+        let before_snapshot = rich.all().expect("snapshot before compact");
+        let rich_path = AcceptanceQueue::path(&rich_root);
+        let lines_before = fs::read_to_string(&rich_path)
+            .expect("read before")
+            .lines()
+            .count();
+        assert!(lines_before > COMPACT_MIN_LINES);
+
+        // Trigger terminal compaction on one more completion (note: all prior
+        // completions already hit COMPACT_MIN_LINES once line 512 was crossed,
+        // and we can also verify compact_with_thresholds directly).
+        let final_done = rich
+            .accept(Some("hint-final"), "final done", 23_000)
+            .expect("final");
+        rich.take(&final_done.id, "att-fin", 23_010, 5_000)
+            .expect("take fin")
+            .expect("claimed");
+        assert!(
+            rich.complete(&final_done.id, "att-fin", 23_020)
+                .expect("complete fin")
+        );
+        expected_kept_ids.insert(final_done.id);
+
+        let lines_after = fs::read_to_string(&rich_path)
+            .expect("read after")
+            .lines()
+            .count();
+        assert!(
+            lines_after < lines_before,
+            "terminal compaction must prune older terminal records ({lines_after} < {lines_before})"
+        );
+
+        // Reopen fresh handle (no cache reuse across handles if invalidated,
+        // and full roundtrip verification).
+        let _ = take_replay_stats();
+        let reopened = AcceptanceQueue::new(&rich_root);
+        let after_reopen = reopened.all().expect("replay after compact");
+        assert_eq!(
+            take_replay_stats().full_replays,
+            1,
+            "compaction must invalidate cache"
+        );
+
+        // Verify exact count: 200 newest terminal + 2 dead + 4 non-terminal
+        // (`retried_from_sup`, `nt_queued`, `nt_running`, `nt_released`) = 206.
+        assert_eq!(after_reopen.len(), 206);
+
+        let before_by_id: HashMap<String, AcceptedMessage> = before_snapshot
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+        for kept in &after_reopen {
+            if let Some(prev) = before_by_id.get(&kept.id) {
+                assert_eq!(
+                    kept, prev,
+                    "compacted receipt {} must roundtrip 100% losslessly",
+                    kept.id
+                );
+            }
+        }
+        for id in &expected_kept_ids {
+            assert!(
+                after_reopen.iter().any(|r| &r.id == id),
+                "expected kept receipt {id} missing after compaction"
+            );
+        }
+        // `retry_dead` on superseded dead receipt must still be rejected!
+        assert!(
+            reopened
+                .retry_dead(&dead_sup.id, 30_000)
+                .expect("idempotent retry_dead")
+                .is_none()
+        );
+        // Un-superseded dead receipt must still be retryable!
+        assert!(
+            reopened
+                .retry_dead(&dead_keep.id, 30_001)
+                .expect("retry_dead on kept dead")
+                .is_some()
+        );
+
+        // Also test deterministic helper `compact_with_thresholds` does not
+        // compact when below threshold.
+        let small_root = temp_root("compact-threshold");
+        let small = AcceptanceQueue::new(&small_root);
+        for i in 0..5_u64 {
+            let r = small.accept(None, &format!("s-{i}"), 1_000 + i).unwrap();
+            small.take(&r.id, "a", 1_010 + i, 5_000).unwrap().unwrap();
+            small.complete(&r.id, "a", 1_020 + i).unwrap();
+        }
+        assert!(
+            !small
+                .compact_with_thresholds(100, 1024 * 1024)
+                .expect("below threshold")
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup");
+        fs::remove_dir_all(&rich_root).expect("cleanup");
+        fs::remove_dir_all(&small_root).expect("cleanup");
+    }
+
+    #[test]
+    fn compaction_skips_corrupt_journals_preserving_quarantine_flag() {
+        let root = temp_root("compact-corrupt-skip");
+        let queue = AcceptanceQueue::new(&root);
+        let first = queue.accept(None, "in-flight", 1_000).expect("first");
+        queue
+            .take(&first.id, "att-1", 1_010, 5_000)
+            .expect("take")
+            .expect("claimed");
+        let path = AcceptanceQueue::path(&root);
+        {
+            let mut f =
+                fs::OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(f, r#"{{"event":"broken""#).unwrap();
+        }
+        for i in 0..10_u64 {
+            let r = queue.accept(None, &format!("ok-{i}"), 2_000 + i).unwrap();
+            queue.take(&r.id, "a", 2_010 + i, 5_000).unwrap().unwrap();
+            queue.complete(&r.id, "a", 2_020 + i).unwrap();
+        }
+        assert!(queue.has_interior_corruption().unwrap());
+        assert!(
+            !queue
+                .compact_with_thresholds(1, 1)
+                .expect("must skip corrupt journal")
+        );
+        assert!(queue.has_interior_corruption().unwrap());
+        assert!(queue.get(&first.id).unwrap().unwrap().quarantined);
         fs::remove_dir_all(&root).expect("cleanup");
     }
 }

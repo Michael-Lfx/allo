@@ -21,7 +21,7 @@ use crate::session::{
     DeliveryCommit, DeliveryCommitter, DispatchRecord, ObjectVerifyState,
     PendingCard, PendingRouterFollowup, SessionIndex, SessionOrigin,
     SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TurnState, WorkAccessMode, WorkContract,
+    SubmissionOutcome, TrackedObject, TurnState, WorkAccessMode, WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -110,6 +110,16 @@ pub enum EnqueueOutcome {
     Enqueued,
     Duplicate,
     QueueFull,
+}
+
+/// Lightweight summary of a durable Worker child session for cascade deletion
+/// without cloning full `messages` or event histories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildDeleteSummary {
+    pub id: String,
+    pub is_busy: bool,
+    pub artifact_ids: Vec<String>,
+    pub submission_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -369,6 +379,84 @@ impl Engine {
             .collect();
         ids.sort();
         ids
+    }
+
+    /// Finds the first durable Worker session owned by `root_id` (in index
+    /// order) whose `WorkContract` tracks `object_id`, returning `(child_id,
+    /// tracked_object, confirmed_facts)` without cloning sibling `messages` or
+    /// histories.
+    #[must_use]
+    #[expect(
+        clippy::type_complexity,
+        reason = "preserves the explicit 3-tuple child object projection signature for callers"
+    )]
+    pub fn find_child_tracked_object(
+        &self,
+        root_id: &str,
+        object_id: &str,
+    ) -> Option<(String, TrackedObject, Vec<(String, String)>)> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let found = inner
+            .index
+            .sessions
+            .iter()
+            .filter(|rec| {
+                rec.role == SessionRole::Worker
+                    && rec.root_session_id.as_deref() == Some(root_id)
+            })
+            .find_map(|child| {
+                let wc = child.work_contract.as_ref()?;
+                let obj = wc.find_object(object_id)?;
+                let facts = wc
+                    .confirmed_facts_for(object_id)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                Some((child.id.clone(), obj.clone(), facts))
+            });
+        drop(inner);
+        found
+    }
+
+    /// Returns lightweight deletion summaries for all durable Worker sessions
+    /// owned by `root_id` without cloning full `messages` or event vectors.
+    #[must_use]
+    pub fn child_delete_summaries(
+        &self,
+        root_id: &str,
+    ) -> Vec<ChildDeleteSummary> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let summaries = inner
+            .index
+            .sessions
+            .iter()
+            .filter(|rec| {
+                rec.role == SessionRole::Worker
+                    && rec.root_session_id.as_deref() == Some(root_id)
+            })
+            .map(|child| {
+                let mut artifact_ids = Vec::new();
+                let mut submission_ids =
+                    Vec::with_capacity(child.delivery_commits.len());
+                for commit in &child.delivery_commits {
+                    artifact_ids.extend(commit.artifact_ids.iter().cloned());
+                    submission_ids.push(commit.submission_id.clone());
+                }
+                ChildDeleteSummary {
+                    id: child.id.clone(),
+                    is_busy: child.status.is_busy(),
+                    artifact_ids,
+                    submission_ids,
+                }
+            })
+            .collect();
+        drop(inner);
+        summaries
     }
 
     /// Atomically enqueue a durable FIFO user follow-up onto a busy Router
@@ -3867,5 +3955,225 @@ mod tests {
         assert_eq!(after_failed_take.pending_cards, vec![card]);
         assert_eq!(after_failed_take.status, TurnState::WaitingForUser);
         let _ = std::fs::remove_dir(&history_path);
+    }
+
+    #[test]
+    fn child_projections_match_child_sessions_across_multiple_workers() {
+        use std::collections::BTreeMap;
+
+        use crate::session::{
+            DeliveryCommit, FactEntry, FactStatus, ObjectVerifyState,
+            SessionOrigin, SessionRecord, SessionRole, TrackedObject,
+            TrackedObjectKind, TurnState, WorkContract,
+        };
+
+        struct NoopObserver;
+        impl TurnObserver for NoopObserver {}
+
+        let scratch = Scratch::new("child-projection-parity");
+        let engine =
+            Engine::open(scratch.0.clone(), config(), Arc::new(NoopObserver))
+                .unwrap();
+
+        engine
+            .insert_session(SessionRecord {
+                id: "router-1".into(),
+                role: SessionRole::Router,
+                updated_at: 10,
+                ..SessionRecord::default()
+            })
+            .unwrap();
+        // Other root worker and non-worker session must be ignored.
+        engine
+            .insert_session(SessionRecord {
+                id: "other-worker".into(),
+                role: SessionRole::Worker,
+                root_session_id: Some("router-2".into()),
+                updated_at: 99,
+                status: TurnState::Running,
+                work_contract: Some(WorkContract {
+                    objects: vec![TrackedObject {
+                        object_id: "obj-shared".into(),
+                        kind: TrackedObjectKind::Deliverable,
+                        filename: Some("other.pptx".into()),
+                        extension: "pptx".into(),
+                        anchor_summary: String::new(),
+                        overrides: BTreeMap::new(),
+                        verify_state: ObjectVerifyState::Unverified,
+                    }],
+                    ..WorkContract::default()
+                }),
+                ..SessionRecord::default()
+            })
+            .unwrap();
+        engine
+            .insert_session(SessionRecord {
+                id: "standard-child-id".into(),
+                role: SessionRole::Standard,
+                root_session_id: Some("router-1".into()),
+                updated_at: 98,
+                ..SessionRecord::default()
+            })
+            .unwrap();
+
+        // Older worker (updated_at = 20)
+        engine
+            .insert_session(SessionRecord {
+                id: "w-older".into(),
+                role: SessionRole::Worker,
+                root_session_id: Some("router-1".into()),
+                updated_at: 20,
+                status: TurnState::Completed,
+                delivery_commits: vec![DeliveryCommit {
+                    session_id: "w-older".into(),
+                    submission_id: "sub-1".into(),
+                    artifact_ids: vec!["art-a".into(), "art-b".into()],
+                    completed_successfully: true,
+                    committed_at_ms: 20,
+                    origin: SessionOrigin::Home,
+                    origin_title_snapshot: String::new(),
+                }],
+                work_contract: Some(WorkContract {
+                    revision: 2,
+                    pinned_facts: BTreeMap::from([
+                        ("client".into(), "Acme".into()),
+                        ("date".into(), "2026-01-01".into()),
+                    ]),
+                    objects: vec![
+                        TrackedObject {
+                            object_id: "obj-1".into(),
+                            kind: TrackedObjectKind::Deliverable,
+                            filename: Some("deck.pptx".into()),
+                            extension: "pptx".into(),
+                            anchor_summary: "deck".into(),
+                            overrides: BTreeMap::from([
+                                (
+                                    "date".into(),
+                                    FactEntry {
+                                        value: "2026-02-02".into(),
+                                        status: FactStatus::Confirmed,
+                                        updated_at_ms: 21,
+                                    },
+                                ),
+                                (
+                                    "client".into(),
+                                    FactEntry {
+                                        value: "PendingCorp".into(),
+                                        status: FactStatus::PendingProposal,
+                                        updated_at_ms: 22,
+                                    },
+                                ),
+                            ]),
+                            verify_state: ObjectVerifyState::Unverified,
+                        },
+                        TrackedObject {
+                            object_id: "obj-shared".into(),
+                            kind: TrackedObjectKind::Record,
+                            filename: None,
+                            extension: "md".into(),
+                            anchor_summary: "older".into(),
+                            overrides: BTreeMap::new(),
+                            verify_state: ObjectVerifyState::Unverified,
+                        },
+                    ],
+                    ..WorkContract::default()
+                }),
+                ..SessionRecord::default()
+            })
+            .unwrap();
+
+        // Newer worker (updated_at = 50) also tracking `obj-shared`
+        engine
+            .insert_session(SessionRecord {
+                id: "w-newer".into(),
+                role: SessionRole::Worker,
+                root_session_id: Some("router-1".into()),
+                updated_at: 50,
+                status: TurnState::Running,
+                delivery_commits: vec![
+                    DeliveryCommit {
+                        session_id: "w-newer".into(),
+                        submission_id: "sub-2".into(),
+                        artifact_ids: vec!["art-c".into()],
+                        completed_successfully: true,
+                        committed_at_ms: 50,
+                        origin: SessionOrigin::Home,
+                        origin_title_snapshot: String::new(),
+                    },
+                    DeliveryCommit {
+                        session_id: "w-newer".into(),
+                        submission_id: "sub-3".into(),
+                        artifact_ids: vec!["art-d".into()],
+                        completed_successfully: false,
+                        committed_at_ms: 51,
+                        origin: SessionOrigin::Home,
+                        origin_title_snapshot: String::new(),
+                    },
+                ],
+                work_contract: Some(WorkContract {
+                    revision: 1,
+                    pinned_facts: BTreeMap::from([(
+                        "topic".into(),
+                        "Q4".into(),
+                    )]),
+                    objects: vec![TrackedObject {
+                        object_id: "obj-shared".into(),
+                        kind: TrackedObjectKind::Deliverable,
+                        filename: Some("newer.pptx".into()),
+                        extension: "pptx".into(),
+                        anchor_summary: "newer".into(),
+                        overrides: BTreeMap::new(),
+                        verify_state: ObjectVerifyState::Unverified,
+                    }],
+                    ..WorkContract::default()
+                }),
+                ..SessionRecord::default()
+            })
+            .unwrap();
+
+        let full_children = engine.child_sessions("router-1");
+        for oid in ["obj-1", "obj-shared", "obj-missing"] {
+            let expected = full_children.iter().find_map(|child| {
+                let wc = child.work_contract.as_ref()?;
+                let obj = wc.find_object(oid)?;
+                let facts: Vec<(String, String)> =
+                    wc.confirmed_facts_for(oid).into_iter().collect();
+                Some((child.id.clone(), obj.clone(), facts))
+            });
+            assert_eq!(
+                engine.find_child_tracked_object("router-1", oid),
+                expected,
+                "parity mismatch for object {oid}"
+            );
+        }
+        // `obj-shared` resolves to `w-newer` first (higher `updated_at`).
+        assert_eq!(
+            engine
+                .find_child_tracked_object("router-1", "obj-shared")
+                .map(|(id, _, _)| id),
+            Some("w-newer".to_owned())
+        );
+
+        let expected_summaries: Vec<super::ChildDeleteSummary> = full_children
+            .iter()
+            .map(|child| super::ChildDeleteSummary {
+                id: child.id.clone(),
+                is_busy: child.status.is_busy(),
+                artifact_ids: child
+                    .delivery_commits
+                    .iter()
+                    .flat_map(|c| c.artifact_ids.iter().cloned())
+                    .collect(),
+                submission_ids: child
+                    .delivery_commits
+                    .iter()
+                    .map(|c| c.submission_id.clone())
+                    .collect(),
+            })
+            .collect();
+        assert_eq!(
+            engine.child_delete_summaries("router-1"),
+            expected_summaries
+        );
     }
 }

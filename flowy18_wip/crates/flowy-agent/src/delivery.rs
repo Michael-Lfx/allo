@@ -10,6 +10,10 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::SystemTime;
+
+const BOUNDARY_SLICE_BYTES: usize = 4096;
+const MAX_CACHE_ENTRIES: usize = 64;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -368,16 +372,21 @@ impl DeliveryStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        ensure_trailing_newline(path)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let cache_key = normalize_cache_path(path);
+        ensure_trailing_newline(path, &cache_key)?;
         let line = serde_json::to_string(value)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        writeln!(file, "{line}")?;
-        file.flush()?;
-        file.sync_all()
+        let res = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            writeln!(file, "{line}")?;
+            file.flush()?;
+            file.sync_all()
+        })();
+        cache_invalidate(&cache_key);
+        res
     }
 
     /// Persist a verification report for already-parsed `bytes`, binding the
@@ -452,43 +461,183 @@ impl DeliveryStore {
     pub fn latest_report(&self, artifact: &Path) -> io::Result<Option<Report>> {
         let key = artifact_key(artifact);
         let path = self.reports_path();
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
+        let lock = store_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::latest_report_locked(&path, &key)
+    }
+
+    fn latest_report_locked(
+        path: &Path,
+        key: &str,
+    ) -> io::Result<Option<Report>> {
+        let cache_key = normalize_cache_path(path);
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                cache_invalidate(&cache_key);
                 return Ok(None);
             }
             Err(error) => return Err(error),
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let lines: Vec<&str> = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        let mut latest = None;
-        for (idx, line) in lines.iter().enumerate() {
-            let Ok(report) = serde_json::from_str::<Report>(line) else {
-                if idx + 1 < lines.len() {
-                    tracing::error!(
-                        target: "flowy.delivery",
-                        path = %path.display(),
-                        line = idx + 1,
-                        "interior corruption in reports.jsonl; invalidating prior reports"
-                    );
-                    latest = None;
+        let meta = file.metadata()?;
+        let file_len = meta.len();
+        let file_modified = meta.modified().ok();
+
+        if let Some(mut entry) = cache_get(&cache_key)
+            && let CachedKind::Reports { latest_by_key } = &mut entry.kind
+            && file_len >= entry.meta.parsed_len
+            && verify_boundary_slices(
+                &mut file,
+                entry.meta.parsed_len,
+                &entry.meta.head,
+                &entry.meta.tail,
+            )?
+        {
+            if file_len == entry.meta.parsed_len {
+                if file_modified.is_some()
+                    && file_modified == entry.meta.modified
+                {
+                    #[cfg(test)]
+                    record_replay_stat(ReplayStatKind::CacheHit);
+                    return Ok(latest_by_key.get(key).cloned());
                 }
-                continue;
-            };
-            let matches_key = if report.artifact_key.is_empty() {
-                artifact_key(Path::new(&report.artifact_path)) == key
-            } else {
-                report.artifact_key == key
-            };
-            if matches_key {
-                latest = Some(report);
+            } else if !entry.meta.has_unparseable {
+                file.seek(SeekFrom::Start(entry.meta.parsed_len))?;
+                let mut tail_bytes = Vec::new();
+                file.read_to_end(&mut tail_bytes)?;
+                if !tail_bytes.is_empty() {
+                    let complete_len = tail_bytes
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                        .map_or(0, |idx| idx + 1);
+                    let complete_slice = &tail_bytes[..complete_len];
+                    let trailing_fragment = &tail_bytes[complete_len..];
+                    let complete_text = String::from_utf8_lossy(complete_slice);
+                    let mut parsed_reports = Vec::new();
+                    let mut all_valid = true;
+                    for line in complete_text
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                    {
+                        if let Ok(report) = serde_json::from_str::<Report>(line)
+                        {
+                            parsed_reports.push(report);
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                    if all_valid {
+                        #[cfg(test)]
+                        record_replay_stat(ReplayStatKind::TailParse);
+                        let mut found = latest_by_key.get(key).cloned();
+                        if complete_len > 0 {
+                            for report in parsed_reports {
+                                latest_by_key
+                                    .insert(report_lookup_key(&report), report);
+                            }
+                            found = latest_by_key.get(key).cloned();
+                            entry.meta.parsed_len = entry
+                                .meta
+                                .parsed_len
+                                .saturating_add(complete_len as u64);
+                            advance_boundary_slices(
+                                &mut entry.meta.head,
+                                &mut entry.meta.tail,
+                                complete_slice,
+                            );
+                            entry.meta.modified =
+                                if trailing_fragment.is_empty() {
+                                    file.metadata()
+                                        .ok()
+                                        .filter(|m| {
+                                            m.len() == entry.meta.parsed_len
+                                        })
+                                        .and_then(|m| m.modified().ok())
+                                } else {
+                                    None
+                                };
+                            cache_insert(cache_key, entry);
+                        }
+                        if !trailing_fragment.is_empty() {
+                            let trailing_text =
+                                String::from_utf8_lossy(trailing_fragment);
+                            let trimmed = trailing_text.trim();
+                            if !trimmed.is_empty()
+                                && let Ok(report) =
+                                    serde_json::from_str::<Report>(trimmed)
+                                && report_lookup_key(&report) == key
+                            {
+                                found = Some(report);
+                            }
+                        }
+                        return Ok(found);
+                    }
+                }
             }
         }
-        Ok(latest)
+
+        // Fail-closed fallback: invalidate cache and replay from offset 0.
+        #[cfg(test)]
+        record_replay_stat(ReplayStatKind::FullReplay);
+        cache_invalidate(&cache_key);
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let after_modified = file
+            .metadata()
+            .ok()
+            .filter(|m| m.len() == bytes.len() as u64)
+            .and_then(|m| m.modified().ok());
+        let committed_len = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |idx| idx + 1);
+        let trailing_fragment = &bytes[committed_len..];
+        let trailing_non_empty =
+            !String::from_utf8_lossy(trailing_fragment).trim().is_empty();
+
+        let (latest_by_key, has_unparseable) =
+            replay_reports_bytes(path, &bytes[..committed_len]);
+        if trailing_non_empty && has_unparseable {
+            let (full_map, _) = replay_reports_bytes(path, &bytes);
+            return Ok(full_map.get(key).cloned());
+        }
+        let (head, tail) = compute_boundary_slices(&bytes[..committed_len]);
+        cache_insert(
+            cache_key,
+            JsonlCacheEntry {
+                meta: BoundaryMeta {
+                    parsed_len: committed_len as u64,
+                    head,
+                    tail,
+                    modified: if trailing_non_empty
+                        || committed_len != bytes.len()
+                    {
+                        None
+                    } else {
+                        after_modified
+                    },
+                    has_unparseable,
+                },
+                kind: CachedKind::Reports {
+                    latest_by_key: latest_by_key.clone(),
+                },
+                last_used_seq: 0,
+            },
+        );
+        let mut found = latest_by_key.get(key).cloned();
+        if trailing_non_empty {
+            let trailing_text = String::from_utf8_lossy(trailing_fragment);
+            let trimmed = trailing_text.trim();
+            if let Ok(report) = serde_json::from_str::<Report>(trimmed)
+                && report_lookup_key(&report) == key
+            {
+                found = Some(report);
+            }
+        }
+        Ok(found)
     }
 
     fn read_events(&self) -> io::Result<Vec<AuditEvent>> {
@@ -496,18 +645,172 @@ impl DeliveryStore {
     }
 
     fn read_events_from(path: &Path) -> io::Result<Vec<AuditEvent>> {
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
+        let lock = store_lock(path);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::read_events_from_locked(path)
+    }
+
+    fn read_events_from_locked(path: &Path) -> io::Result<Vec<AuditEvent>> {
+        let cache_key = normalize_cache_path(path);
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                cache_invalidate(&cache_key);
                 return Ok(Vec::new());
             }
             Err(error) => return Err(error),
         };
-        let text = String::from_utf8_lossy(&bytes);
-        Ok(text
-            .lines()
-            .filter_map(|line| serde_json::from_str::<AuditEvent>(line).ok())
-            .collect())
+        let meta = file.metadata()?;
+        let file_len = meta.len();
+        let file_modified = meta.modified().ok();
+
+        if let Some(mut entry) = cache_get(&cache_key)
+            && let CachedKind::Events { events } = &mut entry.kind
+            && file_len >= entry.meta.parsed_len
+            && verify_boundary_slices(
+                &mut file,
+                entry.meta.parsed_len,
+                &entry.meta.head,
+                &entry.meta.tail,
+            )?
+        {
+            if file_len == entry.meta.parsed_len {
+                if file_modified.is_some()
+                    && file_modified == entry.meta.modified
+                {
+                    #[cfg(test)]
+                    record_replay_stat(ReplayStatKind::CacheHit);
+                    return Ok(events.clone());
+                }
+            } else if !entry.meta.has_unparseable {
+                file.seek(SeekFrom::Start(entry.meta.parsed_len))?;
+                let mut tail_bytes = Vec::new();
+                file.read_to_end(&mut tail_bytes)?;
+                if !tail_bytes.is_empty() {
+                    let complete_len = tail_bytes
+                        .iter()
+                        .rposition(|&b| b == b'\n')
+                        .map_or(0, |idx| idx + 1);
+                    let complete_slice = &tail_bytes[..complete_len];
+                    let trailing_fragment = &tail_bytes[complete_len..];
+                    let complete_text = String::from_utf8_lossy(complete_slice);
+                    let mut parsed_events = Vec::new();
+                    let mut all_valid = true;
+                    for line in complete_text
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                    {
+                        if let Ok(event) =
+                            serde_json::from_str::<AuditEvent>(line)
+                        {
+                            parsed_events.push(event);
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                    if all_valid {
+                        #[cfg(test)]
+                        record_replay_stat(ReplayStatKind::TailParse);
+                        let mut out = if complete_len > 0 {
+                            events.extend(parsed_events);
+                            let cloned = events.clone();
+                            entry.meta.parsed_len = entry
+                                .meta
+                                .parsed_len
+                                .saturating_add(complete_len as u64);
+                            advance_boundary_slices(
+                                &mut entry.meta.head,
+                                &mut entry.meta.tail,
+                                complete_slice,
+                            );
+                            entry.meta.modified =
+                                if trailing_fragment.is_empty() {
+                                    file.metadata()
+                                        .ok()
+                                        .filter(|m| {
+                                            m.len() == entry.meta.parsed_len
+                                        })
+                                        .and_then(|m| m.modified().ok())
+                                } else {
+                                    None
+                                };
+                            cache_insert(cache_key, entry);
+                            cloned
+                        } else {
+                            events.clone()
+                        };
+                        if !trailing_fragment.is_empty() {
+                            let trailing_text =
+                                String::from_utf8_lossy(trailing_fragment);
+                            let trimmed = trailing_text.trim();
+                            if !trimmed.is_empty()
+                                && let Ok(event) =
+                                    serde_json::from_str::<AuditEvent>(trimmed)
+                            {
+                                out.push(event);
+                            }
+                        }
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+
+        // Fail-closed fallback: invalidate cache and replay from offset 0.
+        #[cfg(test)]
+        record_replay_stat(ReplayStatKind::FullReplay);
+        cache_invalidate(&cache_key);
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let after_modified = file
+            .metadata()
+            .ok()
+            .filter(|m| m.len() == bytes.len() as u64)
+            .and_then(|m| m.modified().ok());
+        let committed_len = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |idx| idx + 1);
+        let trailing_fragment = &bytes[committed_len..];
+        let trailing_non_empty =
+            !String::from_utf8_lossy(trailing_fragment).trim().is_empty();
+
+        let (mut events, has_unparseable) =
+            replay_events_bytes(&bytes[..committed_len]);
+        let (head, tail) = compute_boundary_slices(&bytes[..committed_len]);
+        cache_insert(
+            cache_key,
+            JsonlCacheEntry {
+                meta: BoundaryMeta {
+                    parsed_len: committed_len as u64,
+                    head,
+                    tail,
+                    modified: if trailing_non_empty
+                        || committed_len != bytes.len()
+                    {
+                        None
+                    } else {
+                        after_modified
+                    },
+                    has_unparseable,
+                },
+                kind: CachedKind::Events {
+                    events: events.clone(),
+                },
+                last_used_seq: 0,
+            },
+        );
+        if trailing_non_empty {
+            let trailing_text = String::from_utf8_lossy(trailing_fragment);
+            let trimmed = trailing_text.trim();
+            if let Ok(event) = serde_json::from_str::<AuditEvent>(trimmed) {
+                events.push(event);
+            }
+        }
+        Ok(events)
     }
 
     /// Return all deliveries currently stuck in doubt (`deliver_intent`
@@ -661,7 +964,7 @@ impl DeliveryStore {
         let path = self.events_path();
         let lock = store_lock(&path);
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let events = Self::read_events_from(&path)?;
+        let events = Self::read_events_from_locked(&path)?;
         if events.iter().any(|event| {
             matches!(event, AuditEvent::Deliver { delivery_id: existing, .. } if existing == delivery_id)
         }) {
@@ -696,7 +999,7 @@ impl DeliveryStore {
         let path = self.events_path();
         let lock = store_lock(&path);
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let events = Self::read_events_from(&path)?;
+        let events = Self::read_events_from_locked(&path)?;
         if events.iter().any(|event| {
             matches!(
                 event,
@@ -734,7 +1037,7 @@ impl DeliveryStore {
         let lock = store_lock(&path);
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut pending: BTreeMap<String, InDoubtDelivery> = BTreeMap::new();
-        for event in Self::read_events_from(&path)? {
+        for event in Self::read_events_from_locked(&path)? {
             match event {
                 AuditEvent::DeliverIntent {
                     delivery_id,
@@ -1289,19 +1592,238 @@ impl DeliveryStore {
     }
 }
 
+#[derive(Clone)]
+struct BoundaryMeta {
+    parsed_len: u64,
+    head: Vec<u8>,
+    tail: Vec<u8>,
+    modified: Option<SystemTime>,
+    has_unparseable: bool,
+}
+
+#[derive(Clone)]
+enum CachedKind {
+    Reports {
+        latest_by_key: HashMap<String, Report>,
+    },
+    Events {
+        events: Vec<AuditEvent>,
+    },
+}
+
+#[derive(Clone)]
+struct JsonlCacheEntry {
+    meta: BoundaryMeta,
+    kind: CachedKind,
+    last_used_seq: u64,
+}
+
+fn cache_registry() -> &'static Mutex<HashMap<PathBuf, JsonlCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, JsonlCacheEntry>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_get(key: &Path) -> Option<JsonlCacheEntry> {
+    static CACHE_TOUCH: AtomicU64 = AtomicU64::new(1);
+    let mut map = cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let cloned = if let Some(entry) = map.get_mut(key) {
+        entry.last_used_seq = CACHE_TOUCH.fetch_add(1, Ordering::Relaxed);
+        Some(entry.clone())
+    } else {
+        None
+    };
+    drop(map);
+    cloned
+}
+
+fn cache_insert(key: PathBuf, mut entry: JsonlCacheEntry) {
+    static CACHE_SEQ: AtomicU64 = AtomicU64::new(1);
+    let mut map = cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if !map.contains_key(&key)
+        && map.len() >= MAX_CACHE_ENTRIES
+        && let Some(evict_key) = map
+            .iter()
+            .min_by_key(|(_, val)| val.last_used_seq)
+            .map(|(k, _)| k.clone())
+    {
+        map.remove(&evict_key);
+    }
+    entry.last_used_seq = CACHE_SEQ.fetch_add(1, Ordering::Relaxed);
+    map.insert(key, entry);
+}
+
+fn cache_invalidate(key: &Path) {
+    cache_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(key);
+}
+
+fn normalize_cache_path(path: &Path) -> PathBuf {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut clean = PathBuf::new();
+    for component in abs.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other.as_os_str()),
+        }
+    }
+    let mut tail = Vec::new();
+    let mut probe = clean.as_path();
+    loop {
+        if let Ok(canon) = std::fs::canonicalize(probe) {
+            let mut out = canon;
+            for seg in tail.into_iter().rev() {
+                out.push(seg);
+            }
+            return out;
+        }
+        match (probe.parent(), probe.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                probe = parent;
+            }
+            _ => return clean,
+        }
+    }
+}
+
+fn compute_boundary_slices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let head_len = bytes.len().min(BOUNDARY_SLICE_BYTES);
+    let tail_start = bytes.len().saturating_sub(BOUNDARY_SLICE_BYTES);
+    (bytes[..head_len].to_vec(), bytes[tail_start..].to_vec())
+}
+
+fn advance_boundary_slices(
+    head: &mut Vec<u8>,
+    tail: &mut Vec<u8>,
+    appended: &[u8],
+) {
+    if head.len() < BOUNDARY_SLICE_BYTES {
+        let need = BOUNDARY_SLICE_BYTES - head.len();
+        head.extend_from_slice(&appended[..appended.len().min(need)]);
+    }
+    if appended.len() >= BOUNDARY_SLICE_BYTES {
+        *tail = appended[appended.len() - BOUNDARY_SLICE_BYTES..].to_vec();
+    } else {
+        let mut combined = Vec::with_capacity(
+            (tail.len() + appended.len()).min(BOUNDARY_SLICE_BYTES * 2),
+        );
+        combined.extend_from_slice(tail);
+        combined.extend_from_slice(appended);
+        let start = combined.len().saturating_sub(BOUNDARY_SLICE_BYTES);
+        *tail = combined[start..].to_vec();
+    }
+}
+
+fn verify_boundary_slices(
+    file: &mut std::fs::File,
+    parsed_len: u64,
+    expected_head: &[u8],
+    expected_tail: &[u8],
+) -> io::Result<bool> {
+    if parsed_len == 0 {
+        return Ok(expected_head.is_empty() && expected_tail.is_empty());
+    }
+    let head_len = usize::try_from(parsed_len.min(BOUNDARY_SLICE_BYTES as u64))
+        .unwrap_or(BOUNDARY_SLICE_BYTES);
+    if expected_head.len() != head_len {
+        return Ok(false);
+    }
+    let mut head_buf = vec![0_u8; head_len];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut head_buf)?;
+    if head_buf != expected_head {
+        return Ok(false);
+    }
+    if parsed_len <= BOUNDARY_SLICE_BYTES as u64 {
+        return Ok(head_buf == expected_tail);
+    }
+    if expected_tail.len() != BOUNDARY_SLICE_BYTES {
+        return Ok(false);
+    }
+    let tail_start = parsed_len - BOUNDARY_SLICE_BYTES as u64;
+    let mut tail_buf = vec![0_u8; BOUNDARY_SLICE_BYTES];
+    file.seek(SeekFrom::Start(tail_start))?;
+    file.read_exact(&mut tail_buf)?;
+    Ok(tail_buf == expected_tail)
+}
+
+fn report_lookup_key(report: &Report) -> String {
+    if report.artifact_key.is_empty() {
+        artifact_key(Path::new(&report.artifact_path))
+    } else {
+        report.artifact_key.clone()
+    }
+}
+
+fn replay_reports_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> (HashMap<String, Report>, bool) {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut latest_by_key = HashMap::new();
+    let mut has_unparseable = false;
+    for (idx, line) in lines.iter().enumerate() {
+        let Ok(report) = serde_json::from_str::<Report>(line) else {
+            has_unparseable = true;
+            if idx + 1 < lines.len() {
+                tracing::error!(
+                    target: "flowy.delivery",
+                    path = %path.display(),
+                    line = idx + 1,
+                    "interior corruption in reports.jsonl; invalidating prior reports"
+                );
+                latest_by_key.clear();
+            }
+            continue;
+        };
+        latest_by_key.insert(report_lookup_key(&report), report);
+    }
+    (latest_by_key, has_unparseable)
+}
+
+fn replay_events_bytes(bytes: &[u8]) -> (Vec<AuditEvent>, bool) {
+    let text = String::from_utf8_lossy(bytes);
+    let mut events = Vec::new();
+    let mut has_unparseable = false;
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Ok(event) = serde_json::from_str::<AuditEvent>(line) {
+            events.push(event);
+        } else {
+            has_unparseable = true;
+        }
+    }
+    (events, has_unparseable)
+}
+
 fn store_lock(path: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
         OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = normalize_cache_path(path);
     registry
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .entry(path.to_path_buf())
+        .entry(key)
         .or_default()
         .clone()
 }
 
-fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
+fn ensure_trailing_newline(path: &Path, cache_key: &Path) -> io::Result<()> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1317,10 +1839,13 @@ fn ensure_trailing_newline(path: &Path) -> io::Result<()> {
     if last[0] == b'\n' {
         return Ok(());
     }
+    drop(file);
     let mut handle = std::fs::OpenOptions::new().append(true).open(path)?;
     handle.write_all(b"\n")?;
     handle.flush()?;
-    handle.sync_all()
+    handle.sync_all()?;
+    cache_invalidate(cache_key);
+    Ok(())
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -1366,6 +1891,46 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> String {
 fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum ReplayStatKind {
+    CacheHit,
+    TailParse,
+    FullReplay,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct ReplayStats {
+    cache_hits: usize,
+    tail_parses: usize,
+    full_replays: usize,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_REPLAY_STATS: std::cell::Cell<ReplayStats> =
+        const { std::cell::Cell::new(ReplayStats { cache_hits: 0, tail_parses: 0, full_replays: 0 }) };
+}
+
+#[cfg(test)]
+fn record_replay_stat(kind: ReplayStatKind) {
+    TEST_REPLAY_STATS.with(|cell| {
+        let mut stats = cell.get();
+        match kind {
+            ReplayStatKind::CacheHit => stats.cache_hits += 1,
+            ReplayStatKind::TailParse => stats.tail_parses += 1,
+            ReplayStatKind::FullReplay => stats.full_replays += 1,
+        }
+        cell.set(stats);
+    });
+}
+
+#[cfg(test)]
+fn take_replay_stats() -> ReplayStats {
+    TEST_REPLAY_STATS.with(|cell| cell.replace(ReplayStats::default()))
 }
 
 #[cfg(test)]
@@ -1893,5 +2458,241 @@ mod tests {
         assert!(events.contains("\"deliver_override\""));
         assert!(events.contains("DELIVERY_CONTRACT_REVISION_MISMATCH"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reports_tail_cache_hits_tails_and_fails_closed_on_truncation_or_rewrite()
+    {
+        let root = scratch("reports-tail-cache");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let pad = "a".repeat(256);
+        let target = root.join("target.pptx");
+        std::fs::write(&target, b"PK payload").unwrap();
+        for i in 0..24_u64 {
+            let other = root.join(format!("other-{i:02}.pptx"));
+            std::fs::write(&other, b"PK other").unwrap();
+            let path_for_rep = if i == 0 || i == 23 { &target } else { &other };
+            let issues = if i == 0 {
+                vec![Issue {
+                    code: "INIT".into(),
+                    field: pad.clone(),
+                }]
+            } else if i == 23 {
+                Vec::new()
+            } else {
+                vec![Issue {
+                    code: "PAD".into(),
+                    field: pad.clone(),
+                }]
+            };
+            store
+                .record_report_bytes(
+                    path_for_rep,
+                    b"PK payload",
+                    issues,
+                    1_000 + i,
+                )
+                .unwrap();
+        }
+        let reports_path = store.reports_path();
+        let original = std::fs::read(&reports_path).unwrap();
+        assert!(original.len() > 8192);
+
+        let _ = take_replay_stats();
+        let first = store.latest_report(&target).unwrap().expect("report");
+        assert!(first.ok);
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // Cache hit on unchanged file
+        let second = store.latest_report(&target).unwrap().expect("cached");
+        assert_eq!(second, first);
+        assert_eq!(
+            take_replay_stats(),
+            ReplayStats {
+                cache_hits: 1,
+                tail_parses: 0,
+                full_replays: 0
+            }
+        );
+
+        // Append a torn trailing fragment without `\n` -> tolerated via tail parse
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&reports_path)
+                .unwrap();
+            f.write_all(br#"{"id":"torn-"#).unwrap();
+        }
+        let with_torn =
+            store.latest_report(&target).unwrap().expect("with torn");
+        assert_eq!(with_torn, first);
+        assert_eq!(take_replay_stats().tail_parses, 1);
+
+        // Complete the torn fragment externally with a failing report for target
+        let mut completed = original;
+        let new_rep = Report {
+            id: "rep-ext".into(),
+            artifact_path: target.display().to_string(),
+            artifact_hash: hash_bytes(b"PK payload"),
+            ok: false,
+            issues: vec![Issue {
+                code: "EXT_FAIL".into(),
+                field: "slide".into(),
+            }],
+            at_ms: 9_999,
+            contract_revision: None,
+            artifact_key: artifact_key(&target),
+        };
+        completed.extend_from_slice(&serde_json::to_vec(&new_rep).unwrap());
+        completed.push(b'\n');
+        std::fs::write(&reports_path, &completed).unwrap();
+
+        let after_append = store.latest_report(&target).unwrap().expect("ext");
+        assert!(!after_append.ok);
+        assert_eq!(after_append.id, "rep-ext");
+        assert_eq!(take_replay_stats().tail_parses, 1);
+
+        // Same-length external rewrite in head bytes must fail closed -> full replay
+        let mut head_mutated = completed.clone();
+        let head_pos = head_mutated
+            .windows(b"INIT".len())
+            .position(|w| w == b"INIT")
+            .expect("INIT in head");
+        assert!(head_pos < 4096);
+        head_mutated[head_pos..head_pos + 4].copy_from_slice(b"HEAD");
+        assert_eq!(head_mutated.len(), completed.len());
+        std::fs::write(&reports_path, &head_mutated).unwrap();
+        let _ = store.latest_report(&target).unwrap();
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // Same-length external rewrite in tail bytes must fail closed -> full replay
+        let mut tail_mutated = head_mutated.clone();
+        let tail_pos = tail_mutated
+            .windows(b"EXT_FAIL".len())
+            .position(|w| w == b"EXT_FAIL")
+            .expect("EXT_FAIL in tail");
+        assert!(tail_pos + 4096 >= tail_mutated.len());
+        tail_mutated[tail_pos..tail_pos + 8].copy_from_slice(b"TAIL_ERR");
+        assert_eq!(tail_mutated.len(), head_mutated.len());
+        std::fs::write(&reports_path, &tail_mutated).unwrap();
+        let after_tail = store.latest_report(&target).unwrap().expect("tail");
+        assert_eq!(after_tail.issues[0].code, "TAIL_ERR");
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // External truncation (`len < parsed_len`) must fail closed -> full replay
+        let first_end =
+            tail_mutated.iter().position(|&b| b == b'\n').expect("nl") + 1;
+        std::fs::write(&reports_path, &tail_mutated[..first_end]).unwrap();
+        let after_trunc = store.latest_report(&target).unwrap().expect("trunc");
+        assert!(!after_trunc.ok);
+        assert_eq!(after_trunc.issues[0].code, "HEAD");
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn events_tail_cache_hits_appends_and_invalidates_on_write_and_truncation()
+    {
+        let root = scratch("events-tail-cache");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let pad = "e".repeat(256);
+        for i in 0..24_u64 {
+            DeliveryStore::append_json(
+                &store.events_path(),
+                &AuditEvent::DeliverIntent {
+                    delivery_id: format!("del-{i:02}-{pad}"),
+                    artifact_path: format!("deck-{i}.pptx"),
+                    artifact_hash: format!("hash-{i}"),
+                    at_ms: 1_000 + i,
+                },
+            )
+            .unwrap();
+        }
+        let events_path = store.events_path();
+        assert!(std::fs::metadata(&events_path).unwrap().len() > 8192);
+
+        let _ = take_replay_stats();
+        let first = store.read_events().unwrap();
+        assert_eq!(first.len(), 24);
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // Unchanged read hits cache directly.
+        let cached = store.read_events().unwrap();
+        assert_eq!(cached.len(), 24);
+        assert_eq!(take_replay_stats().cache_hits, 1);
+
+        // External append uses incremental tail parse.
+        let extra = serde_json::to_vec(&AuditEvent::Deliver {
+            delivery_id: format!("del-00-{pad}"),
+            artifact_path: "deck-0.pptx".into(),
+            artifact_hash: "hash-0".into(),
+            at_ms: 2_000,
+        })
+        .unwrap();
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&events_path)
+                .unwrap();
+            f.write_all(&extra).unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        let after_ext = store.read_events().unwrap();
+        assert_eq!(after_ext.len(), 25);
+        assert_eq!(take_replay_stats().tail_parses, 1);
+
+        // Write via DeliveryStore (`confirm_delivered`) invalidates cache so
+        // stale state is never served.
+        assert!(
+            store
+                .confirm_delivered(
+                    &format!("del-01-{pad}"),
+                    "deck-1.pptx",
+                    "hash-1",
+                    3_000,
+                )
+                .unwrap()
+        );
+        // `confirm_delivered` read via cache hit (len == parsed_len) before
+        // appending and invalidating; next read must do full replay and see 26.
+        let _ = take_replay_stats();
+        let after_write = store.read_events().unwrap();
+        assert_eq!(after_write.len(), 26);
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        // Truncate externally -> fail-closed full replay.
+        let bytes = std::fs::read(&events_path).unwrap();
+        let one_line = bytes.iter().position(|&b| b == b'\n').unwrap() + 1;
+        std::fs::write(&events_path, &bytes[..one_line]).unwrap();
+        let after_trunc = store.read_events().unwrap();
+        assert_eq!(after_trunc.len(), 1);
+        assert_eq!(take_replay_stats().full_replays, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delivery_tail_cache_stays_bounded_under_max_entries() {
+        let mut roots = Vec::new();
+        for i in 0..80_usize {
+            let root = scratch(&format!("cache-bound-{i}"));
+            let store = DeliveryStore::new(root.join("delivery"));
+            let art = artifact(&root, b"PK bound");
+            store.record_report(&art, Vec::new(), 1_000).unwrap();
+            let _ = store.latest_report(&art).unwrap();
+            roots.push(root);
+        }
+        let len = cache_registry()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        assert!(
+            len <= MAX_CACHE_ENTRIES,
+            "cache size {len} exceeded bound {MAX_CACHE_ENTRIES}"
+        );
+        for root in roots {
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }
