@@ -763,7 +763,7 @@ impl AgentHandle {
             &receipt.sha256,
             now_ms(),
         );
-        let root_session_id = self.root_session_id_for(session_id);
+        let root_session_id = self.root_session_id(session_id);
         tracing::info!(
             target: "flowy.delivery",
             session_id = %session_id,

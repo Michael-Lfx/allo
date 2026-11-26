@@ -979,7 +979,12 @@ impl AgentHandle {
                     let mut committed_counts: HashMap<String, usize> =
                         HashMap::new();
                     for msg in &rec.messages {
-                        if msg.role == Role::User {
+                        if msg.role == Role::User
+                            && !matches!(
+                                msg.source,
+                                MessageSource::SystemEvent { .. }
+                            )
+                        {
                             let fallback = msg.text();
                             let label = msg
                                 .display_text
@@ -2371,10 +2376,6 @@ impl AgentHandle {
     /// parent Router ID for a child `Worker`, or `session_id` itself otherwise).
     #[must_use]
     pub fn root_session_id(&self, session_id: &str) -> String {
-        self.inner.root_session_id_for(session_id)
-    }
-
-    fn root_session_id_for(&self, session_id: &str) -> String {
         self.inner.root_session_id_for(session_id)
     }
 

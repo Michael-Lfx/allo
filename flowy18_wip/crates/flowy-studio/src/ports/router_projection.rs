@@ -93,6 +93,7 @@ where
             child_branches.retain(|b| !matches!(b.phase, BranchPhase::Idle));
             child_branches.push(WorkBranchSummary {
                 id: format!("work:{}:approval", work.work_id),
+                owner_session_id: Some(work.work_id.clone()),
                 skill_label: SkillLabel::Key("board.skill_work"),
                 phase: BranchPhase::NeedsApproval {
                     report_id: String::new(),
@@ -112,11 +113,13 @@ where
         }
 
         // Prefix branch IDs with `work:<worker_id>:` so sibling Workers never
-        // collide on branch IDs inside the parent Router's board group.
+        // collide on branch IDs inside the parent Router's board group, and
+        // tag `owner_session_id` so Flowchart Modal actions route to the child.
         for mut branch in child_branches {
             if !branch.id.starts_with("work:") {
                 branch.id = format!("work:{}:{}", work.work_id, branch.id);
             }
+            branch.owner_session_id = Some(work.work_id.clone());
             out.push(branch);
         }
     }

@@ -1,10 +1,12 @@
-//! Session-level Router active child-Works status pill, queued follow-up badge,
-//! and two-section (`This conversation` / `Other conversations`) background
-//! popover (PR-2B Q2 / Q5 / Q6).
+//! Event-driven cached Router active child-Works status pill, queued follow-up
+//! badge, and two-section (`This conversation` / `Other conversations`)
+//! background popover (PR-2B Q2 / Q5 / Q6).
 
 use std::collections::{HashMap, HashSet};
 
-use flowy_agent::{ChildWorkSummary, ReceiptState, SessionRole};
+use flowy_agent::{
+    AcceptedMessage, ChildWorkSummary, ReceiptState, SessionRole,
+};
 use flowy_ui as theme;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, div,
@@ -13,14 +15,14 @@ use gpui::{
 
 use crate::panel::{StudioPanel, StudioSurface};
 
-/// Visual tone for the compact `bg-tasks-slot` status pill.
+/// Visual tone for the compact `bg-tasks-slot` and Home resume pills.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BgPillTone {
     Active,
     Attention,
 }
 
-/// Compact summary rendered in `chat.rs::bg_tasks_dock_slot`.
+/// Compact summary rendered in `chat.rs::bg_tasks_dock_slot` and `home.rs`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BgPillSummary {
     pub label: String,
@@ -29,12 +31,13 @@ pub struct BgPillSummary {
     pub detail: Option<String>,
 }
 
-/// Categorized active-work view for the two-section popover (deduplicated by `work_id`).
+/// Cached active-work snapshot for the two-section popover (deduplicated by `work_id`).
+#[derive(Clone, Debug, Default)]
 pub struct PopoverWorksSnapshot {
     pub current_works: Vec<ChildWorkSummary>,
     pub other_works: Vec<(String, ChildWorkSummary)>,
     pub legacy_running_sessions: Vec<(String, String)>,
-    pub legacy_receipts: Vec<(flowy_agent::AcceptedMessage, ReceiptState)>,
+    pub legacy_receipts: Vec<(AcceptedMessage, ReceiptState)>,
 }
 
 impl PopoverWorksSnapshot {
@@ -77,8 +80,16 @@ fn work_priority_rank(state: &str) -> u8 {
 }
 
 impl StudioPanel {
+    /// Rebuilds the cached popover/pill snapshot from `AgentHandle`.
+    /// Called strictly on structural updates, surface changes, or throttled
+    /// background-worker updates — never inside `Render::render`.
+    pub(crate) fn refresh_popover_works(&mut self) {
+        self.popover_works = self.collect_popover_works();
+        self.last_popover_works_refresh = Some(std::time::Instant::now());
+    }
+
     /// Collect deduplicated active/attention child works for the current Router
-    /// conversation and other top-level conversations, plus any legacy Standard
+    /// conversation and other top-level conversations, plus any legacy/other
     /// running sessions and non-Worker receipts.
     pub(crate) fn collect_popover_works(&self) -> PopoverWorksSnapshot {
         let active_id = self.agent.active_session_id();
@@ -86,10 +97,10 @@ impl StudioPanel {
             self.agent.session_role(sid) == SessionRole::Router
         });
         let sessions = self.agent.list_sessions();
-        let mut titles: HashMap<String, String> = HashMap::new();
-        for s in &sessions {
-            titles.insert(s.id.clone(), s.title.clone());
-        }
+        let titles: HashMap<&str, &str> = sessions
+            .iter()
+            .map(|s| (s.id.as_str(), s.title.as_str()))
+            .collect();
 
         let mut seen_work_ids: HashSet<String> = HashSet::new();
         let mut current_works: Vec<ChildWorkSummary> = Vec::new();
@@ -151,9 +162,10 @@ impl StudioPanel {
                 continue;
             }
             let title = titles
-                .get(sid)
+                .get(sid.as_str())
+                .copied()
                 .filter(|t| !t.trim().is_empty())
-                .map(|t| crate::ports::redact_trace_text(t))
+                .map(crate::ports::redact_trace_text)
                 .or_else(|| {
                     self.agent
                         .session_preview(sid)
@@ -163,22 +175,21 @@ impl StudioPanel {
             legacy_running_sessions.push((sid.clone(), title));
         }
 
-        let legacy_receipts: Vec<(flowy_agent::AcceptedMessage, ReceiptState)> =
-            self.popover_visible_receipts(&running_ids)
-                .into_iter()
-                .filter(|(receipt, _)| {
-                    let target = receipt
-                        .target_session_id
-                        .as_deref()
-                        .or(receipt.session_hint.as_deref());
-                    !target.is_some_and(|sid| {
-                        seen_work_ids.contains(sid)
-                            || self.agent.session_role(sid)
-                                == SessionRole::Worker
-                    })
+        let legacy_receipts: Vec<(AcceptedMessage, ReceiptState)> = self
+            .popover_visible_receipts(&running_ids)
+            .into_iter()
+            .filter(|(receipt, _)| {
+                let target = receipt
+                    .target_session_id
+                    .as_deref()
+                    .or(receipt.session_hint.as_deref());
+                !target.is_some_and(|sid| {
+                    seen_work_ids.contains(sid)
+                        || self.agent.session_role(sid) == SessionRole::Worker
                 })
-                .map(|(r, s)| (r.clone(), s))
-                .collect();
+            })
+            .map(|(r, s)| (r.clone(), s))
+            .collect();
 
         PopoverWorksSnapshot {
             current_works,
@@ -188,76 +199,109 @@ impl StudioPanel {
         }
     }
 
-    /// Compute the priority-ordered `bg-tasks-slot` pill summary (Q2):
-    /// shows the current conversation's count plus its most urgent status
-    /// (`awaiting_approval`, then `failed/partial`, then `running/verifying/queued`),
-    /// falling back to global background works when the active conversation has none.
+    #[must_use]
+    pub(crate) fn show_anonymous_active_work(&self) -> bool {
+        self.surface != StudioSurface::Chat
+            && self.popover_works.total_count() == 0
+            && (self.status.is_busy() || self.submission_pending)
+    }
+
+    /// Single source of truth for background work count across Chat pill, Home
+    /// resume pill, and the `bg-tasks-panel` header badge.
+    #[must_use]
+    pub(crate) fn popover_total_count(&self) -> usize {
+        self.popover_works.total_count()
+            + usize::from(self.show_anonymous_active_work())
+    }
+
+    fn summarize_works_slice(
+        &self,
+        works: &[&ChildWorkSummary],
+        total_count: usize,
+        include_detail: bool,
+    ) -> BgPillSummary {
+        let approval_count = works
+            .iter()
+            .filter(|w| w.state == "awaiting_approval")
+            .count();
+        let failed_count = works
+            .iter()
+            .filter(|w| matches!(w.state.as_str(), "failed" | "partial"))
+            .count();
+        let detail = include_detail
+            .then(|| {
+                let waiting = self.t("card.heartbeat_waiting");
+                works.first().and_then(|top| {
+                    top.heartbeat.as_ref().and_then(|hb| {
+                        crate::pending_card::format_heartbeat_line(hb, &waiting)
+                    })
+                })
+            })
+            .flatten();
+        if approval_count > 0 {
+            return BgPillSummary {
+                label: self.tf(
+                    "chat.bg_tasks_needs_approval",
+                    &[("count", &approval_count.to_string())],
+                ),
+                tone: BgPillTone::Attention,
+                count: total_count,
+                detail,
+            };
+        }
+        if failed_count > 0 {
+            return BgPillSummary {
+                label: self.tf(
+                    "chat.bg_tasks_failed",
+                    &[("count", &failed_count.to_string())],
+                ),
+                tone: BgPillTone::Attention,
+                count: total_count,
+                detail,
+            };
+        }
+        BgPillSummary {
+            label: self.tf(
+                "chat.bg_tasks_pill",
+                &[("count", &total_count.to_string())],
+            ),
+            tone: BgPillTone::Active,
+            count: total_count,
+            detail,
+        }
+    }
+
+    /// O(1) read of the priority-ordered `bg-tasks-slot` / Home pill summary (Q2):
+    /// shows the current conversation's count + most urgent status
+    /// (`awaiting_approval` > `failed/partial` > active), falling back to global
+    /// background works (preserving urgent attention tone on Home).
     #[must_use]
     pub(crate) fn router_bg_pill_summary(&self) -> Option<BgPillSummary> {
-        let snap = self.collect_popover_works();
+        let snap = &self.popover_works;
         if !snap.current_works.is_empty() {
-            let approval_count = snap
-                .current_works
-                .iter()
-                .filter(|w| w.state == "awaiting_approval")
-                .count();
-            let failed_count = snap
-                .current_works
-                .iter()
-                .filter(|w| matches!(w.state.as_str(), "failed" | "partial"))
-                .count();
-            let top = &snap.current_works[0];
-            let waiting = self.t("card.heartbeat_waiting");
-            let detail = top.heartbeat.as_ref().and_then(|hb| {
-                crate::pending_card::format_heartbeat_line(hb, &waiting)
-            });
-            if approval_count > 0 {
-                return Some(BgPillSummary {
-                    label: self.tf(
-                        "chat.bg_tasks_needs_approval",
-                        &[("count", &approval_count.to_string())],
-                    ),
-                    tone: BgPillTone::Attention,
-                    count: snap.current_works.len(),
-                    detail,
-                });
-            }
-            if failed_count > 0 {
-                return Some(BgPillSummary {
-                    label: self.tf(
-                        "chat.bg_tasks_failed",
-                        &[("count", &failed_count.to_string())],
-                    ),
-                    tone: BgPillTone::Attention,
-                    count: snap.current_works.len(),
-                    detail,
-                });
-            }
-            return Some(BgPillSummary {
-                label: self.tf(
-                    "chat.bg_tasks_pill",
-                    &[("count", &snap.current_works.len().to_string())],
-                ),
-                tone: BgPillTone::Active,
-                count: snap.current_works.len(),
-                detail,
-            });
+            let refs: Vec<&ChildWorkSummary> =
+                snap.current_works.iter().collect();
+            return Some(self.summarize_works_slice(
+                &refs,
+                snap.current_works.len(),
+                true,
+            ));
         }
 
-        let total = snap.total_count();
-        let fallback = if total > 0 {
-            total
-        } else {
-            self.background_work_count()
-        };
-        if fallback == 0 {
+        let total = self.popover_total_count();
+        if total == 0 {
             return None;
+        }
+        if !snap.other_works.is_empty() {
+            let refs: Vec<&ChildWorkSummary> =
+                snap.other_works.iter().map(|(_, w)| w).collect();
+            return Some(self.summarize_works_slice(&refs, total, false));
         }
         Some(BgPillSummary {
             label: self
-                .tf("chat.bg_tasks_pill", &[("count", &fallback.to_string())]),
+                .tf("chat.bg_tasks_pill", &[("count", &total.to_string())]),
             tone: BgPillTone::Active,
-            count: fallback,
+            count: total,
             detail: None,
         })
     }
@@ -310,17 +354,15 @@ impl StudioPanel {
     }
 
     /// Two-section background works popover: `This conversation` + `Other
-    /// conversations`, deduplicated by `work_id`, with click-to-inspect in
-    /// parent Router and per-work `cancel_work` stop buttons (Q2 & Q6).
+    /// conversations`, deduplicated by `work_id`, reading cached `popover_works`
+    /// in O(1) with click-to-inspect in parent Router and per-work Stop (Q2 & Q6).
     pub(crate) fn router_bg_tasks_popover(
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let snap = self.collect_popover_works();
-        let show_anonymous_active = self.surface != StudioSurface::Chat
-            && snap.total_count() == 0
-            && (self.status.is_busy() || self.submission_pending);
-        let total = snap.total_count() + usize::from(show_anonymous_active);
+        let snap = &self.popover_works;
+        let show_anonymous_active = self.show_anonymous_active_work();
+        let total = self.popover_total_count();
 
         let mut panel = div()
             .id("bg-tasks-panel")
@@ -400,167 +442,19 @@ impl StudioPanel {
                 ));
             }
             for (ix, (session_id, title)) in
-                snap.legacy_running_sessions.into_iter().enumerate()
+                snap.legacy_running_sessions.iter().enumerate()
             {
-                let inspect_title = title.clone();
-                let stop_sid = session_id.clone();
-                panel = panel.child(
-                    div()
-                        .id(("bg-legacy-row", ix as u64))
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(4.))
-                        .child(
-                            theme::interactive(
-                                ("bg-task-running", ix as u64),
-                                title.clone(),
-                                &self.theme,
-                            )
-                            .flex_1()
-                            .min_w_0()
-                            .px(self.theme.space(8.))
-                            .py(self.theme.space(6.))
-                            .rounded_lg()
-                            .flex()
-                            .items_center()
-                            .gap(self.theme.space(8.))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(self.theme.soft()))
-                            .child(
-                                div()
-                                    .size(px(6.))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(self.theme.status_active()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(self.theme.ink())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .child(title),
-                            )
-                            .child(theme::status_pill(
-                                self.theme.status_active_bg(),
-                                self.theme.status_active(),
-                                self.t("chat.bg_task_running"),
-                                None,
-                            ))
-                            .on_click(cx.listener(move |panel, _, _, cx| {
-                                panel.open_work_inspector(
-                                    crate::deliverables::InspectedWork::Session {
-                                        id: session_id.clone(),
-                                        title: inspect_title.clone(),
-                                    },
-                                    cx,
-                                );
-                            })),
-                        )
-                        .child(
-                            theme::Button::new(
-                                ("bg-legacy-stop", ix as u64),
-                                self.t("chat.bg_work_stop"),
-                            )
-                            .variant(theme::ControlVariant::Ghost)
-                            .size(theme::ControlSize::Small)
-                            .render(
-                                &self.theme,
-                                cx.listener(move |panel, _, _, cx| {
-                                    panel.stop_session_turn(&stop_sid, cx);
-                                }),
-                            ),
-                        ),
-                );
+                panel = panel.child(self.render_legacy_running_row(
+                    ix as u64, session_id, title, cx,
+                ));
             }
             for (ix, (receipt, state)) in
-                snap.legacy_receipts.into_iter().enumerate()
+                snap.legacy_receipts.iter().enumerate()
             {
-                let safe_text = crate::ports::redact_trace_text(&receipt.text);
-                let preview: String = safe_text.chars().take(40).collect();
-                let owner = self.receipt_owner(&receipt);
-                let receipt_tag = self.tf(
-                    "chat.pending_receipt",
-                    &[("id", &crate::ports::short_id(&receipt.id))],
-                );
-                let label = format!(
-                    "{receipt_tag} \u{00b7} {owner} \u{00b7} {preview}"
-                );
-                let meta = format!("{receipt_tag} \u{00b7} {owner}");
-                let heading = if preview.trim().is_empty() {
-                    receipt_tag
-                } else {
-                    preview
-                };
-                let (state_fg, state_label, _) =
-                    self.receipt_state_visual(state);
-                let inspect_receipt = receipt;
-                panel = panel.child(
-                    theme::interactive(
-                        ("pending-receipt", ix as u64),
-                        label,
-                        &self.theme,
-                    )
-                    .w_full()
-                    .min_w_0()
-                    .px(self.theme.space(8.))
-                    .py(self.theme.space(6.))
-                    .rounded_lg()
-                    .bg(self.theme.soft().opacity(0.45))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(self.theme.soft()))
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.ink())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .child(heading),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.muted())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .child(meta),
-                            ),
-                    )
-                    .child(theme::status_pill(
-                        self.theme.soft(),
-                        state_fg,
-                        state_label,
-                        None,
-                    ))
-                    .on_click(cx.listener(
-                        move |panel, _, _, cx| {
-                            panel.open_work_inspector(
-                                crate::deliverables::InspectedWork::Receipt(
-                                    inspect_receipt.clone(),
-                                ),
-                                cx,
-                            );
-                        },
-                    )),
-                );
+                panel =
+                    panel.child(self.render_legacy_receipt_row(
+                        ix as u64, receipt, *state, cx,
+                    ));
             }
         }
 
@@ -629,6 +523,172 @@ impl StudioPanel {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(self.theme.muted())
             .child(self.t(key))
+    }
+
+    fn render_legacy_running_row(
+        &self,
+        ix: u64,
+        session_id: &str,
+        title: &str,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let open_sid = session_id.to_owned();
+        let inspect_title = title.to_owned();
+        let stop_sid = session_id.to_owned();
+        div()
+            .id(("bg-legacy-row", ix))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(4.))
+            .child(
+                theme::interactive(
+                    ("bg-task-running", ix),
+                    inspect_title.clone(),
+                    &self.theme,
+                )
+                .flex_1()
+                .min_w_0()
+                .px(self.theme.space(8.))
+                .py(self.theme.space(6.))
+                .rounded_lg()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(
+                    div()
+                        .size(px(6.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(self.theme.status_active()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.ink())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(title.to_owned()),
+                )
+                .child(theme::status_pill(
+                    self.theme.status_active_bg(),
+                    self.theme.status_active(),
+                    self.t("chat.bg_task_running"),
+                    None,
+                ))
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.open_work_inspector(
+                            crate::deliverables::InspectedWork::Session {
+                                id: open_sid.clone(),
+                                title: inspect_title.clone(),
+                            },
+                            cx,
+                        );
+                    },
+                )),
+            )
+            .child(
+                theme::Button::new(
+                    ("bg-legacy-stop", ix),
+                    self.t("chat.bg_work_stop"),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        panel.stop_session_turn(&stop_sid, cx);
+                    }),
+                ),
+            )
+            .into_any_element()
+    }
+
+    fn render_legacy_receipt_row(
+        &self,
+        ix: u64,
+        receipt: &AcceptedMessage,
+        state: ReceiptState,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let safe_text = crate::ports::redact_trace_text(&receipt.text);
+        let preview: String = safe_text.chars().take(40).collect();
+        let owner = self.receipt_owner(receipt);
+        let receipt_tag = self.tf(
+            "chat.pending_receipt",
+            &[("id", &crate::ports::short_id(&receipt.id))],
+        );
+        let label =
+            format!("{receipt_tag} \u{00b7} {owner} \u{00b7} {preview}");
+        let meta = format!("{receipt_tag} \u{00b7} {owner}");
+        let heading = if preview.trim().is_empty() {
+            receipt_tag
+        } else {
+            preview
+        };
+        let (state_fg, state_label, _) = self.receipt_state_visual(state);
+        let inspect_receipt = receipt.clone();
+        theme::interactive(("pending-receipt", ix), label, &self.theme)
+            .w_full()
+            .min_w_0()
+            .px(self.theme.space(8.))
+            .py(self.theme.space(6.))
+            .rounded_lg()
+            .bg(self.theme.soft().opacity(0.45))
+            .cursor_pointer()
+            .hover(|style| style.bg(self.theme.soft()))
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.ink())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(heading),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(meta),
+                    ),
+            )
+            .child(theme::status_pill(
+                self.theme.soft(),
+                state_fg,
+                state_label,
+                None,
+            ))
+            .on_click(cx.listener(move |panel, _, _, cx| {
+                panel.open_work_inspector(
+                    crate::deliverables::InspectedWork::Receipt(
+                        inspect_receipt.clone(),
+                    ),
+                    cx,
+                );
+            }))
+            .into_any_element()
     }
 
     pub(crate) fn render_child_work_row(

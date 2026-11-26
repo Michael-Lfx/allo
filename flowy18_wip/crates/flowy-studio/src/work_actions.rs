@@ -16,6 +16,7 @@ impl StudioPanel {
     pub(crate) fn sync_receipts(&mut self) {
         self.pending_receipts = self.agent.pending_acceptances();
         self.visible_receipts = self.agent.visible_acceptances();
+        self.refresh_popover_works();
     }
 
     /// Whether `path` is an existing safe local regular file allowed to launch
@@ -126,9 +127,7 @@ impl StudioPanel {
         if self.active_project_id.is_none()
             && self.agent.active_session_id().is_none()
         {
-            self.agent.set_workspace_for_new_sessions(None);
-            self.agent
-                .set_origin_for_new_sessions(flowy_agent::SessionOrigin::Home);
+            self.apply_draft_project(None);
             self.refresh_local_env();
             cx.notify();
             return;
@@ -136,14 +135,12 @@ impl StudioPanel {
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.clear_right_sheet();
-        self.active_project_id = None;
-        self.agent.set_workspace_for_new_sessions(None);
-        self.agent
-            .set_origin_for_new_sessions(flowy_agent::SessionOrigin::Home);
+        self.apply_draft_project(None);
         if self.surface == StudioSurface::Chat {
             self.surface = StudioSurface::Home;
             self.refresh_chat(cx);
         }
+        self.refresh_popover_works();
         self.refresh_local_env();
         self.emit_notice(clear_error, cx);
         cx.emit(crate::panel::StudioEvent::SessionsChanged);
@@ -297,27 +294,47 @@ impl StudioPanel {
         .detach();
     }
 
-    /// Requests a graceful stop for one specific background or active session
-    /// without coupling cancellation to whichever session is currently focused.
+    /// Requests a graceful stop for one specific session, routing strictly by
+    /// session role (`Worker` -> `cancel_work`, `Router` -> `stop_router_reply`,
+    /// `Standard` -> `cancel_task`) without coupling to the focused session (Q6).
     pub(crate) fn stop_session_turn(
         &self,
         session_id: &str,
         cx: &Context<'_, Self>,
     ) {
-        self.cancel_task_target(TaskTarget::Session(session_id.to_owned()), cx);
+        match self.agent.session_role(session_id) {
+            flowy_agent::SessionRole::Worker => {
+                let root_id = self.agent.root_session_id(session_id);
+                self.cancel_child_work(&root_id, session_id, cx);
+            }
+            flowy_agent::SessionRole::Router => {
+                self.stop_router_reply_target(session_id, cx);
+            }
+            flowy_agent::SessionRole::Standard => {
+                self.cancel_task_target(
+                    TaskTarget::Session(session_id.to_owned()),
+                    cx,
+                );
+            }
+        }
     }
 
-    /// Stops ONLY the Router's active reply without cancelling child Workers or
-    /// discarding queued follow-ups (Q6).
-    pub(crate) fn stop_router_reply_target(
+    fn run_stop_work_action<F>(
         &self,
-        router_id: &str,
+        sync_receipts: bool,
+        op: F,
         cx: &Context<'_, Self>,
-    ) {
+    ) where
+        F: FnOnce(
+                &flowy_agent::AgentHandle,
+            )
+                -> Result<flowy_agent::StopWorkResult, &'static str>
+            + Send
+            + 'static,
+    {
         let agent = self.agent.clone();
-        let rid = router_id.to_owned();
         let job = cx.background_executor().spawn(async move {
-            let outcome = agent.stop_router_reply(&rid);
+            let outcome = op(&agent);
             let updates = agent.drain_updates();
             (outcome, updates)
         });
@@ -330,6 +347,9 @@ impl StudioPanel {
                         panel.emit_notice(Some("notice.cancel_finalizing"), cx);
                     }
                     Ok(_) => {
+                        if sync_receipts {
+                            panel.sync_receipts();
+                        }
                         panel.refresh_chat(cx);
                         panel.refresh_board_snapshot();
                     }
@@ -341,6 +361,21 @@ impl StudioPanel {
             });
         })
         .detach();
+    }
+
+    /// Stops ONLY the Router's active reply without cancelling child Workers or
+    /// discarding queued follow-ups (Q6).
+    pub(crate) fn stop_router_reply_target(
+        &self,
+        router_id: &str,
+        cx: &Context<'_, Self>,
+    ) {
+        let rid = router_id.to_owned();
+        self.run_stop_work_action(
+            false,
+            move |agent| agent.stop_router_reply(&rid),
+            cx,
+        );
     }
 
     /// Cancels one specific child Worker owned by `root_session_id`, leaving
@@ -351,35 +386,13 @@ impl StudioPanel {
         worker_id: &str,
         cx: &Context<'_, Self>,
     ) {
-        let agent = self.agent.clone();
         let rid = root_session_id.to_owned();
         let wid = worker_id.to_owned();
-        let job = cx.background_executor().spawn(async move {
-            let outcome = agent.cancel_work(&rid, &wid);
-            let updates = agent.drain_updates();
-            (outcome, updates)
-        });
-        cx.spawn(async move |weak, cx| {
-            let (outcome, updates) = job.await;
-            let _ = weak.update(cx, |panel, cx| {
-                panel.process_agent_updates(updates, cx);
-                match outcome {
-                    Ok(res) if res.outcome == "finalizing_not_cancellable" => {
-                        panel.emit_notice(Some("notice.cancel_finalizing"), cx);
-                    }
-                    Ok(_) => {
-                        panel.sync_receipts();
-                        panel.refresh_chat(cx);
-                        panel.refresh_board_snapshot();
-                    }
-                    Err(error) => {
-                        panel.emit_notice(Some(error), cx);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.run_stop_work_action(
+            true,
+            move |agent| agent.cancel_work(&rid, &wid),
+            cx,
+        );
     }
 
     /// Opens the parent Router conversation (if not already focused) and opens
@@ -506,6 +519,7 @@ impl StudioPanel {
                 }
             }
         }
+        self.refresh_popover_works();
         self.refresh_trace_cache();
         self.last_board_refresh = Some(std::time::Instant::now());
     }

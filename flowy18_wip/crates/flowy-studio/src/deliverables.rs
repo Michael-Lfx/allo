@@ -701,22 +701,9 @@ impl StudioPanel {
                                     .render(
                                         &self.theme,
                                         cx.listener(move |panel, _, _, cx| {
-                                            if panel.agent.session_role(&stop_id)
-                                                == flowy_agent::SessionRole::Worker
-                                            {
-                                                let root_id = panel
-                                                    .agent
-                                                    .root_session_id(&stop_id);
-                                                panel.cancel_child_work(
-                                                    &root_id,
-                                                    &stop_id,
-                                                    cx,
-                                                );
-                                            } else {
-                                                panel.stop_session_turn(
-                                                    &stop_id, cx,
-                                                );
-                                            }
+                                            panel.stop_session_turn(
+                                                &stop_id, cx,
+                                            );
                                         }),
                                     ),
                                 )

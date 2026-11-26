@@ -3534,7 +3534,22 @@ mod tests {
         // cleanly with the dock navigation row's left edge.
         app.update(cx, |app, cx| {
             app.studio.update(cx, |panel, cx| {
-                panel.create_task(cx).expect("create project router task");
+                let project = panel
+                    .projects
+                    .iter()
+                    .find(|p| p.id == project_id)
+                    .cloned()
+                    .expect("created project exists");
+                let sid = panel
+                    .agent
+                    .create_router_project_session(
+                        flowy_agent::AgentWorkspace {
+                            project_id: project.id,
+                            root: project.root,
+                        },
+                    )
+                    .expect("create project router task");
+                panel.open_session(&sid, cx);
             });
         });
         draw(cx);

@@ -55,7 +55,7 @@ impl crate::panel::StudioPanel {
 
     fn home_hero(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let title = self.t("home.title");
-        let active_work = self.background_work_count();
+        let bg_pill = self.router_bg_pill_summary();
         div()
             // `w_full` collapses inside a centred flex row; `flex_1` takes the
             // width from the parent so narrow windows stay responsive.
@@ -103,23 +103,38 @@ impl crate::panel::StudioPanel {
                     .whitespace_normal()
                     .child(self.t("home.subtitle")),
             )
-            .when(active_work > 0, |hero| {
-                hero.child(self.home_desk_resume(active_work, cx))
+            .when_some(bg_pill, |hero, summary| {
+                hero.child(self.home_desk_resume(summary, cx))
             })
     }
 
     fn home_desk_resume(
         &self,
-        active_work: usize,
+        summary: crate::router_works::BgPillSummary,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let resume_label = self.t("home.desk_resume");
-        let count = active_work.to_string();
-        let count_label =
-            self.tf("chat.bg_tasks_pill", &[("count", count.as_str())]);
+        let is_attention =
+            summary.tone == crate::router_works::BgPillTone::Attention;
+        let dot_color = if is_attention {
+            self.theme.status_attention()
+        } else {
+            self.theme.status_active()
+        };
+        let badge_bg = if is_attention {
+            self.theme.status_attention_bg()
+        } else {
+            self.theme.status_active_bg()
+        };
+        let border_color = if is_attention {
+            self.theme.status_attention().opacity(0.45)
+        } else {
+            self.theme.line()
+        };
+        let count_label = summary.label;
         let dot_el = crate::motion::live_dot(
             "home-desk-resume-dot",
-            self.theme.status_active(),
+            dot_color,
             self.theme.motion_policy(),
         );
         theme::anchor_trigger(
@@ -135,7 +150,7 @@ impl crate::panel::StudioPanel {
             .py(self.theme.space(4.))
             .rounded_full()
             .border_1()
-            .border_color(self.theme.line())
+            .border_color(border_color)
             .bg(self.theme.pill_surface())
             .shadow_sm()
             .flex()
@@ -158,10 +173,10 @@ impl crate::panel::StudioPanel {
                     .px(self.theme.space(8.))
                     .py(px(1.))
                     .rounded_full()
-                    .bg(self.theme.status_active_bg())
+                    .bg(badge_bg)
                     .text_size(self.theme.caption_size())
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(self.theme.status_active())
+                    .text_color(dot_color)
                     .child(count_label),
             )
             .child(

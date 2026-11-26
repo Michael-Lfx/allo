@@ -329,6 +329,9 @@ impl WorkContractProgress {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkBranchSummary {
     pub id: String,
+    /// Owning session ID when projected from a child Worker onto a parent
+    /// Router group (`None` means owned directly by `SessionBoardGroup.session_id`).
+    pub owner_session_id: Option<String>,
     pub skill_label: SkillLabel,
     pub phase: BranchPhase,
     pub deliverable_name: String,
@@ -532,6 +535,21 @@ const fn receipt_progress_pct(state: ReceiptState) -> f32 {
     }
 }
 
+/// Folds a Router conversation's `updated_at` with all owned child Workers'
+/// `updated_at` timestamps so PR #497's 7-day local calendar buckets and day
+/// drill-down include today's child-work activity on older Routers.
+#[must_use]
+fn fold_group_updated_at(
+    parent_updated_at: u64,
+    child_works: &[flowy_agent::ChildWorkSummary],
+) -> u64 {
+    child_works
+        .iter()
+        .fold(normalize_epoch_ms(parent_updated_at), |acc, work| {
+            acc.max(normalize_epoch_ms(work.updated_at))
+        })
+}
+
 impl BoardDataSource for AgentHandle {
     fn build_board_snapshot(
         &self,
@@ -711,13 +729,16 @@ impl BoardDataSource for AgentHandle {
                     !text.is_empty() && !is_redundant_preview(&title, text)
                 });
 
+            let latest_updated_at =
+                fold_group_updated_at(summary.updated_at, &child_works);
+
             groups.push(SessionBoardGroup {
                 session_id: summary.id.clone(),
                 title,
                 project_id: summary.project_id.clone(),
                 project_name: project.map(|proj| proj.name.clone()),
                 workspace_display,
-                updated_at: normalize_epoch_ms(summary.updated_at),
+                updated_at: latest_updated_at,
                 pinned: summary.pinned,
                 archived: summary.archived,
                 preview,
@@ -749,6 +770,7 @@ impl BoardDataSource for AgentHandle {
                     let safe_text = redact_trace_text(&receipt.text);
                     WorkBranchSummary {
                         id: format!("receipt-{}", receipt.id),
+                        owner_session_id: None,
                         skill_label: SkillLabel::Key("board.skill_queue"),
                         phase: BranchPhase::Queued {
                             receipt_id: receipt.id.clone(),
@@ -965,6 +987,7 @@ where
             };
             branches.push(WorkBranchSummary {
                 id: format!("{}-v-{idx}", summary.id),
+                owner_session_id: None,
                 skill_label: infer_skill_label(format, None),
                 phase,
                 deliverable_name: name,
@@ -989,6 +1012,7 @@ where
                     let format = DeliverableFormat::from_path(&file.path);
                     branches.push(WorkBranchSummary {
                         id: format!("{}-fc-{idx}-{f_ix}", summary.id),
+                        owner_session_id: None,
                         skill_label: infer_skill_label(format, None),
                         phase: BranchPhase::Delivered {
                             override_used: false,
@@ -1010,6 +1034,7 @@ where
                     let format = DeliverableFormat::from_path(path);
                     branches.push(WorkBranchSummary {
                         id: format!("{}-f-{idx}", summary.id),
+                        owner_session_id: None,
                         skill_label: infer_skill_label(format, None),
                         phase: BranchPhase::Delivered {
                             override_used: false,
@@ -1038,6 +1063,7 @@ where
             0,
             WorkBranchSummary {
                 id: format!("{}-delivery-failed", summary.id),
+                owner_session_id: None,
                 skill_label: SkillLabel::Key("chat.status_delivery_failed"),
                 phase: BranchPhase::DeliveryFailed,
                 deliverable_name: clip_label(&safe_title, 28),
@@ -1107,6 +1133,7 @@ where
             0,
             WorkBranchSummary {
                 id: format!("{}-live", summary.id),
+                owner_session_id: None,
                 skill_label,
                 phase: BranchPhase::Running {
                     step_label: step_label.clone(),
@@ -1133,6 +1160,7 @@ where
         let safe_text = super::redact_trace_text(&receipt.text);
         branches.push(WorkBranchSummary {
             id: format!("{}-q-{}", summary.id, receipt.id),
+            owner_session_id: None,
             skill_label: SkillLabel::Key("board.skill_queue"),
             phase: BranchPhase::Queued {
                 receipt_id: receipt.id.clone(),
@@ -1166,6 +1194,7 @@ where
             .unwrap_or_else(|| super::redact_trace_text(&summary.title));
         branches.push(WorkBranchSummary {
             id: format!("{}-idle", summary.id),
+            owner_session_id: None,
             skill_label: SkillLabel::Key("chat.router_name"),
             phase: BranchPhase::Idle,
             deliverable_name: clip_label(
@@ -2071,18 +2100,22 @@ mod tests {
             "truly unassigned legacy receipt must remain in unassigned bucket"
         );
 
-        // Verify folded branches carry W1's delivered PPTX, W2's queued receipt, and W2's approval blocker.
+        // Verify folded branches carry W1's delivered PPTX, W2's queued receipt,
+        // W2's approval blocker, and preserve each child's `owner_session_id`.
         assert!(child_branches.iter().any(|b| {
             b.id.starts_with(&format!("work:{w1_id}:"))
+                && b.owner_session_id.as_deref() == Some(w1_id.as_str())
                 && matches!(b.phase, BranchPhase::Delivered { .. })
                 && b.format == DeliverableFormat::Slides
         }));
         assert!(child_branches.iter().any(|b| {
             b.id.starts_with(&format!("work:{w2_id}:"))
+                && b.owner_session_id.as_deref() == Some(w2_id.as_str())
                 && matches!(b.phase, BranchPhase::Queued { .. })
         }));
         assert!(child_branches.iter().any(|b| {
             b.id == format!("work:{w2_id}:approval")
+                && b.owner_session_id.as_deref() == Some(w2_id.as_str())
                 && matches!(b.phase, BranchPhase::NeedsApproval { .. })
         }));
 
@@ -2096,5 +2129,48 @@ mod tests {
         assert_eq!(kpi.running_count, 1);
         assert_eq!(kpi.approval_count, 1);
         assert_eq!(kpi.total_branches, 3);
+
+        // PR #497 coupling: an 8-day-old Router whose child Worker updated today
+        // must land inside the 7-day local calendar window ("today" bucket),
+        // never folded behind "older than 7 days".
+        let tz = 8 * 3600;
+        let now_ms = 1_760_000_000_000_u64;
+        let old_parent_ms = now_ms - 8 * DAY_MS;
+        let mut today_child = child_works[0].clone();
+        today_child.updated_at = now_ms - 60_000;
+        let folded_ts = fold_group_updated_at(old_parent_ms, &[today_child]);
+        assert_eq!(folded_ts, now_ms - 60_000);
+        assert!(!is_older_than_7d_in_tz(folded_ts, now_ms, tz));
+        assert!(is_older_than_7d_in_tz(old_parent_ms, now_ms, tz));
+        let group = SessionBoardGroup {
+            session_id: parent.id,
+            title: parent.title,
+            project_id: None,
+            project_name: None,
+            workspace_display: String::new(),
+            updated_at: folded_ts,
+            pinned: false,
+            archived: false,
+            preview: None,
+            branches: child_branches,
+            total_branch_count: 3,
+            total_file_count: 1,
+            session_contract: None,
+            has_blocker: true,
+            has_delivered: true,
+            is_running: true,
+            is_active: true,
+            group_kpi: kpi,
+        };
+        let buckets = compute_daily_7d_in_tz(&[&group], now_ms, tz);
+        let today = buckets.last().unwrap();
+        assert_eq!(today.active_or_blocked, 1);
+        assert!(matches_day_filter(folded_ts, now_ms, tz, today.date_key));
+        assert!(!matches_day_filter(
+            old_parent_ms,
+            now_ms,
+            tz,
+            today.date_key
+        ));
     }
 }

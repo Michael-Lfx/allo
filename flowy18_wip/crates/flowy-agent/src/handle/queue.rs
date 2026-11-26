@@ -43,7 +43,7 @@ impl AgentHandle {
                 "notice.session_storage_failed"
             })?;
         let root_session_id =
-            hint.as_deref().map(|id| self.root_session_id_for(id));
+            hint.as_deref().map(|id| self.root_session_id(id));
         tracing::info!(
             target: "flowy.acceptance",
             event = "accepted",
