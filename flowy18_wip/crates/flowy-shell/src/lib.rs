@@ -52,7 +52,10 @@ pub struct Brand {
 pub use autostart::{
     is_enabled as autostart_enabled, set_enabled as set_autostart,
 };
-pub use deep_link::{DeepLink, parse as parse_deep_link, take_pending};
+pub use deep_link::{
+    DeepLink, parse as parse_deep_link,
+    parse_with_scheme as parse_deep_link_with_scheme, take_pending,
+};
 pub use notify::{
     NotifyKind, show_task_notification, show_update_notification,
 };

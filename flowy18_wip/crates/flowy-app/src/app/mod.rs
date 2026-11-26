@@ -768,6 +768,7 @@ impl FlowyApp {
                 status: None,
                 code: invite_book.code,
                 inbound_code: None,
+                pending_open: false,
                 emails: invite_book.emails,
                 email: invite_email,
             },
@@ -1312,8 +1313,19 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         self.invite.inbound_code = Some(code);
-        self.invite.status = Some("invite.deep_link_received");
-        self.open_invite(cx);
+        if self.screen == Screen::Main {
+            self.open_invite_with_status(Some("invite.deep_link_received"), cx);
+        } else {
+            self.invite.pending_open = true;
+            self.invite.status = Some("invite.deep_link_received");
+            cx.notify();
+        }
+    }
+
+    fn flush_pending_invite(&mut self, cx: &mut Context<'_, Self>) {
+        if self.screen == Screen::Main && self.invite.pending_open {
+            self.open_invite_with_status(Some("invite.deep_link_received"), cx);
+        }
     }
 
     fn submit_login(&mut self, cx: &mut Context<'_, Self>) {
@@ -1454,6 +1466,7 @@ impl FlowyApp {
                             app.studio.update(cx, |panel, cx| {
                                 panel.dismiss_overlay("model-info", cx);
                             });
+                            app.flush_pending_invite(cx);
                         }
                         Err(AuthError::InvalidCode) => {
                             app.auth.phase = LoginPhase::Idle;
@@ -1623,6 +1636,9 @@ impl FlowyApp {
         self.auth.task = None;
         self.auth.cooldown_task = None;
         self.active_dialog = state::ActiveDialog::None;
+        self.invite.status = None;
+        self.invite.pending_open = false;
+        self.invite.inbound_code = None;
         self.screen = Screen::Login;
         self.section = Section::Studio;
         self.dock_visible = true;
@@ -4225,6 +4241,68 @@ mod tests {
                 assert!(
                     list.iter().find(|s| s.id == "s-ctx").unwrap().archived
                 );
+            });
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn receive_invite_code_on_main_preserves_deep_link_status(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
+        });
+        cx.update(|_window, cx| {
+            app.update(cx, |app, cx| {
+                app.screen = Screen::Main;
+                app.receive_invite_code("INV123".into(), cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::Invite);
+                assert_eq!(app.invite.inbound_code.as_deref(), Some("INV123"));
+                assert_eq!(
+                    app.invite.status,
+                    Some("invite.deep_link_received")
+                );
+                assert!(!app.invite.pending_open);
+            });
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn receive_invite_code_on_login_defers_dialog_until_main(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
+        });
+        cx.update(|_window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.screen, Screen::Login);
+                app.receive_invite_code("LOGIN789".into(), cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::None);
+                assert_eq!(
+                    app.invite.inbound_code.as_deref(),
+                    Some("LOGIN789")
+                );
+                assert_eq!(
+                    app.invite.status,
+                    Some("invite.deep_link_received")
+                );
+                assert!(app.invite.pending_open);
+
+                app.screen = Screen::Main;
+                app.flush_pending_invite(cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::Invite);
+                assert_eq!(
+                    app.invite.status,
+                    Some("invite.deep_link_received")
+                );
+                assert!(!app.invite.pending_open);
             });
         });
         drop(app);

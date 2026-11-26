@@ -46,6 +46,20 @@ fn set_temp_env(dir: &std::path::Path) {
     }
 }
 
+/// Filter raw CLI launch arguments down to valid deep-link URLs for `scheme`
+/// without requiring `flowy_shell::configure_brand` to have run first.
+fn extract_deep_link_args(args: &[String], scheme: &str) -> Vec<String> {
+    args.iter()
+        .map(|raw| raw.trim())
+        .filter(|arg| {
+            !arg.is_empty()
+                && flowy_shell::parse_deep_link_with_scheme(arg, scheme)
+                    .is_some()
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn main() {
     // tracing is not live yet — queue notes until init_tracing drains them.
     flowy_obs::record_boot_note(BootNoteLevel::Info, "stage=main enter");
@@ -65,8 +79,12 @@ fn main() {
         Err(error) => {
             if error.kind() == std::io::ErrorKind::AlreadyExists {
                 let args: Vec<String> = std::env::args().skip(1).collect();
+                let urls = extract_deep_link_args(
+                    &args,
+                    flowy_app::brand_api::url_scheme(),
+                );
                 if let Err(wake_error) =
-                    flowy_shell::signal_wake(&data_root, &args)
+                    flowy_shell::signal_wake(&data_root, &urls)
                 {
                     eprintln!(
                         "{} is already running, and wake signal failed ({wake_error}).",
@@ -169,6 +187,18 @@ fn main() {
         product = flowy_app::brand_api::product(),
         "brand"
     );
+    let cold_args: Vec<String> = std::env::args().skip(1).collect();
+    let cold_urls =
+        extract_deep_link_args(&cold_args, flowy_app::brand_api::url_scheme());
+    if !cold_urls.is_empty() {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "main::cold_deep_links",
+            count = cold_urls.len(),
+            "enqueue"
+        );
+        flowy_shell::enqueue_urls(cold_urls);
+    }
     if prefs.launch_at_login != flowy_shell::autostart_enabled() {
         let _ = flowy_shell::set_autostart(prefs.launch_at_login);
         tracing::debug!(
@@ -204,4 +234,29 @@ fn main() {
         "→ app::run"
     );
     application.run(flowy_app::app::run);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_deep_link_args;
+
+    #[test]
+    fn extract_deep_link_args_filters_non_deep_links_without_brand_init() {
+        let args = vec![
+            "--minimized".to_owned(),
+            r"C:\temp\notes.txt".to_owned(),
+            "https://example.com/invite/ABC".to_owned(),
+            "  flowy://invite/INV_123  ".to_owned(),
+            "flowy://open".to_owned(),
+            "flowy://invite/".to_owned(),
+            String::new(),
+        ];
+        assert_eq!(
+            extract_deep_link_args(&args, "flowy"),
+            vec![
+                "flowy://invite/INV_123".to_owned(),
+                "flowy://open".to_owned(),
+            ]
+        );
+    }
 }

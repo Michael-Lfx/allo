@@ -35,17 +35,27 @@ const SOCIAL: &[(&str, &str)] = &[
 ];
 
 impl FlowyApp {
-    pub(super) fn open_invite(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn open_invite_with_status(
+        &mut self,
+        status: Option<&'static str>,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.activate_dialog(super::state::ActiveDialog::Invite, cx);
         self.invite.panel = Panel::Share;
-        self.invite.status = None;
+        self.invite.status = status;
+        self.invite.pending_open = false;
         self.user_menu = false;
         cx.notify();
+    }
+
+    pub(super) fn open_invite(&mut self, cx: &mut Context<'_, Self>) {
+        self.open_invite_with_status(None, cx);
     }
 
     pub(super) fn close_invite(&mut self, cx: &mut Context<'_, Self>) {
         self.active_dialog = super::state::ActiveDialog::None;
         self.invite.status = None;
+        self.invite.pending_open = false;
         cx.notify();
     }
 

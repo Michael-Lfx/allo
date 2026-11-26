@@ -114,6 +114,7 @@ pub struct InviteState {
     pub(super) status: Option<&'static str>,
     pub(super) code: String,
     pub(super) inbound_code: Option<String>,
+    pub(super) pending_open: bool,
     pub(super) emails: Vec<String>,
     pub(super) email: Entity<InputState>,
 }
