@@ -101,6 +101,7 @@ pub struct DeckAnchor {
 mod contract;
 mod ooxml;
 mod provenance;
+pub mod resolver;
 #[cfg(test)]
 mod tests;
 
@@ -111,6 +112,9 @@ use self::ooxml::{
 };
 pub use self::provenance::PROVENANCE_INVALID;
 use self::provenance::ProvenanceClaim;
+pub use self::resolver::{
+    ResolveOutcome, apply_disambiguation_selection, resolve_contract_sync,
+};
 
 fn next_action_for(report: &VerifyReport) -> &'static str {
     if report.ok {

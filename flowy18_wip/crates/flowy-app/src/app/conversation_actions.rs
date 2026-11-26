@@ -306,8 +306,8 @@ mod tests {
         assert!(!state.open("second".into()));
         assert!(state.begin().is_none());
         assert_eq!(state.id.as_deref(), Some("first"));
-        assert!(state.finish(&first, Err("notice.storage_error")));
-        assert_eq!(state.error, Some("notice.storage_error"));
+        assert!(state.finish(&first, Err("notice.session_storage_failed")));
+        assert_eq!(state.error, Some("notice.session_storage_failed"));
         assert!(state.open("second".into()));
         let second = state.begin().unwrap();
         assert!(!state.finish(&first, Ok(())));
@@ -366,7 +366,7 @@ mod tests {
                 // close the newly confirmed request.
                 app.finish_conversation_delete(
                     &first,
-                    Err("notice.storage_error"),
+                    Err("notice.session_storage_failed"),
                     cx,
                 );
                 assert_eq!(app.active_dialog, ActiveDialog::ConversationDelete);

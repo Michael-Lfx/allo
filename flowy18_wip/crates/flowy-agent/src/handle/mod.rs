@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, Engine, EngineConfig,
-    LoopOutcome, ModelRoute, PromptTurn, ReceiptState, RequiredDeliverable,
-    RunError, SessionOrigin, SessionRecord, SessionWorkspace,
-    SubmissionOutcome, TurnObserver, TurnState, complete_text, echo_stream_fn,
-    log_preview,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit, Engine,
+    EngineConfig, LoopOutcome, ModelRoute, PendingCard, PromptTurn,
+    ReceiptState, RequiredDeliverable, RunError, SessionOrigin, SessionRecord,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TurnObserver,
+    TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -59,15 +59,16 @@ mod queue;
 mod tests;
 mod work;
 
-pub use self::guards::{confined_to, has_reserved_device_component};
 use self::guards::{
-    ensure_tool_cwd, session_working_directory, tool_registry, tool_target,
+    build_pre_tool_hook, ensure_tool_cwd, session_working_directory,
+    tool_registry, tool_target,
 };
+pub use self::guards::{confined_to, has_reserved_device_component};
 use self::observer::{
     UiObserver, apply_delivery_commit_to_live, backfill_conversation_artifacts,
-    capture_turn_artifacts, confirm_commit_audit, ensure_engine_session,
-    extract_session_preview, finish_interrupted_lines, hydrate_engine,
-    import_engine_sessions, mark_delivery_failed,
+    capture_turn_artifacts, clear_live_heartbeat, confirm_commit_audit,
+    ensure_engine_session, extract_session_preview, finish_interrupted_lines,
+    hydrate_engine, import_engine_sessions, mark_delivery_failed,
     migrate_legacy_source_deletions, persist_index, recover_session_deletions,
     sync_engine_titles,
 };
@@ -120,6 +121,14 @@ pub enum CancelOutcome {
     FinalizingNotCancellable,
 }
 
+/// User selection submitted to resolve a persisted [`PendingCard`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardSelection {
+    Disambiguate { object_ids: Vec<String> },
+    ApproveTool { args_hash: String },
+    DenyTool { reason: Option<String> },
+}
+
 /// Structured card-level user actions executed exclusively by the host kernel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardAction {
@@ -135,6 +144,11 @@ pub enum CardAction {
     RetryDeadReceipt {
         receipt_id: String,
     },
+    ResolveCard {
+        session_id: String,
+        card_id: String,
+        selection: CardSelection,
+    },
 }
 
 /// Result of applying one [`CardAction`] inside the host kernel.
@@ -143,6 +157,7 @@ pub enum CardActionOutcome {
     ArtifactDelivered { artifact_id: String },
     DeliveryRetried,
     ReceiptRequeued { receipt_id: String },
+    CardResolved { card_id: String, resumed: bool },
 }
 
 /// One accepted receipt claimed by `run_accepted_once`.
@@ -183,6 +198,18 @@ struct Live {
     workspace: Option<AgentWorkspace>,
     origin: SessionOrigin,
     session_workspace: Option<SessionWorkspace>,
+    heartbeat: Option<BranchHeartbeat>,
+}
+
+struct ResumedSubmission {
+    pub(super) contract: Option<crate::verify::BriefContract>,
+    pub(super) skip_contract_evolve: bool,
+    pub(super) model_prompt_override: Option<String>,
+    pub(super) model_prompt_suffix: Option<String>,
+    pub(super) display_text_override: Option<String>,
+    pub(super) skip_push_user_line: bool,
+    pub(super) preserve_turn_denial: bool,
+    pub(super) preserve_tool_approval: bool,
 }
 
 #[derive(Clone)]
@@ -204,6 +231,12 @@ struct UiState {
     /// File-tool arguments held between `tool_start` and `tool_end`, keyed by
     /// session and call id, so the change card never re-reads the file.
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
+    /// One-shot pre-tool approval grants pinned to exact `(tool_name, args_hash)`
+    /// per session, consumed upon execution.
+    approved_tool_calls: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// Turn-scoped `UserDenied` anti-bypass guard per session; cleared once the
+    /// resumed denial turn completes or a brand-new user turn starts.
+    denied_tool_turns: Mutex<HashMap<String, String>>,
     active: Mutex<Option<String>>,
     accepted_claim: Mutex<Option<AcceptedClaim>>,
     accepted_lease_ms: AtomicU64,
@@ -253,6 +286,8 @@ impl UiState {
             root,
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
+            approved_tool_calls: Mutex::new(HashMap::new()),
+            denied_tool_turns: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             accepted_claim: Mutex::new(None),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
@@ -678,6 +713,7 @@ impl AgentHandle {
                         workspace: record.workspace,
                         origin: record.origin,
                         session_workspace: record.session_workspace,
+                        heartbeat: None,
                     },
                 );
             }
@@ -778,9 +814,19 @@ impl AgentHandle {
         );
         // Desktop is single-instance: any remaining unexpired lease belongs to
         // a crashed predecessor process and must transition immediately to
-        // Retrying rather than falsely displaying Running until lease expiry.
+        // Retrying rather than falsely displaying Running until lease expiry,
+        // EXCEPT sessions intentionally parked in WaitingForUser / pending_cards.
+        let waiting_sessions: BTreeSet<String> = engine
+            .sessions()
+            .into_iter()
+            .filter(|rec| {
+                rec.status == TurnState::WaitingForUser
+                    || !rec.pending_cards.is_empty()
+            })
+            .map(|rec| rec.id)
+            .collect();
         if let Ok(released_ids) = AcceptanceQueue::new(state.root.clone())
-            .release_uncommitted_leases(now_ms())
+            .release_uncommitted_leases_except(now_ms(), &waiting_sessions)
         {
             for id in released_ids {
                 receipt_updates.push((id, ReceiptState::Retrying));
@@ -914,7 +960,9 @@ impl AgentHandle {
             .is_some_and(|session| {
                 if matches!(
                     session.status,
-                    TurnStatus::Error { .. } | TurnStatus::DeliveryFailed
+                    TurnStatus::Error { .. }
+                        | TurnStatus::DeliveryFailed
+                        | TurnStatus::WaitingForUser
                 ) {
                     return true;
                 }
@@ -945,6 +993,11 @@ impl AgentHandle {
             .as_ref()
             .and_then(|engine| {
                 engine.with_session(session_id, |record| {
+                    if !record.pending_cards.is_empty()
+                        || record.status == TurnState::WaitingForUser
+                    {
+                        return true;
+                    }
                     latest_session_submission_id(record).is_some_and(|sub_id| {
                         matches!(
                             record.submission_outcomes.get(&sub_id),
@@ -973,6 +1026,43 @@ impl AgentHandle {
         lock(&self.inner.state.live)
             .get(session_id)
             .map_or_default(|session| session.projection.lines.clone())
+    }
+
+    /// Returns persisted interactive cards awaiting user resolution on
+    /// `session_id` (disambiguation or tool-approval gates).
+    #[must_use]
+    pub fn session_pending_cards(&self, session_id: &str) -> Vec<PendingCard> {
+        let engine = lock(&self.inner.engine).clone();
+        engine
+            .as_ref()
+            .and_then(|engine| {
+                engine.with_session(session_id, |rec| rec.pending_cards.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the most recent persisted [`StopHandoffManifest`] recorded for
+    /// `session_id` after cancellation cleanup settled, if any.
+    #[must_use]
+    pub fn session_stop_handoff(
+        &self,
+        session_id: &str,
+    ) -> Option<StopHandoffManifest> {
+        let engine = lock(&self.inner.engine).clone();
+        engine.as_ref().and_then(|engine| {
+            engine.with_session(session_id, |rec| rec.last_stop_handoff.clone())
+        })?
+    }
+
+    /// Returns the latest honest 3-part execution heartbeat for `session_id`.
+    #[must_use]
+    pub fn session_heartbeat(
+        &self,
+        session_id: &str,
+    ) -> Option<BranchHeartbeat> {
+        lock(&self.inner.state.live)
+            .get(session_id)
+            .and_then(|session| session.heartbeat.clone())
     }
 
     /// Memory-only selection revision, including empty Home/Project contexts.
@@ -1084,83 +1174,10 @@ impl AgentHandle {
     }
 
     pub fn create_session(&self) -> Result<String, &'static str> {
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.inner.state.load_failed) {
-            return Err("notice.session_storage_failed");
-        }
-        let id = format!("s-{}", next_stamp());
-        let now = now_ms();
         let workspace =
             lock(&self.inner.state.workspace_for_new_sessions).clone();
         let origin = lock(&self.inner.state.origin_for_new_sessions).clone();
-        let session_workspace = match &origin {
-            SessionOrigin::Home => {
-                let root = self
-                    .inner
-                    .state
-                    .root
-                    .join("sessions")
-                    .join("workspaces")
-                    .join(&id);
-                std::fs::create_dir_all(&root).map_err(|error| {
-                    log_storage_io_error(
-                        "create session workspace",
-                        &root,
-                        &error,
-                    );
-                    "notice.session_storage_failed"
-                })?;
-                Some(SessionWorkspace { root })
-            }
-            SessionOrigin::Project { .. } => {
-                workspace.as_ref().map(|workspace| SessionWorkspace {
-                    root: workspace.root.clone(),
-                })
-            }
-            SessionOrigin::Unknown => None,
-        };
-        let engine = lock(&self.inner.engine)
-            .clone()
-            .ok_or("notice.agent_failed")?;
-        // The durable history write may fail on the same broken volume the
-        // index uses; the live session still works in memory and the failure is
-        // reported through `AgentUpdate::StorageError`.
-        engine
-            .create_session_with_metadata(
-                id.clone(),
-                now,
-                origin.clone(),
-                session_workspace.clone(),
-            )
-            .map_err(|_| "notice.session_storage_failed")?;
-        lock(&self.inner.state.live).insert(
-            id.clone(),
-            Live {
-                projection: ChatProjection::new(),
-                title: String::new(),
-                titled: false,
-                auto_title_pending: false,
-                title_signal: CancelToken::new(),
-                status: TurnStatus::Idle,
-                updated_at: now,
-                turn_started_at: None,
-                workspace,
-                origin,
-                session_workspace,
-            },
-        );
-        *lock(&self.inner.state.active) = Some(id.clone());
-        self.inner
-            .state
-            .context_generation
-            .fetch_add(1, Ordering::AcqRel);
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        self.inner.state.push_update(AgentUpdate::Sessions);
-        Ok(id)
+        self.inner.create_session_inner(origin, workspace, true)
     }
 
     pub fn select_session(&self, id: &str) -> Result<(), &'static str> {
@@ -1334,8 +1351,9 @@ impl AgentHandle {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
-        self.inner
-            .submit_message_targeted(None, text, submission, selection, None)
+        self.inner.submit_message_targeted(
+            None, text, submission, selection, None, None,
+        )
     }
 }
 
@@ -1362,6 +1380,23 @@ impl Harness {
             )
     }
 
+    /// If `UiObserver::finished`/`waiting_for_user`/`stop_settled` has already
+    /// flipped `live[id].status` out of a busy state, `Engine::finish_after_observer`
+    /// is microseconds away from calling `ticket.finish()`. Wait briefly for the
+    /// `RunFence` drop so callers polling `session_status` never observe a
+    /// spurious `notice.agent_busy` or stale `has_busy_session() == true`.
+    fn settle_finishing_fence(&self, engine: &Engine, id: &str) {
+        if engine.is_active(id)
+            && !engine.is_cancelling(id)
+            && lock(&self.state.live)
+                .get(id)
+                .is_some_and(|session| !session.status.is_busy())
+        {
+            let _ = engine
+                .wait_until_idle(id, std::time::Duration::from_millis(50));
+        }
+    }
+
     pub(super) fn has_busy_session(&self) -> bool {
         let live_busy = lock(&self.state.live)
             .values()
@@ -1369,10 +1404,17 @@ impl Harness {
         if live_busy {
             return true;
         }
-        let engine = lock(&self.engine).clone();
-        engine
-            .as_ref()
-            .is_some_and(|engine| !engine.active_session_ids().is_empty())
+        let Some(engine) = lock(&self.engine).clone() else {
+            return false;
+        };
+        let active = engine.active_session_ids();
+        if active.is_empty() {
+            return false;
+        }
+        for sid in &active {
+            self.settle_finishing_fence(&engine, sid);
+        }
+        !engine.active_session_ids().is_empty()
     }
 
     pub(super) fn is_session_busy_or_active(&self, id: &str) -> bool {
@@ -1382,14 +1424,43 @@ impl Harness {
         {
             return true;
         }
+        let Some(engine) = lock(&self.engine).clone() else {
+            return false;
+        };
+        self.settle_finishing_fence(&engine, id);
+        engine.is_active(id)
+    }
+
+    pub(super) fn is_session_waiting_for_user(&self, id: &str) -> bool {
+        if lock(&self.state.live).get(id).is_some_and(|session| {
+            matches!(session.status, TurnStatus::WaitingForUser)
+        }) {
+            return true;
+        }
         let engine = lock(&self.engine).clone();
-        engine.as_ref().is_some_and(|engine| engine.is_active(id))
+        engine.as_ref().is_some_and(|engine| {
+            engine
+                .with_session(id, |rec| {
+                    rec.status == TurnState::WaitingForUser
+                        || !rec.pending_cards.is_empty()
+                })
+                .unwrap_or(false)
+        })
     }
 
     /// Create a new durable Home session in the background without ever
     /// mutating the UI's active selection or `context_generation`.
     pub(super) fn create_background_home_session(
         &self,
+    ) -> Result<String, &'static str> {
+        self.create_session_inner(SessionOrigin::Home, None, false)
+    }
+
+    fn create_session_inner(
+        &self,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        make_active: bool,
     ) -> Result<String, &'static str> {
         if self.is_initializing() {
             return Err("library.loading");
@@ -1399,23 +1470,37 @@ impl Harness {
         }
         let id = format!("s-{}", next_stamp());
         let now = now_ms();
-        let root = self
-            .state
-            .root
-            .join("sessions")
-            .join("workspaces")
-            .join(&id);
-        std::fs::create_dir_all(&root).map_err(|error| {
-            log_storage_io_error("create session workspace", &root, &error);
-            "notice.session_storage_failed"
-        })?;
-        let session_workspace = Some(SessionWorkspace { root });
+        let session_workspace = match &origin {
+            SessionOrigin::Home => {
+                let root = self
+                    .state
+                    .root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&id);
+                std::fs::create_dir_all(&root).map_err(|error| {
+                    log_storage_io_error(
+                        "create session workspace",
+                        &root,
+                        &error,
+                    );
+                    "notice.session_storage_failed"
+                })?;
+                Some(SessionWorkspace { root })
+            }
+            SessionOrigin::Project { .. } => {
+                workspace.as_ref().map(|workspace| SessionWorkspace {
+                    root: workspace.root.clone(),
+                })
+            }
+            SessionOrigin::Unknown => None,
+        };
         let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
         engine
             .create_session_with_metadata(
                 id.clone(),
                 now,
-                SessionOrigin::Home,
+                origin.clone(),
                 session_workspace.clone(),
             )
             .map_err(|_| "notice.session_storage_failed")?;
@@ -1430,11 +1515,16 @@ impl Harness {
                 status: TurnStatus::Idle,
                 updated_at: now,
                 turn_started_at: None,
-                workspace: None,
-                origin: SessionOrigin::Home,
+                workspace,
+                origin,
                 session_workspace,
+                heartbeat: None,
             },
         );
+        if make_active {
+            *lock(&self.state.active) = Some(id.clone());
+            self.state.context_generation.fetch_add(1, Ordering::AcqRel);
+        }
         if persist_index(&self.state).is_err() {
             self.state.report_storage_error();
         }
@@ -1449,6 +1539,33 @@ impl Harness {
         submission: Option<u128>,
         selection: Option<SubmissionSelection<'_>>,
         pending_claim: Option<AcceptedClaim>,
+        reply_to_object_id: Option<&str>,
+    ) -> Result<String, &'static str> {
+        let _dispatch = lock(&self.state.dispatch);
+        self.submit_message_targeted_locked(
+            explicit_session_id,
+            text,
+            submission,
+            selection,
+            pending_claim,
+            reply_to_object_id,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal dispatch entrypoint shares one lock-validated path across direct chat, receipts, and card resume"
+    )]
+    pub(super) fn submit_message_targeted_locked(
+        self: &Arc<Self>,
+        explicit_session_id: Option<&str>,
+        text: &str,
+        submission: Option<u128>,
+        selection: Option<SubmissionSelection<'_>>,
+        pending_claim: Option<AcceptedClaim>,
+        reply_to_object_id: Option<&str>,
+        resumed: Option<ResumedSubmission>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
@@ -1468,7 +1585,6 @@ impl Harness {
         if *lock(&state.load_failed) {
             return Err("notice.session_storage_failed");
         }
-        let _dispatch = lock(&state.dispatch);
         // Re-verify receipt liveness inside `dispatch` so a concurrent
         // `cancel_task(TaskTarget::Receipt)` between `bind` and submit never
         // dispatches a cancelled prompt (closes Window A TOCTOU).
@@ -1496,6 +1612,19 @@ impl Harness {
         {
             return Ok(session);
         }
+        if let Some(sub) = submission {
+            let expected_card_id = format!("disambig-submission-{sub:032x}");
+            if let Some(existing_sid) =
+                engine.sessions().into_iter().find_map(|rec| {
+                    rec.pending_cards
+                        .iter()
+                        .any(|card| card.card_id() == expected_card_id)
+                        .then_some(rec.id)
+                })
+            {
+                return Ok(existing_sid);
+            }
+        }
         if selection.is_some_and(|selection| {
             self.state.context_generation.load(Ordering::Acquire)
                 != selection.generation
@@ -1512,6 +1641,7 @@ impl Harness {
             }
             None => self.ensure_active_session_locked()?,
         };
+        self.settle_finishing_fence(&engine, &id);
         if lock(&state.live)
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
@@ -1530,7 +1660,36 @@ impl Harness {
         }
         let config = lock(&self.config).clone();
         let skills = self.skill_catalog();
-        let (prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let (mut prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
+        let is_resumed = resumed.is_some();
+        let skip_push_user_line = resumed
+            .as_ref()
+            .is_some_and(|item| item.skip_push_user_line);
+        let skip_contract_evolve = resumed
+            .as_ref()
+            .is_some_and(|item| item.skip_contract_evolve);
+        let preserve_turn_denial = resumed
+            .as_ref()
+            .is_some_and(|item| item.preserve_turn_denial);
+        let preserve_tool_approval = resumed
+            .as_ref()
+            .is_some_and(|item| item.preserve_tool_approval);
+        if let Some(override_model) = resumed
+            .as_ref()
+            .and_then(|item| item.model_prompt_override.clone())
+        {
+            let display = resumed
+                .as_ref()
+                .and_then(|item| item.display_text_override.as_deref())
+                .unwrap_or(text);
+            prompt = PromptTurn::with_display(override_model, display);
+        } else if let Some(suffix) = resumed
+            .as_ref()
+            .and_then(|item| item.model_prompt_suffix.as_deref())
+        {
+            prompt.model.push_str(suffix);
+        }
+        let pre_resolved_contract = resumed.and_then(|item| item.contract);
         let title_prompt = text.to_owned();
         let stream = config
             .api_key
@@ -1540,17 +1699,76 @@ impl Harness {
             .get(&id)
             .and_then(|session| session.workspace.clone());
         let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
+        if !is_resumed
+            && (!core_session.pending_cards.is_empty()
+                || core_session.status == TurnState::WaitingForUser
+                || lock(&state.live).get(&id).is_some_and(|session| {
+                    session.status == TurnStatus::WaitingForUser
+                }))
+        {
+            return Err("notice.card_pending");
+        }
         let cwd = core_session.workspace.as_ref().map_or_else(
             || session_working_directory(&state.root, workspace.as_ref()),
             |workspace| workspace.root.clone(),
         );
+        if !preserve_turn_denial {
+            lock(&state.denied_tool_turns).remove(&id);
+        }
+        if !preserve_tool_approval {
+            lock(&state.approved_tool_calls).remove(&id);
+        }
         let mut run_config = engine_config(&config, &cwd);
         run_config.registry = tool_registry(&cwd, &skills, active_skills);
+        run_config.pre_tool_hook =
+            Some(build_pre_tool_hook(id.clone(), cwd, Arc::clone(state)));
+        let mut staged_intents_for_turn: Option<
+            crate::publish_tool::StagedIntentLog,
+        > = None;
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
             && let Some(store) = state.artifact_store.get().cloned()
         {
+            let contract = if let Some(resolved) = pre_resolved_contract {
+                resolved
+            } else if skip_contract_evolve {
+                core_session.work_contract.as_ref().map_or_default(
+                    crate::verify::BriefContract::from_work_contract,
+                )
+            } else {
+                match crate::verify::resolve_contract_sync(
+                    core_session.work_contract.as_ref(),
+                    text,
+                    reply_to_object_id,
+                    now_ms(),
+                ) {
+                    crate::verify::ResolveOutcome::Ambiguous {
+                        mut card,
+                        ..
+                    } => {
+                        if let PendingCard::Disambiguation { card_id, .. } =
+                            &mut card
+                        {
+                            *card_id = format!(
+                                "disambig-submission-{submission:032x}"
+                            );
+                        }
+                        return self.park_disambiguation_locked(
+                            &engine,
+                            &id,
+                            card,
+                            text,
+                            skip_push_user_line,
+                            pending_claim,
+                        );
+                    }
+                    crate::verify::ResolveOutcome::Resolved {
+                        contract,
+                        ..
+                    } => contract,
+                }
+            };
             let submission_id = format!("submission-{submission:032x}");
             let output_root =
                 session_workspace.root.join("outputs").join(&submission_id);
@@ -1565,15 +1783,17 @@ impl Harness {
             let delivery = crate::delivery::DeliveryStore::new(
                 state.root.join("delivery"),
             );
-            let contract = crate::verify::BriefContract::evolve(
-                core_session.work_contract.as_ref(),
-                text,
-            );
             if core_session.work_contract.is_some() || !contract.is_empty() {
                 run_config.work_contract = Some(contract.to_work_contract());
             }
-            let semantic_brief =
-                compose_semantic_brief(&core_session.messages, text);
+            let expected_revision = run_config
+                .work_contract
+                .as_ref()
+                .map(|wc| wc.revision.max(1));
+            let semantic_brief = compose_semantic_brief(
+                &core_session.messages,
+                if skip_contract_evolve { "" } else { text },
+            );
             let semantic = state
                 .semantic_verify_enabled
                 .load(Ordering::Acquire)
@@ -1605,12 +1825,17 @@ impl Harness {
                     Some(failures),
                 ),
             );
-            run_config
-                .registry
-                .register(crate::publish_tool::definition(
+            let staged_log: crate::publish_tool::StagedIntentLog =
+                Arc::new(Mutex::new(Vec::new()));
+            staged_intents_for_turn = Some(Arc::clone(&staged_log));
+            run_config.registry.register(
+                crate::publish_tool::definition_with_revision(
                     store.clone(),
                     Some(delivery),
-                ));
+                    expected_revision,
+                    Some(staged_log),
+                ),
+            );
             run_config.delivery_committer = Some(Arc::new(store));
             run_config.system = format!(
                 "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
@@ -1656,7 +1881,18 @@ impl Harness {
             session.status = TurnStatus::Running;
             session.turn_started_at = Some(now);
             session.updated_at = now;
-            session.projection.push_user(text);
+            session.heartbeat = Some(BranchHeartbeat {
+                last_completed: None,
+                last_completed_at_ms: None,
+                current_action: "thinking".to_owned(),
+                next_check_hint: Some(
+                    "awaiting first tool or model step".to_owned(),
+                ),
+                awaiting_evidence: true,
+            });
+            if !skip_push_user_line {
+                session.projection.push_user(text);
+            }
             let title = if session.titled {
                 (None, None)
             } else {
@@ -1746,8 +1982,90 @@ impl Harness {
                     &id,
                     completed_submission,
                 );
+            } else if matches!(
+                outcome,
+                Ok(LoopOutcome::Aborted | LoopOutcome::WaitingForUser)
+            ) && let Some(staged_log) = staged_intents_for_turn
+            {
+                let pending = std::mem::take(
+                    &mut *staged_log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                if !pending.is_empty() {
+                    let expected_sub = completed_submission
+                        .map(|s| format!("submission-{s:032x}"));
+                    let live_delivery_failed =
+                        lock(&state.live).get(&id).is_some_and(|session| {
+                            matches!(session.status, TurnStatus::DeliveryFailed)
+                        });
+                    let has_durable_commit =
+                        expected_sub.as_deref().is_some_and(|sub| {
+                            engine.session(&id).is_some_and(|rec| {
+                                rec.delivery_commits
+                                    .iter()
+                                    .any(|commit| commit.submission_id == sub)
+                            })
+                        });
+                    if !live_delivery_failed && !has_durable_commit {
+                        let gate = crate::delivery::DeliveryStore::new(
+                            state.root.join("delivery"),
+                        );
+                        let reason = match &outcome {
+                            Ok(LoopOutcome::WaitingForUser) => {
+                                "turn_waiting_for_user"
+                            }
+                            _ => "turn_aborted",
+                        };
+                        let now = now_ms();
+                        for (delivery_id, artifact_path, sha256) in pending {
+                            let _ = gate.abort_intent(
+                                &delivery_id,
+                                &artifact_path,
+                                &sha256,
+                                reason,
+                                now,
+                            );
+                        }
+                    }
+                }
             }
-            if state.autonomous_drain.load(Ordering::Acquire)
+            if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
+                // PendingCard::ToolApproval is durably persisted in
+                // `history.json`. Complete the AcceptanceQueue receipt (matching
+                // the Disambiguation handoff) so 30s lease expiry or a later
+                // `DenyTool` never causes autonomous_drain to re-run this prompt.
+                let claim = {
+                    let mut slot = lock(&state.accepted_claim);
+                    if slot.as_ref().is_some_and(|c| c.session_id == id) {
+                        slot.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(claim) = claim {
+                    claim.heartbeat_cancel.cancel();
+                    let queue = AcceptanceQueue::new(state.root.clone());
+                    if queue
+                        .complete(
+                            &claim.receipt_id,
+                            &claim.attempt_id,
+                            now_ms(),
+                        )
+                        .unwrap_or(false)
+                    {
+                        state.push_update(AgentUpdate::Receipt {
+                            id: claim.receipt_id,
+                            state: ReceiptState::Completed,
+                        });
+                    }
+                }
+                if state.autonomous_drain.load(Ordering::Acquire)
+                    && let Some(harness) = weak_harness.upgrade()
+                {
+                    harness.kick_autonomous_drain();
+                }
+            } else if state.autonomous_drain.load(Ordering::Acquire)
                 && let Some(harness) = weak_harness.upgrade()
             {
                 let expected_sub = completed_submission
@@ -1806,6 +2124,92 @@ impl Harness {
         Ok(receipt)
     }
 
+    fn park_disambiguation_locked(
+        &self,
+        engine: &Engine,
+        id: &str,
+        card: PendingCard,
+        text: &str,
+        skip_push_user_line: bool,
+        pending_claim: Option<AcceptedClaim>,
+    ) -> Result<String, &'static str> {
+        let state = &self.state;
+        let now = now_ms();
+        engine.park_pending_card(id, card, None).map_err(|error| {
+            log_storage_io_error(
+                "park disambiguation card",
+                &flowy_agent_core::SessionIndex::path(&state.root),
+                &error,
+            );
+            state.report_storage_error();
+            "notice.session_storage_failed"
+        })?;
+        let fallback_title = {
+            let mut live = lock(&state.live);
+            let session = live.get_mut(id).expect("active session exists");
+            session.status = TurnStatus::WaitingForUser;
+            session.turn_started_at = None;
+            session.updated_at = now;
+            session.heartbeat = Some(BranchHeartbeat {
+                last_completed: session
+                    .heartbeat
+                    .as_ref()
+                    .and_then(|hb| hb.last_completed.clone()),
+                last_completed_at_ms: session
+                    .heartbeat
+                    .as_ref()
+                    .and_then(|hb| hb.last_completed_at_ms),
+                current_action: "waiting_for_user".to_owned(),
+                next_check_hint: Some(
+                    "awaiting disambiguation card selection".to_owned(),
+                ),
+                awaiting_evidence: true,
+            });
+            if !skip_push_user_line {
+                session.projection.push_user(text);
+            }
+            session.projection.lines.push(ChatLine::Status {
+                text: TurnStatus::WaitingForUser.key().into(),
+            });
+            let title = if session.titled {
+                None
+            } else {
+                session.title = title::clamp_title(
+                    &title::fallback_title(text, TITLE_MAX_CHARS),
+                    TITLE_MAX_CHARS,
+                );
+                session.titled = true;
+                Some(session.title.clone())
+            };
+            drop(live);
+            title
+        };
+        if let Some(title) = fallback_title
+            && engine.set_session_title(id, title, true).is_err()
+        {
+            state.report_storage_error();
+        }
+        if let Some(claim) = pending_claim {
+            claim.heartbeat_cancel.cancel();
+            let queue = AcceptanceQueue::new(state.root.clone());
+            if queue
+                .complete(&claim.receipt_id, &claim.attempt_id, now)
+                .unwrap_or(false)
+            {
+                state.push_update(AgentUpdate::Receipt {
+                    id: claim.receipt_id,
+                    state: ReceiptState::Completed,
+                });
+            }
+        }
+        if persist_index(state).is_err() {
+            state.report_storage_error();
+        }
+        state.push_update(AgentUpdate::Session { id: id.to_owned() });
+        state.push_update(AgentUpdate::Sessions);
+        Ok(id.to_owned())
+    }
+
     fn ensure_active_session_locked(&self) -> Result<String, &'static str> {
         let active = lock(&self.state.active).clone();
         if let Some(id) = active
@@ -1813,73 +2217,9 @@ impl Harness {
         {
             return Ok(id);
         }
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.state.load_failed) {
-            return Err("notice.session_storage_failed");
-        }
-        let id = format!("s-{}", next_stamp());
-        let now = now_ms();
         let workspace = lock(&self.state.workspace_for_new_sessions).clone();
         let origin = lock(&self.state.origin_for_new_sessions).clone();
-        let session_workspace = match &origin {
-            SessionOrigin::Home => {
-                let root = self
-                    .state
-                    .root
-                    .join("sessions")
-                    .join("workspaces")
-                    .join(&id);
-                std::fs::create_dir_all(&root).map_err(|error| {
-                    log_storage_io_error(
-                        "create session workspace",
-                        &root,
-                        &error,
-                    );
-                    "notice.session_storage_failed"
-                })?;
-                Some(SessionWorkspace { root })
-            }
-            SessionOrigin::Project { .. } => {
-                workspace.as_ref().map(|workspace| SessionWorkspace {
-                    root: workspace.root.clone(),
-                })
-            }
-            SessionOrigin::Unknown => None,
-        };
-        let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
-        engine
-            .create_session_with_metadata(
-                id.clone(),
-                now,
-                origin.clone(),
-                session_workspace.clone(),
-            )
-            .map_err(|_| "notice.session_storage_failed")?;
-        lock(&self.state.live).insert(
-            id.clone(),
-            Live {
-                projection: ChatProjection::new(),
-                title: String::new(),
-                titled: false,
-                auto_title_pending: false,
-                title_signal: CancelToken::new(),
-                status: TurnStatus::Idle,
-                updated_at: now,
-                turn_started_at: None,
-                workspace,
-                origin,
-                session_workspace,
-            },
-        );
-        *lock(&self.state.active) = Some(id.clone());
-        self.state.context_generation.fetch_add(1, Ordering::AcqRel);
-        if persist_index(&self.state).is_err() {
-            self.state.report_storage_error();
-        }
-        self.state.push_update(AgentUpdate::Sessions);
-        Ok(id)
+        self.create_session_inner(origin, workspace, true)
     }
 }
 
@@ -1898,11 +2238,21 @@ fn compose_semantic_brief(
     let prior: Vec<String> = messages
         .iter()
         .filter(|msg| {
-            msg.role == Role::User && matches!(msg.source, MessageSource::User)
+            msg.role == Role::User
+                && matches!(msg.source, MessageSource::User)
+                && msg.display_text.as_deref() != Some("")
         })
         .map(|msg| msg.text().trim().to_owned())
         .filter(|text| !text.is_empty())
         .collect();
+    if current_prompt.trim().is_empty() {
+        let start = prior.len().saturating_sub(4);
+        return prior[start..]
+            .join("\n\n")
+            .chars()
+            .take(MAX_BRIEF_CHARS)
+            .collect();
+    }
     if prior.is_empty() {
         return current_prompt.to_owned();
     }
@@ -2021,6 +2371,7 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         todos: None,
         delivery_committer: None,
         work_contract: None,
+        pre_tool_hook: None,
     }
 }
 

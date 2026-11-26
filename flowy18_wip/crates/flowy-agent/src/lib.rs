@@ -33,19 +33,23 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, DeliveryCommit, ReceiptState,
-    RequiredDeliverable, SessionOrigin, SessionWorkspace, SubmissionOutcome,
-    WorkContract,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit,
+    DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
+    PendingCard, ReceiptState, RequiredDeliverable, SessionOrigin,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
+    TrackedObjectKind, WorkContract,
     tools::{
-        SandboxAvailability, SandboxBackend, SandboxPolicy,
-        detect_sandbox_availability, has_reserved_device_component,
+        SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
+        SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,
+        evaluate_shell_command, has_reserved_device_component,
         is_windows_reparse_point,
     },
 };
 pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
-    CardAction, CardActionOutcome, SessionSummary, TaskTarget, WorkStatus,
+    CardAction, CardActionOutcome, CardSelection, SessionSummary, TaskTarget,
+    WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -57,7 +61,10 @@ pub use projection::{
     VerificationIssue,
 };
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
-pub use verify::{PROVENANCE_INVALID, ui_key as verify_ui_key};
+pub use verify::{
+    PROVENANCE_INVALID, ResolveOutcome, resolve_contract_sync,
+    ui_key as verify_ui_key,
+};
 
 #[cfg(test)]
 mod perf_tests;

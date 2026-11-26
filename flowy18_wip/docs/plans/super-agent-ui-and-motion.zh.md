@@ -1,7 +1,23 @@
 # Flowy Super Agent 界面交互与 GPUI 丝滑动效升级 · 技术方案
 
-> **状态**：📋 计划（2026-11-25 架构与视觉交互定稿，待 `feat-flowy-local-receipt` 收尾合流后分叉并行实施）  
-> **核心原则**：**台前常驻助理极简对话，幕后多任务与核验按需收纳；严守 `gpui-pre` 布局契约与 Quiet Kinetic 暖墨克制审美，以子 `Entity` 隔离、预测量插值与算术 FLIP 复现原生 120fps 丝滑动效。**
+> **状态**：✅ 核心极简助理体验、无歧义 SVG、GPUI 原生旋转/弹簧动效与决策卡片已于 **PR #492（`feat/flowy-v1-integration`，2026-11-26）** 落地；侧栏常驻空间 FLIP / 运行中过程实时折叠等深改项按极简减负取舍延后迭代（见下方 §0 现役对照）。  
+> **核心原则**：**台前常驻助理极简对话，幕后多任务与核验按需收纳；严守 `gpui-pre` 布局契约与 Quiet Kinetic 暖墨克制审美。**
+
+---
+
+## 0. 2026-11-26 现役落地对照（PR #492 · `feat/flowy-v1-integration`）
+
+> 保留下方 §1–§5 与附录作为原设计档案（零删改）；本节记录 PR #492 的实际代码落点与经用户复眼确认的设计取舍，**以现役代码为准**。
+
+| 方案项 | PR #492 实际状态 | 现役代码落点与取舍说明 |
+| --- | --- | --- |
+| **输入区极致减负与 `+` 旋转菜单** | ✅ **已落地** | `flowy-studio/src/composer_add_menu.rs` + `composer.rs`：4 个散落按钮收口为单一 `+` 按钮（点击 45° 旋转成 `×`，菜单收口工作目录 / 真实已装 ClawHub 技能 `/skill:<owner>/<slug>` / 连接器占位 / 静默自动检查开关），附 Active-Only 可移除胶囊；首页快捷胶囊精简为 4 枚。 |
+| **顶栏减负（移除 `fold-desk` 与重复模型选择）** | 🔄 **按极简原则反向精简** | 实测「收纳台面（`fold-desk`）」与顶栏重复模型选择器增加小白认知负担，PR #492 **直接移除**；健康态隐藏 `env-status-pill`；右侧抽屉默认双标签（Trace 收入调试开关）；每段粗体「复制 Markdown 原文」改为悬停 `copy.svg → 绿色 check.svg`。 |
+| **无歧义 Lucide SVG 与 23 语种亲切文案** | ✅ **已落地** | `flowy-ui/assets/icons/` 淘汰 `file-fold.svg` / `document-file.svg` 等 5 枚旧图标，补标准 Lucide `panel-right.svg` / `file-text.svg` / `arrow-up.svg` / `plug.svg` 与 `LICENSES.md`；全部 23 份 `flowy-i18n/locales/*.json`（891 键）去 AI 味重写并清除 `"L3"` 术语泄漏。 |
+| **原生 GPUI 旋转与叶级弹簧动效** | ✅ **已落地** | 修复 `flowy-app/src/app/mod.rs` 硬编码 `cx.set_reduce_motion(true)`；`flowy-ui/src/{icons,motion,overlays,button}.rs` 接入 `gpui-pre` 原生 `with_transformation` / `with_timed_transformation` 与叶级 `with_spring`（含 `#[gpui::test]` 帧断言与 33ms 实机连拍验证）。 |
+| **待人拍板卡、停机交接与实时心跳** | ✅ **已落地** | 新增 `flowy-studio/src/pending_card.rs`，落地消歧卡、工具执行前审批卡、停机交接摘要（含 `verified_effects` 与本地化回退提示）与三段式心跳条；补全 8 条切会话 `clear_right_sheet()` 与 `ComposerViewState::stopping`。 |
+| **Windows 路径重定向修复 & 真实技能** | ✅ **已落地** | 拆出纯函数 `flowy-studio/src/ports/local_path.rs` 修复 Windows 祖先 ReparsePoint / OneDrive 误拦；`flowy-app/src/app/skills.rs` 接真实 `AgentHandle::skill_catalog()`。 |
+| **侧栏常驻空间算术 `FLIP` / 过程生而折叠（M1–M3）** | 🟡 **留待后续迭代** | 本轮聚焦极简减负、无歧义图标、核心动效基建与 S1–S3 内核闭环，侧栏重排 FLIP 与高度预测量折叠留待下一轮 UI 迭代按需引入。 |
 
 ---
 

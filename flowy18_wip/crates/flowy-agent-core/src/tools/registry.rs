@@ -348,7 +348,7 @@ mod tests {
             .await;
         match missing {
             ToolExecutionResult::Error { code, .. } => {
-                assert_eq!(code, "UNKNOWN_TOOL")
+                assert_eq!(code, "UNKNOWN_TOOL");
             }
             ToolExecutionResult::Success { .. } => {
                 panic!("unknown tool must not succeed")

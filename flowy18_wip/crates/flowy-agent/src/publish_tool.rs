@@ -1,7 +1,7 @@
 //! Explicit, host-owned artifact publishing tool.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{
@@ -14,6 +14,11 @@ use serde_json::json;
 use crate::artifact_store::{ArtifactStore, PrepareArtifact};
 use crate::delivery::DeliveryStore;
 use crate::handle::now_ms;
+
+/// `(delivery_id, artifact_path, sha256)` entries staged during one turn so
+/// the host can abort unresolved `deliver_intent` records if the turn ends
+/// without producing a durable `DeliveryCommit`.
+pub type StagedIntentLog = Arc<Mutex<Vec<(String, String, String)>>>;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,9 +48,19 @@ fn publish_error(
     }
 }
 
+#[cfg(test)]
 pub fn definition(
     store: ArtifactStore,
     gate: Option<DeliveryStore>,
+) -> Arc<ToolDefinition> {
+    definition_with_revision(store, gate, None, None)
+}
+
+pub fn definition_with_revision(
+    store: ArtifactStore,
+    gate: Option<DeliveryStore>,
+    expected_contract_revision: Option<u32>,
+    staged_intents: Option<StagedIntentLog>,
 ) -> Arc<ToolDefinition> {
     Arc::new(
         ToolDefinition::new(
@@ -64,6 +79,7 @@ pub fn definition(
             move |args: ToolCallArgs, context: ToolRunContext| {
                 let store = store.clone();
                 let gate = gate.clone();
+                let staged_intents = staged_intents.clone();
                 Box::pin(async move {
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
@@ -187,14 +203,16 @@ pub fn definition(
                     let session_id_clone = session_id.clone();
                     let submission_id_clone = submission_id.clone();
                     let signal_clone = context.signal.clone();
+                    let staged_log = staged_intents.clone();
                     tokio::task::spawn_blocking(move || {
                         let (receipt, staged_intent) =
                             if let Some(gate) = &gate_clone {
                                 let artifact =
                                     output_root_clone.join(&normalized_clone);
-                                match gate.stage_with(
+                                match gate.stage_with_revision(
                                     &artifact,
                                     false,
+                                    expected_contract_revision,
                                     now_ms(),
                                     |checked_bytes| {
                                         let expected_hash =
@@ -310,6 +328,21 @@ pub fn definition(
                                 "chat.publish.cancelled",
                                 "File publication was cancelled.",
                             );
+                        }
+                        if let (
+                            Some(log),
+                            Some((_, delivery_id, artifact_path)),
+                        ) = (staged_log, staged_intent)
+                        {
+                            log.lock()
+                                .unwrap_or_else(
+                                    std::sync::PoisonError::into_inner,
+                                )
+                                .push((
+                                    delivery_id,
+                                    artifact_path,
+                                    receipt.sha256.clone(),
+                                ));
                         }
                         let summary = json!({
                             "status": "staged",
@@ -604,6 +637,67 @@ mod tests {
             ),
             "submission-prefixed relative path must publish cleanly: {result:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn stale_contract_revision_report_is_refused_at_publish_file() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-publish-stale-rev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store =
+            crate::artifact_store::ArtifactStore::open(root.join("store"))
+                .unwrap();
+        let gate = DeliveryStore::new(root.join("delivery"));
+        let submission_id = format!("submission-{:032x}", 10);
+        let output_root = root.join("workspace/outputs").join(&submission_id);
+        std::fs::create_dir_all(&output_root).unwrap();
+        let deck = output_root.join("deck.pptx");
+        std::fs::write(&deck, b"PK rev1-deck").unwrap();
+        gate.record_report_bytes_with_revision(
+            &deck,
+            b"PK rev1-deck",
+            Vec::new(),
+            Some(1),
+            10,
+        )
+        .unwrap();
+
+        let tool = super::definition_with_revision(
+            store.clone(),
+            Some(gate),
+            Some(2),
+            None,
+        );
+        let result = (tool.execute)(
+            ToolCallArgs {
+                call_id: "call-stale-rev".to_owned(),
+                name: "publish_file".to_owned(),
+                arguments: json!({
+                    "path": "deck.pptx",
+                    "delivery_key": "deck",
+                }),
+            },
+            ToolRunContext {
+                signal: CancelToken::new(),
+                agent_id: Some("session-rev".to_owned()),
+                cwd: Some(root.display().to_string()),
+                todos: None,
+                submission_id: Some(submission_id),
+                session_origin: SessionOrigin::Home,
+                output_root: Some(output_root),
+                artifact_delivery_available: true,
+            },
+        )
+        .await;
+        let ToolExecutionResult::Error { code, .. } = result else {
+            panic!(
+                "stale rev=1 report must be refused under rev=2: {result:?}"
+            );
+        };
+        assert_eq!(code, "DELIVERY_CONTRACT_REVISION_MISMATCH");
+        assert_eq!(store.usage().unwrap().staging_bytes, 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

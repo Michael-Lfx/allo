@@ -462,14 +462,13 @@ impl AgentHandle {
         .map_err(|_| "chat.publish.failed")?;
         let current_hash = crate::delivery::hash_bytes(&current_bytes);
         let latest_report = gate.latest_report(&full_path).ok().flatten();
+        let current_contract_revision = engine
+            .session(session_id)
+            .and_then(|rec| rec.work_contract.map(|c| c.revision.max(1)));
         let target_revision = latest_report
             .as_ref()
             .and_then(|report| report.contract_revision)
-            .or_else(|| {
-                engine
-                    .session(session_id)
-                    .and_then(|rec| rec.work_contract.map(|c| c.revision))
-            });
+            .or(current_contract_revision);
         if let Some(latest) = &latest_report
             && latest.id == report_id
             && latest.artifact_hash == current_hash
@@ -530,9 +529,10 @@ impl AgentHandle {
             origin: SessionOrigin::Home,
         };
         let result = gate
-            .stage_override_for_report(
+            .stage_override_for_report_with_revision(
                 &full_path,
                 report_id,
+                current_contract_revision,
                 now,
                 |checked_bytes| {
                     let expected_hash =

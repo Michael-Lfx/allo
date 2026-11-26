@@ -304,6 +304,7 @@ mod tests {
                 },
                 tools: vec![Arc::new(tool)],
                 signal: CancelToken::new(),
+                pre_tool_hook: None,
             },
             stream,
             Arc::new(emitter),

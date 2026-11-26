@@ -148,7 +148,11 @@ impl Button {
         let loading = self.loading;
         let label = self.label.clone();
         let leading = if loading {
-            Some(crate::icons::loader_circle().into_any_element())
+            Some(
+                crate::icons::loader_circle()
+                    .spinning(theme.motion_policy())
+                    .into_any_element(),
+            )
         } else {
             self.icon
         };
@@ -266,26 +270,40 @@ impl IconButton {
         self.button = self.button.disabled(value);
         self
     }
-    pub fn render(
+    /// Renders the underlying interactive button element directly, suitable for
+    /// wrapping with [`crate::tooltip_trigger`] or [`crate::anchor_trigger`]
+    /// without introducing an extra focus wrapper / double tab stop.
+    pub fn render_interactive(
         self,
         theme: &ResolvedTheme,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> AnyElement {
+    ) -> InteractiveDiv {
+        self.build_interactive(*theme, on_click).0
+    }
+
+    fn build_interactive(
+        self,
+        theme: ResolvedTheme,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> (InteractiveDiv, bool, bool) {
         let size = self.button.size;
         let icon_id: ElementId = (self.button.id.clone(), "icon").into();
         let label = self.button.label.clone();
         let colors = theme.control_colors(self.button.variant);
         let loading = self.button.loading;
+        let disabled = self.button.disabled;
         let leading = if loading {
-            crate::icons::loader_circle().into_any_element()
+            crate::icons::loader_circle()
+                .spinning(theme.motion_policy())
+                .into_any_element()
         } else {
             self.icon
         };
         let element = button(
             self.button.id,
             label,
-            self.button.disabled,
-            theme,
+            disabled,
+            &theme,
             move |event, window, cx| {
                 if !loading {
                     on_click(event, window, cx);
@@ -302,14 +320,14 @@ impl IconButton {
         .justify_center()
         .bg(colors.background)
         .text_color(colors.foreground)
-        .when(self.button.disabled, |el| el.opacity(0.5))
-        .when(!self.button.disabled && !loading, move |el| {
+        .when(disabled, |el| el.opacity(0.5))
+        .when(!disabled && !loading, move |el| {
             el.hover(move |style| style.bg(colors.hover))
         })
         .when(loading, Styled::cursor_default)
         .when(self.framed, |element| {
             let side = theme.control_height(size);
-            toolbar_frame(element, *theme)
+            toolbar_frame(element, theme)
                 .text_color(theme.toolbar_icon())
                 .w(side)
                 .h(side)
@@ -317,9 +335,19 @@ impl IconButton {
                 .min_h(side)
         })
         .child(div().id(icon_id).child(leading));
+        (element, loading, disabled)
+    }
+
+    pub fn render(
+        self,
+        theme: &ResolvedTheme,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        let (element, loading, disabled) =
+            self.build_interactive(*theme, on_click);
         crate::A11yElement::new(element.into_element())
             .busy(loading)
-            .disabled(self.button.disabled)
+            .disabled(disabled)
             .into_any_element()
             .into_any_element()
     }

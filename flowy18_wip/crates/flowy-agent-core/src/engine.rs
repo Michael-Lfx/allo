@@ -13,12 +13,14 @@ use futures::future::BoxFuture;
 use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
-use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
+use crate::loop_runner::{
+    LoopOutcome, ModelRoute, PreToolHook, TurnRequest, run_turn,
+};
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
-    DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-    SessionRecord, SessionWorkspace, SubmissionOutcome, TurnState,
-    WorkContract,
+    DeliveryCommit, DeliveryCommitter, ObjectVerifyState, PendingCard,
+    SessionIndex, SessionOrigin, SessionRecord, SessionWorkspace,
+    StopHandoffManifest, SubmissionOutcome, TurnState, WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -62,6 +64,13 @@ pub trait TurnObserver: Send + Sync {
     /// The history commit is durable, but the independent artifact-store marker
     /// failed. The host may retry this same commit without rerunning the turn.
     fn delivery_failed(&self, _commit: &DeliveryCommit, _error: &str) {}
+    /// A cancelled run finished unwinding and reaping child tools, persisted
+    /// its 5-element [`StopHandoffManifest`], and transitioned to `Stopped`.
+    fn stop_settled(&self, _session: &str, _manifest: &StopHandoffManifest) {}
+    /// A turn suspended cleanly before executing a medium-risk tool call,
+    /// persisted its [`PendingCard::ToolApproval`], released `RunFence`, and
+    /// transitioned to `WaitingForUser`.
+    fn waiting_for_user(&self, _session: &str, _card: &PendingCard) {}
 }
 
 /// Everything needed to run a turn in this engine.
@@ -78,6 +87,8 @@ pub struct EngineConfig {
     /// Optional work contract to persist atomically once the session run fence
     /// is acquired in [`Engine::prepare`].
     pub work_contract: Option<WorkContract>,
+    /// Optional host pre-tool gate wired into `rpi_agent`'s `before_tool_call`.
+    pub pre_tool_hook: Option<PreToolHook>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -365,6 +376,104 @@ impl Engine {
         inner.index.save(&self.root)
     }
 
+    /// Persist a pending interactive card on `id` and transition its durable
+    /// status to [`TurnState::WaitingForUser`] without acquiring a run fence.
+    pub fn park_pending_card(
+        &self,
+        id: &str,
+        card: PendingCard,
+        updated_contract: Option<WorkContract>,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        let prev_cards = record.pending_cards.clone();
+        let prev_contract = record.work_contract.clone();
+        let prev_status = record.status.clone();
+        let prev_updated = record.updated_at;
+        record.pending_cards.retain(|existing| {
+            if existing.card_id() == card.card_id() {
+                return false;
+            }
+            !matches!(
+                (existing, &card),
+                (
+                    PendingCard::Disambiguation { prompt: a, .. },
+                    PendingCard::Disambiguation { prompt: b, .. }
+                ) if a == b
+            )
+        });
+        record.pending_cards.push(card);
+        if let Some(contract) = updated_contract {
+            record.work_contract = Some(contract);
+        }
+        record.status = TurnState::WaitingForUser;
+        record.updated_at = now_ms();
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pending_cards = prev_cards;
+                record.work_contract = prev_contract;
+                record.status = prev_status;
+                record.updated_at = prev_updated;
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
+    }
+
+    /// Remove and return a persisted pending card by `card_id`, optionally
+    /// updating `work_contract` and durable status atomically.
+    pub fn take_pending_card(
+        &self,
+        id: &str,
+        card_id: &str,
+        next_status: TurnState,
+        updated_contract: Option<WorkContract>,
+    ) -> std::io::Result<Option<PendingCard>> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        let Some(pos) = record
+            .pending_cards
+            .iter()
+            .position(|card| card.card_id() == card_id)
+        else {
+            return Ok(None);
+        };
+        let prev_contract = record.work_contract.clone();
+        let prev_status = record.status.clone();
+        let prev_updated = record.updated_at;
+        let removed = record.pending_cards.remove(pos);
+        if let Some(contract) = updated_contract {
+            record.work_contract = Some(contract);
+        }
+        if record.pending_cards.is_empty() {
+            record.status = next_status;
+        }
+        record.updated_at = now_ms();
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pending_cards.insert(pos, removed);
+                record.work_contract = prev_contract;
+                record.status = prev_status;
+                record.updated_at = prev_updated;
+            }
+            return Err(error);
+        }
+        drop(inner);
+        Ok(Some(removed))
+    }
+
     /// Insert or replace one durable session record.
     pub fn insert_session(&self, record: SessionRecord) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
@@ -503,19 +612,17 @@ impl Engine {
             .collect()
     }
 
-    /// Defensively cancel every active run fence (for process shutdown / handle
-    /// teardown) so child tool processes are signaled to exit immediately.
+    /// Defensively cancel every cancellable active run fence (for process
+    /// shutdown / handle teardown) so child tool processes are signaled to exit
+    /// immediately while preserving sessions currently finalizing a durable
+    /// delivery commit.
     pub fn cancel_all_active(&self) {
-        let fences: Vec<Arc<RunFence>> = self
+        let inner = self
             .inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fences
-            .values()
-            .cloned()
-            .collect();
-        for fence in fences {
-            if fence.is_active() {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, fence) in &inner.fences {
+            if !inner.finalizing.contains(id.as_str()) && fence.is_active() {
                 fence.cancel_active();
             }
         }
@@ -538,13 +645,33 @@ impl Engine {
         if inner.finalizing.contains(id) {
             return Ok(false);
         }
+        let fence_active =
+            inner.fences.get(id).is_some_and(|fence| fence.is_active());
         if let Some(fence) = inner.fences.get(id) {
             fence.cancel_active();
         }
         if let Some(record) = inner.index.get_mut(id)
             && record.status.is_busy()
         {
-            record.status = TurnState::Stopped;
+            if fence_active {
+                // Keep durable status at `Stopping` until the worker finishes
+                // unwinding/reaping and persists its StopHandoffManifest.
+                record.status = TurnState::Stopping;
+            } else {
+                let prompt = record
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|msg| {
+                        msg.role == Role::User
+                            && matches!(msg.source, MessageSource::User)
+                    })
+                    .map_or_default(Message::text);
+                let manifest =
+                    CancelTrace::default().build_manifest(record, &prompt);
+                record.last_stop_handoff = Some(manifest);
+                record.status = TurnState::Stopped;
+            }
             if let Some(sub_id) = record
                 .messages
                 .iter()
@@ -563,6 +690,94 @@ impl Engine {
             }
         }
         inner.index.save(&self.root).map(|()| true)
+    }
+
+    fn settle_cancelled_run(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        trace: &Mutex<CancelTrace>,
+        ticket: &RunTicket,
+    ) {
+        let (manifest, save_failed) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(record) = inner.index.get_mut(session_id) else {
+                drop(inner);
+                let _ = ticket.finish();
+                return;
+            };
+            let manifest = trace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .build_manifest(record, prompt);
+            record.status = TurnState::Stopped;
+            record.last_stop_handoff = Some(manifest.clone());
+            record.updated_at = now_ms();
+            let save_failed = inner.index.save(&self.root).is_err();
+            drop(inner);
+            (manifest, save_failed)
+        };
+        if save_failed {
+            self.observer.storage_error(session_id);
+        }
+        self.observer.stop_settled(session_id, &manifest);
+        let _ = ticket.finish();
+    }
+
+    /// Emit terminal observer callbacks while `ticket` still holds the
+    /// session's `RunFence` and `inner.finalizing` blocks concurrent
+    /// `request_cancel`, then release `ticket` under `self.inner`.
+    fn finish_after_observer<F>(
+        &self,
+        session_id: &str,
+        ticket: &RunTicket,
+        notify: F,
+    ) -> bool
+    where
+        F: FnOnce(),
+    {
+        let mut guard = FinalizingGuard {
+            engine: self,
+            session_id: session_id.to_owned(),
+            armed: true,
+        };
+        if ticket.is_current() {
+            notify();
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.armed = false;
+        let clean = ticket.finish();
+        inner.finalizing.remove(session_id);
+        drop(inner);
+        clean
+    }
+
+    /// Either settle a cancelled run (when `armed == false`) or notify the
+    /// observer while `inner.finalizing` blocks concurrent `request_cancel`
+    /// and then release `ticket`.
+    fn finish_non_commit<F>(
+        &self,
+        armed: bool,
+        session_id: &str,
+        prompt: &str,
+        cancel_trace: &Mutex<CancelTrace>,
+        ticket: &RunTicket,
+        notify: F,
+    ) -> bool
+    where
+        F: FnOnce(),
+    {
+        if !armed {
+            self.settle_cancelled_run(session_id, prompt, cancel_trace, ticket);
+            return false;
+        }
+        self.finish_after_observer(session_id, ticket, notify)
     }
 
     /// Run one turn against the configured provider. The caller spawns this;
@@ -760,7 +975,14 @@ impl Engine {
             origin,
             output_root,
         } = prepared;
+        let cancel_trace = Arc::new(Mutex::new(CancelTrace::default()));
         if !ticket.is_current() {
+            self.settle_cancelled_run(
+                session_id,
+                prompt,
+                &cancel_trace,
+                &ticket,
+            );
             return Ok(LoopOutcome::Aborted);
         }
         let stream = stream.unwrap_or_else(|| {
@@ -798,16 +1020,25 @@ impl Engine {
             route: config.route,
             tools,
             signal: ticket.signal().clone(),
+            pre_tool_hook: config.pre_tool_hook,
         };
         let emitter = Arc::new(EngineEmitter {
             session: session_id.to_owned(),
             observer: Arc::clone(&self.observer),
             publisher: ticket.publisher(),
+            trace: Some(Arc::clone(&cancel_trace)),
         });
         let result = run_turn(request, stream, emitter).await;
         let stored = {
             let mut inner = self.inner.lock().unwrap();
             if !ticket.is_current() {
+                drop(inner);
+                self.settle_cancelled_run(
+                    session_id,
+                    prompt,
+                    &cancel_trace,
+                    &ticket,
+                );
                 return Ok(LoopOutcome::Aborted);
             }
             let Some(record) = inner.index.get_mut(session_id) else {
@@ -878,35 +1109,69 @@ impl Engine {
                         });
                         record.delivery_commits.push(commit.clone());
                     }
+                    let pending_approval = result.pending_approval.clone();
+                    if let Some(card) = &pending_approval {
+                        record
+                            .pending_cards
+                            .retain(|c| c.card_id() != card.card_id());
+                        record.pending_cards.push(card.clone());
+                    }
+                    let effective_outcome = if result.outcome
+                        != LoopOutcome::Aborted
+                        && commit.is_none()
+                        && !record.pending_cards.is_empty()
+                    {
+                        LoopOutcome::WaitingForUser
+                    } else {
+                        result.outcome
+                    };
+                    let effective_card = pending_approval
+                        .or_else(|| record.pending_cards.first().cloned());
                     record.status =
-                        status_for(result.outcome, error.as_deref());
+                        status_for(effective_outcome, error.as_deref());
                     if let Some(sub_id) = submission_id.as_ref() {
-                        let outcome_entry = match result.outcome {
+                        match effective_outcome {
                             LoopOutcome::Completed => {
                                 let missing = missing_required_for_submission(
                                     record, sub_id,
                                 );
-                                if missing.is_empty() {
+                                let outcome_entry = if missing.is_empty() {
                                     SubmissionOutcome::Completed
                                 } else {
                                     SubmissionOutcome::Partial { missing }
-                                }
+                                };
+                                record
+                                    .submission_outcomes
+                                    .insert(sub_id.clone(), outcome_entry);
                             }
-                            LoopOutcome::Aborted => SubmissionOutcome::Aborted,
-                            LoopOutcome::Failed => SubmissionOutcome::Failed {
-                                message: error
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|text| !text.is_empty())
-                                    .unwrap_or("model reported an error")
-                                    .to_owned(),
-                            },
-                        };
-                        record
-                            .submission_outcomes
-                            .insert(sub_id.clone(), outcome_entry);
+                            LoopOutcome::Aborted => {
+                                record.submission_outcomes.insert(
+                                    sub_id.clone(),
+                                    SubmissionOutcome::Aborted,
+                                );
+                            }
+                            LoopOutcome::Failed => {
+                                record.submission_outcomes.insert(
+                                    sub_id.clone(),
+                                    SubmissionOutcome::Failed {
+                                        message: error
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|text| !text.is_empty())
+                                            .unwrap_or(
+                                                "model reported an error",
+                                            )
+                                            .to_owned(),
+                                    },
+                                );
+                            }
+                            LoopOutcome::WaitingForUser => {
+                                // Suspended awaiting user confirmation; do not
+                                // record a terminal Failed/Aborted outcome.
+                            }
+                        }
                     }
-                    Ok((result.outcome, commit))
+                    Ok((effective_outcome, commit, effective_card))
                 }
                 Err(message) => {
                     tracing::warn!(
@@ -938,36 +1203,98 @@ impl Engine {
                     message: "could not save turn history".to_owned(),
                 };
                 inner.index.upsert(before);
-                if !ticket.finish() {
+                let armed = ticket.is_current();
+                if armed {
+                    inner.finalizing.insert(session_id.to_owned());
+                }
+                drop(inner);
+                if !self.finish_non_commit(
+                    armed,
+                    session_id,
+                    prompt,
+                    &cancel_trace,
+                    &ticket,
+                    || {
+                        self.observer.storage_error(session_id);
+                        self.observer.finished(session_id, LoopOutcome::Failed);
+                    },
+                ) {
                     return Ok(LoopOutcome::Aborted);
                 }
-                self.observer.storage_error(session_id);
-                self.observer.finished(session_id, LoopOutcome::Failed);
                 return Err(RunError::Storage(error));
             }
             match result {
-                Ok((outcome, Some(commit))) => {
+                Ok((outcome, Some(commit), _)) => {
                     // This lock also serializes request_cancel. The successful
                     // history save is the delivery's linearization point.
                     inner.finalizing.insert(session_id.to_owned());
                     drop(inner);
                     (outcome, commit)
                 }
-                Ok((outcome, None)) => {
-                    // History is durably saved; finish under the same lock so
-                    // `request_cancel` cannot split durable history from live
-                    // observer/queue state in a gap before `ticket.finish()`.
-                    if !ticket.finish() {
+                Ok((LoopOutcome::WaitingForUser, None, Some(card))) => {
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
+                    }
+                    drop(inner);
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer.waiting_for_user(session_id, &card);
+                        },
+                    ) {
                         return Ok(LoopOutcome::Aborted);
                     }
-                    self.observer.finished(session_id, outcome);
+                    return Ok(LoopOutcome::WaitingForUser);
+                }
+                Ok((outcome, None, _)) => {
+                    // History is durably saved; keep `inner.finalizing` armed
+                    // across `observer.finished` so `request_cancel` cannot
+                    // split durable history from live UI state and
+                    // `wait_until_idle` never wakes up before live status leaves
+                    // `Running`.
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
+                    }
+                    drop(inner);
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer.finished(session_id, outcome);
+                        },
+                    ) {
+                        return Ok(LoopOutcome::Aborted);
+                    }
                     return Ok(outcome);
                 }
                 Err(error) => {
-                    if !ticket.finish() {
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
+                    }
+                    drop(inner);
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer
+                                .finished(session_id, LoopOutcome::Failed);
+                        },
+                    ) {
                         return Ok(LoopOutcome::Aborted);
                     }
-                    self.observer.finished(session_id, LoopOutcome::Failed);
                     return Err(error);
                 }
             }
@@ -1242,6 +1569,7 @@ fn status_for(outcome: LoopOutcome, error: Option<&str>) -> TurnState {
     match outcome {
         LoopOutcome::Completed => TurnState::Completed,
         LoopOutcome::Aborted => TurnState::Stopped,
+        LoopOutcome::WaitingForUser => TurnState::WaitingForUser,
         LoopOutcome::Failed => TurnState::Error {
             message: error
                 .map(str::trim)
@@ -1260,10 +1588,181 @@ fn now_ms() -> u64 {
         })
 }
 
+#[derive(Default)]
+struct CancelTrace {
+    last_command: Option<String>,
+    in_flight_tools: HashMap<String, (String, Option<String>)>,
+    modified_files: Vec<String>,
+    verified_effects: Vec<String>,
+    verified_paths: Vec<String>,
+}
+
+impl CancelTrace {
+    fn record_tool_start(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        args: &serde_json::Value,
+    ) {
+        let target = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("command"))
+            .or_else(|| args.get("cmd"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| crate::loop_runner::log_preview(s, 120));
+        let summary = match &target {
+            Some(t) => format!("{name}: {t}"),
+            None => name.to_owned(),
+        };
+        self.last_command = Some(summary);
+        self.in_flight_tools
+            .insert(call_id.to_owned(), (name.to_owned(), target));
+    }
+
+    fn record_tool_end(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        result_text: &str,
+        is_error: bool,
+        aborted: bool,
+    ) {
+        if aborted {
+            // Preserve the interrupted entry in `in_flight_tools` so
+            // `StopHandoffManifest.pending_checks` reports `interrupted:*`.
+            return;
+        }
+        let entry = self.in_flight_tools.remove(call_id);
+        if is_error {
+            return;
+        }
+        let target = entry.and_then(|(_, target)| target);
+        if matches!(
+            name,
+            "write_file" | "edit_file" | "create_deck" | "publish_file"
+        ) && let Some(path) = target.as_ref()
+        {
+            if !self.modified_files.contains(path) {
+                self.modified_files.push(path.clone());
+            }
+            let effect = format!("{name} -> {path}");
+            if !self.verified_effects.contains(&effect) {
+                self.verified_effects.push(effect);
+            }
+        } else if matches!(name, "verify_deck" | "verify_artifact") {
+            let parsed =
+                serde_json::from_str::<serde_json::Value>(result_text).ok();
+            let passed = parsed
+                .as_ref()
+                .and_then(|val| val.get("ok"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            if !passed {
+                return;
+            }
+            let verified_path = parsed
+                .as_ref()
+                .and_then(|val| val.get("artifact"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or(target);
+            let effect = match &verified_path {
+                Some(path) => format!("{name} ({path})"),
+                None => name.to_owned(),
+            };
+            if !self.verified_effects.contains(&effect) {
+                self.verified_effects.push(effect);
+            }
+            if let Some(path) = verified_path
+                && !self.verified_paths.contains(&path)
+            {
+                self.verified_paths.push(path);
+            }
+        }
+    }
+
+    fn is_object_verified(&self, obj: &crate::session::TrackedObject) -> bool {
+        if matches!(
+            obj.verify_state,
+            ObjectVerifyState::Passed { .. }
+                | ObjectVerifyState::Overridden { .. }
+        ) {
+            return true;
+        }
+        self.verified_paths.iter().any(|raw| {
+            let path = Path::new(raw);
+            if let Some(expected) = obj.filename.as_deref() {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            } else {
+                path.extension().and_then(|e| e.to_str()).is_some_and(
+                    |actual| actual.eq_ignore_ascii_case(&obj.extension),
+                )
+            }
+        })
+    }
+
+    fn build_manifest(
+        &self,
+        record: &SessionRecord,
+        prompt: &str,
+    ) -> StopHandoffManifest {
+        let input_revision = record
+            .work_contract
+            .as_ref()
+            .map_or(0, |contract| contract.revision);
+        let command_summary = self.last_command.clone().unwrap_or_else(|| {
+            let trimmed = prompt.trim();
+            if trimmed.is_empty() {
+                "cancelled idle turn".to_owned()
+            } else {
+                crate::loop_runner::log_preview(trimmed, 160)
+            }
+        });
+        let mut pending_checks: Vec<String> = self
+            .in_flight_tools
+            .values()
+            .map(|(name, target)| match target {
+                Some(t) => format!("interrupted:{name}:{t}"),
+                None => format!("interrupted:{name}"),
+            })
+            .collect();
+        pending_checks.sort();
+        if let Some(contract) = &record.work_contract {
+            for obj in contract.writable_deliverables() {
+                if !self.is_object_verified(obj) {
+                    pending_checks
+                        .push(format!("unverified:{}", obj.display_label()));
+                }
+            }
+        }
+        let rollback_hint = if self.modified_files.is_empty() {
+            "card.stop_rollback_none".to_owned()
+        } else {
+            "card.stop_rollback_modified".to_owned()
+        };
+        StopHandoffManifest {
+            input_revision,
+            command_summary,
+            modified_files: self.modified_files.clone(),
+            verified_effects: self.verified_effects.clone(),
+            pending_checks,
+            rollback_hint,
+        }
+    }
+}
+
 struct EngineEmitter {
     session: String,
     observer: Arc<dyn TurnObserver>,
     publisher: PublishToken,
+    trace: Option<Arc<Mutex<CancelTrace>>>,
 }
 
 impl AgentEmitter for EngineEmitter {
@@ -1271,7 +1770,44 @@ impl AgentEmitter for EngineEmitter {
         let session = self.session.clone();
         let observer = Arc::clone(&self.observer);
         let publisher = self.publisher.clone();
+        let trace = self.trace.clone();
         Box::pin(async move {
+            let trace_end = match &event {
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id,
+                    tool_name,
+                    result,
+                    is_error,
+                } if trace.is_some() => {
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            rpi_agent::TextContentOrImage::Text(text) => {
+                                Some(text.text.as_str())
+                            }
+                            rpi_agent::TextContentOrImage::Image(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    Some((
+                        tool_call_id.clone(),
+                        tool_name.clone(),
+                        text,
+                        *is_error,
+                    ))
+                }
+                _ => None,
+            };
+            if let (Some(trace), Some((call_id, name, text, is_error))) =
+                (&trace, trace_end)
+            {
+                let aborted = !publisher.is_current() && is_error;
+                trace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record_tool_end(&call_id, &name, &text, is_error, aborted);
+            }
             publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
                     assistant_message_event:
@@ -1311,12 +1847,24 @@ impl AgentEmitter for EngineEmitter {
                     tool_call_id,
                     tool_name,
                     args,
-                } => observer.tool_start(
-                    &session,
-                    &tool_call_id,
-                    &tool_name,
-                    &args,
-                ),
+                } => {
+                    if let Some(trace) = &trace {
+                        trace
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .record_tool_start(
+                                &tool_call_id,
+                                &tool_name,
+                                &args,
+                            );
+                    }
+                    observer.tool_start(
+                        &session,
+                        &tool_call_id,
+                        &tool_name,
+                        &args,
+                    );
+                }
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
                     tool_name,
@@ -1644,6 +2192,7 @@ mod tests {
             todos: None,
             delivery_committer: None,
             work_contract: None,
+            pre_tool_hook: None,
         }
     }
 
@@ -1745,7 +2294,10 @@ mod tests {
             .unwrap();
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
     }
 
     #[tokio::test]
@@ -1786,7 +2338,10 @@ mod tests {
         assert_eq!(outcome, LoopOutcome::Failed);
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
     }
 
     #[tokio::test]
@@ -1936,7 +2491,10 @@ mod tests {
         released.notify_one();
         assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
         assert_eq!(engine.session("home").unwrap().status, TurnState::Stopped);
-        assert!(engine.session("home").unwrap().delivery_commits.is_empty());
+        assert_eq!(
+            engine.session("home").unwrap().delivery_commits,
+            Vec::new()
+        );
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
         assert_eq!(*observer.saving_files.lock().unwrap(), 0);
@@ -2276,7 +2834,7 @@ mod tests {
             });
             consumer
         });
-        let _hold = tx;
+        let hold = tx;
         let engine = Arc::new(engine);
         let run = {
             let engine = Arc::clone(&engine);
@@ -2291,7 +2849,7 @@ mod tests {
             other => panic!("expected Busy, got {other:?}"),
         }
         engine.cancel("s1").unwrap();
-        drop(_hold);
+        drop(hold);
         let _ = run.await;
     }
 
@@ -2316,6 +2874,7 @@ mod tests {
             session: "s1".into(),
             observer: recorder.clone(),
             publisher: old.ticket.publisher(),
+            trace: None,
         };
         let message = Arc::new(AssistantMessage::empty(
             Api::OpenaiCompletions,
@@ -2537,5 +3096,393 @@ mod tests {
         // The async refusal path is covered by `run`; this keeps the error
         // variant exercised without a live provider.
         assert!(matches!(RunError::NoCredential, RunError::NoCredential));
+    }
+
+    #[tokio::test]
+    async fn cancel_stays_stopping_while_tool_reaps_then_settles_with_handoff_manifest()
+     {
+        #[derive(Default)]
+        struct StopObserver {
+            settled: Mutex<Vec<crate::session::StopHandoffManifest>>,
+        }
+        impl TurnObserver for StopObserver {
+            fn stop_settled(
+                &self,
+                _session: &str,
+                manifest: &crate::session::StopHandoffManifest,
+            ) {
+                self.settled.lock().unwrap().push(manifest.clone());
+            }
+        }
+
+        let scratch = Scratch::new("s2-stopping-handoff");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let entered_tool = Arc::clone(&entered);
+        let release_tool = Arc::clone(&release);
+
+        let mut cfg = config();
+        cfg.registry.register(Arc::new(ToolDefinition::new(
+            "write_file",
+            "records file modification",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text(
+                        "written",
+                        serde_json::json!({"ok": true}),
+                    )
+                })
+            },
+        )));
+        cfg.registry.register(Arc::new(ToolDefinition::new(
+            "slow_reap",
+            "simulates a child process taking time to reap after cancel",
+            serde_json::json!({"type": "object"}),
+            move |_args, _ctx| {
+                let entered = Arc::clone(&entered_tool);
+                let release = Arc::clone(&release_tool);
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    ToolExecutionResult::error("CANCELLED", "reaped")
+                })
+            },
+        )));
+        cfg.work_contract = Some(crate::session::WorkContract {
+            revision: 3,
+            min_slides: Some(3),
+            required_items: vec![crate::session::RequiredDeliverable {
+                extension: "pptx".into(),
+                filename: Some("青禾项目报价汇报.pptx".into()),
+            }],
+            pinned_facts: std::collections::BTreeMap::new(),
+            objects: vec![crate::session::TrackedObject {
+                object_id: "obj-pptx-1".into(),
+                kind: crate::session::TrackedObjectKind::Deliverable,
+                filename: Some("青禾项目报价汇报.pptx".into()),
+                extension: "pptx".into(),
+                anchor_summary: "青禾项目报价汇报.pptx · 2026-12-02".into(),
+                overrides: std::collections::BTreeMap::new(),
+                verify_state: crate::session::ObjectVerifyState::Unverified,
+            }],
+        });
+
+        let observer = Arc::new(StopObserver::default());
+        let observer_dyn: Arc<dyn TurnObserver> = observer.clone();
+        let engine = Arc::new(
+            Engine::open(scratch.0.clone(), cfg.clone(), observer_dyn).unwrap(),
+        );
+        engine.create_session("s-stop".into(), 1).unwrap();
+
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stream = rpi_agent::stream_fn(move |model, _, _| {
+            let n = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut msg = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            msg.content = match n {
+                0 => vec![rpi_ai::types::Content::ToolCall(
+                    rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: "call-write".into(),
+                        name: "write_file".into(),
+                        arguments: serde_json::json!({"path": "draft.txt"}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    },
+                )],
+                _ => vec![rpi_ai::types::Content::ToolCall(
+                    rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: "call-reap".into(),
+                        name: "slow_reap".into(),
+                        arguments: serde_json::json!({"command": "render-deck"}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    },
+                )],
+            };
+            msg.stop_reason = StopReason::ToolUse;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::ToolUse,
+                        message: msg,
+                    })
+                    .await;
+            });
+            consumer
+        });
+
+        let run = engine
+            .start_with_config(
+                "s-stop".into(),
+                crate::types::PromptTurn::plain("generate deck"),
+                cfg,
+                Some(stream),
+                Some(42),
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        entered.notified().await;
+
+        assert!(engine.request_cancel("s-stop").unwrap());
+        // While `slow_reap` is still holding RunTicket, durable status MUST be
+        // `Stopping` (NOT `Stopped`) and `stop_settled` must NOT have fired yet.
+        assert_eq!(
+            engine.session("s-stop").unwrap().status,
+            TurnState::Stopping
+        );
+        assert!(engine.is_active("s-stop"));
+        assert!(engine.is_cancelling("s-stop"));
+        assert_eq!(observer.settled.lock().unwrap().len(), 0);
+
+        // Allow child tool to finish reaping.
+        release.notify_one();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
+
+        let rec = engine.session("s-stop").unwrap();
+        assert_eq!(rec.status, TurnState::Stopped);
+        assert!(!engine.is_active("s-stop"));
+        let manifest = rec
+            .last_stop_handoff
+            .expect("StopHandoffManifest persisted on settle");
+        assert_eq!(manifest.input_revision, 3);
+        assert!(manifest.command_summary.contains("slow_reap"));
+        assert_eq!(manifest.modified_files, vec!["draft.txt".to_owned()]);
+        assert_ne!(manifest.verified_effects, Vec::<String>::new());
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
+                .any(|item| item.contains("interrupted:slow_reap")),
+            "interrupted tool must be preserved in pending_checks: {:?}",
+            manifest.pending_checks
+        );
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
+                .any(|item| item.contains("青禾项目报价汇报.pptx"))
+        );
+        assert_eq!(manifest.rollback_hint, "card.stop_rollback_modified");
+        assert_eq!(observer.settled.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cancel_trace_only_records_passing_verify_and_updates_pending_checks() {
+        let mut trace = super::CancelTrace::default();
+        let record = crate::session::SessionRecord {
+            work_contract: Some(crate::session::WorkContract {
+                revision: 2,
+                min_slides: Some(3),
+                required_items: vec![
+                    crate::session::RequiredDeliverable {
+                        extension: "pptx".into(),
+                        filename: Some("deck.pptx".into()),
+                    },
+                    crate::session::RequiredDeliverable {
+                        extension: "xlsx".into(),
+                        filename: Some("quote.xlsx".into()),
+                    },
+                ],
+                pinned_facts: std::collections::BTreeMap::new(),
+                objects: vec![
+                    crate::session::TrackedObject {
+                        object_id: "obj-pptx-1".into(),
+                        kind: crate::session::TrackedObjectKind::Deliverable,
+                        filename: Some("deck.pptx".into()),
+                        extension: "pptx".into(),
+                        anchor_summary: String::new(),
+                        overrides: std::collections::BTreeMap::new(),
+                        verify_state:
+                            crate::session::ObjectVerifyState::Unverified,
+                    },
+                    crate::session::TrackedObject {
+                        object_id: "obj-xlsx-2".into(),
+                        kind: crate::session::TrackedObjectKind::Deliverable,
+                        filename: Some("quote.xlsx".into()),
+                        extension: "xlsx".into(),
+                        anchor_summary: String::new(),
+                        overrides: std::collections::BTreeMap::new(),
+                        verify_state:
+                            crate::session::ObjectVerifyState::Unverified,
+                    },
+                ],
+            }),
+            ..crate::session::SessionRecord::default()
+        };
+
+        // Failed verify_deck returns is_error == false with {"ok": false} ->
+        // must NOT appear in verified_effects or clear pending_checks.
+        trace.record_tool_start(
+            "c1",
+            "verify_deck",
+            &serde_json::json!({"path": "outputs/deck.pptx"}),
+        );
+        trace.record_tool_end(
+            "c1",
+            "verify_deck",
+            r#"{"ok":false,"artifact":"outputs/deck.pptx","issues":[{"code":"STRUCTURE"}]}"#,
+            false,
+            false,
+        );
+        // Passing verify_artifact with {"ok": true} clears quote.xlsx from pending_checks.
+        trace.record_tool_start(
+            "c2",
+            "verify_artifact",
+            &serde_json::json!({"path": "outputs/quote.xlsx"}),
+        );
+        trace.record_tool_end(
+            "c2",
+            "verify_artifact",
+            r#"{"ok":true,"artifact":"outputs/quote.xlsx","issues":[]}"#,
+            false,
+            false,
+        );
+
+        let manifest = trace.build_manifest(&record, "build deliverables");
+        assert!(
+            !manifest
+                .verified_effects
+                .iter()
+                .any(|e| e.contains("deck.pptx")),
+            "failed verify_deck (ok=false) must not appear in verified_effects: {:?}",
+            manifest.verified_effects
+        );
+        assert!(
+            manifest
+                .verified_effects
+                .iter()
+                .any(|e| e.contains("quote.xlsx")),
+            "passing verify_artifact (ok=true) must appear in verified_effects: {:?}",
+            manifest.verified_effects
+        );
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
+                .any(|p| p == "unverified:deck.pptx"),
+            "failed deck.pptx must stay in pending_checks: {:?}",
+            manifest.pending_checks
+        );
+        assert!(
+            !manifest
+                .pending_checks
+                .iter()
+                .any(|p| p == "unverified:quote.xlsx"),
+            "passing quote.xlsx must be cleared from pending_checks: {:?}",
+            manifest.pending_checks
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_until_idle_never_returns_before_observer_finished_runs() {
+        struct SlowFinishedObserver {
+            finished_ran: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl TurnObserver for SlowFinishedObserver {
+            fn finished(&self, _session: &str, _outcome: LoopOutcome) {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                self.finished_ran
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let scratch = Scratch::new("observer-before-finish");
+        let finished_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observer: Arc<dyn TurnObserver> = Arc::new(SlowFinishedObserver {
+            finished_ran: Arc::clone(&finished_ran),
+        });
+        let engine = Arc::new(
+            Engine::open(scratch.0.clone(), config(), observer).unwrap(),
+        );
+        engine.create_session("s-race".into(), 1).unwrap();
+        let run = engine
+            .start_with_config(
+                "s-race".into(),
+                crate::types::PromptTurn::plain("quick"),
+                config(),
+                Some(text_stream("done")),
+                Some(77),
+            )
+            .unwrap();
+        let task = tokio::spawn(run);
+        let engine_wait = Arc::clone(&engine);
+        let ran_when_idle =
+            tokio::task::spawn_blocking(move || {
+                assert!(engine_wait.wait_until_idle(
+                    "s-race",
+                    std::time::Duration::from_secs(5),
+                ));
+                finished_ran.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Completed);
+        assert!(
+            ran_when_idle,
+            "observer.finished must complete before RunTicket releases wait_until_idle"
+        );
+    }
+
+    #[test]
+    fn park_and_take_pending_card_roll_back_in_memory_state_on_save_error() {
+        struct NoopObserver;
+        impl TurnObserver for NoopObserver {}
+        let scratch = Scratch::new("pending-card-rollback");
+        let engine =
+            Engine::open(scratch.0.clone(), config(), Arc::new(NoopObserver))
+                .unwrap();
+        engine.create_session("s-rb".into(), 1).unwrap();
+        let card = crate::session::PendingCard::ToolApproval {
+            card_id: "card-rb-1".into(),
+            created_at_ms: 10,
+            tool_name: "bash".into(),
+            target_summary: "bash".into(),
+            args_hash: "h1".into(),
+            risk_reason: "risk".into(),
+            command_preview: "rm -rf ./deliverables".into(),
+        };
+        // Break history.json path so `index.save` fails.
+        let history_path = crate::session::SessionIndex::path(&scratch.0);
+        let _ = std::fs::remove_file(&history_path);
+        std::fs::create_dir(&history_path).unwrap();
+
+        assert!(
+            engine
+                .park_pending_card("s-rb", card.clone(), None)
+                .is_err()
+        );
+        let after_failed_park = engine.session("s-rb").unwrap();
+        assert_eq!(after_failed_park.pending_cards.len(), 0);
+        assert_eq!(after_failed_park.status, TurnState::Idle);
+
+        // Restore path, park cleanly, then break again and verify take rolls back.
+        std::fs::remove_dir(&history_path).unwrap();
+        engine
+            .park_pending_card("s-rb", card.clone(), None)
+            .unwrap();
+        assert_eq!(engine.session("s-rb").unwrap().pending_cards.len(), 1);
+
+        let _ = std::fs::remove_file(&history_path);
+        std::fs::create_dir(&history_path).unwrap();
+        assert!(
+            engine
+                .take_pending_card("s-rb", "card-rb-1", TurnState::Idle, None)
+                .is_err()
+        );
+        let after_failed_take = engine.session("s-rb").unwrap();
+        assert_eq!(after_failed_take.pending_cards, vec![card]);
+        assert_eq!(after_failed_take.status, TurnState::WaitingForUser);
+        let _ = std::fs::remove_dir(&history_path);
     }
 }

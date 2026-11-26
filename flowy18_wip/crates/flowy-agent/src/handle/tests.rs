@@ -309,6 +309,7 @@ mod background_init_tests {
                 workspace: None,
                 origin: SessionOrigin::Home,
                 session_workspace: None,
+                heartbeat: None,
             },
         );
 
@@ -1528,6 +1529,668 @@ mod guard_tests {
             handle.receipt_state(&stale.id),
             Some(ReceiptState::Retrying)
         );
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disambiguation_card_survives_restart_and_resolves_only_selected_object()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s1-disambig-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        // Turn 1: BASE contract (xlsx + pptx, 30万, 2026-11-27)
+        handle
+            .submit_chat(
+                101,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 2: Pending proposal recorded as Record (must not mutate 30万)
+        handle
+            .submit_chat(
+                102,
+                "会议记录：客户口头提到报价可考虑 35 万元，尚待确认，先别改正式文件。",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 3: Twin PPT added
+        handle
+            .submit_chat(
+                103,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        // Turn 4: Ambiguous edit -> must park in WaitingForUser WITHOUT running a worker
+        handle
+            .submit_chat(104, "把刚才那份的报价改成 32 万元。")
+            .unwrap();
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        // Retrying the exact same submission id is idempotent (no duplicate card or user bubble).
+        let lines_before_retry = handle.session_lines(&sid).len();
+        assert_eq!(
+            handle
+                .submit_chat(104, "把刚才那份的报价改成 32 万元。")
+                .unwrap(),
+            sid
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(handle.session_lines(&sid).len(), lines_before_retry);
+        // Sending a brand-new fresh message while a PendingCard exists must be refused.
+        assert_eq!(
+            handle.submit_chat(105, "再补充一个新需求"),
+            Err("notice.card_pending")
+        );
+        assert!(!handle.has_busy_session());
+        assert!(handle.session_needs_attention(&sid));
+        let cards = handle.session_pending_cards(&sid);
+        assert_eq!(cards.len(), 1);
+        let (card_id, ppt1_id, ppt2_id, xlsx_id) = match &cards[0] {
+            super::PendingCard::Disambiguation {
+                card_id,
+                options,
+                impact_boundary,
+                ..
+            } => {
+                assert_eq!(
+                    options.len(),
+                    3,
+                    "2 PPTs + 1 XLSX, Record excluded"
+                );
+                assert!(impact_boundary.contains("只改所选"));
+                let p1 = options
+                    .iter()
+                    .find(|o| o.label == "青禾项目报价汇报.pptx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                let p2 = options
+                    .iter()
+                    .find(|o| o.label == "青禾项目内部讨论稿.pptx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                let x = options
+                    .iter()
+                    .find(|o| o.extension == "xlsx")
+                    .unwrap()
+                    .object_id
+                    .clone();
+                (card_id.clone(), p1, p2, x)
+            }
+            other @ super::PendingCard::ToolApproval { .. } => {
+                panic!("expected Disambiguation card, got {other:?}")
+            }
+        };
+
+        // Bind a queued receipt to this WaitingForUser session to prove boot
+        // protects its lease from being forcibly released/requeued.
+        let queue = AcceptanceQueue::new(root.clone());
+        let now = super::now_ms();
+        let pinned_receipt = queue
+            .accept(Some(&sid), "deferred while waiting", now)
+            .unwrap();
+        queue
+            .take(&pinned_receipt.id, "wait-att", now, 120_000)
+            .unwrap()
+            .unwrap();
+        queue
+            .bind(&pinned_receipt.id, "wait-att", &sid, "sub-wait", now)
+            .unwrap();
+
+        // Graceful shutdown must NOT cancel a WaitingForUser session.
+        handle.prepare_shutdown_with_timeout(std::time::Duration::from_millis(
+            200,
+        ));
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        drop(handle);
+
+        // Cold restart must restore WaitingForUser + PendingCard + protect lease.
+        let reopened = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        assert_eq!(
+            reopened.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(reopened.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            reopened.receipt_state(&pinned_receipt.id),
+            Some(ReceiptState::Running),
+            "WaitingForUser session's lease must not be forcibly released at boot"
+        );
+
+        // Invalid object_id is rejected fail-closed.
+        assert_eq!(
+            reopened.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: card_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec!["record-nonexistent".to_owned()],
+                },
+            }),
+            Err("notice.card_selection_invalid")
+        );
+
+        // Resolve card selecting ONLY PPT #1 -> resumes and isolates sibling objects.
+        let outcome = reopened
+            .apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: card_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec![ppt1_id.clone()],
+                },
+            })
+            .expect("resolve disambiguation card");
+        assert_eq!(
+            outcome,
+            super::CardActionOutcome::CardResolved {
+                card_id,
+                resumed: true,
+            }
+        );
+        wait_idle(&reopened, &sid);
+        assert_eq!(reopened.session_pending_cards(&sid), Vec::new());
+
+        let engine = lock(&reopened.inner.engine).clone().expect("engine");
+        let rec = engine.session(&sid).expect("session record");
+        let wc = rec.work_contract.expect("work contract");
+        assert_eq!(
+            wc.confirmed_facts_for(&ppt1_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("32万")
+        );
+        assert_eq!(
+            wc.confirmed_facts_for(&ppt2_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("30万")
+        );
+        assert_eq!(
+            wc.confirmed_facts_for(&xlsx_id)
+                .get("quote")
+                .map(String::as_str),
+            Some("30万")
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canonical_tool_args_hash_is_order_independent_sha256() {
+        let a = serde_json::json!({
+            "b": 2,
+            "a": { "z": true, "y": "hello" },
+            "command": "rm -rf ./outputs"
+        });
+        let b = serde_json::json!({
+            "command": "rm -rf ./outputs",
+            "a": { "y": "hello", "z": true },
+            "b": 2
+        });
+        let c = serde_json::json!({
+            "command": "rm -rf ./other",
+            "a": { "y": "hello", "z": true },
+            "b": 2
+        });
+        let hash_a = super::canonical_tool_args_hash("bash", &a);
+        let hash_b = super::canonical_tool_args_hash("bash", &b);
+        let hash_c = super::canonical_tool_args_hash("bash", &c);
+        assert_eq!(hash_a.len(), 64, "must be full SHA-256 hex digest");
+        assert_eq!(hash_a, hash_b);
+        assert_ne!(hash_a, hash_c);
+        assert_ne!(hash_a, super::canonical_tool_args_hash("powershell", &a));
+    }
+
+    #[test]
+    fn branch_heartbeat_updates_strictly_on_real_events_and_never_fabricates_progress()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-s3-heartbeat-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        assert_eq!(handle.session_heartbeat(&sid), None);
+
+        use flowy_agent_core::TurnObserver as _;
+        let observer = super::UiObserver {
+            state: Arc::clone(&handle.inner.state),
+        };
+        observer.tool_start(
+            &sid,
+            "c1",
+            "read_file",
+            &serde_json::json!({"path": "brief.md"}),
+        );
+        let snap1 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat after tool_start");
+        assert_eq!(snap1.last_completed, None);
+        assert!(snap1.awaiting_evidence);
+        assert!(snap1.current_action.contains("read_file"));
+        // Repeated reads with zero new events must return the exact same snapshot.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(handle.session_heartbeat(&sid), Some(snap1));
+
+        observer.tool_end(&sid, "c1", "read_file", "ok", false);
+        let snap2 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat after tool_end");
+        assert_eq!(snap2.last_completed.as_deref(), Some("read_file"));
+        assert!(snap2.last_completed_at_ms.is_some());
+        assert!(!snap2.awaiting_evidence);
+
+        observer.finished(&sid, flowy_agent_core::LoopOutcome::Completed);
+        let snap3 = handle
+            .session_heartbeat(&sid)
+            .expect("heartbeat preserved after finish");
+        assert_eq!(snap3.last_completed.as_deref(), Some("read_file"));
+        assert_eq!(snap3.current_action, "");
+        assert_eq!(snap3.next_check_hint, None);
+        assert!(!snap3.awaiting_evidence);
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_card_action_rolls_back_card_status_and_grants_when_resume_fails()
+    {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-card-rollback-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        let engine = lock(&handle.inner.engine).clone().expect("engine");
+        let card = super::PendingCard::ToolApproval {
+            card_id: "approval-rollback-1".into(),
+            created_at_ms: 100,
+            tool_name: "bash".into(),
+            target_summary: "bash".into(),
+            args_hash: "a".repeat(64),
+            risk_reason: "destructive".into(),
+            command_preview: "rm -rf ./deliverables".into(),
+        };
+        engine.park_pending_card(&sid, card, None).unwrap();
+        lock(&handle.inner.state.live).get_mut(&sid).unwrap().status =
+            super::TurnStatus::WaitingForUser;
+
+        // Force `submit_message_targeted_locked` to fail with storage error.
+        *lock(&handle.inner.state.load_failed) = true;
+
+        assert_eq!(
+            handle.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: "approval-rollback-1".into(),
+                selection: super::CardSelection::ApproveTool {
+                    args_hash: "a".repeat(64),
+                },
+            }),
+            Err("notice.session_storage_failed")
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert!(
+            lock(&handle.inner.state.approved_tool_calls)
+                .get(&sid)
+                .is_none_or(Vec::is_empty),
+            "failed ApproveTool resume must roll back approved_tool_calls grant"
+        );
+
+        assert_eq!(
+            handle.apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid.clone(),
+                card_id: "approval-rollback-1".into(),
+                selection: super::CardSelection::DenyTool {
+                    reason: Some("nope".into()),
+                },
+            }),
+            Err("notice.session_storage_failed")
+        );
+        assert_eq!(handle.session_pending_cards(&sid).len(), 1);
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        assert!(
+            !lock(&handle.inner.state.denied_tool_turns).contains_key(&sid),
+            "failed DenyTool resume must roll back denied_tool_turns"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unconsumed_tool_approval_expires_and_user_denied_blocks_all_non_readonly_tools()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-approval-expiry-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        let state = Arc::clone(&handle.inner.state);
+
+        // 1) Unconsumed approved_tool_calls must clear on finished, stop_settled, and waiting_for_user.
+        use flowy_agent_core::TurnObserver as _;
+        let observer = super::UiObserver {
+            state: Arc::clone(&state),
+        };
+        for event in 0..3 {
+            lock(&state.approved_tool_calls)
+                .entry(sid.clone())
+                .or_default()
+                .push(("bash".into(), "f".repeat(64)));
+            match event {
+                0 => observer
+                    .finished(&sid, flowy_agent_core::LoopOutcome::Completed),
+                1 => observer.stop_settled(
+                    &sid,
+                    &flowy_agent_core::StopHandoffManifest::default(),
+                ),
+                _ => observer.waiting_for_user(
+                    &sid,
+                    &super::PendingCard::ToolApproval {
+                        card_id: "c-exp".into(),
+                        created_at_ms: 1,
+                        tool_name: "bash".into(),
+                        target_summary: "bash".into(),
+                        args_hash: "e".repeat(64),
+                        risk_reason: "risk".into(),
+                        command_preview: "rm -rf ./out".into(),
+                    },
+                ),
+            }
+            assert!(
+                !lock(&state.approved_tool_calls).contains_key(&sid),
+                "approved_tool_calls must expire at turn boundary #{event}"
+            );
+        }
+
+        // 2) Turn-scoped UserDenied uses a read-only allowlist so publish_file
+        //    and any future mutating tool are blocked while read_file/verify_deck stay allowed.
+        lock(&state.denied_tool_turns)
+            .insert(sid.clone(), "user rejected delete".into());
+        let hook =
+            super::build_pre_tool_hook(sid, root.clone(), Arc::clone(&state));
+        for blocked_tool in [
+            "publish_file",
+            "write_file",
+            "edit_file",
+            "bash",
+            "powershell",
+            "create_deck",
+            "future_mutating_tool",
+        ] {
+            assert!(
+                matches!(
+                    hook(blocked_tool, &serde_json::json!({})),
+                    flowy_agent_core::PreToolDecision::Deny { ref reason }
+                        if reason.contains("USER_DENIED")
+                ),
+                "UserDenied must block non-readonly tool {blocked_tool}"
+            );
+        }
+        for allowed_tool in [
+            "read_file",
+            "glob",
+            "grep",
+            "ls",
+            "list_dir",
+            "find_files",
+            "verify_deck",
+            "verify_artifact",
+        ] {
+            assert_eq!(
+                hook(allowed_tool, &serde_json::json!({})),
+                flowy_agent_core::PreToolDecision::Allow,
+                "UserDenied must keep read-only tool {allowed_tool} allowed"
+            );
+        }
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revise_active_contract_reports_waiting_for_disambiguation_on_ambiguous_prompt()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-revise-ambig-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid = handle.create_home_session().unwrap();
+        handle
+            .submit_chat(
+                201,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+        handle
+            .submit_chat(
+                202,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid);
+
+        handle
+            .submit_chat(203, "把刚才那份的报价改成 32 万元。")
+            .expect("ambiguous submit parks disambiguation card");
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        let cards = handle.session_pending_cards(&sid);
+        assert!(
+            cards.iter().any(|card| matches!(
+                card,
+                flowy_agent_core::PendingCard::Disambiguation { card_id, .. }
+                    if !card_id.is_empty()
+            )),
+            "ambiguous follow-up must park PendingCard::Disambiguation, got {cards:?}"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn queued_disambiguation_does_not_starve_other_sessions_and_multicard_resolves_sequentially()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-disambig-queue-multicard-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid_a = handle.create_home_session().unwrap();
+        handle
+            .submit_chat(
+                301,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid_a);
+        handle
+            .submit_chat(
+                302,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid_a);
+
+        // Queue an ambiguous follow-up on session A AND an independent task
+        // for a new session (no active selection). Autonomous drain must park A
+        // on disambiguation and STILL drain the independent receipt cleanly.
+        let r_ambig = handle
+            .accept_deferred("把刚才那份的报价改成 32 万元。")
+            .expect("accept ambiguous");
+        handle.clear_active().unwrap();
+        let r_other = handle
+            .accept_deferred("总结一下今天的会议纪要")
+            .expect("accept independent");
+        handle.set_autonomous_drain(true);
+
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let a_waiting = handle.session_status(&sid_a)
+                == super::TurnStatus::WaitingForUser;
+            let other_done = handle.receipt_state(&r_other.id)
+                == Some(flowy_agent_core::ReceiptState::Completed);
+            if a_waiting && other_done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            handle.receipt_state(&r_ambig.id),
+            Some(flowy_agent_core::ReceiptState::Completed)
+        );
+        assert_eq!(
+            handle.session_status(&sid_a),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(
+            handle.receipt_state(&r_other.id),
+            Some(flowy_agent_core::ReceiptState::Completed),
+            "parking a disambiguation card must not starve queued receipts for other sessions"
+        );
+
+        // Park a second card on session A and verify resolving card #1 keeps
+        // WaitingForUser (`resumed: false`) instead of launching a turn while
+        // card #2 is still pending.
+        let first_card = handle.session_pending_cards(&sid_a)[0].clone();
+        let flowy_agent_core::PendingCard::Disambiguation {
+            card_id: first_id,
+            options,
+            ..
+        } = &first_card
+        else {
+            panic!("expected disambiguation card, got {first_card:?}");
+        };
+        let first_id = first_id.clone();
+        let first_opt = options[0].object_id.clone();
+        let engine = super::lock(&handle.inner.engine).clone().unwrap();
+        engine
+            .park_pending_card(
+                &sid_a,
+                flowy_agent_core::PendingCard::ToolApproval {
+                    card_id: "card-second-approval".into(),
+                    created_at_ms: 99,
+                    tool_name: "bash".into(),
+                    target_summary: "bash".into(),
+                    args_hash: "hash-second".into(),
+                    risk_reason: "risk".into(),
+                    command_preview: "rm -rf ./deliverables".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let outcome = handle
+            .apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid_a.clone(),
+                card_id: first_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec![first_opt],
+                },
+            })
+            .expect("resolve first of two cards");
+        assert_eq!(
+            outcome,
+            super::CardActionOutcome::CardResolved {
+                card_id: first_id,
+                resumed: false,
+            }
+        );
+        assert_eq!(
+            handle.session_status(&sid_a),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(handle.session_pending_cards(&sid_a).len(), 1);
+
         drop(handle);
         let _ = std::fs::remove_dir_all(&root);
     }

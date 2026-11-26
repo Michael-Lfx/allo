@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Element, ElementId, Entity,
-    IntoElement, ParentElement, Styled, div, px,
+    IntoElement, ParentElement, SpringConfig, Styled, div, px,
 };
 
 use crate::{MotionPolicy, PrepaintBounds};
@@ -38,6 +38,18 @@ pub const COUNTER_ROLL: Duration = Duration::from_millis(180);
 /// Entrance travel in pixels. Fading alone is invisible on a dark surface;
 /// movement is what the eye actually catches.
 pub const ENTER_OFFSET: f32 = 8.;
+
+/// Snappy spring physics for compact floating surfaces (popovers, menus, icon flips).
+#[must_use]
+pub const fn spring_snappy() -> SpringConfig {
+    SpringConfig::new(420.0, 34.0, 1.0)
+}
+
+/// Composed spring physics for larger panels (modal sheets, side drawers).
+#[must_use]
+pub const fn spring_sheet() -> SpringConfig {
+    SpringConfig::new(320.0, 30.0, 1.0)
+}
 
 /// Scales positional travel for accessibility: returns `0.0` under reduced
 /// motion so elements keep opacity feedback without spatial displacement.
@@ -474,6 +486,138 @@ mod tests {
         assert!(
             stored >= 119.5,
             "intermediate height clip must not squash measured height: {stored}"
+        );
+    }
+
+    struct SpringHarness {
+        phases: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
+    }
+
+    impl gpui::Render for SpringHarness {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<'_, Self>,
+        ) -> impl IntoElement {
+            let phases = self.phases.clone();
+            div().w(px(160.)).h(px(160.)).child(
+                div().w(px(80.)).h(px(40.)).with_spring(
+                    "spring-test",
+                    gpui::SpringAnimation::new(spring_snappy())
+                        .to(1.0_f32)
+                        .from(0.0_f32),
+                    move |el, phase| {
+                        phases.borrow_mut().push(phase);
+                        el.opacity(phase.clamp(0.0, 1.0))
+                            .relative()
+                            .top(px(12.0 * (1.0 - phase)))
+                    },
+                ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn spring_entrance_advances_across_frames_and_settles(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let phases = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (_view, cx) = cx.add_window_view({
+            let phases = phases.clone();
+            move |_, _| SpringHarness { phases }
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            phases.borrow().first().copied(),
+            Some(0.0),
+            "spring must start at its initial pose"
+        );
+
+        cx.executor().advance_clock(Duration::from_millis(32));
+        let scheduled = cx.update(gpui::Window::simulate_next_frame);
+        cx.run_until_parked();
+        assert!(
+            scheduled > 0,
+            "active spring must schedule animation frames"
+        );
+        let mid = *phases.borrow().last().expect("spring recorded mid frame");
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "spring must progress through intermediate frame: {mid}"
+        );
+
+        let mut settled = false;
+        for _ in 0..80 {
+            cx.executor().advance_clock(Duration::from_millis(32));
+            let callbacks = cx.update(gpui::Window::simulate_next_frame);
+            cx.run_until_parked();
+            if callbacks == 0 {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "spring must settle with zero remaining callbacks");
+        let final_phase = *phases.borrow().last().expect("spring recorded end");
+        assert!(
+            (final_phase - 1.0).abs() <= 0.005,
+            "spring must settle near target 1.0, got {final_phase}"
+        );
+    }
+
+    #[gpui::test]
+    fn reduced_motion_snaps_spring_to_target_without_travel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let phases = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (_view, cx) = cx.add_window_view({
+            let phases = phases.clone();
+            move |_, _| SpringHarness { phases }
+        });
+        cx.run_until_parked();
+        assert_eq!(*phases.borrow(), vec![1.0]);
+        assert_eq!(cx.update(gpui::Window::simulate_next_frame), 0);
+    }
+
+    struct SpinningIconHarness {
+        renders: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl gpui::Render for SpinningIconHarness {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<'_, Self>,
+        ) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            div().w(px(64.)).h(px(64.)).child(
+                crate::icons::loader_circle().spinning(MotionPolicy::Full),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn spinning_icon_advances_without_rerendering_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let renders = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (_view, cx) = cx.add_window_view({
+            let renders = renders.clone();
+            move |_, _| SpinningIconHarness { renders }
+        });
+        cx.run_until_parked();
+        let initial_renders = renders.get();
+        assert!(initial_renders >= 1);
+
+        for _ in 0..3 {
+            cx.executor().advance_clock(Duration::from_millis(120));
+            cx.update(gpui::Window::simulate_next_frame);
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            renders.get(),
+            initial_renders,
+            "GPU-clock SVG rotation must not trigger view re-renders"
         );
     }
 }

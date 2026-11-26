@@ -60,7 +60,10 @@ impl DeliverableFormat {
     }
 }
 
-/// User-facing skill option pushed from `flowy-app` (`flowy-skills`) into Studio.
+/// User-facing installed skill option pushed from `flowy-app` into Studio.
+///
+/// `id` uses the canonical `<owner_handle>/<slug>` invocation identity
+/// expected by `flowy-agent`'s `/skill:<owner>/<slug>` protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillChip {
     pub id: String,
@@ -356,10 +359,11 @@ impl BoardDataSource for AgentHandle {
         for summary in &sessions {
             let lines = self.session_lines(&summary.id);
             let is_busy = busy_ids.contains(&summary.id);
-            let delivery_failed = matches!(
-                self.session_status(&summary.id),
-                TurnStatus::DeliveryFailed
-            );
+            let status = self.session_status(&summary.id);
+            let delivery_failed = matches!(status, TurnStatus::DeliveryFailed);
+            let live_heartbeat = is_busy
+                .then(|| self.session_heartbeat(&summary.id))
+                .flatten();
             let session_receipts = receipts_by_session
                 .remove(&Some(summary.id.clone()))
                 .unwrap_or_default();
@@ -381,6 +385,7 @@ impl BoardDataSource for AgentHandle {
                 &lines,
                 is_busy,
                 delivery_failed,
+                live_heartbeat.as_ref(),
                 &session_receipts,
                 &overridden_hashes,
                 session_contract.clone(),
@@ -589,6 +594,7 @@ fn project_session_branches<F>(
     lines: &[ChatLine],
     is_busy: bool,
     delivery_failed: bool,
+    live_heartbeat: Option<&flowy_agent::BranchHeartbeat>,
     queued_receipts: &[(AcceptedMessage, ReceiptState)],
     overridden_hashes: &std::collections::BTreeSet<String>,
     session_contract: Option<WorkContractProgress>,
@@ -772,18 +778,24 @@ where
                 .clamp(20.0, 92.0)
         };
         let safe_title = redact_trace_text(&summary.title);
+        let heartbeat_detail = live_heartbeat.and_then(|hb| {
+            crate::pending_card::format_heartbeat_line(hb, "...")
+                .map(|text| redact_trace_text(&text))
+        });
         let (skill_label, step_label, detail) =
             if let Some((name, target)) = active_tool {
                 (
                     infer_skill_label(DeliverableFormat::Other, Some(name)),
                     name.to_owned(),
-                    redact_trace_text(&display_path_str(target)),
+                    heartbeat_detail.unwrap_or_else(|| {
+                        redact_trace_text(&display_path_str(target))
+                    }),
                 )
             } else {
                 (
                     SkillLabel::Key("chat.router_name"),
                     String::new(),
-                    safe_title.clone(),
+                    heartbeat_detail.unwrap_or_else(|| safe_title.clone()),
                 )
             };
         branches.insert(
@@ -964,6 +976,7 @@ mod tests {
             &lines,
             false,
             false,
+            None,
             &[],
             &std::collections::BTreeSet::new(),
             Some(contract.clone()),
@@ -1067,6 +1080,7 @@ mod tests {
             &lines,
             false,
             false,
+            None,
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1170,6 +1184,7 @@ mod tests {
             &lines,
             false,
             false,
+            None,
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1236,6 +1251,7 @@ mod tests {
             &lines,
             false,
             false,
+            None,
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1257,6 +1273,13 @@ mod tests {
             &running_lines,
             true,
             true,
+            Some(&flowy_agent::BranchHeartbeat {
+                last_completed: Some("read config".into()),
+                last_completed_at_ms: Some(123),
+                current_action: "running shell".into(),
+                next_check_hint: None,
+                awaiting_evidence: false,
+            }),
             &[],
             &std::collections::BTreeSet::new(),
             None,
@@ -1271,6 +1294,7 @@ mod tests {
             .iter()
             .find(|b| matches!(b.phase, BranchPhase::Running { .. }))
             .expect("live branch");
+        assert!(live.detail.contains("read config · running shell"));
         assert!(!live.detail.contains("sk-live-secret-999999"));
         assert!(!live.detail.contains("user:pass"));
     }

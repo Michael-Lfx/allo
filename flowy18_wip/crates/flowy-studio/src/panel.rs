@@ -4,7 +4,6 @@ use crate::feed::{
     ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, RevealFile,
     WorkingIndicator, WorkingIndicatorEvent,
 };
-use crate::starter::catalog::Category;
 use flowy_agent::{
     AgentHandle, AgentWorkspace, CardAction, FileEntry, LlmConfig, Model, Plan,
     ProviderCatalog, ReceiptState, SessionOrigin, TaskTarget,
@@ -31,6 +30,23 @@ fn new_submission_id() -> u128 {
         .unwrap_or_default()
         .as_nanos();
     (timestamp << 32) | u128::from(std::process::id() ^ (sequence as u32))
+}
+
+/// Formats an outgoing prompt using `flowy-agent`'s real `/skill:<owner>/<slug>`
+/// invocation protocol when an installed skill chip is mounted.
+fn format_skill_prompt(
+    selected: Option<&crate::ports::SkillChip>,
+    trimmed: &str,
+) -> String {
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(skill) = selected
+        && !trimmed.starts_with("/skill:")
+    {
+        return format!("/skill:{} {trimmed}", skill.id);
+    }
+    trimmed.to_owned()
 }
 
 /// Which workspace surface the panel should show.
@@ -111,12 +127,13 @@ impl std::fmt::Debug for StudioConfig {
     }
 }
 
-/// A failed turn keeps its localized error line visible until the next turn.
+/// A failed or waiting turn keeps its localized status line visible until resolved.
 const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
     status.is_busy()
         || matches!(
             status,
-            flowy_agent::TurnStatus::Error { .. }
+            flowy_agent::TurnStatus::WaitingForUser
+                | flowy_agent::TurnStatus::Error { .. }
                 | flowy_agent::TurnStatus::DeliveryFailed
         )
 }
@@ -130,13 +147,10 @@ pub enum ActivePopover {
     #[default]
     None,
     ModelInfo,
-    ModelMenu {
-        anchor: &'static str,
-    },
+    ModelMenu,
     BgTasks,
     EnvStatus,
-    WorkspaceMenu,
-    SkillMenu,
+    AddMenu,
     Credits,
 }
 
@@ -147,10 +161,9 @@ impl ActivePopover {
             // Closed state and information-only Credits hover card must not
             // claim popup focus scope (prevents hover focus theft).
             Self::None | Self::Credits => None,
-            Self::ModelMenu { .. } => Some("model-list"),
+            Self::ModelMenu => Some("model-list"),
             Self::ModelInfo => Some("model-info"),
-            Self::WorkspaceMenu => Some("workspace-menu"),
-            Self::SkillMenu => Some("skill-menu"),
+            Self::AddMenu => Some("composer-add-menu"),
             Self::EnvStatus => Some("env-status-popover"),
             Self::BgTasks => Some("bg-tasks-popover"),
         }
@@ -203,6 +216,11 @@ pub struct StudioPanel {
     /// Verification report IDs currently executing `CardAction::OverrideDeliver`
     /// on a background worker (prevents double-click re-entry).
     pub(crate) overriding_reports: std::collections::HashSet<String>,
+    /// Multi-select object ids ticked per `(session_id, card_id)`.
+    pub(crate) pending_card_selected:
+        std::collections::HashMap<(String, String), Vec<String>>,
+    /// `(session_id, card_id)` keys currently resolving via `CardAction::ResolveCard`.
+    pub(crate) resolving_cards: std::collections::HashSet<(String, String)>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -261,8 +279,6 @@ pub struct StudioPanel {
     pub product: &'static str,
     pub surface: StudioSurface,
     pub notice: Option<&'static str>,
-    /// Category whose examples the home stage shows.
-    pub(crate) starter_category: Category,
     /// Set once the user opens a conversation in this run. Startup initialization
     /// must not pull the app back into the last thread, but a session restored
     /// because the user asked for it should land on Chat.
@@ -479,28 +495,28 @@ impl StudioPanel {
                         panel.send_prompt(cx);
                     }
                     ComposerEvent::Stop => panel.stop_turn(cx),
-                    ComposerEvent::ModelMenu(anchor) => {
-                        panel.toggle_popover(ActivePopover::ModelMenu {
-                            anchor,
-                        });
+                    ComposerEvent::ModelMenu => {
+                        panel.toggle_popover(ActivePopover::ModelMenu);
                         cx.notify();
                     }
-                    ComposerEvent::WorkspaceMenu => {
-                        panel.toggle_popover(ActivePopover::WorkspaceMenu);
+                    ComposerEvent::AddMenu => {
+                        panel.toggle_popover(ActivePopover::AddMenu);
                         cx.notify();
                     }
-                    ComposerEvent::VerifyToggle => {
-                        panel.toggle_popover(ActivePopover::None);
-                        panel.toggle_semantic_verify(cx);
+                    ComposerEvent::OpenAddMenu => {
+                        panel.open_popover(ActivePopover::AddMenu);
+                        cx.notify();
                     }
-                    ComposerEvent::SkillMenu => {
-                        panel.toggle_popover(ActivePopover::SkillMenu);
+                    ComposerEvent::ClearWorkspace => {
+                        panel.close_all_popovers();
+                        panel.bind_default_workspace(cx);
+                    }
+                    ComposerEvent::ClearSkill => {
+                        panel.selected_skill = None;
                         cx.notify();
                     }
                     ComposerEvent::CloudNotReady => {
-                        panel.open_popover(ActivePopover::ModelMenu {
-                            anchor: "composer-model-trigger",
-                        });
+                        panel.open_popover(ActivePopover::ModelMenu);
                         panel.emit_notice(
                             Some("notice.model_setup_required"),
                             cx,
@@ -540,6 +556,8 @@ impl StudioPanel {
             visible_receipts,
             retrying_receipts: std::collections::HashSet::new(),
             overriding_reports: std::collections::HashSet::new(),
+            pending_card_selected: std::collections::HashMap::new(),
+            resolving_cards: std::collections::HashSet::new(),
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
@@ -597,7 +615,6 @@ impl StudioPanel {
             product,
             surface,
             notice: initial_notice,
-            starter_category: Category::Website,
             session_opened_by_user: false,
             deliverables: None,
             inspected_work: None,
@@ -1174,14 +1191,6 @@ impl StudioPanel {
         running + self.popover_visible_receipts(&busy_ids).len()
     }
 
-    /// Non-destructively folds the active table back to the calm Home stage
-    /// while leaving any running turns or queued background tasks untouched.
-    pub fn fold_desk(&mut self, cx: &mut Context<'_, Self>) {
-        self.close_all_popovers();
-        self.surface = StudioSurface::Home;
-        cx.notify();
-    }
-
     /// Jumps to the Chief Assistant's active default-workspace thread, or lands
     /// calmly on the Home stage ready for a fresh instruction.
     pub fn open_chief_assistant(&mut self, cx: &mut Context<'_, Self>) {
@@ -1222,6 +1231,7 @@ impl StudioPanel {
         );
         self.agent.create_session()?;
         self.invalidate_submission(cx);
+        self.clear_right_sheet();
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.set_prompt_text("", cx);
@@ -1334,6 +1344,7 @@ impl StudioPanel {
                     let draft =
                         self.drafts.get(id).cloned().unwrap_or_default();
                     self.fill_prompt(&draft, cx);
+                    self.clear_right_sheet();
                 }
                 self.invalidate_submission(cx);
                 // The journal is global, but re-read it on every open so the
@@ -1476,12 +1487,26 @@ impl StudioPanel {
     ) {
         if self.agent.active_session_id().is_none() {
             self.invalidate_submission(cx);
+            self.clear_right_sheet();
             self.surface = StudioSurface::Home;
             self.document = DocumentSession::new(self.product);
             self.active_project_id = None;
             self.agent.set_workspace_for_new_sessions(None);
             self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
             self.set_prompt_text("", cx);
+        } else if let Some(crate::deliverables::InspectedWork::Session {
+            id,
+            ..
+        }) = &self.inspected_work
+        {
+            let still_exists = self
+                .agent
+                .list_sessions()
+                .iter()
+                .any(|session| &session.id == id);
+            if !still_exists {
+                self.clear_right_sheet();
+            }
         }
         self.refresh_chat(cx);
         self.refresh_board_snapshot();
@@ -1522,6 +1547,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -1547,6 +1573,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -1568,13 +1595,7 @@ impl StudioPanel {
         let typed = self.prompt_text(cx);
         let trimmed = typed.trim();
         let trimmed_draft = trimmed.to_owned();
-        let text = if let Some(skill) = &self.selected_skill
-            && !trimmed.is_empty()
-        {
-            format!("[Skill: {}]\n{trimmed}", skill.title)
-        } else {
-            trimmed_draft.clone()
-        };
+        let text = format_skill_prompt(self.selected_skill.as_ref(), trimmed);
         tracing::debug!(
             target: "flowy.prompt",
             stage = "StudioPanel::send_prompt",
@@ -1593,11 +1614,16 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        let running = matches!(
-            self.status,
-            flowy_agent::TurnStatus::Running
-                | flowy_agent::TurnStatus::SavingFiles
-        );
+        let has_pending_card =
+            matches!(self.status, flowy_agent::TurnStatus::WaitingForUser)
+                || self.agent.active_session_id().is_some_and(|sid| {
+                    !self.agent.session_pending_cards(&sid).is_empty()
+                });
+        if has_pending_card {
+            self.emit_notice(Some("notice.card_pending"), cx);
+            return;
+        }
+        let running = self.status.is_busy();
         let waiting_for_cloud = self.catalog_loading
             || ((!self.cloud_ready || model.is_none())
                 && self.agent.requires_cloud_ready());
@@ -1828,44 +1854,10 @@ impl StudioPanel {
         self.fill_prompt(&text, cx);
     }
 
-    /// Fills the prompt from a starter and optionally pre-mounts its suggested
-    /// skill when installed.
-    pub(crate) fn request_fill_prompt_with_skill(
-        &mut self,
-        text: String,
-        skill_id: Option<&str>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if let Some(id) = skill_id
-            && let Some(chip) =
-                self.installed_skills.iter().find(|skill| skill.id == id)
-        {
-            self.selected_skill = Some(chip.clone());
-        }
-        self.request_fill_prompt(text, cx);
-    }
-
-    /// Switches which category's examples the home stage shows.
-    pub(crate) fn set_starter_category(
-        &mut self,
-        category: Category,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if self.starter_category == category {
-            return;
-        }
-        self.starter_category = category;
-        cx.notify();
-    }
-
     /// Whether the user opened a conversation in this run. The app shell uses
     /// this to keep launch on Home while still restoring an opened session.
     pub const fn session_opened_by_user(&self) -> bool {
         self.session_opened_by_user
-    }
-
-    pub(crate) const fn starter_category(&self) -> Category {
-        self.starter_category
     }
     pub(crate) fn open_deliverables(
         &mut self,
@@ -2015,6 +2007,7 @@ impl StudioPanel {
             self.agent.set_workspace_for_new_sessions(None);
             self.surface = StudioSurface::Home;
             self.flow_modal.close();
+            self.clear_right_sheet();
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
         }
@@ -2081,6 +2074,7 @@ impl StudioPanel {
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.agent.set_workspace_for_new_sessions(Some(workspace));
         self.agent
             .set_origin_for_new_sessions(SessionOrigin::Project {
@@ -2147,7 +2141,6 @@ impl Render for StudioPanel {
                 |project| project.name.clone(),
             );
         let workspace_bound = self.active_project_id.is_some();
-        let semantic_verify_enabled = self.agent.semantic_verify_enabled();
         let skill_label = self
             .selected_skill
             .as_ref()
@@ -2156,14 +2149,13 @@ impl Render for StudioPanel {
             model: self.model,
             model_menu_open: self.is_model_menu_open(),
             running: self.submission_pending || self.status.is_busy(),
+            stopping: matches!(self.status, flowy_agent::TurnStatus::Stopping),
             model_label: gpui::SharedString::from(model_label),
             cloud_ready: can_submit,
             workspace_label: gpui::SharedString::from(workspace_label),
             workspace_bound,
-            workspace_menu_open: self.is_workspace_menu_open(),
-            semantic_verify_enabled,
             skill_label,
-            skill_menu_open: self.is_skill_menu_open(),
+            add_menu_open: self.is_add_menu_open(),
         };
         self.composer.update(cx, |composer, cx| {
             composer.sync_state(composer_state, cx);
@@ -3081,6 +3073,8 @@ mod tests {
         use flowy_agent::TurnStatus;
 
         assert!(working_line_visible(&TurnStatus::Running));
+        assert!(working_line_visible(&TurnStatus::Stopping));
+        assert!(working_line_visible(&TurnStatus::WaitingForUser));
         assert!(working_line_visible(&TurnStatus::Error {
             message: "chat.status_error".into(),
         }));
@@ -3675,23 +3669,19 @@ mod tests {
             panel.toggle_popover(ActivePopover::EnvStatus);
             assert_eq!(panel.active_popup_scope(), Some("env-status-popover"));
 
-            // Opening the model menu automatically replaces EnvStatus (never two popovers).
-            panel.toggle_popover(ActivePopover::ModelMenu {
-                anchor: "model-menu-trigger",
-            });
+            // Opening the unified `+` menu automatically replaces EnvStatus.
+            panel.toggle_popover(ActivePopover::AddMenu);
+            assert_eq!(panel.active_popup_scope(), Some("composer-add-menu"));
+            assert!(panel.is_add_menu_open());
+
+            // Opening the composer model menu replaces AddMenu (never two popovers).
+            panel.toggle_popover(ActivePopover::ModelMenu);
             assert_eq!(panel.active_popup_scope(), Some("model-list"));
             assert!(panel.is_model_menu_open());
+            assert!(!panel.is_add_menu_open());
 
-            // Switching anchor keeps ModelMenu open on the new anchor.
-            panel.toggle_popover(ActivePopover::ModelMenu {
-                anchor: "composer-model-trigger",
-            });
-            assert_eq!(panel.active_popup_scope(), Some("model-list"));
-
-            // Same anchor toggles closed.
-            panel.toggle_popover(ActivePopover::ModelMenu {
-                anchor: "composer-model-trigger",
-            });
+            // Same popover toggles closed.
+            panel.toggle_popover(ActivePopover::ModelMenu);
             assert_eq!(panel.active_popup_scope(), None);
 
             // Overlay dismissal only closes matching scope and also handles Flow Modal.
@@ -3743,5 +3733,26 @@ mod tests {
         });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn format_skill_prompt_uses_real_slash_skill_protocol() {
+        let chip = crate::ports::SkillChip {
+            id: "flowy/xlsx-summary".into(),
+            title: "Excel Summary".into(),
+            summary: String::new(),
+            official: true,
+        };
+        assert_eq!(
+            format_skill_prompt(Some(&chip), "summarize Q3.xlsx"),
+            "/skill:flowy/xlsx-summary summarize Q3.xlsx"
+        );
+        // Never double-prefix if the user already typed `/skill:...`.
+        assert_eq!(
+            format_skill_prompt(Some(&chip), "/skill:other/foo run"),
+            "/skill:other/foo run"
+        );
+        assert_eq!(format_skill_prompt(Some(&chip), ""), "");
+        assert_eq!(format_skill_prompt(None, "plain prompt"), "plain prompt");
     }
 }

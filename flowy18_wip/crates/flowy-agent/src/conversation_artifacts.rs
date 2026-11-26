@@ -192,7 +192,7 @@ pub fn prepare_conversation_artifacts_gated(
     // Multiple writes to one file in the same turn all see the final bytes.
     // Keep only the last successful call as the stable source identity while
     // enforcing the same per-turn file and byte budgets as publish_file.
-    let mut latest = BTreeMap::<String, (ResolvedWrite, String)>::new();
+    let mut latest = BTreeMap::<String, (ResolvedWrite, String, String)>::new();
     let mut budgets = BTreeMap::<String, TurnBudget>::new();
     for write in writes {
         let Some(resolved) = resolve_write(&root, &write.raw_path) else {
@@ -257,7 +257,7 @@ pub fn prepare_conversation_artifacts_gated(
         }
         latest.insert(
             resolved.identity.clone(),
-            (resolved, write.tool_call_id.clone()),
+            (resolved, write.tool_call_id.clone(), write.turn_id.clone()),
         );
     }
 
@@ -271,7 +271,7 @@ pub fn prepare_conversation_artifacts_gated(
         }
     };
     let mut commits = Vec::new();
-    for (identity, (resolved, tool_call_id)) in latest {
+    for (identity, (resolved, tool_call_id, turn_id)) in latest {
         let full_path = resolved.source_root.join(&resolved.identity);
         let submission_id = match submission_id() {
             Ok(id) => id,
@@ -318,9 +318,22 @@ pub fn prepare_conversation_artifacts_gated(
             {
                 continue;
             }
-            match gate.stage_with(
+            let turn_revision =
+                session.submission_revisions.get(&turn_id).copied();
+            let contract_revision = session
+                .work_contract
+                .as_ref()
+                .map(|contract| contract.revision.max(1));
+            let expected_revision = match (turn_revision, contract_revision) {
+                (Some(t), Some(c)) => Some(t.max(c)),
+                (Some(t), None) => Some(t),
+                (None, Some(c)) => Some(c),
+                (None, None) => None,
+            };
+            match gate.stage_with_revision(
                 &full_path,
                 false,
+                expected_revision,
                 now_ms(),
                 |checked_bytes| {
                     let expected_hash =
@@ -1056,6 +1069,71 @@ mod tests {
             store.diagnostics().unwrap(),
             Vec::<String>::new(),
             "normal delivery-gate skips must not trigger the Library catalog error banner"
+        );
+    }
+
+    #[test]
+    fn gated_backfill_blocks_stale_rev1_artifact_after_contract_evolves_to_rev2()
+     {
+        let scratch = Scratch::new("gated-stale-rev");
+        let workspace = scratch.0.join("home");
+        fs::create_dir_all(&workspace).unwrap();
+        let deck_path = workspace.join("deck.pptx");
+        let deck_bytes = b"PK\x03\x04stale-rev1-deck";
+        fs::write(&deck_path, deck_bytes).unwrap();
+
+        let store = ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
+        let gate = DeliveryStore::new(scratch.0.join("delivery"));
+        gate.record_report_bytes_with_revision(
+            &deck_path,
+            deck_bytes,
+            Vec::new(),
+            Some(1),
+            1_000,
+        )
+        .unwrap();
+
+        let mut record = session(
+            "session-stale-backfill",
+            &workspace,
+            SessionOrigin::Home,
+            vec![
+                user_message("submission-00000000000000000000000000000001"),
+                call_message("c-deck", "write_file", "deck.pptx"),
+                result_message("c-deck", "write_file", false),
+            ],
+        );
+        // Active contract has evolved to revision 2 (even if submission_revisions
+        // is missing or recorded rev=1 for the earlier turn).
+        record.work_contract = Some(flowy_agent_core::WorkContract {
+            revision: 2,
+            ..flowy_agent_core::WorkContract::default()
+        });
+        let writes = parse_successful_writes(&record.messages);
+        let commits = prepare_conversation_artifacts_gated(
+            &store,
+            Some(&gate),
+            &record,
+            &writes,
+        );
+        assert!(
+            commits.is_empty(),
+            "stale rev=1 artifact must not sneak into Library once work_contract is rev=2"
+        );
+        // Also when submission_revisions explicitly maps the turn to rev=1.
+        record.submission_revisions.insert(
+            "submission-00000000000000000000000000000001".to_owned(),
+            1,
+        );
+        let commits_tagged = prepare_conversation_artifacts_gated(
+            &store,
+            Some(&gate),
+            &record,
+            &writes,
+        );
+        assert!(
+            commits_tagged.is_empty(),
+            "rev=1 turn artifact must stay blocked when contract evolved to rev=2"
         );
     }
 }

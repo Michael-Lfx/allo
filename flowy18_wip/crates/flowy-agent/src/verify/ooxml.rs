@@ -218,7 +218,11 @@ pub(super) fn verify_deck_file_with_shapes(
         .map(|(_, text)| text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    active_contract.check_pinned_facts(&combined_text, &mut report.issues);
+    active_contract.check_pinned_facts_for_path(
+        path,
+        &combined_text,
+        &mut report.issues,
+    );
     report.ok = report.issues.is_empty();
     Ok(VerifiedDeck {
         report,
@@ -397,7 +401,7 @@ pub(super) fn verify_docx_file(
         evaluate_pairs(&bookmarks, expected, false, &mut issues);
     }
     if let Some(contract) = contract {
-        contract.check_pinned_facts(&all_text, &mut issues);
+        contract.check_pinned_facts_for_path(path, &all_text, &mut issues);
     }
     Ok(VerifiedArtifact {
         report: report_for(path, "bookmark", issues),
@@ -772,7 +776,7 @@ pub(super) fn verify_xlsx_file(
         }
     }
     if let Some(contract) = contract {
-        contract.check_pinned_facts(&all_text, &mut issues);
+        contract.check_pinned_facts_for_path(path, &all_text, &mut issues);
     }
     Ok(VerifiedArtifact {
         report: report_for(path, "row_key", issues),

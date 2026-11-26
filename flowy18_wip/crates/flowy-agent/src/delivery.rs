@@ -49,6 +49,7 @@ pub enum BlockReason {
     MissingReport,
     VerificationFailed,
     HashMismatch,
+    ContractRevisionMismatch,
 }
 
 impl BlockReason {
@@ -58,6 +59,9 @@ impl BlockReason {
             Self::MissingReport => "DELIVERY_NOT_VERIFIED",
             Self::VerificationFailed => "DELIVERY_VERIFICATION_FAILED",
             Self::HashMismatch => "DELIVERY_ARTIFACT_CHANGED",
+            Self::ContractRevisionMismatch => {
+                "DELIVERY_CONTRACT_REVISION_MISMATCH"
+            }
         }
     }
 }
@@ -142,6 +146,25 @@ enum AuditEvent {
         artifact_hash: String,
         at_ms: u64,
     },
+}
+
+/// Check whether a persisted report's `contract_revision` is stale relative to
+/// the turn's `expected_revision`.
+///
+/// Any explicitly tagged report whose revision differs from `expected` is
+/// blocked. Legacy/untagged reports (`None`) remain compatible with initial
+/// `rev = 1` turns, but are blocked as soon as the contract evolves (`>= 2`).
+const fn contract_revision_mismatched(
+    report_revision: Option<u32>,
+    expected_revision: Option<u32>,
+) -> bool {
+    let Some(expected) = expected_revision else {
+        return false;
+    };
+    match report_revision {
+        Some(actual) => actual != expected,
+        None => expected > 1,
+    }
 }
 
 /// Read a regular file into memory with strict safety bounds:
@@ -760,6 +783,17 @@ impl DeliveryStore {
     /// Check a report without sending anything. `None` means the artifact is
     /// clear to leave; `Some(reason)` must block it.
     pub fn check(&self, artifact: &Path) -> io::Result<Option<BlockReason>> {
+        self.check_for_revision(artifact, None)
+    }
+
+    /// Check a report against both artifact bytes and an optional expected
+    /// `WorkContract` revision. A passing report recorded under an older
+    /// contract revision is blocked with [`BlockReason::ContractRevisionMismatch`].
+    pub fn check_for_revision(
+        &self,
+        artifact: &Path,
+        expected_revision: Option<u32>,
+    ) -> io::Result<Option<BlockReason>> {
         let bytes =
             read_regular_file_bounded(artifact, crate::MAX_ARTIFACT_BYTES)?;
         let artifact_hash = hash_bytes(&bytes);
@@ -769,6 +803,14 @@ impl DeliveryStore {
             Some(report) if !report.ok => Some(BlockReason::VerificationFailed),
             Some(report) if report.artifact_hash != artifact_hash => {
                 Some(BlockReason::HashMismatch)
+            }
+            Some(report)
+                if contract_revision_mismatched(
+                    report.contract_revision,
+                    expected_revision,
+                ) =>
+            {
+                Some(BlockReason::ContractRevisionMismatch)
             }
             Some(_) => None,
         })
@@ -787,8 +829,30 @@ impl DeliveryStore {
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
+        self.stage_with_revision(artifact, allow_override, None, now_ms, stage)
+    }
+
+    /// Phase-1 staging gate enforcing `expected_contract_revision` when set.
+    pub fn stage_with_revision<T, F>(
+        &self,
+        artifact: &Path,
+        allow_override: bool,
+        expected_contract_revision: Option<u32>,
+        now_ms: u64,
+        stage: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
         Ok(self
-            .stage_with_hash(artifact, allow_override, now_ms, true, stage)?
+            .stage_with_hash(
+                artifact,
+                allow_override,
+                expected_contract_revision,
+                now_ms,
+                true,
+                stage,
+            )?
             .0)
     }
 
@@ -796,6 +860,7 @@ impl DeliveryStore {
         &self,
         artifact: &Path,
         allow_override: bool,
+        expected_contract_revision: Option<u32>,
         now_ms: u64,
         abort_on_stage_error: bool,
         stage: F,
@@ -819,6 +884,14 @@ impl DeliveryStore {
             Some(report) if !report.ok => Some(BlockReason::VerificationFailed),
             Some(report) if report.artifact_hash != artifact_hash => {
                 Some(BlockReason::HashMismatch)
+            }
+            Some(report)
+                if contract_revision_mismatched(
+                    report.contract_revision,
+                    expected_contract_revision,
+                ) =>
+            {
+                Some(BlockReason::ContractRevisionMismatch)
             }
             Some(_) => None,
         };
@@ -945,6 +1018,7 @@ impl DeliveryStore {
         let (mut result, artifact_hash) = self.stage_with_hash(
             artifact,
             allow_override,
+            None,
             now_ms,
             false,
             send,
@@ -985,10 +1059,35 @@ impl DeliveryStore {
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
+        self.stage_override_for_report_with_revision(
+            artifact,
+            expected_report_id,
+            None,
+            now_ms,
+            stage,
+        )
+    }
+
+    /// Revision-aware variant of [`Self::stage_override_for_report`] ensuring
+    /// a stale `ok == true` report from an older `WorkContract` revision is
+    /// audited with `DeliverBlocked` + `DeliverOverride` (`override_used = true`)
+    /// rather than bypassing silently.
+    pub fn stage_override_for_report_with_revision<T, F>(
+        &self,
+        artifact: &Path,
+        expected_report_id: &str,
+        expected_contract_revision: Option<u32>,
+        now_ms: u64,
+        stage: F,
+    ) -> io::Result<DeliveryResult<T>>
+    where
+        F: FnOnce(&[u8]) -> io::Result<T>,
+    {
         Ok(self
             .stage_override_for_report_with_hash(
                 artifact,
                 expected_report_id,
+                expected_contract_revision,
                 now_ms,
                 true,
                 stage,
@@ -1000,6 +1099,7 @@ impl DeliveryStore {
         &self,
         artifact: &Path,
         expected_report_id: &str,
+        expected_contract_revision: Option<u32>,
         now_ms: u64,
         abort_on_stage_error: bool,
         stage: F,
@@ -1064,16 +1164,26 @@ impl DeliveryStore {
             ));
         }
         let report = report.expect("report checked above");
-        let override_used = !report.ok;
-        let blocked = override_used.then_some(BlockReason::VerificationFailed);
-        if override_used {
+        let revision_mismatched = contract_revision_mismatched(
+            report.contract_revision,
+            expected_contract_revision,
+        );
+        let blocked = if !report.ok {
+            Some(BlockReason::VerificationFailed)
+        } else if revision_mismatched {
+            Some(BlockReason::ContractRevisionMismatch)
+        } else {
+            None
+        };
+        let override_used = blocked.is_some();
+        if let Some(reason) = blocked {
             Self::append_json(
                 &self.events_path(),
                 &AuditEvent::DeliverBlocked {
                     delivery_id: delivery_id.clone(),
                     artifact_path: path_display.clone(),
                     artifact_hash: artifact_hash.clone(),
-                    code: BlockReason::VerificationFailed.code().to_owned(),
+                    code: reason.code().to_owned(),
                     issues,
                     at_ms: now_ms,
                 },
@@ -1085,7 +1195,7 @@ impl DeliveryStore {
                     report_id: report_id.clone().unwrap_or_default(),
                     artifact_path: path_display.clone(),
                     artifact_hash: artifact_hash.clone(),
-                    code: BlockReason::VerificationFailed.code().to_owned(),
+                    code: reason.code().to_owned(),
                     at_ms: now_ms,
                 },
             )?;
@@ -1151,6 +1261,7 @@ impl DeliveryStore {
             .stage_override_for_report_with_hash(
                 artifact,
                 expected_report_id,
+                None,
                 now_ms,
                 false,
                 send,
@@ -1701,6 +1812,86 @@ mod tests {
         );
         // A valid report recorded AFTER the corruption still succeeds.
         assert!(store.latest_report(&other).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_contract_revision_report_is_blocked_at_delivery_gate() {
+        let root = scratch("stale-contract-rev");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK rev1-verified");
+        let report = store
+            .record_report_bytes_with_revision(
+                &path,
+                b"PK rev1-verified",
+                Vec::new(),
+                Some(1),
+                1_000,
+            )
+            .unwrap();
+        assert_eq!(report.contract_revision, Some(1));
+        assert!(report.ok);
+        // A rev=1 ok=true report passes for rev=1 and legacy None checks, but
+        // is hard-blocked once the contract advances to rev=2.
+        assert_eq!(store.check_for_revision(&path, Some(1)).unwrap(), None);
+        assert_eq!(store.check(&path).unwrap(), None);
+        let blocked = store.check_for_revision(&path, Some(2)).unwrap();
+        assert_eq!(blocked, Some(BlockReason::ContractRevisionMismatch));
+        assert_eq!(
+            blocked.unwrap().code(),
+            "DELIVERY_CONTRACT_REVISION_MISMATCH"
+        );
+        let (calls, send) = counting_sender();
+        let staged = store
+            .stage_with_revision(&path, false, Some(2), 2_000, send)
+            .unwrap();
+        assert!(!staged.outcome.delivered);
+        assert_eq!(
+            staged.outcome.blocked,
+            Some(BlockReason::ContractRevisionMismatch)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let events = std::fs::read_to_string(store.events_path()).unwrap();
+        assert!(events.contains("DELIVERY_CONTRACT_REVISION_MISMATCH"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stage_override_for_stale_ok_report_logs_blocked_and_override_audit() {
+        let root = scratch("override-stale-rev");
+        let store = DeliveryStore::new(root.join("delivery"));
+        let path = artifact(&root, b"PK rev1-ok-override");
+        let report = store
+            .record_report_bytes_with_revision(
+                &path,
+                b"PK rev1-ok-override",
+                Vec::new(),
+                Some(1),
+                1_000,
+            )
+            .unwrap();
+        assert!(report.ok);
+
+        let (calls, send) = counting_sender();
+        let staged = store
+            .stage_override_for_report_with_revision(
+                &path,
+                &report.id,
+                Some(2),
+                2_000,
+                send,
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(staged.outcome.override_used);
+        assert_eq!(
+            staged.outcome.blocked,
+            Some(BlockReason::ContractRevisionMismatch)
+        );
+        let events = std::fs::read_to_string(store.events_path()).unwrap();
+        assert!(events.contains("\"deliver_blocked\""));
+        assert!(events.contains("\"deliver_override\""));
+        assert!(events.contains("DELIVERY_CONTRACT_REVISION_MISMATCH"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

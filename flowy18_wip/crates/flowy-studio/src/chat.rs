@@ -27,6 +27,8 @@ impl crate::panel::StudioPanel {
                     ),
                 )
             })
+            .child(self.pending_cards_slot(cx))
+            .child(self.stop_handoff_slot(cx))
             .child(self.bg_tasks_dock_slot(cx))
             .child(self.composer.clone())
     }

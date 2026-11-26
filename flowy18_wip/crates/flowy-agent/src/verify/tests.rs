@@ -900,3 +900,490 @@ fn round4_laoyeye_adversarial_contract_and_pptx_preflight_cases() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn e1_regression_base_spaced_cjk_date_and_clean_filename() {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    assert_eq!(base.min_slides, Some(3));
+    assert_eq!(
+        base.pinned_facts.get("quote").map(String::as_str),
+        Some("30万")
+    );
+    assert_eq!(
+        base.pinned_facts.get("date").map(String::as_str),
+        Some("2026-11-27"),
+        "CJK spaces around 年/月/日 must still extract date"
+    );
+    assert_eq!(
+        base.expected_filenames,
+        vec!["青禾项目报价汇报.pptx".to_owned()],
+        "leading Chinese phrasing before filename must be stripped cleanly"
+    );
+}
+
+#[test]
+fn e1_regression_case1_and_case2_pending_proposal_never_overwrites_confirmed_quote()
+ {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    // CASE 1: meeting record with "尚待确认"
+    let c1 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "记一下刚才和客户沟通的会议记录：客户希望报价调整为 35 万元，尚待确认。",
+    );
+    let mut issues1 = Vec::new();
+    c1.check_pinned_facts(
+        "青禾项目报价表 总价 30 万元 日期 2026-11-27",
+        &mut issues1,
+    );
+    assert!(
+        issues1.is_empty(),
+        "CASE 1 pending proposal must not overwrite confirmed 30万 quote: facts={:?} issues={issues1:?}",
+        c1.pinned_facts
+    );
+
+    // CASE 2: spoken proposal with "先别改正式文件"
+    let c2 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "客户口头说报价 35 万元，先别改正式文件，先记进会议纪要归档。",
+    );
+    let mut issues2 = Vec::new();
+    c2.check_pinned_facts(
+        "青禾项目报价表 总价 30 万元 日期 2026-11-27",
+        &mut issues2,
+    );
+    assert!(
+        issues2.is_empty(),
+        "CASE 2 spoken proposal must not overwrite confirmed 30万 quote: facts={:?} issues={issues2:?}",
+        c2.pinned_facts
+    );
+
+    // CASE 3: exact Qinghe phrasing "可考虑调整为"
+    let c3 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "客户会议纪要：客户口头提到后续可考虑调整为 35 万元，但目前先按原方案归档记录。",
+    );
+    assert_eq!(
+        c3.pinned_facts.get("quote").map(String::as_str),
+        Some("30万")
+    );
+}
+
+#[test]
+fn e1_regression_case4_ppt_only_date_update_preserves_xlsx() {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    let c4 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "只把青禾项目报价汇报.pptx 的汇报日期改成 2026 年 11 月 30 日，报价表不动",
+    );
+    let mut ppt_ok = Vec::new();
+    c4.check_pinned_facts(
+        "青禾项目报价汇报 报价 30 万元 日期 2026-11-30",
+        &mut ppt_ok,
+    );
+    assert!(
+        ppt_ok.is_empty(),
+        "PPT updated to 2026-11-30 must pass: {ppt_ok:?}"
+    );
+    let mut ppt_stale = Vec::new();
+    c4.check_pinned_facts(
+        "青禾项目报价汇报 报价 30 万元 日期 2026-11-27",
+        &mut ppt_stale,
+    );
+    assert!(
+        ppt_stale.iter().any(|i| i.field == "brief_date"),
+        "stale 2026-11-27 on updated PPT must be caught (date must be extracted despite CJK spaces): facts={:?}",
+        c4.pinned_facts
+    );
+}
+
+#[test]
+fn e1_regression_case5_twin_pptx_clean_names_and_reject_wrong_filename() {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    let c5 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+    );
+    assert_eq!(
+        c5.expected_filenames,
+        vec![
+            "青禾项目报价汇报.pptx".to_owned(),
+            "青禾项目内部讨论稿.pptx".to_owned()
+        ],
+        "twin PPT filenames must be cleanly stripped without Chinese verb prefixes"
+    );
+    let mut wrong_issues = Vec::new();
+    c5.check_filename(
+        Path::new("totally_wrong_file.pptx"),
+        "pptx",
+        &mut wrong_issues,
+    );
+    assert!(
+        wrong_issues.iter().any(|i| i.field == "brief_filename"),
+        "totally_wrong_file.pptx must NEVER slip past multi-pptx filename check: {wrong_issues:?}"
+    );
+}
+
+#[test]
+fn e1_regression_case6_twin_pptx_split_dates_isolated_per_object() {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    let c5 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+    );
+    let c6 = BriefContract::evolve(
+        Some(&c5.to_work_contract()),
+        "仅把青禾项目报价汇报.pptx 的汇报日期改为 2026-12-02，青禾项目内部讨论稿.pptx 仍保持 2026-11-30",
+    );
+    let mut orig_issues = Vec::new();
+    c6.check_pinned_facts(
+        "青禾项目报价汇报 报价 30 万元 汇报日期 2026-12-02",
+        &mut orig_issues,
+    );
+    assert!(
+        orig_issues.is_empty(),
+        "CASE 6: original PPT with 2026-12-02 must NOT be rejected as brief_date mismatch: {orig_issues:?}"
+    );
+}
+
+#[test]
+fn e1_regression_case7_ambiguous_quote_edit_must_not_corrupt_untouched_deliverables()
+ {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    let c5 = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+    );
+    let c7 = BriefContract::evolve(
+        Some(&c5.to_work_contract()),
+        "把刚才那份的报价改成 32 万元。",
+    );
+    let mut untouched_issues = Vec::new();
+    c7.check_pinned_facts("青禾项目报价表 报价 30 万元", &mut untouched_issues);
+    assert!(
+        untouched_issues.is_empty(),
+        "CASE 7: ambiguous edit without target must NOT globally overwrite 30万 quote: facts={:?} issues={untouched_issues:?}",
+        c7.pinned_facts
+    );
+}
+
+#[test]
+fn multi_object_per_path_isolation_and_reply_to_object_fast_path() {
+    let base = BriefContract::from_brief(
+        "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期是 2026 年 11 月 27 日",
+    );
+    let c_rec = BriefContract::evolve(
+        Some(&base.to_work_contract()),
+        "会议记录：客户口头提到报价可考虑 35 万元，尚待确认，先别改正式文件。",
+    );
+    let c_twin = BriefContract::evolve(
+        Some(&c_rec.to_work_contract()),
+        "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+    );
+    let c_split = BriefContract::evolve(
+        Some(&c_twin.to_work_contract()),
+        "仅把青禾项目报价汇报.pptx 的汇报日期改为 2026-12-02，青禾项目内部讨论稿.pptx 仍保持 2026-11-30",
+    );
+
+    // Per-path check: xlsx keeps 2026-11-27, PPT#1 expects 2026-12-02, PPT#2 expects 2026-11-30.
+    let mut xlsx_issues = Vec::new();
+    c_split.check_pinned_facts_for_path(
+        Path::new("青禾项目报价表.xlsx"),
+        "报价 30 万元 日期 2026-11-27",
+        &mut xlsx_issues,
+    );
+    assert!(
+        xlsx_issues.is_empty(),
+        "xlsx must keep 2026-11-27: {xlsx_issues:?}"
+    );
+
+    let mut ppt1_ok = Vec::new();
+    c_split.check_pinned_facts_for_path(
+        Path::new("青禾项目报价汇报.pptx"),
+        "报价 30 万元 日期 2026-12-02",
+        &mut ppt1_ok,
+    );
+    assert!(ppt1_ok.is_empty(), "PPT#1 expects 2026-12-02: {ppt1_ok:?}");
+
+    let mut ppt1_stale = Vec::new();
+    c_split.check_pinned_facts_for_path(
+        Path::new("青禾项目报价汇报.pptx"),
+        "报价 30 万元 日期 2026-11-30",
+        &mut ppt1_stale,
+    );
+    assert!(
+        ppt1_stale.iter().any(|i| i.field == "brief_date"),
+        "PPT#1 with PPT#2's date must fail: {ppt1_stale:?}"
+    );
+
+    let mut ppt2_ok = Vec::new();
+    c_split.check_pinned_facts_for_path(
+        Path::new("青禾项目内部讨论稿.pptx"),
+        "报价 30 万元 日期 2026-11-30",
+        &mut ppt2_ok,
+    );
+    assert!(ppt2_ok.is_empty(), "PPT#2 expects 2026-11-30: {ppt2_ok:?}");
+
+    // Ambiguous quote mutation without reply_to_object_id produces PendingCard::Disambiguation
+    // listing all 3 writable deliverables and excluding the Record object.
+    let wc = c_split.to_work_contract();
+    let ambig = resolve_contract_sync(
+        Some(&wc),
+        "把刚才那份的报价改成 32 万元。",
+        None,
+        2_000,
+    );
+    let ResolveOutcome::Ambiguous {
+        card:
+            flowy_agent_core::PendingCard::Disambiguation {
+                options,
+                impact_boundary,
+                allow_multi,
+                ..
+            },
+        used_llm,
+    } = ambig
+    else {
+        panic!("expected Ambiguous disambiguation card: {ambig:?}");
+    };
+    assert!(!used_llm);
+    assert!(allow_multi);
+    assert_eq!(
+        options.len(),
+        3,
+        "2 PPTs + 1 XLSX, Record excluded: {options:?}"
+    );
+    assert!(impact_boundary.contains("只改所选"));
+    assert!(options.iter().all(|o| !o.anchor_summary.is_empty()));
+
+    // Explicit `reply_to_object_id` fast-path updates ONLY that object (0ms, no disambiguation).
+    let ppt1_id = options
+        .iter()
+        .find(|o| o.label == "青禾项目报价汇报.pptx")
+        .unwrap()
+        .object_id
+        .clone();
+    let fast = resolve_contract_sync(
+        Some(&wc),
+        "把刚才那份的报价改成 32 万元。",
+        Some(&ppt1_id),
+        2_001,
+    );
+    let ResolveOutcome::Resolved {
+        contract: updated,
+        target_object_ids,
+        used_llm,
+    } = fast
+    else {
+        panic!("reply_to_object_id must take 0ms fast-path: {fast:?}");
+    };
+    assert!(!used_llm);
+    assert_eq!(target_object_ids, vec![ppt1_id.clone()]);
+    let updated_wc = updated.to_work_contract();
+    assert_eq!(
+        updated_wc
+            .confirmed_facts_for(&ppt1_id)
+            .get("quote")
+            .map(String::as_str),
+        Some("32万")
+    );
+    let ppt2_id = options
+        .iter()
+        .find(|o| o.label == "青禾项目内部讨论稿.pptx")
+        .unwrap()
+        .object_id
+        .clone();
+    assert_eq!(
+        updated_wc
+            .confirmed_facts_for(&ppt2_id)
+            .get("quote")
+            .map(String::as_str),
+        Some("30万"),
+        "sibling deliverable must stay untouched at 30万"
+    );
+}
+
+#[test]
+fn contract_and_resolver_handle_utf8_dots_stale_overrides_all_scope_mixed_clauses_and_records()
+ {
+    // 1. Trailing dots before extension on multibyte UTF-8 stems must never panic.
+    let dotted =
+        BriefContract::from_brief("请做一份青禾方案..pptx 和 foo..pptx");
+    assert!(
+        dotted
+            .expected_filenames
+            .iter()
+            .any(|n| n == "青禾方案.pptx"),
+        "expected clean UTF-8 stem: {:?}",
+        dotted.expected_filenames
+    );
+    assert!(
+        dotted.expected_filenames.iter().any(|n| n == "foo.pptx"),
+        "expected clean ASCII stem: {:?}",
+        dotted.expected_filenames
+    );
+
+    // 2. First-turn pending proposal must stay isolated in a Record, not pinned_facts.
+    let first_proposal = resolve_contract_sync(
+        None,
+        "会议记录：客户口头提到报价 35 万元，尚待确认，先别改正式文件。",
+        None,
+        10,
+    );
+    let ResolveOutcome::Resolved {
+        contract: rec_only, ..
+    } = first_proposal
+    else {
+        panic!("first-turn proposal must resolve into a Record");
+    };
+    assert!(
+        rec_only.pinned_facts.is_empty(),
+        "pending proposal must not leak into pinned_facts on turn 1"
+    );
+    assert!(
+        rec_only
+            .objects
+            .iter()
+            .any(|o| o.kind == flowy_agent_core::TrackedObjectKind::Record)
+    );
+
+    // 3. Single-deliverable stale override must be cleared by subsequent global update.
+    let single = BriefContract::from_brief("做一份青禾汇报.pptx，报价 30 万元");
+    let targeted = BriefContract::evolve(
+        Some(&single.to_work_contract()),
+        "把青禾汇报.pptx 的报价改成 32 万元",
+    );
+    let global_next = BriefContract::evolve(
+        Some(&targeted.to_work_contract()),
+        "报价改成 35 万元",
+    );
+    let global_wc = global_next.to_work_contract();
+    let single_id = &global_wc.objects[0].object_id;
+    assert_eq!(
+        global_wc
+            .confirmed_facts_for(single_id)
+            .get("quote")
+            .map(String::as_str),
+        Some("35万"),
+        "stale per-object override must not shadow subsequent global update"
+    );
+
+    // 4. "全部文件的汇报日期..." must update BOTH xlsx and pptx (not get hijacked by "汇报").
+    let pair = BriefContract::from_brief(
+        "做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+    );
+    let all_date = BriefContract::evolve(
+        Some(&pair.to_work_contract()),
+        "全部文件的汇报日期都改成 2026-12-01",
+    );
+    let all_wc = all_date.to_work_contract();
+    for obj in all_wc.writable_deliverables() {
+        assert_eq!(
+            all_wc
+                .confirmed_facts_for(&obj.object_id)
+                .get("date")
+                .map(String::as_str),
+            Some("2026-12-01"),
+            "all-objects date update must reach {}",
+            obj.object_id
+        );
+    }
+
+    // 5. Mixed clause ("仅把 A 日期改 12-02，报价改成 32 万") must NOT silently drop the unscoped quote.
+    let mixed = resolve_contract_sync(
+        Some(&all_wc),
+        "仅把青禾项目报价汇报.pptx 的汇报日期改为 2026-12-02，报价改成 32 万元",
+        None,
+        20,
+    );
+    let ResolveOutcome::Resolved {
+        contract: mixed_c, ..
+    } = mixed
+    else {
+        panic!(
+            "mixed clause on 1 pptx + 1 xlsx should apply unscoped quote: {mixed:?}"
+        );
+    };
+    assert_eq!(
+        mixed_c.pinned_facts.get("quote").map(String::as_str),
+        Some("32万"),
+        "unscoped quote in second clause must not be dropped"
+    );
+
+    // 6. Ambiguous prompt that also introduces a new file must build options from persisted `prev`
+    //    so selecting any option succeeds instead of failing with `card_selection_invalid`.
+    let with_twin_ambig = resolve_contract_sync(
+        Some(&all_wc),
+        "另做一份青禾内部稿.pptx，把刚才那份的报价改成 32 万元",
+        None,
+        30,
+    );
+    if let ResolveOutcome::Ambiguous {
+        card: flowy_agent_core::PendingCard::Disambiguation { options, .. },
+        ..
+    } = with_twin_ambig
+    {
+        for opt in &options {
+            assert!(
+                super::apply_disambiguation_selection(
+                    &all_wc,
+                    "把刚才那份的报价改成 32 万元",
+                    std::slice::from_ref(&opt.object_id),
+                    31,
+                )
+                .is_ok(),
+                "every option on disambiguation card must be valid against persisted prev: {}",
+                opt.object_id
+            );
+        }
+    } else {
+        panic!("expected Ambiguous for demonstrative mutation");
+    }
+
+    // 7. Revoking date/quote must NOT touch Record archive overrides, and invalid
+    //    `reply_to_object_id` must fail closed to Ambiguous instead of overwriting globally.
+    let with_rec = BriefContract::evolve(
+        Some(&all_wc),
+        "会议记录：客户口头说报价 35 万元，日期 2026-12-05，尚待确认。",
+    );
+    let rec_wc = with_rec.to_work_contract();
+    let rec_id = rec_wc
+        .objects
+        .iter()
+        .find(|o| o.kind == flowy_agent_core::TrackedObjectKind::Record)
+        .unwrap()
+        .object_id
+        .clone();
+    let revoked = BriefContract::evolve(Some(&rec_wc), "去掉报价，去掉日期");
+    let rec_after = revoked
+        .objects
+        .iter()
+        .find(|o| o.object_id == rec_id)
+        .unwrap();
+    assert_eq!(
+        rec_after.overrides.get("quote").map(|f| f.value.as_str()),
+        Some("35万"),
+        "Record archive overrides must survive deliverable fact revocation"
+    );
+    let bad_reply = resolve_contract_sync(
+        Some(&rec_wc),
+        "把报价改成 32 万元",
+        Some(&rec_id),
+        40,
+    );
+    assert!(
+        matches!(bad_reply, ResolveOutcome::Ambiguous { .. }),
+        "targeting a Record via reply_to_object_id must fail closed to Ambiguous"
+    );
+}

@@ -503,15 +503,16 @@ pub fn centered_modal_sheet(
 
     let animated_panel =
         if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
-            gpui::AnimationExt::with_animation(
+            gpui::AnimationExt::with_spring(
                 panel,
-                (config.panel_id, "enter"),
-                gpui::Animation::new(crate::motion::MODERATE)
-                    .with_easing(crate::motion::out_quint()),
-                |el, delta| {
-                    el.opacity(delta)
+                (config.panel_id, "spring"),
+                gpui::SpringAnimation::new(crate::motion::spring_sheet())
+                    .to(1.0_f32)
+                    .from(0.0_f32),
+                |el, phase| {
+                    el.opacity(phase.clamp(0.0, 1.0))
                         .relative()
-                        .top(px(crate::motion::ENTER_OFFSET * (1.0 - delta)))
+                        .top(px(16.0 * (1.0 - phase)))
                 },
             )
             .into_any_element()
@@ -519,9 +520,21 @@ pub fn centered_modal_sheet(
             panel.into_any_element()
         };
 
-    modal_layer(config.layer_id, theme, ui, animated_panel)
-        .p(px(24.))
+    let layer = modal_layer(config.layer_id.clone(), theme, ui, animated_panel)
+        .p(px(24.));
+    if crate::motion::travel_scale(theme.motion_policy()) > 0.0 {
+        let scrim = theme.scrim();
+        gpui::AnimationExt::with_animation(
+            layer,
+            (config.layer_id, "scrim"),
+            gpui::Animation::new(crate::motion::FAST)
+                .with_easing(crate::motion::entrance()),
+            move |el, delta| el.bg(scrim.opacity(delta)),
+        )
         .into_any_element()
+    } else {
+        layer.into_any_element()
+    }
 }
 
 /// Replacement for the retired `InteractiveElement::on_prepaint` hook.
@@ -798,6 +811,7 @@ fn popover_with_direction(
     let weak = ui.overlays.downgrade();
     let outside_scope = capture_pointer.then(|| id.clone());
     let validate_scope = id.clone();
+    let spring_id = SharedString::from(format!("{id}-spring"));
     let mut panel = div()
         .id(id)
         .key_context("FlowyPopover")
@@ -835,6 +849,40 @@ fn popover_with_direction(
             );
         });
     });
+    let panel =
+        if crate::motion::travel_scale(ui.snapshot(cx).motion_policy()) > 0.0 {
+            if capture_pointer {
+                // Emerge from the trigger edge: `popover_above` rises up
+                // (`+8 -> 0`), downward `popover` drops down (`-8 -> 0`).
+                let offset_y = if above { 8.0_f32 } else { -8.0_f32 };
+                gpui::AnimationExt::with_spring(
+                    panel,
+                    spring_id,
+                    gpui::SpringAnimation::new(crate::motion::spring_snappy())
+                        .to(1.0_f32)
+                        .from(0.0_f32),
+                    move |el, phase| {
+                        el.opacity(phase.clamp(0.0, 1.0))
+                            .relative()
+                            .top(px(offset_y * (1.0 - phase)))
+                    },
+                )
+                .into_any_element()
+            } else {
+                // Hover tooltips / information popovers stay crisp and
+                // immediate: subtle opacity fade with zero spatial bounce.
+                gpui::AnimationExt::with_animation(
+                    panel,
+                    spring_id,
+                    gpui::Animation::new(std::time::Duration::from_millis(90))
+                        .with_easing(crate::motion::entrance()),
+                    |el, delta| el.opacity(delta.clamp(0.0, 1.0)),
+                )
+                .into_any_element()
+            }
+        } else {
+            panel.into_any_element()
+        };
     deferred(
         anchored()
             .anchor(if above && rtl {

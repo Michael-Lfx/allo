@@ -20,7 +20,7 @@
 //! it is written while a turn is running, and the index is rewritten at turn
 //! boundaries.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -763,13 +763,14 @@ impl AcceptanceQueue {
         Ok(true)
     }
 
-    /// Release any unexpired leases left behind by a crashed predecessor
-    /// process on single-instance cold boot (with 0 ms backoff) so they become
-    /// immediately retryable instead of falsely displaying `Running` until
-    /// lease expiry.
-    pub fn release_uncommitted_leases(
+    /// Cold-boot lease release that protects receipts bound to sessions in
+    /// `protected_sessions` (such as sessions suspended in
+    /// [`crate::TurnState::WaitingForUser`] awaiting a persisted user card), so
+    /// restarts never auto-requeue or drop user approval/disambiguation gates.
+    pub fn release_uncommitted_leases_except(
         &self,
         now_ms: u64,
+        protected_sessions: &BTreeSet<String>,
     ) -> io::Result<Vec<String>> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -777,6 +778,14 @@ impl AcceptanceQueue {
         let mut entries = Vec::new();
         let mut released_ids = Vec::new();
         for receipt in receipts {
+            let protected = receipt
+                .target_session_id
+                .as_deref()
+                .or(receipt.session_hint.as_deref())
+                .is_some_and(|sid| protected_sessions.contains(sid));
+            if protected {
+                continue;
+            }
             if receipt.completed_at_ms.is_none()
                 && !receipt.dead
                 && !receipt.cancelled
@@ -1078,7 +1087,7 @@ mod tests {
     fn empty_queue_reads_as_empty_not_missing() {
         let root = temp_root("empty");
         let queue = AcceptanceQueue::new(&root);
-        assert!(queue.pending().expect("pending").is_empty());
+        assert_eq!(queue.pending().expect("pending"), Vec::new());
         assert!(!AcceptanceQueue::path(&root).exists());
         fs::remove_dir_all(&root).expect("cleanup");
     }
@@ -1301,7 +1310,7 @@ mod tests {
                 .expect("give up")
         );
 
-        assert!(queue.pending_at(10_000_000).expect("pending").is_empty());
+        assert_eq!(queue.pending_at(10_000_000).expect("pending"), Vec::new());
         assert!(queue.all().expect("all")[0].dead);
         assert!(
             queue
@@ -1519,7 +1528,7 @@ mod tests {
                 .state_at(1_100),
             ReceiptState::Cancelled
         );
-        assert!(queue.pending_at(1_100).expect("pending").is_empty());
+        assert_eq!(queue.pending_at(1_100).expect("pending"), Vec::new());
         assert!(
             queue
                 .take(&queued.id, "attempt-1", 1_100, 500)
@@ -1775,7 +1784,7 @@ mod tests {
         );
 
         let released = queue
-            .release_uncommitted_leases(2_000)
+            .release_uncommitted_leases_except(2_000, &BTreeSet::new())
             .expect("release stale leases");
         assert_eq!(released, vec![r.id.clone()]);
         assert_eq!(
@@ -1783,6 +1792,24 @@ mod tests {
             ReceiptState::Retrying
         );
         assert_eq!(queue.pending_at(2_000).unwrap().len(), 1);
+
+        // A receipt bound to session B whose stale session_hint points to
+        // protected session A must still be released on cold boot.
+        let r2 = queue
+            .accept(Some("session-a"), "rebound to b", 2_100)
+            .expect("accept r2");
+        queue
+            .take(&r2.id, "att-r2", 2_110, 30_000)
+            .expect("take r2")
+            .expect("claimed r2");
+        queue
+            .bind(&r2.id, "att-r2", "session-b", "sub-r2", 2_120)
+            .expect("bind r2");
+        let protected = BTreeSet::from(["session-a".to_owned()]);
+        let released_r2 = queue
+            .release_uncommitted_leases_except(2_200, &protected)
+            .expect("release rebound r2");
+        assert_eq!(released_r2, vec![r2.id]);
         fs::remove_dir_all(&root).expect("cleanup");
     }
 }

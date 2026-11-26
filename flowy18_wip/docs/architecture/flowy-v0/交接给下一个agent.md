@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-25 修订 9.3 更新）**：**直接先读 §16（`feat/flowy-v0-rc@65772f857` 现役总账、`6+4` UI 契约与 Harness 四支柱偏差）**，再查 §5（环境与 UIA 踩坑实录）与 §15.4（仓库硬约束）。
-> §1–§15 保留 2026-11-24～25 演进底稿作历史与踩坑备查；凡状态描述与 §16 不一致处，**一律以 §16 为准**。
+> **现役唯一入口（2026-11-26 修订 9.7 更新）**：**直接先读 §18（PR #492 `feat/flowy-v1-integration` 现役总账、600 单测基线与下一 PR 顺延队列）**，再查 §5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§17 保留 2026-11-24～25 演进底稿作历史与踩坑备查；凡状态描述与 §18 不一致处，**一律以 §18 为准**。
 
 ---
 
@@ -559,3 +559,48 @@ cargo check -p flowy-app                                       # 0 errors (UI 10
 # 可选真云端 L3 回归（需本机 Flowy 登录态，消耗少量额度）：
 cargo test -p flowy-agent live_cloud_structured_l3_verifies_pass_and_flagged -- --ignored --nocapture
 ```
+
+---
+
+## 18. 2026-11-26 现役最新总账（PR #492 · `feat/flowy-v1-integration`，接管 §17）
+
+> **唯一最新真相（对应 `最终方案.md` 修订 9.7 §12.6 与 `证据.md` §11.33）**：基于最新 `origin/main@a12440075` 线性推进并提交 PR #492（仅改 `flowy18_wip/`，0 触碰根 workspace / `Cargo.toml` / `Cargo.lock` / `check-ui-contracts.mjs`）。已完成 **Super Agent 内核 S1–S3**、**极简私人助理 UI + 无歧义 Lucide SVG + 原生 GPUI 动效 + Windows 路径/真实技能修复** 以及 **5 笔对抗审查防膨胀加固**。
+
+### 18.1 新增与重点演进模块速查
+
+- **内核（`flowy-agent-core` / `flowy-agent` / `flowy-shell`）**：
+  - `flowy-agent/src/verify/{contract,resolver}.rs`：多对象 `WorkContract`（`Deliverable | Record`、`Confirmed / PendingProposal`）、混合按需消歧器（未接线 LLM 异步入口收进 `#[cfg(test)] mod llm_probe`）。
+  - `flowy-agent-core/src/{engine,session,loop_runner}.rs`：`TurnStatus::{Stopping, WaitingForUser}`、`PendingCard::{Disambiguation, ToolApproval}`、5 要素 `StopHandoffManifest`、三段式 `BranchHeartbeat`、按 turn 计数熔断与尾部成功重置、`Aborted` 优先。
+  - `flowy-agent-core/src/tools/shell_policy.rs`：引号感知 tokenizer + 结构化 `argv` 策略（覆盖 PowerShell 缩写与 `rm -Irf`），`Ask` 接 `before_tool_call` 持久化 `ToolApproval(args_hash)`。
+  - `flowy-agent/src/{delivery,publish_tool}.rs` + `handle/{mod,work,queue,guards,observer}.rs`：`expected_contract_revision` 强校验、`StagedIntentLog` 回滚（`Aborted | WaitingForUser`）、`CardAction::ResolveCard`、并发会话公平与多卡顺序确认；`flowy-shell` 已裁回 OTA-only。
+- **UI / Studio / App / i18n（`flowy-ui` / `flowy-studio` / `flowy-app` / `flowy-i18n`）**：
+  - `flowy-studio/src/ports/local_path.rs`：纯函数自顶向下 `VecDeque` Windows 重解析点安全校验。
+  - `flowy-studio/src/composer_add_menu.rs`：`+` 旋转菜单（工作目录、真实已装技能、连接器占位、自动检查开关）+ Active-Only 可移除胶囊。
+  - `flowy-studio/src/pending_card.rs`：消歧卡、工具审批卡、停机交接摘要（含 `verified_effects` 与本地化回退提示）与实时心跳条，带滚动限高、脱敏、`(session_id, card_id)` 锁与 `catch_unwind`。
+  - `flowy-ui/src/{icons,motion,overlays,button}.rs` + `assets/icons/{panel-right,file-text,arrow-up,plug}.svg` + `LICENSES.md`：无歧义 Lucide SVG、`Icon` GPU 变换与叶级 `with_spring`；`flowy-app/src/app/{mod,skills,conversation_actions}.rs` 修硬编码 `set_reduce_motion(true)` 与真实 `skill_catalog()`。
+  - `flowy-i18n/locales/*.json`（23 语种）：全量去 AI 味重写，891 键严格对称。
+
+### 18.2 现役验证命令与最新基线（PR #492）
+
+```powershell
+# 在 flowy18_wip/ 下严格串行执行（禁止并发跑 cargo）：
+node scripts/check-ui-contracts.mjs --self-test               # 24/24 passed
+node scripts/check-ui-contracts.mjs                           # PASS
+cargo fmt --all -- --check                                    # 0 diff
+cargo clippy --locked -p flowy-ui -p flowy-i18n -p flowy-studio -p flowy-app -p flowy-agent-core -p flowy-agent -p flowy-shell -p flowy-skills --all-targets -- -D warnings  # 0 warning
+cargo test --locked -p flowy-agent-core                       # 112 passed (2 ignored)
+cargo test --locked -p flowy-shell                            # 1 passed
+cargo test --locked -p flowy-skills                           # 66 passed
+cargo test --locked -p flowy-i18n                             # 8 passed
+cargo test --locked -p flowy-ui                               # 45 passed (43 lib + 2 int)
+cargo test --locked -p flowy-studio                           # 110 passed
+cargo test --locked -p flowy-app                              # 51 passed
+cargo test --locked -p flowy-agent -- --test-threads=1        # 207 passed (3 ignored)
+# 合计 8 crate：600 passed / 0 failed（较 551 基线净增 +49）
+```
+
+### 18.3 下一 PR 接手优先级
+
+1. **S4（目录级 Workspace RWLock + Brief/权限双裁剪）**：将 `handle/queue.rs` 单槽串行锁升级为按规范化项目根路径并发 RWLock，并按子任务裁剪 Brief 与 `confined_to`。
+2. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：结合 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 在三端真机实测逃逸阻断后升为 `Enforced`。
+3. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。

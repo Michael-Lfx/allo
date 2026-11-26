@@ -25,11 +25,18 @@ impl StudioPanel {
     #[must_use]
     pub(crate) fn can_open_file_externally(path: &str) -> bool {
         flowy_agent::can_open_with_default_app(path)
-            && crate::ports::resolve_safe_local_file(path).is_some()
+            && crate::ports::resolve_safe_local_file(path).is_some_and(
+                |canon| {
+                    canon
+                        .to_str()
+                        .is_some_and(flowy_agent::can_open_with_default_app)
+                },
+            )
     }
 
     /// Opens `path` in the OS default application after verifying the
-    /// safe-extension allowlist and resolving a safe canonical local file path.
+    /// safe-extension allowlist before AND after resolving the canonical local
+    /// file path (closes TOCTOU symlink-to-executable swap windows).
     pub(crate) fn open_file_externally(
         &mut self,
         path: &str,
@@ -38,6 +45,11 @@ impl StudioPanel {
         let Some(safe_path) = flowy_agent::can_open_with_default_app(path)
             .then(|| crate::ports::resolve_safe_local_file(path))
             .flatten()
+            .filter(|canon| {
+                canon
+                    .to_str()
+                    .is_some_and(flowy_agent::can_open_with_default_app)
+            })
         else {
             self.emit_notice(Some("library.error.open"), cx);
             return;
@@ -69,6 +81,8 @@ impl StudioPanel {
         self.selected_skill = None;
         self.board_project_filter = None;
         self.retrying_receipts.clear();
+        self.pending_card_selected.clear();
+        self.resolving_cards.clear();
         self.retrying_delivery = None;
         self.close_all_popovers();
         self.flow_modal.close();
@@ -120,6 +134,7 @@ impl StudioPanel {
         }
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.agent.set_workspace_for_new_sessions(None);
         self.agent
@@ -231,7 +246,7 @@ impl StudioPanel {
 
     #[must_use]
     pub(crate) const fn is_model_menu_open(&self) -> bool {
-        matches!(self.popover, ActivePopover::ModelMenu { .. })
+        matches!(self.popover, ActivePopover::ModelMenu)
     }
 
     #[must_use]
@@ -240,13 +255,8 @@ impl StudioPanel {
     }
 
     #[must_use]
-    pub(crate) const fn is_workspace_menu_open(&self) -> bool {
-        matches!(self.popover, ActivePopover::WorkspaceMenu)
-    }
-
-    #[must_use]
-    pub(crate) const fn is_skill_menu_open(&self) -> bool {
-        matches!(self.popover, ActivePopover::SkillMenu)
+    pub(crate) const fn is_add_menu_open(&self) -> bool {
+        matches!(self.popover, ActivePopover::AddMenu)
     }
 
     pub(crate) fn cancel_task_target(
@@ -574,6 +584,13 @@ impl StudioPanel {
     ) {
         if self.installed_skills != skills {
             self.installed_skills = skills;
+            if let Some(selected) = &self.selected_skill {
+                self.selected_skill = self
+                    .installed_skills
+                    .iter()
+                    .find(|chip| chip.id == selected.id)
+                    .cloned();
+            }
             self.refresh_local_env();
             cx.notify();
         }

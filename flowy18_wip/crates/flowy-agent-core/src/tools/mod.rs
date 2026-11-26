@@ -23,6 +23,7 @@ pub use sandbox::{
     detect_sandbox_availability, linux_bwrap_args, macos_seatbelt_profile,
 };
 pub use shell_policy::{
-    SHELL_CREDENTIAL_ACCESS, SHELL_DESTRUCTIVE_HOST_OP, SHELL_PRIVACY_TAMPER,
-    SHELL_SYSTEM_TAMPER, ShellPolicyDecision, evaluate_shell_command,
+    SHELL_CONFIRM_REQUIRED, SHELL_CREDENTIAL_ACCESS, SHELL_DESTRUCTIVE_HOST_OP,
+    SHELL_PRIVACY_TAMPER, SHELL_SYSTEM_TAMPER, ShellPolicyDecision,
+    evaluate_shell_command,
 };

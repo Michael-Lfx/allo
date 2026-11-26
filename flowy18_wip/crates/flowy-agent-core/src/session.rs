@@ -65,6 +65,8 @@ pub enum TurnState {
     #[default]
     Idle,
     Running,
+    WaitingForUser,
+    Stopping,
     Completed,
     Stopped,
     Error {
@@ -75,8 +77,161 @@ pub enum TurnState {
 impl TurnState {
     #[must_use]
     pub const fn is_busy(&self) -> bool {
-        matches!(self, Self::Running)
+        matches!(self, Self::Running | Self::Stopping)
     }
+}
+
+/// Classification of one tracked object inside a [`WorkContract`].
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedObjectKind {
+    #[default]
+    Deliverable,
+    Record,
+}
+
+/// Confirmation status of a fact bound to a tracked object.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FactStatus {
+    #[default]
+    Confirmed,
+    PendingProposal,
+}
+
+/// One factual entry attached to a tracked object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FactEntry {
+    pub value: String,
+    #[serde(default)]
+    pub status: FactStatus,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
+/// Verification status tracked per object inside a [`WorkContract`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObjectVerifyState {
+    #[default]
+    Unverified,
+    Passed {
+        report_id: String,
+        revision: u32,
+    },
+    Failed {
+        report_id: String,
+    },
+    Overridden {
+        report_id: String,
+    },
+}
+
+/// One addressable object tracked within a session's [`WorkContract`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedObject {
+    pub object_id: String,
+    #[serde(default)]
+    pub kind: TrackedObjectKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    pub extension: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub anchor_summary: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, FactEntry>,
+    #[serde(default)]
+    pub verify_state: ObjectVerifyState,
+}
+
+impl TrackedObject {
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        self.filename
+            .clone()
+            .unwrap_or_else(|| format!("*.{}", self.extension))
+    }
+}
+
+/// One candidate choice presented on a [`PendingCard::Disambiguation`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisambiguationOption {
+    pub object_id: String,
+    pub label: String,
+    #[serde(default)]
+    pub anchor_summary: String,
+    #[serde(default)]
+    pub extension: String,
+}
+
+/// Durable interactive card persisted on a session while [`TurnState::WaitingForUser`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingCard {
+    Disambiguation {
+        card_id: String,
+        created_at_ms: u64,
+        prompt: String,
+        impact_boundary: String,
+        options: Vec<DisambiguationOption>,
+        #[serde(default)]
+        allow_multi: bool,
+    },
+    ToolApproval {
+        card_id: String,
+        created_at_ms: u64,
+        tool_name: String,
+        target_summary: String,
+        args_hash: String,
+        risk_reason: String,
+        command_preview: String,
+    },
+}
+
+impl PendingCard {
+    #[must_use]
+    pub fn card_id(&self) -> &str {
+        match self {
+            Self::Disambiguation { card_id, .. }
+            | Self::ToolApproval { card_id, .. } => card_id,
+        }
+    }
+}
+
+/// Five-element handoff manifest recorded once a cancelled turn finishes reaping.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopHandoffManifest {
+    #[serde(default)]
+    pub input_revision: u32,
+    #[serde(default)]
+    pub command_summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verified_effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_checks: Vec<String>,
+    #[serde(default)]
+    pub rollback_hint: String,
+}
+
+/// Three-part honest progress heartbeat tracked live per active session.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchHeartbeat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub current_action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_check_hint: Option<String>,
+    #[serde(default)]
+    pub awaiting_evidence: bool,
 }
 
 /// Durable terminal outcome recorded per `submission_id` inside a session.
@@ -127,9 +282,86 @@ pub struct WorkContract {
     /// Factual values pinned from user briefs (e.g. `"quote"`, `"date"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pinned_facts: BTreeMap<String, String>,
+    /// Multi-object deliverables and lightweight records with isolated overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<TrackedObject>,
 }
 
 impl WorkContract {
+    #[must_use]
+    pub fn find_object(&self, object_id: &str) -> Option<&TrackedObject> {
+        self.objects.iter().find(|obj| obj.object_id == object_id)
+    }
+
+    /// Writable deliverable objects (excludes read-only/archival [`TrackedObjectKind::Record`]).
+    #[must_use]
+    pub fn writable_deliverables(&self) -> Vec<&TrackedObject> {
+        self.objects
+            .iter()
+            .filter(|obj| obj.kind == TrackedObjectKind::Deliverable)
+            .collect()
+    }
+
+    /// Resolve effective confirmed facts for `object_id`: starts from session
+    /// defaults (`pinned_facts`) and applies only [`FactStatus::Confirmed`]
+    /// overrides from that object, ignoring [`FactStatus::PendingProposal`].
+    #[must_use]
+    pub fn confirmed_facts_for(
+        &self,
+        object_id: &str,
+    ) -> BTreeMap<String, String> {
+        let mut facts = self.pinned_facts.clone();
+        if let Some(obj) = self.find_object(object_id) {
+            for (key, entry) in &obj.overrides {
+                if entry.status == FactStatus::Confirmed {
+                    facts.insert(key.clone(), entry.value.clone());
+                }
+            }
+        }
+        facts
+    }
+
+    /// Resolve the best-matching writable deliverable for `artifact_path` and
+    /// return its effective confirmed facts (falling back to session defaults).
+    #[must_use]
+    pub fn confirmed_facts_for_artifact(
+        &self,
+        artifact_path: &Path,
+    ) -> BTreeMap<String, String> {
+        let file_name = artifact_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if !file_name.is_empty()
+            && let Some(obj) = self.objects.iter().find(|obj| {
+                obj.kind == TrackedObjectKind::Deliverable
+                    && obj
+                        .filename
+                        .as_deref()
+                        .is_some_and(|f| f.eq_ignore_ascii_case(file_name))
+            })
+        {
+            return self.confirmed_facts_for(&obj.object_id);
+        }
+        if let Some(ext) = artifact_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+        {
+            let same_ext: Vec<&TrackedObject> = self
+                .objects
+                .iter()
+                .filter(|obj| {
+                    obj.kind == TrackedObjectKind::Deliverable
+                        && obj.extension.eq_ignore_ascii_case(&ext)
+                })
+                .collect();
+            if same_ext.len() == 1 {
+                return self.confirmed_facts_for(&same_ext[0].object_id);
+            }
+        }
+        self.pinned_facts.clone()
+    }
     /// Return labels of required deliverables that are not satisfied by any
     /// distinct `(display_name, delivery_key)` pair in `delivered`.
     #[must_use]
@@ -243,6 +475,12 @@ pub struct SessionRecord {
     /// Top-level session id when spawned from a parent conversation; omitted on root sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session_id: Option<String>,
+    /// Durable interactive cards awaiting explicit user choice or approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_cards: Vec<PendingCard>,
+    /// Five-element handoff manifest recorded after a cancelled turn finishes reaping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stop_handoff: Option<StopHandoffManifest>,
 }
 
 impl SessionRecord {
@@ -488,8 +726,10 @@ mod tests {
     #[test]
     fn tool_arguments_and_pairing_survive_a_round_trip() {
         let scratch = Scratch::new("roundtrip");
-        let mut index = SessionIndex::default();
-        index.active = Some("session-1".into());
+        let mut index = SessionIndex {
+            active: Some("session-1".into()),
+            ..SessionIndex::default()
+        };
         index.upsert(record());
         index.save(&scratch.0).unwrap();
 
@@ -518,7 +758,7 @@ mod tests {
     fn missing_file_is_an_empty_index_not_an_error() {
         let scratch = Scratch::new("missing");
         let index = SessionIndex::load(&scratch.0).unwrap();
-        assert!(index.sessions.is_empty());
+        assert_eq!(index.sessions, Vec::new());
         assert!(index.active.is_none());
     }
 
@@ -560,7 +800,7 @@ mod tests {
                 .unwrap();
         assert_eq!(record.origin, SessionOrigin::Unknown);
         assert!(record.workspace.is_none());
-        assert!(record.delivery_commits.is_empty());
+        assert_eq!(record.delivery_commits, Vec::new());
         let result: ContentBlock = serde_json::from_str(
             r#"{"type":"tool-result","tool_call_id":"old-call","content":[],"is_error":false}"#,
         ).unwrap();
@@ -591,5 +831,115 @@ mod tests {
         )
         .unwrap();
         assert_eq!(roundtrip.root_session_id.as_deref(), Some("s-root"));
+    }
+
+    #[test]
+    fn multi_object_work_contract_and_pending_cards_roundtrip_compatibly() {
+        use super::{
+            DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
+            PendingCard, StopHandoffManifest, TrackedObject, TrackedObjectKind,
+            WorkContract,
+        };
+        use std::collections::BTreeMap;
+
+        // Legacy WorkContract JSON without `objects` must deserialize cleanly.
+        let legacy: WorkContract = serde_json::from_str(
+            r#"{"revision":2,"min_slides":3,"pinned_facts":{"quote":"30万"}}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.revision, 2);
+        assert_eq!(legacy.objects, Vec::new());
+
+        let mut ppt_overrides = BTreeMap::new();
+        ppt_overrides.insert(
+            "date".to_owned(),
+            FactEntry {
+                value: "2026-12-02".to_owned(),
+                status: FactStatus::Confirmed,
+                updated_at_ms: 10,
+            },
+        );
+        ppt_overrides.insert(
+            "quote".to_owned(),
+            FactEntry {
+                value: "35万".to_owned(),
+                status: FactStatus::PendingProposal,
+                updated_at_ms: 11,
+            },
+        );
+        let contract = WorkContract {
+            revision: 3,
+            required_items: Vec::new(),
+            min_slides: Some(3),
+            pinned_facts: BTreeMap::from([
+                ("quote".to_owned(), "30万".to_owned()),
+                ("date".to_owned(), "2026-11-27".to_owned()),
+            ]),
+            objects: vec![
+                TrackedObject {
+                    object_id: "obj-ppt-1".to_owned(),
+                    kind: TrackedObjectKind::Deliverable,
+                    filename: Some("deck.pptx".to_owned()),
+                    extension: "pptx".to_owned(),
+                    anchor_summary: "deck.pptx · 2026-12-02".to_owned(),
+                    overrides: ppt_overrides,
+                    verify_state: ObjectVerifyState::Passed {
+                        report_id: "rep-1".to_owned(),
+                        revision: 3,
+                    },
+                },
+                TrackedObject {
+                    object_id: "obj-rec-1".to_owned(),
+                    kind: TrackedObjectKind::Record,
+                    filename: None,
+                    extension: "md".to_owned(),
+                    anchor_summary: "会议记录".to_owned(),
+                    overrides: BTreeMap::new(),
+                    verify_state: ObjectVerifyState::Unverified,
+                },
+            ],
+        };
+        assert_eq!(contract.writable_deliverables().len(), 1);
+        let facts = contract.confirmed_facts_for("obj-ppt-1");
+        assert_eq!(facts.get("date").map(String::as_str), Some("2026-12-02"));
+        assert_eq!(
+            facts.get("quote").map(String::as_str),
+            Some("30万"),
+            "PendingProposal must never override confirmed quote"
+        );
+
+        let record = SessionRecord {
+            id: "s-multi".to_owned(),
+            status: TurnState::WaitingForUser,
+            work_contract: Some(contract),
+            pending_cards: vec![PendingCard::Disambiguation {
+                card_id: "card-1".to_owned(),
+                created_at_ms: 100,
+                prompt: "把刚才那份的报价改成 32 万元。".to_owned(),
+                impact_boundary: "只改所选，其余保持原值".to_owned(),
+                options: vec![DisambiguationOption {
+                    object_id: "obj-ppt-1".to_owned(),
+                    label: "deck.pptx".to_owned(),
+                    anchor_summary: "deck.pptx · 2026-12-02".to_owned(),
+                    extension: "pptx".to_owned(),
+                }],
+                allow_multi: true,
+            }],
+            last_stop_handoff: Some(StopHandoffManifest {
+                input_revision: 3,
+                command_summary: "cancelled".to_owned(),
+                modified_files: vec!["deck.pptx".to_owned()],
+                verified_effects: Vec::new(),
+                pending_checks: vec!["deck.pptx".to_owned()],
+                rollback_hint: "retry or restore".to_owned(),
+            }),
+            ..SessionRecord::default()
+        };
+        assert!(!record.status.is_busy());
+        assert!(TurnState::Stopping.is_busy());
+        let decoded: SessionRecord =
+            serde_json::from_str(&serde_json::to_string(&record).unwrap())
+                .unwrap();
+        assert_eq!(decoded, record);
     }
 }

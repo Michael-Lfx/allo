@@ -232,7 +232,7 @@ mod tests {
             &self.schema
         }
 
-        fn label(&self) -> &str {
+        fn label(&self) -> &'static str {
             "echo"
         }
 
@@ -266,7 +266,7 @@ mod tests {
             &self.schema
         }
 
-        fn label(&self) -> &str {
+        fn label(&self) -> &'static str {
             "failing"
         }
 
@@ -363,7 +363,9 @@ mod tests {
                     vec![crate::types::ContentBlock::text("boom")]
                 );
             }
-            other => panic!("expected structured error, got {other:?}"),
+            other @ crate::types::ToolExecutionResult::Success { .. } => {
+                panic!("expected structured error, got {other:?}")
+            }
         }
     }
 
@@ -390,7 +392,7 @@ mod tests {
             fn schema(&self) -> &Tool {
                 &self.schema
             }
-            fn label(&self) -> &str {
+            fn label(&self) -> &'static str {
                 "capture"
             }
             async fn execute(
