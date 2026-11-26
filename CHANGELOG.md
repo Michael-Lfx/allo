@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.7.5 - 2026-11-26
+
+- The instant-clip detail page stays usable: layout, playback, and actions no longer collapse after opening a finished clip.
+
 ## v1.7.4 - 2026-11-23
 
 - An Ultra plan name unlocks Pro models when the numeric plan tier is missing.
