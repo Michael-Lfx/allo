@@ -82,15 +82,23 @@ pub fn prompt_lines(skills: &[InstalledSkill]) -> Vec<String> {
         .collect()
 }
 
-/// PI-compatible model-visible skill listing. The listing escapes every field
-/// because descriptions and paths come from installed packages.
-#[must_use]
-pub fn format_available_skills(skills: &[InstalledSkill]) -> String {
-    let visible: Vec<&InstalledSkill> =
-        skills.iter().filter(|skill| skill.auto_invoke).collect();
-    if visible.is_empty() {
-        return String::new();
+pub const SKILL_LISTING_CHAR_BUDGET: usize = 20_000;
+pub const SKILL_DESC_MAX_CHARS: usize = 250;
+
+fn truncate_description(description: &str, max_chars: usize) -> String {
+    if description.chars().count() <= max_chars {
+        return description.to_owned();
     }
+    let keep = max_chars.saturating_sub(3);
+    let mut out: String = description.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
+fn render_available_skills(
+    visible: &[&InstalledSkill],
+    include_descriptions: bool,
+) -> String {
     let mut lines = vec![
         "The following skills provide specialized instructions for specific tasks.".to_string(),
         "Read the full skill file when the task matches its description.".to_string(),
@@ -101,10 +109,14 @@ pub fn format_available_skills(skills: &[InstalledSkill]) -> String {
     for skill in visible {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!(
-            "    <description>{}</description>",
-            escape_xml(&skill.description)
-        ));
+        if include_descriptions {
+            let desc =
+                truncate_description(&skill.description, SKILL_DESC_MAX_CHARS);
+            lines.push(format!(
+                "    <description>{}</description>",
+                escape_xml(&desc)
+            ));
+        }
         lines.push(format!(
             "    <location>{}</location>",
             escape_xml(&skill.skill_path.display().to_string())
@@ -115,6 +127,30 @@ pub fn format_available_skills(skills: &[InstalledSkill]) -> String {
     lines.join("\n")
 }
 
+/// PI-compatible model-visible skill listing. The listing escapes every field
+/// because descriptions and paths come from installed packages.
+#[must_use]
+pub fn format_available_skills(skills: &[InstalledSkill]) -> String {
+    let mut visible: Vec<&InstalledSkill> =
+        skills.iter().filter(|skill| skill.auto_invoke).collect();
+    if visible.is_empty() {
+        return String::new();
+    }
+    visible.sort_by_key(|skill| {
+        (
+            skill.name.as_str(),
+            skill.id.owner_handle.as_str(),
+            skill.id.slug.as_str(),
+        )
+    });
+    let full = render_available_skills(&visible, true);
+    if full.chars().count() > SKILL_LISTING_CHAR_BUDGET {
+        render_available_skills(&visible, false)
+    } else {
+        full
+    }
+}
+
 #[must_use]
 pub fn format_skill_invocation(
     skill: &InstalledSkill,
@@ -123,8 +159,8 @@ pub fn format_skill_invocation(
     let dirname = skill.root.display();
     let block = format!(
         "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {dirname}.\n\n{}\n</skill>",
-        skill.name,
-        skill.skill_path.display(),
+        escape_xml(&skill.name),
+        escape_xml(&skill.skill_path.display().to_string()),
         skill.content,
     );
     match additional_instructions.filter(|text| !text.is_empty()) {
@@ -276,5 +312,113 @@ mod tests {
         let lines =
             prompt_lines(&[skill("excel", true), skill("community", false)]);
         assert_eq!(lines, ["excel: excel description"]);
+    }
+
+    fn make_skill(
+        owner: &str,
+        slug: &str,
+        name: &str,
+        description: &str,
+        auto_invoke: bool,
+    ) -> InstalledSkill {
+        let root = PathBuf::from(format!("/skills/{owner}/{slug}"));
+        InstalledSkill {
+            id: parse_skill_id(owner, slug, "1.0.0").unwrap(),
+            name: name.to_owned(),
+            description: description.to_owned(),
+            skill_path: root.join("SKILL.md"),
+            root,
+            content: "body".to_owned(),
+            auto_invoke,
+            scripts_enabled: false,
+            origin: InstallOrigin::Community,
+            latest_version: Some("1.0.0".to_owned()),
+        }
+    }
+
+    #[test]
+    fn format_available_skills_sorts_deterministically() {
+        let a = make_skill("bob", "zeta", "alpha", "first", true);
+        let b = make_skill("alice", "beta", "alpha", "second", true);
+        let c = make_skill("alice", "alpha", "alpha", "third", true);
+        let d = make_skill("carol", "doc", "beta", "fourth", true);
+        let hidden = make_skill("dan", "secret", "aaa", "hidden", false);
+
+        let forward = format_available_skills(&[
+            d.clone(),
+            a.clone(),
+            hidden.clone(),
+            c.clone(),
+            b.clone(),
+        ]);
+        let reversed = format_available_skills(&[b, c, hidden, a, d]);
+        assert_eq!(forward, reversed);
+
+        let pos_c = forward.find("third").unwrap();
+        let pos_b = forward.find("second").unwrap();
+        let pos_a = forward.find("first").unwrap();
+        let pos_d = forward.find("fourth").unwrap();
+        assert!(pos_c < pos_b && pos_b < pos_a && pos_a < pos_d);
+        assert!(!forward.contains("hidden"));
+    }
+
+    #[test]
+    fn format_available_skills_truncates_utf8_cjk_descriptions_to_250_chars() {
+        let long_cjk = "中".repeat(260);
+        let skill = make_skill("flowy", "cjk", "cjk", &long_cjk, true);
+        let rendered = format_available_skills(&[skill]);
+        let start =
+            rendered.find("<description>").unwrap() + "<description>".len();
+        let end = rendered.find("</description>").unwrap();
+        let desc = &rendered[start..end];
+        assert_eq!(desc.chars().count(), SKILL_DESC_MAX_CHARS);
+        assert!(desc.ends_with("..."));
+        assert_eq!(desc, format!("{}...", "中".repeat(247)));
+    }
+
+    #[test]
+    fn format_available_skills_uniformly_degrades_over_budget() {
+        let desc = "x".repeat(240);
+        let skills: Vec<InstalledSkill> = (0..80)
+            .map(|idx| {
+                make_skill(
+                    "owner",
+                    &format!("slug-{idx:03}"),
+                    &format!("skill-{idx:03}"),
+                    &desc,
+                    true,
+                )
+            })
+            .collect();
+        let rendered = format_available_skills(&skills);
+        assert!(!rendered.contains("<description>"));
+        assert!(!rendered.contains("</description>"));
+        for idx in 0..80 {
+            assert!(rendered.contains(&format!("<name>skill-{idx:03}</name>")));
+            assert!(rendered.contains(&format!("slug-{idx:03}")));
+        }
+    }
+
+    #[test]
+    fn format_skill_invocation_escapes_xml_attributes() {
+        let root = PathBuf::from("/tmp/skills/a&b\"c<d>");
+        let skill = InstalledSkill {
+            id: parse_skill_id("owner", "slug", "1.0.0").unwrap(),
+            name: "my\"<skill>&'".to_owned(),
+            description: "desc".to_owned(),
+            skill_path: root.join("SKILL.md"),
+            root,
+            content: "Instructions body".to_owned(),
+            auto_invoke: true,
+            scripts_enabled: false,
+            origin: InstallOrigin::Official,
+            latest_version: None,
+        };
+        let rendered = format_skill_invocation(&skill, Some("extra step"));
+        assert!(rendered.starts_with(
+            "<skill name=\"my&quot;&lt;skill&gt;&amp;&apos;\" location=\""
+        ));
+        assert!(rendered.contains("a&amp;b&quot;c&lt;d&gt;"));
+        assert!(rendered.ends_with("extra step"));
     }
 }

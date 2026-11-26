@@ -42,6 +42,8 @@ impl ShellPolicyDecision {
     }
 }
 
+const MAX_RECURSION_DEPTH: usize = 3;
+
 const SENSITIVE_PATH_MARKERS: &[(&str, &str)] = &[
     ("/.ssh", "SSH key store"),
     ("~/.ssh", "SSH key store"),
@@ -49,6 +51,16 @@ const SENSITIVE_PATH_MARKERS: &[(&str, &str)] = &[
     ("~/.aws", "AWS credential store"),
     ("/.gnupg", "GPG keyring"),
     ("~/.gnupg", "GPG keyring"),
+    ("/.kube/config", "Kubernetes kubeconfig"),
+    ("~/.kube/config", "Kubernetes kubeconfig"),
+    ("/.docker/config.json", "Docker credentials config"),
+    ("~/.docker/config.json", "Docker credentials config"),
+    ("/.npmrc", "npm auth config"),
+    ("~/.npmrc", "npm auth config"),
+    ("/.pypirc", "PyPI credentials config"),
+    ("~/.pypirc", "PyPI credentials config"),
+    ("/.git-credentials", "Git credentials store"),
+    ("~/.git-credentials", "Git credentials store"),
     ("flowy/flowy/data/auth", "Flowy account auth store"),
     (
         "library/application support/com.flowy.flowy/auth",
@@ -73,41 +85,62 @@ const SENSITIVE_PATH_MARKERS: &[(&str, &str)] = &[
 ];
 
 /// Token produced by the shell splitter. `comma_parts` preserves unquoted
-/// PowerShell array splits (e.g. `./tmp/a,./deliverables` or `"tmp/a","b"`).
+/// PowerShell array splits (e.g. `./tmp/a,./deliverables` or `"tmp/a","b"`),
+/// `script_text` preserves backslashes for recursive subshell re-parsing, and
+/// `raw` preserves original quoting for multi-token subshell re-assembly.
 #[derive(Clone, Debug)]
 struct Token {
     text: String,
+    script_text: String,
+    raw: String,
     comma_parts: Vec<String>,
 }
 
 impl Token {
-    fn from_segments(parts: Vec<String>) -> Self {
-        let text = parts.join(",");
+    fn from_segments(parts: Vec<String>, raw: String) -> Self {
+        let script_text = parts.join(",");
+        let comma_parts: Vec<String> =
+            parts.into_iter().map(|p| p.replace('\\', "/")).collect();
+        let text = comma_parts.join(",");
         Self {
             text,
-            comma_parts: parts,
+            script_text,
+            raw,
+            comma_parts,
         }
     }
 }
 
+fn looks_like_win_path(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.starts_with("\\\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'))
+}
+
 /// Splits a shell script into statements → pipelines → simple-command argv.
-fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
+fn split_pipelines(script: &str) -> Vec<Vec<Vec<Token>>> {
     let mut statements: Vec<Vec<Vec<Token>>> = Vec::new();
     let mut cur_pipeline: Vec<Vec<Token>> = Vec::new();
     let mut cur_cmd: Vec<Token> = Vec::new();
     let mut cur_parts: Vec<String> = Vec::new();
     let mut cur_part = String::new();
+    let mut cur_raw = String::new();
     let mut in_token = false;
     let mut quote: Option<char> = None;
 
     let flush_token = |cur_cmd: &mut Vec<Token>,
                        cur_parts: &mut Vec<String>,
                        cur_part: &mut String,
+                       cur_raw: &mut String,
                        in_token: &mut bool| {
         if *in_token {
             cur_parts.push(std::mem::take(cur_part));
             let parts = std::mem::take(cur_parts);
-            cur_cmd.push(Token::from_segments(parts));
+            let raw = std::mem::take(cur_raw);
+            cur_cmd.push(Token::from_segments(parts, raw));
             *in_token = false;
         }
     };
@@ -115,8 +148,9 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                      cur_cmd: &mut Vec<Token>,
                      cur_parts: &mut Vec<String>,
                      cur_part: &mut String,
+                     cur_raw: &mut String,
                      in_token: &mut bool| {
-        flush_token(cur_cmd, cur_parts, cur_part, in_token);
+        flush_token(cur_cmd, cur_parts, cur_part, cur_raw, in_token);
         if !cur_cmd.is_empty() {
             cur_pipeline.push(std::mem::take(cur_cmd));
         }
@@ -126,16 +160,42 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                       cur_cmd: &mut Vec<Token>,
                       cur_parts: &mut Vec<String>,
                       cur_part: &mut String,
+                      cur_raw: &mut String,
                       in_token: &mut bool| {
-        flush_cmd(cur_pipeline, cur_cmd, cur_parts, cur_part, in_token);
+        flush_cmd(
+            cur_pipeline,
+            cur_cmd,
+            cur_parts,
+            cur_part,
+            cur_raw,
+            in_token,
+        );
         if !cur_pipeline.is_empty() {
             statements.push(std::mem::take(cur_pipeline));
         }
     };
 
-    let mut chars = normalized.chars().peekable();
+    let mut chars = script.chars().peekable();
     while let Some(ch) = chars.next() {
         if let Some(q) = quote {
+            cur_raw.push(ch);
+            if q == '"' && ch == '\\' && !looks_like_win_path(&cur_part) {
+                match chars.peek().copied() {
+                    Some('"') => {
+                        chars.next();
+                        cur_raw.push('"');
+                        cur_part.push('"');
+                        continue;
+                    }
+                    Some('\\') => {
+                        chars.next();
+                        cur_raw.push('\\');
+                        cur_part.push('\\');
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             if ch == q {
                 quote = None;
             } else {
@@ -147,6 +207,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
             '\'' | '"' => {
                 in_token = true;
                 quote = Some(ch);
+                cur_raw.push(ch);
             }
             ';' | '\n' | '\r' | '(' | ')' | '`' => {
                 flush_stmt(
@@ -155,6 +216,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                     &mut cur_cmd,
                     &mut cur_parts,
                     &mut cur_part,
+                    &mut cur_raw,
                     &mut in_token,
                 );
             }
@@ -168,6 +230,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                     &mut cur_cmd,
                     &mut cur_parts,
                     &mut cur_part,
+                    &mut cur_raw,
                     &mut in_token,
                 );
             }
@@ -180,6 +243,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                         &mut cur_cmd,
                         &mut cur_parts,
                         &mut cur_part,
+                        &mut cur_raw,
                         &mut in_token,
                     );
                 } else {
@@ -188,6 +252,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                         &mut cur_cmd,
                         &mut cur_parts,
                         &mut cur_part,
+                        &mut cur_raw,
                         &mut in_token,
                     );
                 }
@@ -195,12 +260,14 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
             ',' => {
                 in_token = true;
                 cur_parts.push(std::mem::take(&mut cur_part));
+                cur_raw.push(',');
             }
             c if c.is_whitespace() => {
                 flush_token(
                     &mut cur_cmd,
                     &mut cur_parts,
                     &mut cur_part,
+                    &mut cur_raw,
                     &mut in_token,
                 );
             }
@@ -212,12 +279,14 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
                     &mut cur_cmd,
                     &mut cur_parts,
                     &mut cur_part,
+                    &mut cur_raw,
                     &mut in_token,
                 );
             }
             _ => {
                 in_token = true;
                 cur_part.push(ch);
+                cur_raw.push(ch);
             }
         }
     }
@@ -227,6 +296,7 @@ fn split_pipelines(normalized: &str) -> Vec<Vec<Vec<Token>>> {
         &mut cur_cmd,
         &mut cur_parts,
         &mut cur_part,
+        &mut cur_raw,
         &mut in_token,
     );
     statements
@@ -616,6 +686,369 @@ fn is_unix_root_perm_target(raw: &str) -> bool {
     matches!(seg, "etc" | "usr" | "system" | "library" | "bin" | "sbin")
 }
 
+fn handle_ps_backtick(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    out: &mut String,
+) {
+    match chars.peek().copied() {
+        Some('n') => {
+            chars.next();
+            out.push('\n');
+        }
+        Some('r') => {
+            chars.next();
+            out.push('\r');
+        }
+        Some('t') => {
+            chars.next();
+            out.push('\t');
+        }
+        Some('\r') => {
+            chars.next();
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push(' ');
+        }
+        Some('\n') => {
+            chars.next();
+            out.push(' ');
+        }
+        Some(next) if !next.is_whitespace() => {
+            chars.next();
+            out.push(next);
+        }
+        _ => {
+            out.push('`');
+        }
+    }
+}
+
+/// Deobfuscate PowerShell escape backticks outside single-quoted literals.
+fn strip_powershell_backticks(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                }
+                out.push(ch);
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None;
+                    out.push(ch);
+                } else if ch == '`' {
+                    handle_ps_backtick(&mut chars, &mut out);
+                } else {
+                    out.push(ch);
+                }
+            }
+            Some(_) => unreachable!(),
+            None => match ch {
+                '\'' | '"' => {
+                    quote = Some(ch);
+                    out.push(ch);
+                }
+                '`' => handle_ps_backtick(&mut chars, &mut out),
+                _ => out.push(ch),
+            },
+        }
+    }
+    out
+}
+
+const fn decision_rank(decision: &ShellPolicyDecision) -> u8 {
+    match decision {
+        ShellPolicyDecision::Allow => 0,
+        ShellPolicyDecision::Ask { .. } => 1,
+        ShellPolicyDecision::Deny { .. } => 2,
+    }
+}
+
+fn merge_decisions(
+    a: ShellPolicyDecision,
+    b: ShellPolicyDecision,
+) -> ShellPolicyDecision {
+    if decision_rank(&b) > decision_rank(&a) {
+        b
+    } else {
+        a
+    }
+}
+
+fn is_posix_shell_c_flag(arg: &str) -> bool {
+    if arg == "-c" {
+        return true;
+    }
+    arg.starts_with('-')
+        && !arg.starts_with("--")
+        && arg.len() > 1
+        && arg[1..].chars().all(|c| c.is_ascii_alphabetic())
+        && arg[1..].contains('c')
+}
+
+fn extract_posix_subshell_script(args: &[Token]) -> Option<String> {
+    let mut saw_c = false;
+    let mut saw_end_opts = false;
+    let mut i = 0;
+    while i < args.len() {
+        let s = args[i].text.as_str();
+        if !saw_end_opts {
+            if s == "--" {
+                saw_end_opts = true;
+                i += 1;
+                continue;
+            }
+            if s == "-o" || s == "+o" {
+                i += 2;
+                continue;
+            }
+            if is_posix_shell_c_flag(s) {
+                saw_c = true;
+                i += 1;
+                continue;
+            }
+            if s.starts_with('-') || s.starts_with('+') {
+                i += 1;
+                continue;
+            }
+        }
+        return if saw_c {
+            Some(args[i].script_text.clone())
+        } else {
+            None
+        };
+    }
+    None
+}
+
+fn join_subshell_tokens(tokens: &[Token]) -> Option<String> {
+    if tokens.is_empty() {
+        return None;
+    }
+    if tokens.len() == 1 {
+        return Some(tokens[0].script_text.clone());
+    }
+    Some(
+        tokens
+            .iter()
+            .map(|t| t.raw.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn extract_cmd_subshell_script(args: &[Token]) -> Option<String> {
+    for (idx, tok) in args.iter().enumerate() {
+        let lower = tok.text.to_ascii_lowercase();
+        if lower == "/c" || lower == "/k" {
+            return join_subshell_tokens(&args[idx + 1..]);
+        }
+        if tok.raw.len() > 2
+            && (lower.starts_with("/c") || lower.starts_with("/k"))
+            && tok.raw.as_bytes()[2] == b'"'
+        {
+            let mut parts = vec![tok.script_text[2..].to_owned()];
+            for rest in &args[idx + 1..] {
+                parts.push(rest.raw.clone());
+            }
+            return Some(parts.join(" "));
+        }
+    }
+    None
+}
+
+fn extract_powershell_command(args: &[Token]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        let lower = args[i].text.to_ascii_lowercase();
+        if is_ps_prefix(&lower, "-file", 2) {
+            return None;
+        }
+        if lower == "-c" || is_ps_prefix(&lower, "-command", 2) {
+            let rem = &args[i + 1..];
+            if rem.len() == 1 && rem[0].text == "-" {
+                return None;
+            }
+            return join_subshell_tokens(rem);
+        }
+        if let Some((flag, val)) = args[i].script_text.split_once(':') {
+            let fl = flag.to_ascii_lowercase();
+            if is_ps_prefix(&fl, "-file", 2) {
+                return None;
+            }
+            if fl == "-c" || is_ps_prefix(&fl, "-command", 2) {
+                let mut parts = Vec::new();
+                if !val.is_empty() {
+                    parts.push(val);
+                }
+                for t in &args[i + 1..] {
+                    parts.push(t.raw.as_str());
+                }
+                if parts.is_empty() || parts == ["-"] {
+                    return None;
+                }
+                return Some(parts.join(" "));
+            }
+        }
+        if is_ps_prefix(&lower, "-executionpolicy", 3)
+            || lower == "-ep"
+            || is_ps_prefix(&lower, "-windowstyle", 2)
+            || is_ps_prefix(&lower, "-workingdirectory", 3)
+            || lower == "-wd"
+            || is_ps_prefix(&lower, "-inputformat", 3)
+            || lower == "-if"
+            || is_ps_prefix(&lower, "-outputformat", 3)
+            || lower == "-of"
+            || is_ps_prefix(&lower, "-version", 2)
+            || is_ps_prefix(&lower, "-configurationname", 4)
+            || is_ps_prefix(&lower, "-settingsfile", 4)
+            || is_ps_prefix(&lower, "-custompipename", 4)
+        {
+            i += 2;
+            continue;
+        }
+        if !lower.starts_with('-') && !lower.starts_with('/') {
+            if Path::new(&args[i].text)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ps1"))
+            {
+                return None;
+            }
+            return join_subshell_tokens(&args[i..]);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn extract_iex_command(args: &[Token]) -> Option<String> {
+    let mut parts: Vec<(&str, &str)> = Vec::new();
+    let mut skip_next = false;
+    for tok in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let lower = tok.text.to_ascii_lowercase();
+        if lower == "-c" || is_ps_prefix(&lower, "-command", 2) {
+            continue;
+        }
+        if let Some((flag, val)) = tok.script_text.split_once(':') {
+            let fl = flag.to_ascii_lowercase();
+            if fl == "-c" || is_ps_prefix(&fl, "-command", 2) {
+                if !val.is_empty() {
+                    parts.push((val, val));
+                }
+                continue;
+            }
+        }
+        if matches!(
+            lower.as_str(),
+            "-erroraction"
+                | "-ea"
+                | "-warningaction"
+                | "-wa"
+                | "-informationaction"
+                | "-ia"
+        ) {
+            skip_next = true;
+            continue;
+        }
+        parts.push((tok.script_text.as_str(), tok.raw.as_str()));
+    }
+    if parts.is_empty() {
+        None
+    } else if parts.len() == 1 {
+        Some(parts[0].0.to_owned())
+    } else {
+        Some(
+            parts
+                .iter()
+                .map(|(_, raw)| *raw)
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+}
+
+fn is_cmdkey_credential_arg(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("generic:") {
+        return true;
+    }
+    let Some(flag) =
+        lower.strip_prefix('/').or_else(|| lower.strip_prefix('-'))
+    else {
+        return false;
+    };
+    matches!(flag, "list" | "generic" | "add" | "delete")
+        || flag.starts_with("list:")
+        || flag.starts_with("generic:")
+        || flag.starts_with("add:")
+        || flag.starts_with("delete:")
+}
+
+fn is_ps_runas_verb(args: &[Token]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let lower = args[i].text.to_ascii_lowercase();
+        if let Some((flag, val)) = lower.split_once(':')
+            && is_ps_prefix(flag, "-verb", 2)
+            && val.trim().eq_ignore_ascii_case("runas")
+        {
+            return true;
+        }
+        if is_ps_prefix(&lower, "-verb", 2) {
+            if args.get(i + 1).is_some_and(|next| {
+                next.text.trim().eq_ignore_ascii_case("runas")
+            }) {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn defer_ask(
+    deferred_ask: &mut Option<(&'static str, String)>,
+    reason: &'static str,
+) {
+    deferred_ask
+        .get_or_insert_with(|| (SHELL_CONFIRM_REQUIRED, reason.to_owned()));
+}
+
+fn inspect_subshell(
+    script: &str,
+    cwd: &Path,
+    depth: usize,
+    deferred_ask: &mut Option<(&'static str, String)>,
+) -> Option<ShellPolicyDecision> {
+    if depth >= MAX_RECURSION_DEPTH {
+        return Some(ShellPolicyDecision::Deny {
+            code: SHELL_SYSTEM_TAMPER,
+            reason: "nested subshell depth exceeds static policy limit"
+                .to_owned(),
+        });
+    }
+    match evaluate_shell_command_with_deobf(script, cwd, depth + 1) {
+        ShellPolicyDecision::Allow => None,
+        ShellPolicyDecision::Ask { code, reason } => {
+            deferred_ask.get_or_insert((code, reason));
+            None
+        }
+        deny @ ShellPolicyDecision::Deny { .. } => Some(deny),
+    }
+}
+
 /// Evaluate a shell command string against the host static safety policy.
 ///
 /// The check is OS-agnostic so Windows, macOS, and Linux policy rules can all
@@ -623,19 +1056,44 @@ fn is_unix_root_perm_target(raw: &str) -> bool {
 #[must_use]
 pub fn evaluate_shell_command(
     command: &str,
-    _cwd: &Path,
+    cwd: &Path,
+) -> ShellPolicyDecision {
+    evaluate_shell_command_with_deobf(command, cwd, 0)
+}
+
+fn evaluate_shell_command_with_deobf(
+    command: &str,
+    cwd: &Path,
+    depth: usize,
+) -> ShellPolicyDecision {
+    let original = evaluate_shell_command_inner(command, cwd, depth);
+    if matches!(original, ShellPolicyDecision::Deny { .. }) {
+        return original;
+    }
+    let deobfuscated = strip_powershell_backticks(command);
+    if deobfuscated == command {
+        original
+    } else {
+        let stripped = evaluate_shell_command_inner(&deobfuscated, cwd, depth);
+        merge_decisions(original, stripped)
+    }
+}
+
+fn evaluate_shell_command_inner(
+    command: &str,
+    cwd: &Path,
+    depth: usize,
 ) -> ShellPolicyDecision {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return ShellPolicyDecision::Allow;
     }
-    let normalized = trimmed.replace('\\', "/");
     let marker_lower = trimmed
         .replace("\\ ", " ")
         .replace('\\', "/")
         .to_ascii_lowercase();
     let marker_unquoted = marker_lower.replace(['"', '\''], "");
-    let statements = split_pipelines(&normalized);
+    let statements = split_pipelines(trimmed);
 
     // 1. OS privacy / TCC tampering (Deny)
     for pipeline in &statements {
@@ -652,7 +1110,7 @@ pub fn evaluate_shell_command(
         }
     }
 
-    // 2. Host credential stores & auth vaults (Deny)
+    // 2. Host credential stores, auth vaults & Windows credential tools (Deny)
     for (marker, label) in SENSITIVE_PATH_MARKERS {
         if marker_lower.contains(marker) || marker_unquoted.contains(marker) {
             return ShellPolicyDecision::Deny {
@@ -663,9 +1121,25 @@ pub fn evaluate_shell_command(
             };
         }
     }
+    for pipeline in &statements {
+        for cmd in pipeline {
+            let name = cmd_basename(&cmd[0].text);
+            let args = &cmd[1..];
+            if name == "vaultcmd"
+                || (name == "cmdkey"
+                    && args.iter().any(|t| is_cmdkey_credential_arg(&t.text)))
+            {
+                return ShellPolicyDecision::Deny {
+                    code: SHELL_CREDENTIAL_ACCESS,
+                    reason: "access to Windows credential manager is blocked"
+                        .to_owned(),
+                };
+            }
+        }
+    }
 
     // 3. Host-wide destructive operations & system tampering (Deny before Ask)
-    let mut deferred_ask: Option<&'static str> = None;
+    let mut deferred_ask: Option<(&'static str, String)> = None;
 
     for pipeline in &statements {
         let mut saw_downloader = false;
@@ -708,7 +1182,8 @@ pub fn evaluate_shell_command(
                             .iter()
                             .any(|t| !is_safe_scratch_delete_target(t)))
                 {
-                    deferred_ask.get_or_insert(
+                    defer_ask(
+                        &mut deferred_ask,
                         "recursive deletion of non-scratch workspace path requires user approval",
                     );
                 }
@@ -738,7 +1213,8 @@ pub fn evaluate_shell_command(
                             .iter()
                             .any(|t| !is_safe_scratch_delete_target(t)))
                 {
-                    deferred_ask.get_or_insert(
+                    defer_ask(
+                        &mut deferred_ask,
                         "recursive deletion of non-scratch workspace path requires user approval",
                     );
                 }
@@ -780,6 +1256,107 @@ pub fn evaluate_shell_command(
                     let l = t.text.to_ascii_lowercase();
                     l == "-ec" || is_ps_prefix(&l, "-encodedcommand", 2)
                 }) {
+                    return ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        reason: "privileged system or service modification via shell is blocked".to_owned(),
+                    };
+                }
+                if let Some(script) = extract_powershell_command(args)
+                    && let Some(deny) =
+                        inspect_subshell(&script, cwd, depth, &mut deferred_ask)
+                {
+                    return deny;
+                }
+            } else if matches!(
+                name.as_str(),
+                "bash" | "sh" | "zsh" | "dash" | "ksh"
+            ) {
+                if let Some(script) = extract_posix_subshell_script(args)
+                    && let Some(deny) =
+                        inspect_subshell(&script, cwd, depth, &mut deferred_ask)
+                {
+                    return deny;
+                }
+            } else if name == "cmd" {
+                if let Some(script) = extract_cmd_subshell_script(args)
+                    && let Some(deny) =
+                        inspect_subshell(&script, cwd, depth, &mut deferred_ask)
+                {
+                    return deny;
+                }
+            } else if matches!(name.as_str(), "iex" | "invoke-expression") {
+                if let Some(script) = extract_iex_command(args)
+                    && let Some(deny) =
+                        inspect_subshell(&script, cwd, depth, &mut deferred_ask)
+                {
+                    return deny;
+                }
+            } else if matches!(
+                name.as_str(),
+                "start-process" | "saps" | "start"
+            ) {
+                if is_ps_runas_verb(args) {
+                    return ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        reason: "privileged system or service modification via shell is blocked".to_owned(),
+                    };
+                }
+            } else if name == "sc" {
+                let sub = args.first().and_then(|first| {
+                    if first.text.starts_with("//") {
+                        args.get(1)
+                    } else {
+                        Some(first)
+                    }
+                });
+                if sub.is_some_and(|t| {
+                    matches!(
+                        t.text.to_ascii_lowercase().as_str(),
+                        "delete" | "stop" | "config" | "create" | "failure"
+                    )
+                }) {
+                    return ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        reason: "privileged system or service modification via shell is blocked".to_owned(),
+                    };
+                }
+            } else if name == "schtasks" {
+                if args.iter().any(|t| {
+                    matches!(
+                        t.text.to_ascii_lowercase().as_str(),
+                        "/create" | "/delete" | "/change"
+                    )
+                }) {
+                    return ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        reason: "privileged system or service modification via shell is blocked".to_owned(),
+                    };
+                }
+            } else if matches!(name.as_str(), "net" | "net1") {
+                let sub = args.first().map(|t| t.text.to_ascii_lowercase());
+                if matches!(sub.as_deref(), Some("user" | "localgroup"))
+                    && args.iter().skip(1).any(|t| {
+                        matches!(
+                            t.text.to_ascii_lowercase().as_str(),
+                            "/add" | "/delete" | "administrators"
+                        )
+                    })
+                {
+                    return ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        reason: "privileged system or service modification via shell is blocked".to_owned(),
+                    };
+                }
+            } else if matches!(name.as_str(), "icacls" | "takeown") {
+                let hits_win_root = args.iter().any(|t| {
+                    if let Some((flag, val)) = t.text.split_once(':')
+                        && (flag.starts_with('/') || flag.starts_with('-'))
+                    {
+                        return is_win_host_delete_target(val);
+                    }
+                    is_win_host_delete_target(&t.text)
+                });
+                if hits_win_root {
                     return ShellPolicyDecision::Deny {
                         code: SHELL_SYSTEM_TAMPER,
                         reason: "privileged system or service modification via shell is blocked".to_owned(),
@@ -833,13 +1410,15 @@ pub fn evaluate_shell_command(
                     };
                 }
             } else if name == "git" && is_git_destructive(args) {
-                deferred_ask.get_or_insert(
+                defer_ask(
+                    &mut deferred_ask,
                     "destructive git command (reset --hard / clean -f / force push) requires user approval",
                 );
             } else if name == "curl" {
                 saw_downloader = true;
                 if is_curl_network_write(args) {
-                    deferred_ask.get_or_insert(
+                    defer_ask(
+                        &mut deferred_ask,
                         "outbound network mutation or remote file transfer requires user approval",
                     );
                 }
@@ -849,7 +1428,8 @@ pub fn evaluate_shell_command(
             ) {
                 saw_downloader = true;
                 if is_ps_web_write(args) {
-                    deferred_ask.get_or_insert(
+                    defer_ask(
+                        &mut deferred_ask,
                         "outbound network mutation or remote file transfer requires user approval",
                     );
                 }
@@ -858,7 +1438,8 @@ pub fn evaluate_shell_command(
             } else if matches!(name.as_str(), "scp" | "rsync")
                 && !args.is_empty()
             {
-                deferred_ask.get_or_insert(
+                defer_ask(
+                    &mut deferred_ask,
                     "outbound network mutation or remote file transfer requires user approval",
                 );
             } else if matches!(name.as_str(), "npm" | "pnpm") {
@@ -871,7 +1452,8 @@ pub fn evaluate_shell_command(
                         )
                     })
                 {
-                    deferred_ask.get_or_insert(
+                    defer_ask(
+                        &mut deferred_ask,
                         "global package installation requires user approval",
                     );
                 }
@@ -880,7 +1462,8 @@ pub fn evaluate_shell_command(
                     .first()
                     .is_some_and(|t| t.text.eq_ignore_ascii_case("install"))
             {
-                deferred_ask.get_or_insert(
+                defer_ask(
+                    &mut deferred_ask,
                     "global package installation requires user approval",
                 );
             }
@@ -897,18 +1480,16 @@ pub fn evaluate_shell_command(
                         | "invoke-expression"
                 )
             {
-                deferred_ask.get_or_insert(
+                defer_ask(
+                    &mut deferred_ask,
                     "outbound network mutation or remote file transfer requires user approval",
                 );
             }
         }
     }
 
-    if let Some(reason) = deferred_ask {
-        return ShellPolicyDecision::Ask {
-            code: SHELL_CONFIRM_REQUIRED,
-            reason: reason.to_owned(),
-        };
+    if let Some((code, reason)) = deferred_ask {
+        return ShellPolicyDecision::Ask { code, reason };
     }
 
     ShellPolicyDecision::Allow
@@ -919,9 +1500,11 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        SHELL_CONFIRM_REQUIRED, SHELL_CREDENTIAL_ACCESS,
+        MAX_RECURSION_DEPTH, SHELL_CONFIRM_REQUIRED, SHELL_CREDENTIAL_ACCESS,
         SHELL_DESTRUCTIVE_HOST_OP, SHELL_PRIVACY_TAMPER, SHELL_SYSTEM_TAMPER,
         ShellPolicyDecision, evaluate_shell_command,
+        evaluate_shell_command_inner, merge_decisions,
+        strip_powershell_backticks,
     };
 
     #[test]
@@ -1220,5 +1803,220 @@ mod tests {
                 evaluate_shell_command(denied_cmd, cwd)
             );
         }
+    }
+
+    #[test]
+    fn strip_powershell_backticks_preserves_single_quotes_and_deobfuscates() {
+        assert_eq!(strip_powershell_backticks("r`m -rf /"), "rm -rf /");
+        assert_eq!(strip_powershell_backticks("s`udo id"), "sudo id");
+        assert_eq!(
+            strip_powershell_backticks("~/.s`sh/id_rsa"),
+            "~/.ssh/id_rsa"
+        );
+        assert_eq!(
+            strip_powershell_backticks("C:\\Win`dows\\System32"),
+            "C:\\Windows\\System32"
+        );
+        assert_eq!(
+            strip_powershell_backticks("Write-Output 'r`m -rf /'"),
+            "Write-Output 'r`m -rf /'"
+        );
+        assert_eq!(
+            strip_powershell_backticks("Write-Output \"line1`nline2`tcol\""),
+            "Write-Output \"line1\nline2\tcol\""
+        );
+        assert_eq!(
+            strip_powershell_backticks("\"C:\\Win`dows\""),
+            "\"C:\\Windows\""
+        );
+        assert_eq!(
+            strip_powershell_backticks("Write-Output \"it's r`m\""),
+            "Write-Output \"it's rm\""
+        );
+    }
+
+    #[test]
+    fn merge_decisions_enforces_deny_gt_ask_gt_allow() {
+        let ask = ShellPolicyDecision::Ask {
+            code: SHELL_CONFIRM_REQUIRED,
+            reason: "confirm".to_owned(),
+        };
+        let deny = ShellPolicyDecision::Deny {
+            code: SHELL_SYSTEM_TAMPER,
+            reason: "blocked".to_owned(),
+        };
+        assert_eq!(
+            merge_decisions(ShellPolicyDecision::Allow, ask.clone()),
+            ask
+        );
+        assert_eq!(
+            merge_decisions(ask.clone(), ShellPolicyDecision::Allow),
+            ask
+        );
+        assert_eq!(merge_decisions(ask.clone(), deny.clone()), deny);
+        assert_eq!(merge_decisions(deny.clone(), ask), deny);
+    }
+
+    #[test]
+    fn blocks_ps_backticks_subshells_windows_privesc_and_extra_credentials() {
+        let cwd = Path::new("workspace");
+
+        let hostile_destructive = [
+            "r`m -rf /",
+            "bash -c \"rm -rf /\"",
+            "cmd /c \"rd /s /q C:\\Windows\"",
+            "powershell -Command \"Remove-Item -Recurse C:\\Windows\"",
+            "powershell -c \"Remove-Item -Recurse 'C:\\Program Files'\"",
+            "powershell -Command \"echo ok`nrm -rf /\"",
+            "iex \"rm -rf /\"",
+            "Invoke-Expression -Command \"rm -rf /\"",
+            "echo ok && bash -c \"rm -rf /\"",
+            "bash -c \"sh -c 'zsh -c \\\"rm -rf /\\\"'\"",
+        ];
+        for cmd in hostile_destructive {
+            let decision = evaluate_shell_command(cmd, cwd);
+            assert!(
+                matches!(
+                    decision,
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_DESTRUCTIVE_HOST_OP,
+                        ..
+                    }
+                ),
+                "expected destructive Deny for {cmd:?}, got {decision:?}"
+            );
+        }
+
+        let hostile_system = [
+            "echo `sudo id`",
+            "s`udo id",
+            "sh -lc \"sudo id\"",
+            "powershell -Command 's`udo id'",
+            "Start-Process powershell -Verb RunAs",
+            "Start-Process cmd -Verb:RunAs",
+            "saps powershell -Ve runas",
+            "start cmd -Verb RunAs",
+            "sc delete WinDefend",
+            "sc.exe config WinDefend start= disabled",
+            "sc \\\\localhost stop WinDefend",
+            "schtasks /create /tn x /tr y",
+            "schtasks /delete /tn x /f",
+            "schtasks /change /tn x /disable",
+            "net localgroup administrators alice /add",
+            "net user alice Secret123 /add",
+            "net user alice /delete",
+            "takeown /f C:\\Windows",
+            "icacls C:\\Windows /grant everyone:F",
+            "bash -c \"sh -c 'zsh -c \\\"bash -c \\\\\\\"rm -rf /\\\\\\\"\\\"'\"",
+        ];
+        for cmd in hostile_system {
+            let decision = evaluate_shell_command(cmd, cwd);
+            assert!(
+                matches!(
+                    decision,
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_SYSTEM_TAMPER,
+                        ..
+                    }
+                ),
+                "expected system tamper Deny for {cmd:?}, got {decision:?}"
+            );
+        }
+
+        let hostile_creds = [
+            "cat ~/.s`sh/id_rsa",
+            "cmdkey /list",
+            "cmdkey /generic:target /user:alice /pass:123",
+            "cmdkey /add:target /user:alice /pass:123",
+            "cmdkey /delete:target",
+            "vaultcmd /list",
+            "cat ~/.kube/config",
+            "Get-Content $env:USERPROFILE\\.kube\\config",
+            "cat ~/.npmrc",
+            "cat ~/.pypirc",
+            "cat ~/.docker/config.json",
+            "cat ~/.git-credentials",
+        ];
+        for cmd in hostile_creds {
+            let decision = evaluate_shell_command(cmd, cwd);
+            assert!(
+                matches!(
+                    decision,
+                    ShellPolicyDecision::Deny {
+                        code: SHELL_CREDENTIAL_ACCESS,
+                        ..
+                    }
+                ),
+                "expected credential Deny for {cmd:?}, got {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subshell_ask_aggregation_benign_subshells_and_depth_cap() {
+        let cwd = Path::new("workspace");
+
+        let ask_decision =
+            evaluate_shell_command("bash -c \"git reset --hard\"", cwd);
+        assert!(
+            matches!(
+                ask_decision,
+                ShellPolicyDecision::Ask {
+                    code: SHELL_CONFIRM_REQUIRED,
+                    ..
+                }
+            ),
+            "expected Ask for nested git reset --hard, got {ask_decision:?}"
+        );
+
+        let mixed_decision = evaluate_shell_command(
+            "bash -c \"git reset --hard\" && sh -c \"rm -rf /\"",
+            cwd,
+        );
+        assert!(
+            matches!(
+                mixed_decision,
+                ShellPolicyDecision::Deny {
+                    code: SHELL_DESTRUCTIVE_HOST_OP,
+                    ..
+                }
+            ),
+            "expected Deny to dominate Ask in multi-subshell pipeline, got {mixed_decision:?}"
+        );
+
+        for benign in [
+            "bash -c \"ls -la outputs/\"",
+            "cmd /c \"dir outputs\"",
+            "powershell -Command \"Get-ChildItem ./outputs\"",
+            "powershell -File ./scripts/build.ps1 -Command \"rm -rf /\"",
+            "python -c \"print('ok')\"",
+            "Start-Process notepad.exe ./notes.txt",
+            "Write-Output 'r`m -rf /'",
+            "powershell -Command Write-Output \"a; rm -rf /\"",
+        ] {
+            assert_eq!(
+                evaluate_shell_command(benign, cwd),
+                ShellPolicyDecision::Allow,
+                "expected benign command to stay Allow: {benign:?}"
+            );
+        }
+
+        // Direct call at MAX_RECURSION_DEPTH evaluates flat rules safely
+        // and blocks deeper subshell recursion without infinite looping.
+        assert_eq!(
+            evaluate_shell_command_inner("ls -la", cwd, MAX_RECURSION_DEPTH),
+            ShellPolicyDecision::Allow
+        );
+        assert!(matches!(
+            evaluate_shell_command_inner(
+                "bash -c \"ls\"",
+                cwd,
+                MAX_RECURSION_DEPTH
+            ),
+            ShellPolicyDecision::Deny {
+                code: SHELL_SYSTEM_TAMPER,
+                ..
+            }
+        ));
     }
 }
