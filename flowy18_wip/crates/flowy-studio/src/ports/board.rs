@@ -521,6 +521,7 @@ pub trait BoardDataSource {
         default_space_label: &str,
         unassigned_queue_title: &str,
         generation: u64,
+        localize: &dyn Fn(&str) -> String,
     ) -> WorkBoardSnapshot;
 }
 
@@ -558,6 +559,7 @@ impl BoardDataSource for AgentHandle {
         default_space_label: &str,
         unassigned_queue_title: &str,
         generation: u64,
+        localize: &dyn Fn(&str) -> String,
     ) -> WorkBoardSnapshot {
         let sessions = self.list_sessions();
         let busy_ids: HashSet<String> =
@@ -641,6 +643,7 @@ impl BoardDataSource for AgentHandle {
                 &session_receipts,
                 &overridden_hashes,
                 session_contract.clone(),
+                localize,
                 |work_id| work_contracts.get(work_id).cloned(),
             );
 
@@ -650,6 +653,7 @@ impl BoardDataSource for AgentHandle {
                         summary,
                         &child_works,
                         &overridden_hashes,
+                        localize,
                         |wid| self.session_lines(wid),
                         |wid| {
                             receipts_by_session
@@ -922,6 +926,7 @@ pub(super) fn project_session_branches<F>(
     queued_receipts: &[(AcceptedMessage, ReceiptState)],
     overridden_hashes: &std::collections::BTreeSet<String>,
     session_contract: Option<WorkContractProgress>,
+    localize: &dyn Fn(&str) -> String,
     work_status_fn: F,
 ) -> Vec<WorkBranchSummary>
 where
@@ -1110,7 +1115,7 @@ where
         };
         let safe_title = redact_trace_text(&summary.title);
         let heartbeat_detail = live_heartbeat.and_then(|hb| {
-            crate::pending_card::format_heartbeat_line(hb, "...")
+            crate::pending_card::format_heartbeat_line_localized(hb, localize)
                 .map(|text| redact_trace_text(&text))
         });
         let (skill_label, step_label, detail) =
@@ -1399,6 +1404,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             Some(contract.clone()),
+            &|k| k.to_owned(),
             |_| None,
         );
         assert_eq!(branches.len(), 2);
@@ -1505,6 +1511,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             None,
+            &|k| k.to_owned(),
             |_| None,
         );
         assert_eq!(branches.len(), 1);
@@ -1546,6 +1553,7 @@ mod tests {
             "Default space",
             "Background tasks",
             1,
+            &|k| k.to_owned(),
         );
         let group = snap
             .sessions
@@ -1612,6 +1620,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             None,
+            &|k| k.to_owned(),
             |_| None,
         );
         let mut kpi = BoardKpiSummary::default();
@@ -1681,6 +1690,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             None,
+            &|k| k.to_owned(),
             |_| None,
         );
         assert!(!branches[0].deliverable_name.contains("sk-secret"));
@@ -1694,6 +1704,11 @@ mod tests {
                 .into(),
             running: true,
         }];
+        let en_localize = |k: &str| match k {
+            "chat.status_running" => "Running".into(),
+            "chat.thinking" => "Thinking".into(),
+            other => other.to_owned(),
+        };
         let running_branches = project_session_branches(
             &summary,
             &running_lines,
@@ -1709,6 +1724,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             None,
+            &en_localize,
             |_| None,
         );
         assert!(
@@ -1723,6 +1739,60 @@ mod tests {
         assert!(live.detail.contains("read config · running shell"));
         assert!(!live.detail.contains("sk-live-secret-999999"));
         assert!(!live.detail.contains("user:pass"));
+
+        let zh_localize = |k: &str| match k {
+            "chat.status_running" => "运行中".into(),
+            "chat.thinking" => "思考中".into(),
+            other => other.to_owned(),
+        };
+        let zh_branches = project_session_branches(
+            &summary,
+            &running_lines,
+            true,
+            false,
+            Some(&flowy_agent::BranchHeartbeat {
+                last_completed: Some("read config".into()),
+                last_completed_at_ms: Some(123),
+                current_action: "evaluating tool evidence".into(),
+                next_check_hint: Some("raw hint".into()),
+                awaiting_evidence: false,
+            }),
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &zh_localize,
+            |_| None,
+        );
+        let zh_live = zh_branches
+            .iter()
+            .find(|b| matches!(b.phase, BranchPhase::Running { .. }))
+            .expect("zh live branch");
+        assert_eq!(zh_live.detail, "read config · 运行中");
+        assert!(!zh_live.detail.contains("evaluating tool evidence"));
+
+        let thinking_branches = project_session_branches(
+            &summary,
+            &[],
+            true,
+            false,
+            Some(&flowy_agent::BranchHeartbeat {
+                last_completed: None,
+                last_completed_at_ms: None,
+                current_action: "thinking".into(),
+                next_check_hint: None,
+                awaiting_evidence: false,
+            }),
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &zh_localize,
+            |_| None,
+        );
+        let thinking_live = thinking_branches
+            .iter()
+            .find(|b| matches!(b.phase, BranchPhase::Running { .. }))
+            .expect("thinking live branch");
+        assert_eq!(thinking_live.detail, "思考中");
     }
 
     #[test]
@@ -1845,6 +1915,7 @@ mod tests {
             &[],
             &std::collections::BTreeSet::new(),
             None,
+            &|k| k.to_owned(),
             |_| None,
         );
         let names: Vec<&str> = branches
@@ -2079,6 +2150,7 @@ mod tests {
                 &parent,
                 &child_works,
                 &std::collections::BTreeSet::new(),
+                &|k| k.to_owned(),
                 |wid| child_lines.get(wid).cloned().unwrap_or_default(),
                 |wid| {
                     receipts_by_session

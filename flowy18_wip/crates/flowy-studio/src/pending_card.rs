@@ -44,44 +44,6 @@ fn clamp_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// Formats a live [`BranchHeartbeat`] into one concise, honest, redacted
-/// progress line without fabricating percentage progress when no new evidence
-/// has arrived.
-#[must_use]
-pub fn format_heartbeat_line(
-    heartbeat: &BranchHeartbeat,
-    waiting_label: &str,
-) -> Option<String> {
-    let mut parts: Vec<String> = Vec::with_capacity(3);
-    if let Some(last) = heartbeat
-        .last_completed
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        parts.push(crate::ports::redact_trace_text(last));
-    }
-    let current = heartbeat.current_action.trim();
-    if !current.is_empty() {
-        parts.push(crate::ports::redact_trace_text(current));
-    } else if heartbeat.awaiting_evidence && !waiting_label.trim().is_empty() {
-        parts.push(waiting_label.trim().to_owned());
-    }
-    if let Some(next) = heartbeat
-        .next_check_hint
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        parts.push(crate::ports::redact_trace_text(next));
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" \u{00b7} "))
-    }
-}
-
 /// Formats the current action of a live [`BranchHeartbeat`] into one localized
 /// status phrase using existing locale keys (never leaking raw English
 /// observer literals like `"thinking"` or `"evaluating tool evidence"`).
@@ -934,19 +896,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heartbeat_line_omits_empty_parts_redacts_secrets_and_surfaces_waiting() {
-        let waiting = BranchHeartbeat {
-            last_completed: Some("已读取报价表".into()),
-            last_completed_at_ms: Some(1_000),
-            current_action: String::new(),
-            next_check_hint: Some("等待工具返回".into()),
-            awaiting_evidence: true,
-        };
-        assert_eq!(
-            format_heartbeat_line(&waiting, "正在等待，尚未确认进展")
-                .as_deref(),
-            Some("已读取报价表 · 正在等待，尚未确认进展 · 等待工具返回")
-        );
+    fn localized_heartbeat_covers_all_observer_actions_and_redaction_edges() {
+        let fake_t = |key: &str| format!("<{key}>");
 
         let with_secret = BranchHeartbeat {
             current_action:
@@ -954,16 +905,16 @@ mod tests {
                     .into(),
             ..BranchHeartbeat::default()
         };
-        let rendered = format_heartbeat_line(&with_secret, "waiting").unwrap();
+        let rendered =
+            format_heartbeat_line_localized(&with_secret, &fake_t).unwrap();
         assert!(!rendered.contains("sk-1234567890abcdef1234567890"));
-
-        let empty = BranchHeartbeat::default();
-        assert_eq!(format_heartbeat_line(&empty, "waiting"), None);
-    }
-
-    #[test]
-    fn localized_heartbeat_covers_all_observer_actions_and_redaction_edges() {
-        let fake_t = |key: &str| format!("<{key}>");
+        assert_eq!(
+            format_heartbeat_line_localized(
+                &BranchHeartbeat::default(),
+                &fake_t
+            ),
+            None
+        );
 
         let cases = [
             ("thinking", "<chat.thinking>"),

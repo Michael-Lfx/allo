@@ -350,6 +350,27 @@ impl Engine {
             .collect()
     }
 
+    /// Sorted IDs of all durable Worker sessions owned by `root_id`, avoiding
+    /// cloning full [`SessionRecord`] histories on hot projection paths.
+    #[must_use]
+    pub fn child_session_ids(&self, root_id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .sessions
+            .iter()
+            .filter(|rec| {
+                rec.role == SessionRole::Worker
+                    && rec.root_session_id.as_deref() == Some(root_id)
+            })
+            .map(|rec| rec.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Atomically enqueue a durable FIFO user follow-up onto a busy Router
     /// session, idempotent by `submission_id` and bounded by `max_len`.
     pub fn enqueue_router_followup(

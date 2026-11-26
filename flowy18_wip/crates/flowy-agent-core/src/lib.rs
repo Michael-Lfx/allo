@@ -13,7 +13,9 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
-pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease, ReceiptState};
+pub use acceptance::{
+    AcceptanceQueue, AcceptedMessage, DraftTarget, Lease, ReceiptState,
+};
 pub use engine::{
     Engine, EngineConfig, EnqueueOutcome, RunError, TurnObserver,
 };
@@ -187,6 +189,7 @@ mod router_core_tests {
             engine.child_sessions("r-1")[0].access_mode,
             WorkAccessMode::ReadOnly
         );
+        assert_eq!(engine.child_session_ids("r-1"), vec!["w-1".to_owned()]);
 
         let sub_id = format!("submission-{:032x}", 42_u128);
         let item = PendingRouterFollowup {

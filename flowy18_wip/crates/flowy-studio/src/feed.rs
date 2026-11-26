@@ -180,24 +180,21 @@ fn collect_latest_deliverables(
                         });
                     }
                 }
-                ChatLine::Verification {
-                    artifact_path,
-                    ok,
-                    override_used,
-                    ..
-                } if (*ok || *override_used)
-                    && !artifact_path.trim().is_empty()
-                    && seen.insert(crate::ports::display_path_str(
-                        artifact_path,
-                    )) =>
+                ChatLine::Verification { artifact_path, .. }
+                    if !artifact_path.trim().is_empty() =>
                 {
-                    entries.push(flowy_agent::FileEntry {
-                        path: artifact_path.clone(),
-                        change: flowy_agent::FileChangeKind::Add,
-                        added: 0,
-                        removed: 0,
-                        binary: false,
-                    });
+                    let norm = crate::ports::display_path_str(artifact_path);
+                    if verification_settled.get(&norm).copied() == Some(true)
+                        && seen.insert(norm)
+                    {
+                        entries.push(flowy_agent::FileEntry {
+                            path: artifact_path.clone(),
+                            change: flowy_agent::FileChangeKind::Add,
+                            added: 0,
+                            removed: 0,
+                            binary: false,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -3358,5 +3355,169 @@ mod tests {
                 ChatLine::Status { text } if text == "chat.status_stopped"
             ));
         });
+    }
+
+    #[test]
+    fn collect_latest_deliverables_hides_pass_overturned_by_later_failure() {
+        let lines = vec![
+            ChatLine::User {
+                text: "Build report".into(),
+            },
+            ChatLine::FileChange {
+                path: r"C:\项目\报告.md".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 10,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::Verification {
+                report_id: "rep-1".into(),
+                artifact_path: r"C:\项目\报告.md".into(),
+                artifact_hash: "h1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::Verification {
+                report_id: "rep-2".into(),
+                artifact_path: r"C:\项目\报告.md".into(),
+                artifact_hash: "h2".into(),
+                ok: false,
+                issues: vec![flowy_agent::VerificationIssue {
+                    code: "BROKEN".into(),
+                    field: "body".into(),
+                }],
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+        ];
+        assert!(
+            collect_latest_deliverables(&lines).is_none(),
+            "earlier pass overturned by later failure must never enter deliverables drawer"
+        );
+    }
+
+    #[test]
+    fn collect_latest_deliverables_surfaces_fail_then_pass_and_override_once() {
+        let fail_then_pass = vec![
+            ChatLine::User {
+                text: "Build report".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-1".into(),
+                artifact_path: r"C:\Work\summary.docx".into(),
+                artifact_hash: "h1".into(),
+                ok: false,
+                issues: vec![flowy_agent::VerificationIssue {
+                    code: "EMPTY".into(),
+                    field: "doc".into(),
+                }],
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::Verification {
+                report_id: "rep-2".into(),
+                artifact_path: r"C:\Work\summary.docx".into(),
+                artifact_hash: "h2".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+        ];
+        let entries = collect_latest_deliverables(&fail_then_pass)
+            .expect("fail then pass settles to deliverable");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, r"C:\Work\summary.docx");
+
+        let pass_fail_override = vec![
+            ChatLine::User {
+                text: "Build report".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-1".into(),
+                artifact_path: r"C:\Work\summary.docx".into(),
+                artifact_hash: "h1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::Verification {
+                report_id: "rep-2".into(),
+                artifact_path: r"C:\Work\summary.docx".into(),
+                artifact_hash: "h2".into(),
+                ok: false,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::Verification {
+                report_id: "rep-3".into(),
+                artifact_path: r"\\?\C:\Work\summary.docx".into(),
+                artifact_hash: "h2".into(),
+                ok: false,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: true,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+        ];
+        let overridden = collect_latest_deliverables(&pass_fail_override)
+            .expect("explicit override settles deliverable once");
+        assert_eq!(overridden.len(), 1);
+    }
+
+    #[test]
+    fn collect_latest_deliverables_isolates_latest_turn_from_earlier_anchored_cards()
+     {
+        let lines = vec![
+            ChatLine::User {
+                text: "deliver alpha".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-a".into(),
+                artifact_path: r"C:\Work\alpha.pptx".into(),
+                artifact_hash: "ha".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some("w-1".into()),
+            },
+            ChatLine::User {
+                text: "deliver beta".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-b".into(),
+                artifact_path: r"C:\Work\beta.pptx".into(),
+                artifact_hash: "hb".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some("w-2".into()),
+            },
+        ];
+        let entries = collect_latest_deliverables(&lines)
+            .expect("latest turn with deliverables surfaces only beta");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, r"C:\Work\beta.pptx");
     }
 }

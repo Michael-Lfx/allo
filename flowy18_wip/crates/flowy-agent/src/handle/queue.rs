@@ -5,9 +5,13 @@ use super::AcceptedSubmitHook;
 use super::{
     ACCEPTED_MAX_ATTEMPTS, ACCEPTED_RELEASE_BASE_MS, ACCEPTED_RELEASE_MAX_MS,
     AcceptanceQueue, AcceptedClaim, AcceptedMessage, AcceptedRun, AgentHandle,
-    AgentUpdate, Arc, ArtifactStore, CancelToken, Engine, Harness, HashMap,
-    Live, Ordering, Path, RECEIPT_SUPERSEDED_ERR, ReceiptState, TurnStatus,
-    UiState, lock, now_ms, submission_committed_in_session,
+    AgentUpdate, AgentWorkspace, Arc, ArtifactStore, CancelToken, Engine,
+    Harness, HashMap, Live, Ordering, Path, RECEIPT_SUPERSEDED_ERR,
+    ReceiptState, TurnStatus, UiState, lock, now_ms,
+    submission_committed_in_session,
+};
+use flowy_agent_core::{
+    DraftTarget, SessionOrigin, SessionRole, SessionWorkspace,
 };
 
 impl AgentHandle {
@@ -21,6 +25,49 @@ impl AgentHandle {
         &self,
         text: &str,
     ) -> Result<AcceptedMessage, &'static str> {
+        let active = lock(&self.inner.state.active).clone();
+        let hint =
+            active.filter(|id| lock(&self.inner.state.live).contains_key(id));
+        self.accept_deferred_inner(hint.as_deref(), text, false, None)
+    }
+
+    /// Durably accept a cold-start empty-draft prompt while preserving the
+    /// draft's Project workspace and target role (`SessionRole::Router`), so a
+    /// subsequent project switch or app restart before cloud readiness cannot
+    /// misroute the prompt into `Home / Standard`.
+    pub fn accept_deferred_draft(
+        &self,
+        text: &str,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        role: SessionRole,
+    ) -> Result<AcceptedMessage, &'static str> {
+        let target = DraftTarget {
+            origin,
+            workspace: workspace.map(|ws| SessionWorkspace { root: ws.root }),
+            role,
+        };
+        self.accept_deferred_inner(None, text, false, Some(target))
+    }
+
+    /// Durably accept a cold-start prompt strictly targeted at an existing
+    /// Router conversation (cancels cleanly instead of spawning a Home
+    /// fallback if the Router is deleted before readiness).
+    pub fn accept_deferred_router(
+        &self,
+        router_id: &str,
+        text: &str,
+    ) -> Result<AcceptedMessage, &'static str> {
+        self.accept_deferred_inner(Some(router_id), text, true, None)
+    }
+
+    fn accept_deferred_inner(
+        &self,
+        session_hint: Option<&str>,
+        text: &str,
+        strict_target: bool,
+        target: Option<DraftTarget>,
+    ) -> Result<AcceptedMessage, &'static str> {
         let text = text.trim();
         if text.is_empty() {
             return Err("notice.prompt_empty");
@@ -28,27 +75,25 @@ impl AgentHandle {
         if self.is_initializing() {
             return Err("library.loading");
         }
-        // Accepting must never create a session. `ensure_active_session()`
-        // does exactly that when nothing is live, which would pin the receipt
-        // to an empty conversation the user never had. The session is a hint
-        // here, not a binding (see `AcceptedMessage::session_hint`).
-        // Always release `active` before acquiring `live` (lock ordering).
-        let active = lock(&self.inner.state.active).clone();
-        let hint =
-            active.filter(|id| lock(&self.inner.state.live).contains_key(id));
         let receipt = AcceptanceQueue::new(self.inner.state.root.clone())
-            .accept(hint.as_deref(), text, now_ms())
+            .accept_with_target(
+                session_hint,
+                text,
+                strict_target,
+                target,
+                None,
+                now_ms(),
+            )
             .map_err(|_| {
                 self.inner.state.report_storage_error();
                 "notice.session_storage_failed"
             })?;
-        let root_session_id =
-            hint.as_deref().map(|id| self.root_session_id(id));
+        let root_session_id = session_hint.map(|id| self.root_session_id(id));
         tracing::info!(
             target: "flowy.acceptance",
             event = "accepted",
             receipt_id = %receipt.id,
-            session_id = hint.as_deref().unwrap_or(""),
+            session_id = session_hint.unwrap_or(""),
             root_session_id = root_session_id.as_deref().unwrap_or(""),
             "accepted prompt into durable queue"
         );
@@ -253,9 +298,13 @@ impl Harness {
             .as_deref()
             .or(receipt.session_hint.as_deref())
         else {
-            // Unbound receipts create a brand-new isolated Home workspace.
+            // Unbound receipts create a new session without acquiring a worker write lock.
             return false;
         };
+        // Routers never acquire directory write locks; spawned Workers inherit them.
+        if self.session_role(sid) == SessionRole::Router {
+            return false;
+        }
         let Some(mode) = self.session_access_mode(sid) else {
             return false;
         };
@@ -404,7 +453,31 @@ impl Harness {
                     }
                     return Ok(None);
                 }
-                match self.create_background_home_session() {
+                let (target_origin, target_workspace, target_role) =
+                    match claimed.draft_target.as_deref() {
+                        Some(draft) => {
+                            let ws = draft.workspace.as_ref().map(|ws| {
+                                AgentWorkspace {
+                                    project_id: match &draft.origin {
+                                        SessionOrigin::Project {
+                                            project_id: Some(pid),
+                                        } => pid.clone(),
+                                        _ => String::new(),
+                                    },
+                                    root: ws.root.clone(),
+                                }
+                            });
+                            (draft.origin.clone(), ws, draft.role)
+                        }
+                        None => {
+                            (SessionOrigin::Home, None, SessionRole::Standard)
+                        }
+                    };
+                match self.create_background_session_with_role(
+                    target_origin,
+                    target_workspace,
+                    target_role,
+                ) {
                     Ok(session) => session,
                     Err(error) => {
                         settle_and_notify_failed_attempt(

@@ -486,12 +486,14 @@ impl StudioPanel {
         self.board_generation = self.board_generation.wrapping_add(1);
         let default_label = self.t("studio.space_default_sub");
         let unassigned_title = self.t("chat.bg_tasks_title");
+        let i18n = self.i18n.clone();
         self.board_snapshot = self.agent.build_board_snapshot(
             &self.projects,
             &self.visible_receipts,
             &default_label,
             &unassigned_title,
             self.board_generation,
+            &|key| i18n.t(key),
         );
         if let Some(selected_day) = self.board_day_filter
             && !self

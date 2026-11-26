@@ -1278,12 +1278,7 @@ impl AgentHandle {
             .ok_or("notice.agent_failed")?;
         let mut family_ids: BTreeSet<String> =
             std::iter::once(session_id.to_owned())
-                .chain(
-                    engine
-                        .child_sessions(session_id)
-                        .into_iter()
-                        .map(|child| child.id),
-                )
+                .chain(engine.child_session_ids(session_id))
                 .collect();
         let has_pending_followups = archived
             && engine
@@ -1668,9 +1663,9 @@ impl AgentHandle {
         if self.inner.session_role(session_id) == SessionRole::Router {
             let engine = lock(&self.inner.engine).clone();
             if let Some(eng) = engine {
-                return eng.child_sessions(session_id).iter().any(|child| {
-                    self.single_session_needs_attention(&child.id)
-                });
+                return eng.child_session_ids(session_id).iter().any(
+                    |child_id| self.single_session_needs_attention(child_id),
+                );
             }
         }
         false
@@ -2103,13 +2098,17 @@ impl AgentHandle {
         let Some(engine) = lock(&self.inner.engine).clone() else {
             return;
         };
-        let mut children = engine.child_sessions(router_id);
-        if children.is_empty() {
+        let child_ids = engine.child_session_ids(router_id);
+        if child_ids.is_empty() {
             return;
         }
-        // Sort by monotonic worker id ascending so ordering stays stable across
-        // refresh and restart.
-        children.sort_by(|a, b| a.id.cmp(&b.id));
+
+        #[derive(Clone, Copy)]
+        enum CardSlot {
+            Row(usize),
+            Turn(usize, usize),
+            Tail(usize),
+        }
 
         let mut seen_artifacts: BTreeSet<String> = rows
             .iter()
@@ -2118,7 +2117,7 @@ impl AgentHandle {
                 _ => None,
             })
             .collect();
-        let mut seen_reports: HashMap<String, usize> = HashMap::new();
+        let mut seen_reports: HashMap<String, CardSlot> = HashMap::new();
         for (idx, line) in rows.iter().enumerate() {
             if let ChatLine::Verification {
                 report_id,
@@ -2127,15 +2126,43 @@ impl AgentHandle {
             } = line
             {
                 let key = verification_dedup_key(report_id, artifact_path);
-                seen_reports.insert(key, idx);
+                seen_reports.insert(key, CardSlot::Row(idx));
             }
         }
 
         let live = lock(&self.inner.state.live);
-        for child in &children {
-            let Some(child_live) = live.get(&child.id) else {
+        let user_positions: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                matches!(line, ChatLine::User { .. }).then_some(idx)
+            })
+            .collect();
+        let work_turns =
+            Self::collect_work_dispatch_turns(rows, &user_positions);
+        let mut turn_inserts: Vec<Vec<ChatLine>> =
+            vec![Vec::new(); user_positions.len()];
+        let mut tail_inserts: Vec<ChatLine> = Vec::new();
+        let push_to_slot = |target_turn: Option<usize>,
+                            card: ChatLine,
+                            turn_inserts: &mut [Vec<ChatLine>],
+                            tail_inserts: &mut Vec<ChatLine>|
+         -> CardSlot {
+            if let Some(turn) = target_turn {
+                let pos = turn_inserts[turn].len();
+                turn_inserts[turn].push(card);
+                CardSlot::Turn(turn, pos)
+            } else {
+                let pos = tail_inserts.len();
+                tail_inserts.push(card);
+                CardSlot::Tail(pos)
+            }
+        };
+        for child_id in &child_ids {
+            let Some(child_live) = live.get(child_id) else {
                 continue;
             };
+            let target_turn = work_turns.get(child_id).copied();
             for line in &child_live.projection.lines {
                 match line {
                     ChatLine::Verification {
@@ -2160,27 +2187,71 @@ impl AgentHandle {
                             semantic_hint: semantic_hint.clone(),
                             override_used: *override_used,
                             provenance_warnings: provenance_warnings.clone(),
-                            source_session_id: Some(child.id.clone()),
+                            source_session_id: Some(child_id.clone()),
                         };
-                        if let Some(&existing_idx) = seen_reports.get(&key) {
-                            rows[existing_idx] = card;
-                        } else {
-                            seen_reports.insert(key, rows.len());
-                            rows.push(card);
+                        match seen_reports.get(&key).copied() {
+                            Some(CardSlot::Row(idx)) => rows[idx] = card,
+                            Some(CardSlot::Turn(t, p)) => {
+                                turn_inserts[t][p] = card;
+                            }
+                            Some(CardSlot::Tail(p)) => {
+                                tail_inserts[p] = card;
+                            }
+                            None => {
+                                let slot = push_to_slot(
+                                    target_turn,
+                                    card,
+                                    &mut turn_inserts,
+                                    &mut tail_inserts,
+                                );
+                                seen_reports.insert(key, slot);
+                            }
                         }
                     }
                     ChatLine::Artifact { artifact_id }
                         if seen_artifacts.insert(artifact_id.clone()) =>
                     {
-                        rows.push(ChatLine::Artifact {
-                            artifact_id: artifact_id.clone(),
-                        });
+                        push_to_slot(
+                            target_turn,
+                            ChatLine::Artifact {
+                                artifact_id: artifact_id.clone(),
+                            },
+                            &mut turn_inserts,
+                            &mut tail_inserts,
+                        );
                     }
                     _ => {}
                 }
             }
         }
         drop(live);
+        if turn_inserts.iter().any(|bucket| !bucket.is_empty()) {
+            let extra: usize = turn_inserts.iter().map(Vec::len).sum::<usize>()
+                + tail_inserts.len();
+            let existing = std::mem::take(rows);
+            let mut out = Vec::with_capacity(existing.len() + extra);
+            let mut iter = existing.into_iter();
+            let mut emitted = 0_usize;
+            for (turn_idx, _) in user_positions.iter().enumerate() {
+                let end = user_positions
+                    .get(turn_idx + 1)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                while emitted < end {
+                    let Some(row) = iter.next() else {
+                        break;
+                    };
+                    out.push(row);
+                    emitted += 1;
+                }
+                out.append(&mut turn_inserts[turn_idx]);
+            }
+            out.extend(iter);
+            out.extend(tail_inserts);
+            *rows = out;
+        } else {
+            rows.extend(tail_inserts);
+        }
     }
 
     pub fn turn_status(&self) -> TurnStatus {
@@ -2192,6 +2263,60 @@ impl AgentHandle {
                     .map(|session| session.status.clone())
             })
             .unwrap_or_default()
+    }
+
+    /// Map each dispatched/revised `work_id` to the index in `user_positions`
+    /// of the latest Router user turn that produced a successful
+    /// `DispatchWorkResult`.
+    fn collect_work_dispatch_turns(
+        rows: &[ChatLine],
+        user_positions: &[usize],
+    ) -> HashMap<String, usize> {
+        let mut work_turns = HashMap::new();
+        if user_positions.is_empty() {
+            return work_turns;
+        }
+        let mut current_turn: Option<usize> = None;
+        let mut user_cursor = 0_usize;
+        let mut pending_tools: std::collections::VecDeque<&str> =
+            std::collections::VecDeque::new();
+        for (idx, line) in rows.iter().enumerate() {
+            while user_cursor < user_positions.len()
+                && user_positions[user_cursor] <= idx
+            {
+                current_turn = Some(user_cursor);
+                pending_tools.clear();
+                user_cursor += 1;
+            }
+            match line {
+                ChatLine::ToolCall { name, .. } => {
+                    pending_tools.push_back(name.as_str());
+                }
+                ChatLine::ToolResult {
+                    text,
+                    is_error: false,
+                } => {
+                    let prev_tool = pending_tools.pop_front();
+                    if let Some(turn) = current_turn
+                        && let Ok(val) =
+                            serde_json::from_str::<serde_json::Value>(text)
+                        && let Some(work_id) = val
+                            .get("work_id")
+                            .and_then(serde_json::Value::as_str)
+                        && !work_id.is_empty()
+                        && (val.get("receipt_id").is_some()
+                            || matches!(prev_tool, Some("dispatch_work")))
+                    {
+                        work_turns.insert(work_id.to_owned(), turn);
+                    }
+                }
+                ChatLine::ToolResult { is_error: true, .. } => {
+                    let _ = pending_tools.pop_front();
+                }
+                _ => {}
+            }
+        }
+        work_turns
     }
 
     pub fn working_elapsed_secs(&self) -> Option<u64> {
@@ -2684,10 +2809,20 @@ impl Harness {
 
     /// Create a new durable Home session in the background without ever
     /// mutating the UI's active selection or `context_generation`.
-    pub(super) fn create_background_home_session(
+    pub(super) fn create_background_session_with_role(
         &self,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        role: SessionRole,
     ) -> Result<String, &'static str> {
-        self.create_session_inner(SessionOrigin::Home, None, false)
+        self.create_session_with_role_inner(
+            origin,
+            workspace,
+            false,
+            role,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
     }
 
     fn create_session_inner(

@@ -29,6 +29,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::{SessionOrigin, SessionRole, SessionWorkspace};
+
+/// Captured conversation origin, workspace, and role intent for a cold-start
+/// empty-draft receipt accepted before any live session exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftTarget {
+    pub origin: SessionOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<SessionWorkspace>,
+    pub role: SessionRole,
+}
+
 /// One message the host has taken responsibility for but has not run yet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedMessage {
@@ -92,6 +104,10 @@ pub struct AcceptedMessage {
     /// Optional Router dispatch request identifier for audit and reconciliation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_request_id: Option<String>,
+    /// Captured cold-start origin, workspace, and role intent when accepted from
+    /// an empty Home/Project draft (boxed to keep `AcceptedMessage` compact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_target: Option<Box<DraftTarget>>,
 }
 
 /// Externally observable lifecycle state for one receipt at a point in time.
@@ -168,6 +184,8 @@ enum JournalEntry {
         strict_target: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dispatch_request_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft_target: Option<Box<DraftTarget>>,
     },
     Taken {
         id: String,
@@ -303,6 +321,7 @@ impl AcceptanceQueue {
                     at_ms,
                     strict_target,
                     dispatch_request_id,
+                    draft_target,
                 } => {
                     let pos = receipts.len();
                     index_by_id.entry(id.clone()).or_insert(pos);
@@ -326,6 +345,7 @@ impl AcceptanceQueue {
                         submission_id: None,
                         strict_target,
                         dispatch_request_id,
+                        draft_target,
                     });
                 }
                 JournalEntry::Taken {
@@ -486,7 +506,28 @@ impl AcceptanceQueue {
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
-        self.accept_inner(session_hint, text, false, None, now_ms)
+        self.accept_inner(session_hint, text, false, None, None, now_ms)
+    }
+
+    /// Accept `text` with explicit cold-start draft intent (origin, workspace,
+    /// role) or strict session targeting.
+    pub fn accept_with_target(
+        &self,
+        session_hint: Option<&str>,
+        text: &str,
+        strict_target: bool,
+        target: Option<DraftTarget>,
+        dispatch_request_id: Option<&str>,
+        now_ms: u64,
+    ) -> io::Result<AcceptedMessage> {
+        self.accept_inner(
+            session_hint,
+            text,
+            strict_target,
+            dispatch_request_id,
+            target,
+            now_ms,
+        )
     }
 
     /// Accept `text` strictly bound to an existing Worker `worker_id`.
@@ -506,6 +547,7 @@ impl AcceptanceQueue {
             text,
             true,
             dispatch_request_id,
+            None,
             now_ms,
         )
     }
@@ -516,6 +558,7 @@ impl AcceptanceQueue {
         text: &str,
         strict_target: bool,
         dispatch_request_id: Option<&str>,
+        target: Option<DraftTarget>,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
         let lock = self.queue_lock();
@@ -523,6 +566,7 @@ impl AcceptanceQueue {
         let id = new_receipt_id(now_ms);
         let hint = session_hint.map(str::to_owned);
         let request_id = dispatch_request_id.map(str::to_owned);
+        let draft_target = target.map(Box::new);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
             session_hint: hint.clone(),
@@ -530,6 +574,7 @@ impl AcceptanceQueue {
             at_ms: now_ms,
             strict_target,
             dispatch_request_id: request_id.clone(),
+            draft_target: draft_target.clone(),
         };
         self.append_locked(&entry)?;
         Ok(AcceptedMessage {
@@ -550,6 +595,7 @@ impl AcceptanceQueue {
             submission_id: None,
             strict_target,
             dispatch_request_id: request_id,
+            draft_target,
         })
     }
 
@@ -630,6 +676,7 @@ impl AcceptanceQueue {
                 at_ms: now_ms,
                 strict_target: dead.strict_target,
                 dispatch_request_id: dead.dispatch_request_id.clone(),
+                draft_target: dead.draft_target.clone(),
             },
             JournalEntry::Superseded {
                 id: id.to_owned(),
@@ -659,6 +706,7 @@ impl AcceptanceQueue {
             submission_id: None,
             strict_target: dead.strict_target,
             dispatch_request_id: dead.dispatch_request_id.clone(),
+            draft_target: dead.draft_target.clone(),
         }))
     }
 
@@ -1873,6 +1921,54 @@ mod tests {
             .release_uncommitted_leases_except(2_200, &protected)
             .expect("release rebound r2");
         assert_eq!(released_r2, vec![r2.id]);
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn draft_target_survives_journal_replay_and_retry_dead_across_reopen() {
+        let root = temp_root("draft-target");
+        let queue = AcceptanceQueue::new(&root);
+        let target = DraftTarget {
+            origin: SessionOrigin::Project {
+                project_id: Some("proj-alpha".into()),
+            },
+            workspace: Some(SessionWorkspace {
+                root: PathBuf::from(r"C:\work\proj-alpha"),
+            }),
+            role: SessionRole::Router,
+        };
+        let accepted = queue
+            .accept_with_target(
+                None,
+                "cold start draft prompt",
+                false,
+                Some(target.clone()),
+                None,
+                1_000,
+            )
+            .expect("accept draft");
+        assert_eq!(accepted.draft_target.as_deref(), Some(&target));
+
+        let reopened = AcceptanceQueue::new(&root);
+        let replayed = reopened.get(&accepted.id).unwrap().unwrap();
+        assert_eq!(replayed.draft_target.as_deref(), Some(&target));
+
+        reopened
+            .take(&accepted.id, "att-1", 1_100, 30_000)
+            .unwrap()
+            .unwrap();
+        assert!(reopened.give_up(&accepted.id, "att-1", 1_200).unwrap());
+        let retried = reopened
+            .retry_dead(&accepted.id, 1_300)
+            .unwrap()
+            .expect("retry_dead preserves draft target");
+        assert_eq!(retried.draft_target.as_deref(), Some(&target));
+
+        let reopened_again = AcceptanceQueue::new(&root);
+        let retried_replayed =
+            reopened_again.get(&retried.id).unwrap().unwrap();
+        assert_eq!(retried_replayed.draft_target.as_deref(), Some(&target));
+
         fs::remove_dir_all(&root).expect("cleanup");
     }
 }
