@@ -46,7 +46,7 @@ use crate::projection::{
 };
 use crate::title::{self, TITLE_MAX_CHARS};
 use crate::workspace_arbiter::{
-    ExecutionClass, StartCoordinator, WorkspaceRequest,
+    ExecutionClass, ExecutionPermit, StartCoordinator, WorkspaceRequest,
 };
 
 /// The lease handed to a consumer claim; long enough for a normal turn.
@@ -4034,7 +4034,7 @@ impl Harness {
                 });
             }
         };
-        let execution_permit = execution_permit.map(|permit| permit.started());
+        let execution_permit = execution_permit.map(ExecutionPermit::started);
         let (fallback_title, title_signal) = {
             let mut live = lock(&state.live);
             let session = live.get_mut(&id).expect("active session exists");
