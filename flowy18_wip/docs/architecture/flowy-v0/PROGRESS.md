@@ -1129,3 +1129,21 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
   - 9-Crate `cargo clippy --locked --all-targets -- -D warnings`：**0 error, 0 warning**；
   - 8-Crate 串行 `cargo test --locked`（`flowy-agent` `--test-threads=1`）：**661 / 661 PASS**（core 117 / agent 248 / studio 119 / skills 66 / app 56 / ui 46 / i18n 8 / shell 1；0 failed，6 ignored）；
   - `cargo check --locked -p flowy-desktop`：0 error；真云端同会话双消息非阻塞 E2E **1 / 1 PASS**；双主题双语桌面实机视觉审计（9 PNG）`ok=True, failures=0, log_errors=0`。
+
+---
+
+## 任务 25 · 真云端全链路实测 8 项 UX 修复、PR #498 线性 Rebase 优化与审查收口（`fix/flowy-live-cloud-ux-polish`，2026-11-26）
+
+- **工位与基线**：暖构建 worktree `.agents/worktrees/feat-flowy-local-receipt`（分支 `fix/flowy-live-cloud-ux-polish`），在 PR #498 合入 `origin/main@83a9aef16` 后零冲突线性 rebase；主工作区 `d:/workSpace/git_clone_test/allo` 保持 100% 干净。
+- **边界核验**：聚焦全部自研链路（不碰技能市场、不碰 `flowy-agent-core` / `flowy-skills` / V6 外发 / 根 workspace），改动收口于 `flowy-agent`、`flowy-ui`、`flowy-studio`、`flowy-app`、23 份 `flowy-i18n/locales/*.json`（**933 键**对称，LF 换行）与本目录修订 9.13 同步文档。
+- **实测修复与 PR #498 合并后优化**：
+  - **流式 Markdown + 统一本地化心跳**：`markdown.rs` 新增非交互 `render_streaming`（CommonMark 围栏自动补全 + `Tag::Table` 非交互门控）并守住行 ID/滚动锚点；`pending_card.rs` 统一导出 `localize_heartbeat_action` 与 `format_heartbeat_line_localized` 覆盖全部 6 类 observer 状态（`thinking`/`reasoning`/`saving_files`/`waiting_for_user`/`stopping`/`evaluating tool evidence` + 空脱敏守卫），`composer.rs` 与 PR #498 `router_works.rs` 共用一套实现，彻底清除中英混杂。
+  - **语言防漂移 + 折叠结算 + 投影层防重停**：`handle/mod.rs` 与 `router.rs` 共用 `BASE_BEHAVIOR_PROMPT`，`workspace_has_user_files` 识别历史 `outputs/<prior>` 防多轮误判空目录；`history.rs` 移除死字段 `FoldMeta::duration_secs` 与 CoT 泄露并在结算后锁定 `live = false`；`feed.rs` + `panel.rs` 改在投影层于 `stop_handoff_has_details && TurnStatus::Stopped` 时省略冗余尾行 `已停止`（保留快速取消/重启恢复提示且无空行占位）。
+  - **诚实进度看板 + 导航归位 + UIA/弹出层/桌面文案**：`overview/mod.rs` + `flow_modal.rs` 仅在真实交付或契约分母存在时显示 `%`、对称去省略号防重标题；`panel.rs` 在 `set_surface(Chat)` 与全部入聊路径置位 `session_opened_by_user = true`；`overlays.rs` 弹出层自动垂直翻转；`appearance.rs`/`flex.rs`/`settings.rs` 全部 8 处单选/选中控件（含 `theme_card`）恢复 Windows UIA `InvokePattern`；`dock.rs` 截断与动态套餐徽章；23 语种 `settings.notify` 更新为桌面通知文案。
+- **最终串行全量门禁与真云端双主题 E2E**：
+  - `cargo fmt --all -- --check`：0 diff；`check-ui-contracts.mjs`：24/24 自测 + 全库 PASS；
+  - 9-Crate `cargo clippy --locked --all-targets -- -D warnings`：**0 error, 0 warning**；
+  - 8-Crate 串行 `cargo test --locked`（`flowy-agent` `--test-threads=1`）：**669 / 669 PASS**（core 117 / shell 1 / skills 66 / i18n 8 / ui 47 / studio 124 / app 57 / agent 249；较 PR #498 净增 +8 回归单测，0 failed，6 ignored）；
+  - 真云端 `cargo test -p flowy-agent live_cloud_ -- --ignored --nocapture --test-threads=1`：**3 / 3 PASS**（144.11s）；
+  - 双主题桌面真云端视觉 E2E（Dark Settings 3 PNG + Dark Live Submit/Stream/Stop/Board/Back 4 PNG + Light Model Picker/Board 2 PNG，共 9 张 PNG 逐张目检）：Dark & Light 终跑均 `ok=True, failures=0, log_errors=0, APPDATA_RESTORED, E2E_LOCK_RELEASED`；
+  - 预览包 `C:\Users\38788\AppData\Local\FlowyPreview\flowy-app.exe`（`79,651,840` 字节，`SHA-256: F5ADC622E8CFCBBEFDDAB93C2AE092C3572315408797628476EC4704EF024FE1`）已同步。
