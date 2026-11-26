@@ -2235,9 +2235,15 @@ impl LearningService {
                 .map_err(internal)?;
             }
         }
-        sqlx::query(
+        // pg3 迟到写守卫：课时所属课程已删/归档 = 更新零行、整事务回滚
+        // （可见失败，不把内容写回墓碑课）。
+        let updated = sqlx::query(
             "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1, \
-             capacity_note = ? WHERE lesson_id = ?",
+             capacity_note = ? \
+             WHERE lesson_id = ? AND module_id IN (\
+                 SELECT m.module_id FROM learning_modules m \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                 WHERE c.deleted_at IS NULL AND c.enabled = 1)",
         )
         .bind(output.summary.trim())
         .bind(output.estimated_minutes)
@@ -2246,6 +2252,11 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
+        if updated.rows_affected() == 0 {
+            return Err(AppError::Conflict(
+                "课程已删除/归档，课时不再落库".into(),
+            ));
+        }
 
         // Replace any prior partial activities (idempotent re-generation).
         sqlx::query("DELETE FROM learning_activities WHERE lesson_id = ?")

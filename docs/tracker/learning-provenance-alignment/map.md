@@ -1,12 +1,14 @@
 # Map: 出处门与衍生缺口波（pg0–pg5）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图并立票（2026-11-26）。触发=隔壁 learnhub 2026-11-25/26 的
+<!-- 状态：**已施工关票**（2026-11-26）。触发=隔壁 learnhub 2026-11-25/26 的
       33 提交（#275–#293，main@52e95cb）合入。复核结论：唯一新机制是出处门
       （#287–#293）；12 个非门票里 9 票是本仓已有/反向吸收，3 票
       （#275/#278/#286）照出了本仓 t1/t3/c1 没收掉的衍生缺口。已按影响面
-      复核立 pg0–pg5 六票（全部 open，未开工）：Stage 0/1/1c + 三个衍生
-      小修；Stage 2 先量后裁，Stage 3 不搬。等开工裁决。 -->
+      复核立 pg0–pg5 六票并全部关票：Stage 0/1/1c + 三个衍生
+      小修；Stage 2 先量后裁（pg0 样本 0 翻转），Stage 3 不搬。后端
+      1134/0、UI 学习页 529/0、typecheck/check 绿；pg1/pg2/pg4 的真机
+      校准与拆读欠账见各票 Resolution。 -->
 
 ## 一、隔壁这波是什么（2026-11-26 复核）
 
@@ -115,12 +117,12 @@ XP gauge 剔 skipped（`xp.rs:284-301`），quiz 触发计数不剔（`:428-446`
 | 项 | 裁决 | 理由 |
 | --- | --- | --- |
 | Stage 0 测量 | **做**（pg0） | 本仓零读数；enforce 档与 Stage 2 都要它 |
-| Stage 1 机械域 | **做**（pg1） | 与 CONTEXT「登记表只作身份/命名」「已知集=已教∪声明」直接冲突；改动集中 |
+| Stage 1 机械域 | **做**（pg1，分规则执法档） | 与 CONTEXT「登记表只作身份/命名」「已知集=已教∪声明」直接冲突；pg0 实测直出违规 63.2%，不能一把 enforce |
 | Stage 1c 声明地板 | **做**（pg2） | 声明块已落盘未消费；机械减法 ~30 行，风险低 |
 | 删课收尾 | **做**（pg3） | 墓碑课任务 pill + 迟到写污染；删旧课重建是常用流程 |
 | 跳过/已学完互斥 | **做**（pg4） | 语义矛盾 + 读数分裂脑；存量读侧自愈 |
 | 归档课按课 quiz 面 | **做**（pg5） | 三行查询 + 一个守卫；API 自洽 |
-| Stage 2 derivation+账本 | **暂缓** | 本仓无翻转读数；账本是新机制 + 新观测文件；pg0 后再裁 |
+| Stage 2 derivation+账本 | **暂缓** | pg0 样本 64 次调用/0 翻转对；账本是新机制 + 新观测文件；等 live 档案积累后再判 |
 | Stage 3 primitive/bootstrap | **不搬** | 本仓无链接器；从零已有空账地板；schema/UI 成本高、无本仓病灶 |
 | 其余 9 票 | **不搬主线** | 6 票本仓已有/口径已裁；3 票小件（#277/#280/#282）见第七节 |
 
@@ -128,12 +130,12 @@ XP gauge 剔 skipped（`xp.rs:284-301`），quiz 触发计数不剔（`:428-446`
 
 | 票 | 标题 | 依赖 | 状态 |
 | --- | --- | --- | --- |
-| [pg0](tickets/pg0-flip-surface-measurement.md) | 真机档案只读量翻转面（不改门） | — | open |
-| [pg1](tickets/pg1-known-set-two-faces.md) | 已知集两面拆开：在册≠已知、直接出处、自教同节点、声明值 | pg0 | open |
-| [pg2](tickets/pg2-declared-floor-first-batch.md) | 首批参考面减去已会声明块 | pg1 | open |
-| [pg3](tickets/pg3-delete-inflight-cleanup.md) | 删课收尾：在途任务/课时草稿/迟到写 | — | open |
-| [pg4](tickets/pg4-skip-vs-learned-double-count.md) | 已学完仍可置跳过：账本/读数双计与卡片分裂 | — | open |
-| [pg5](tickets/pg5-archived-quiz-api-parity.md) | 归档课按课 quiz 读数/start 与聚合面口径对齐 | — | open |
+| [pg0](tickets/pg0-flip-surface-measurement.md) | 真机档案只读量翻转面（不改门） | — | closed（直出 63.2% / 在册 0.3% / 兄弟 7/9 / 翻转 0） |
+| [pg1](tickets/pg1-known-set-two-faces.md) | 已知集两面拆开：在册≠已知、直接出处、自教同节点、声明值 | pg0 | closed（真机校准欠账） |
+| [pg2](tickets/pg2-declared-floor-first-batch.md) | 首批参考面减去已会声明块 | pg1 | closed（真机两臂欠账） |
+| [pg3](tickets/pg3-delete-inflight-cleanup.md) | 删课收尾：在途任务/课时草稿/迟到写 | — | closed |
+| [pg4](tickets/pg4-skip-vs-learned-double-count.md) | 已学完仍可置跳过：账本/读数双计与卡片分裂 | — | closed（拆读欠账） |
+| [pg5](tickets/pg5-archived-quiz-api-parity.md) | 归档课按课 quiz 读数/start 与聚合面口径对齐 | — | closed |
 
 建议顺序：pg0 → pg1 → pg2；pg3/pg4/pg5 可并行（互不依赖），但同一
 时期不要把 cargo 构建/测试并发跑满（AGENTS.md 的验证阶梯）。
@@ -160,7 +162,7 @@ XP gauge 剔 skipped（`xp.rs:284-301`），quiz 触发计数不剔（`:428-446`
   （`mod.rs:1041`），intent/scope 走碎片表；本波不动。
 - **复用既有定义的前置核**（评审判据 #2，`mod.rs:1112`）用已教账，不是
   平集合；不得因拆池删除或改口径。
-- **执法档**：有地板 enforce、纯零 report-only（pg0 读数可调）；不新增
+- **执法档**：分规则——`已教=covered` enforce；直接出处/自教同节点先 report-only（pg0 实测直出 63.2%），提示词校准后再翻 enforce；纯零整表 report-only。不新增
   第二把开关。
 - **声明地板只减自报事实**：不按结构依赖/深度裁未声明块，不级联
   （ADR-0015 分界）。

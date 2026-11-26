@@ -50,6 +50,40 @@ impl LearningService {
         }
     }
 
+    /// 删课收尾：清掉本课全部课时草稿与 lesson→draft 映射（内存态）。
+    /// 只按课程内课时 id 反查；草稿 TTL 仍由读侧兜底。
+    pub(crate) async fn clear_lesson_drafts_for_course(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<usize, AppError> {
+        let lesson_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT l.lesson_id FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        if lesson_ids.is_empty() {
+            return Ok(0);
+        }
+        let lesson_ids: HashSet<String> = lesson_ids.into_iter().collect();
+        let removed = {
+            let mut drafts = self
+                .lesson_drafts
+                .write()
+                .map_err(|_| AppError::Internal("lesson draft lock poisoned".into()))?;
+            let before = drafts.len();
+            drafts.retain(|_, (draft, _)| !lesson_ids.contains(&draft.context.lesson_id));
+            before - drafts.len()
+        };
+        if let Ok(mut ids) = self.lesson_draft_ids.lock() {
+            ids.retain(|lesson_id, _| !lesson_ids.contains(lesson_id));
+        }
+        Ok(removed)
+    }
+
     /// Start a lesson draft from the generation context. Synchronous —
     /// unlike the outline draft there is no scope analysis to run; the
     /// grounding (excerpt or course brief) rides on the context. Registers

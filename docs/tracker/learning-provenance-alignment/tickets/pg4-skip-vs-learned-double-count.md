@@ -2,7 +2,7 @@
 id: pg4
 title: 已学完仍可置跳过——账本/读数双计与卡片分子分母分裂
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -142,3 +142,23 @@ learnhub #286（2026-11-26，票面自述「来源: allo c1 的衍生问题」�
 - 学习账本/XP 事件的删除或回滚（ADR-0017：账本独立、事件不删）。
 - 节点级「自报已会」独立状态（learnhub 的 node learned；本仓无此物）。
 - 硬删除/恢复语义。
+
+## Resolution（2026-11-26 施工）
+
+- `progress.rs`：置 `Skipped` 前查当前进度状态与 `learning_xp_events`
+  的 `node-completed` 事件；已完成/已结算 → `Conflict("这个课时已经学完，
+  不需要跳过")`，不覆盖 `completed_at`；撤销跳过不受限。
+- 读侧口径：`skipped_lessons`（list/detail 两查询）与 XP gauge 的
+  `skipped_scope` 都加 `NOT EXISTS node-completed`——已结算课时不算
+  skipped；分母不剔它，分子保留结算，尺不倒挂。quiz 触发只认
+  node-completed，本身不受 skipped 影响。
+- UI：`CourseCard` / `CourseWorkspace` 的百分比与文本分子统一用
+  `settled_or_completed`（后端在账本为空时回退 completed_lessons）；
+  `LearningGraphWorkspace` 对 `status === 'completed'` 隐藏跳过钮，
+  存量 skipped 仍出「撤销跳过」。
+- 测试：新 `completed_lesson_cannot_be_skipped_and_legacy_overlap_reads_as_learned`；
+  重写 `xp_reading_settled_nodes_follow_skip_denominator` 为新口径；全量
+  1134/0；UI 学习页 529/0 + typecheck。
+- 欠账：「已跳过 K 个」拆读未做（需新增双语 i18n；当前 skipped 被静默
+  从分母剔除）。传统课**无 XP 账本**时，存量「完成后再跳过」没有结算
+  证据，读侧仍按 skipped 计；图/完成链路有 node-completed，按已学完算。

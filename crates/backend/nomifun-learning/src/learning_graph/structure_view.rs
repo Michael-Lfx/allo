@@ -8,7 +8,7 @@
 //! 依赖分层（层号 = assumes 前置链深度，L0 = 无前置的块；层号不是排期）、
 //! 枢纽出入度（assumes + composes 的端点计数，方向反转展示归前端）。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -646,11 +646,40 @@ pub(crate) fn render_terrain_list(
     covered: &HashMap<String, usize>,
     note: Option<TerrainListNote>,
 ) -> String {
+    render_terrain_list_with_declared(structure, covered, note, &BTreeSet::new(), false)
+}
+
+/// Stage 1c：首批（课程尚无节点）参考面减去本课已会声明块（slug 精确匹配）。
+/// **只减自报事实**：未声明块全量保留，即使其前置块被声明剔除也不级联；
+/// 无 slug 的块永不被命中。剔除面只用于注记/可读性，不参与判定。
+pub(crate) fn render_terrain_list_with_declared(
+    structure: &Value,
+    covered: &HashMap<String, usize>,
+    note: Option<TerrainListNote>,
+    declared_blocks: &BTreeSet<String>,
+    first_batch: bool,
+) -> String {
     let rows = terrain_rows(structure);
     if rows.is_empty() {
         return String::new();
     }
+    let (declared_rows, rows): (Vec<TerrainRow>, Vec<TerrainRow>) = if first_batch {
+        rows.into_iter()
+            .partition(|row| !row.slug.is_empty() && declared_blocks.contains(&row.slug))
+    } else {
+        (Vec::new(), rows)
+    };
     let mut lines: Vec<String> = note.map(|note| note.line().to_owned()).into_iter().collect();
+    if !declared_rows.is_empty() {
+        let names = declared_rows
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        lines.push(format!(
+            "已会声明块（本批不装）：{names}——其概念已在已教概念账，不要为它们生成学习节点"
+        ));
+    }
     // 已覆盖 = 挂了至少 1 个节点：计数为 0 或 slug 已不在结构里的条目不算。
     let (folded, expanded): (Vec<&TerrainRow>, Vec<&TerrainRow>) = rows
         .iter()
@@ -1086,5 +1115,65 @@ mod tests {
             coverage(&[("block-a", 2), ("block-d", 1)]),
             "块A 两个活节点；块D 一个；块B 只有孤儿条目 = 未覆盖；悬挂 slug block-gone 不计"
         );
+    }
+
+    // ── Stage 1c：首批参考面减去已会声明块 ────────────────────────────────
+
+    #[test]
+    fn terrain_list_first_batch_subtracts_declared_blocks_without_cascade() {
+        let structure = sample_structure();
+        let empty = HashMap::new();
+        let declared: BTreeSet<String> = ["block-a".to_string()].into_iter().collect();
+        let list = render_terrain_list_with_declared(&structure, &empty, None, &declared, true);
+        assert!(list.contains("已会声明块（本批不装）：块A"), "{list}");
+        assert!(!list.contains("- 块A(block-a)"), "声明块行不出现：{list}");
+        assert!(
+            list.contains("- 块B(block-b)|n|advanced|主干一|前置:块A"),
+            "未声明块保留、结构标注不因前置被声明而级联裁剪：{list}"
+        );
+        assert!(list.contains("- 块C(block-c)"), "{list}");
+        assert!(list.contains("- 块D(block-d)"), "{list}");
+    }
+
+    #[test]
+    fn terrain_list_declared_filter_is_first_batch_only_and_empty_set_is_byte_identical() {
+        let structure = sample_structure();
+        let empty = HashMap::new();
+        let declared: BTreeSet<String> =
+            ["block-a".to_string(), "block-c".to_string()].into_iter().collect();
+        assert_eq!(
+            render_terrain_list_with_declared(&structure, &empty, None, &declared, false),
+            FULL_TERRAIN,
+            "非首批不筛"
+        );
+        let none: BTreeSet<String> = BTreeSet::new();
+        assert_eq!(
+            render_terrain_list_with_declared(&structure, &empty, None, &none, true),
+            FULL_TERRAIN,
+            "首批空声明集逐字节同旧"
+        );
+        let list = render_terrain_list_with_declared(&structure, &empty, None, &declared, true);
+        assert!(list.contains("已会声明块（本批不装）：块A、块C"), "{list}");
+        assert!(!list.contains("- 块A(block-a)"), "{list}");
+        assert!(!list.contains("- 块C(block-c)"), "{list}");
+        assert!(list.contains("- 块B(block-b)"), "{list}");
+        assert!(list.contains("- 块D(block-d)"), "{list}");
+    }
+
+    #[test]
+    fn terrain_list_declared_filter_never_removes_slugless_blocks() {
+        let structure = json!({
+            "spines": [{ "name": "s", "definition": "d", "key_points": [], "instance": "i" }],
+            "blocks": [
+                { "name": "无slug块", "spine": "s", "stage": "basic", "note": "n" },
+                { "name": "声明块X", "slug": "x", "spine": "s", "stage": "basic", "note": "n" }
+            ]
+        });
+        let declared: BTreeSet<String> =
+            ["x".to_string(), String::new()].into_iter().collect();
+        let list =
+            render_terrain_list_with_declared(&structure, &HashMap::new(), None, &declared, true);
+        assert!(list.contains("无slug块"), "{list}");
+        assert!(!list.contains("- 声明块X("), "{list}");
     }
 }

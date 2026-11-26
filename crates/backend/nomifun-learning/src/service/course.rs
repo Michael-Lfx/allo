@@ -234,7 +234,9 @@ impl LearningService {
                     (SELECT COUNT(*) {SKIPPED_LESSON_FILTER} \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped' \
+                       AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
+                         WHERE x.user_id = ? AND x.node_id = l.lesson_id AND x.kind = 'node-completed')) AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -248,6 +250,7 @@ impl LearningService {
              FROM learning_courses c WHERE c.deleted_at IS NULL \
              ORDER BY c.updated_at DESC, c.course_id",
         ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -293,7 +296,9 @@ impl LearningService {
                     (SELECT COUNT(*) {SKIPPED_LESSON_FILTER} \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped' \
+                       AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
+                         WHERE x.user_id = ? AND x.node_id = l.lesson_id AND x.kind = 'node-completed')) AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -312,6 +317,7 @@ impl LearningService {
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
         ))
+        .bind(user_value)
         .bind(user_value)
         .bind(user_value)
         .bind(user_value)
@@ -763,6 +769,10 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
+        // pg3 删课收尾：取消可取消的在途任务（在跑 lesson 任务保留，发布
+        // 路径有墓碑守卫）+ 清内存唤醒。放在事务内做（纯内存，不占 DB）。
+        let cancelled_tasks = self.cancel_course_generation_tasks(course_id);
+        self.clear_course_wakes(course_id);
         let now = now_ms();
         // 死卡打标（t3 R1②，ADR-0017）：该课 activities 即将被 purge，其
         // 复习卡按「账本永远保留」留存，但永不复服务——purge 之前打
@@ -787,10 +797,12 @@ impl LearningService {
         // 回合；supersede 同款形态，写路径单源在 quiz::abandon_active_rounds。
         super::quiz::abandon_active_rounds(&mut *transaction, None, course_id.as_str(), now)
             .await?;
-        // 课程内容八表单源 purge（t2 R1，与 delete_courses_by_title 同一张
-        // 清单）——复习保留的只是题目数据，不靠课时行续命。孤儿课时曾把
-        // 新课的入口层向上顶（全局已教账把幽灵供给当真），这条语义从根上
-        // 掐掉污染源。
+        // 课程内容八表 + 课程观测/结构六表单源 purge（t2 R1/pg3，与
+        // delete_courses_by_title 同一张清单）——复习保留的只是题目数据，
+        // 不靠课时行续命。孤儿课时曾把新课的入口层向上顶（全局已教账把
+        // 幽灵供给当真），这条语义从根上掐掉污染源。观测/结构表（growth
+        // batches / mounts / findings / repairs / maintenance / system
+        // actions）也按 course_id 清掉，避免删课后残留可读审计行。
         purge_course_content(&mut transaction, course_id.as_str()).await?;
         // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
         // 遗留数据凭 course_id 归账，后续清理时有据可查。墓碑统一形态
@@ -808,6 +820,22 @@ impl LearningService {
         .await
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
+        // 草稿清理在提交后做（需要读课时表；避免与事务共用连接）；失败只
+        // 留 warn——课已删，草稿发布路径有墓碑守卫，不会落库。
+        match self.clear_lesson_drafts_for_course(course_id).await {
+            Ok(cleared) => tracing::info!(
+                course = course_id.as_str(),
+                cancelled_tasks,
+                cleared_drafts = cleared,
+                "course deleted; in-flight tasks/wakes/drafts cleaned"
+            ),
+            Err(error) => tracing::warn!(
+                course = course_id.as_str(),
+                cancelled_tasks,
+                %error,
+                "course deleted; lesson draft cleanup failed (publish is tombstone-guarded)"
+            ),
+        }
         Ok(())
     }
 
@@ -894,7 +922,7 @@ impl LearningService {
 
 }
 
-/// 课程内容 purge 清单（t2 R1 单源）：软删（[`LearningService::delete_course`]，
+/// 课程内容 + 观测/结构 purge 清单（t2 R1/pg3 单源）：软删（[`LearningService::delete_course`]，
 /// 墓碑语义）与硬删（[`LearningService::delete_courses_by_title`]，教程种子
 /// 替换）共用同一张清单，差异只在账本面与课程行处置。物理外键被合同禁用
 /// （`id_schema_contract::validate_no_physical_foreign_keys`），完整性只能由
@@ -909,7 +937,7 @@ async fn purge_course_content(
     transaction: &mut Transaction<'_, Sqlite>,
     course_id: &str,
 ) -> Result<(), AppError> {
-    const PURGE_SQL: [&str; 8] = [
+    const PURGE_SQL: [&str; 14] = [
         // 分节内容（t2 补齐）：软硬删此前都缺——课时行删后节行成孤儿。
         "DELETE FROM learning_lesson_sections WHERE lesson_id IN (\
             SELECT l.lesson_id FROM learning_lessons l \
@@ -939,6 +967,16 @@ async fn purge_course_content(
         // 已会声明锚随课删（m2，逻辑引用 Cascade 的应用侧执行面——声明是本
         // 课事实；铸出的概念留池不受影响，「声明可撤、概念不灭」）。
         "DELETE FROM learning_basis_declarations WHERE course_id = ?",
+        // pg3：课程级观测/结构表（都带 course_id；不在内容八表里，删课后
+        // 残留会污染审计面/迟到写读面）。growth batches 是生长档案，mounts
+        // 是导航事实，findings/repairs 是维护审计，maintenance_state 是水位，
+        // system_actions 是调度账本——全部随课清。
+        "DELETE FROM learning_growth_batches WHERE course_id = ?",
+        "DELETE FROM learning_structure_mounts WHERE course_id = ?",
+        "DELETE FROM learning_structure_findings WHERE course_id = ?",
+        "DELETE FROM learning_structure_repairs WHERE course_id = ?",
+        "DELETE FROM learning_maintenance_state WHERE course_id = ?",
+        "DELETE FROM learning_system_actions WHERE course_id = ?",
     ];
     for sql in PURGE_SQL {
         sqlx::query(sql)

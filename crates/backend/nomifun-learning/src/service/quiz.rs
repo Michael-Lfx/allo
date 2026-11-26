@@ -222,6 +222,17 @@ impl LearningService {
         user_id: &UserId,
         course_id: &LearningCourseId,
     ) -> Result<QuizRoundView, AppError> {
+        // 归档课不触发检测（ADR-0017/聚合 overview 同口径）：直连 start 也
+        // 明确 409，而不是靠 due=false 落成"not due"的含糊冲突。
+        let (live, enabled) = self.live_course_flags(course_id).await?;
+        if !live {
+            return Err(AppError::NotFound(format!("learning course {course_id}")));
+        }
+        if !enabled {
+            return Err(AppError::Conflict(
+                "课程已归档，恢复后可继续".into(),
+            ));
+        }
         let progress = self.quiz_progress(user_id, course_id).await?;
         if !progress.due {
             return Err(AppError::Conflict(format!(

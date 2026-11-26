@@ -91,8 +91,10 @@ export function CourseWorkspace({
   }, [flatLessons]);
   // f2 进度口径：分母剔除 skipped（可计课时 = total − skipped）；全跳 →
   // 分母 0 → percent 为 null，大纲头计数呈「—」且不渲染进度条。
+  // pg4：文本分子与进度条同口径（settled_or_completed，后端在结算账本
+  // 为空时回退 completed_lessons）。
   const denominator = progressDenominator(course);
-  const percent = progressPercent(course.completed_lessons, denominator);
+  const percent = progressPercent(course.settled_or_completed, denominator);
   const recommendedLesson = useMemo(
     () => flatLessons.find((lesson) => lesson.id === detail.next_lesson_id) ?? null,
     [flatLessons, detail.next_lesson_id]
@@ -301,7 +303,7 @@ export function CourseWorkspace({
             <div className='mb-8px flex items-baseline justify-between gap-8px'>
               <span className='font-600'>{t('learning.outline')}</span>
               <span className='text-12px text-t-tertiary'>
-                {progressReadoutText(course.completed_lessons, denominator)}
+                {progressReadoutText(course.settled_or_completed, denominator)}
               </span>
             </div>
             <ProgressReadout percent={percent} />

@@ -1021,7 +1021,7 @@ const CONCEPT_REVIEW_HEAD: &str = r#"你是一名概念评审员：在结构门�
 /// 边界声明豁免条款防判据①与范围外裁决互相矛盾打乒乓（范围外点名≠引用）。
 const CRITERION_ONE_V2: &str = r#"1. 挂号充分（子查：登记表外名词）：
    - **框定**：节点标题与 purpose、每节点的 intent/scope 声明，以及随批 mints 的 canonical 与 new_aliases 的名字及定义里出现的每个领域名词，都是待查的「登记表外名词」——名单里已有的名字不算登记表外。
-   - **出处核对（四入口）**：每个登记表外名词，须能落到以下之一——①已教（已教账里的正名或别名）、②本节点 teaches（本节点自教）、③本节点 assumes、④课程外通用常识。「简单」不等于常识——课程内的基础概念也要挂号；既像常识又像本课概念的两可词，按概念处理（要求挂号）。四处皆无 = 挂号缺失，打回并指名该名词。
+   - **出处核对（四入口）**：每个登记表外名词，须能落到以下之一——①已教/已会声明（已教账里的正名或别名）、②本节点 teaches（本节点自教）、③本节点 assumes、④课程外通用常识。「简单」不等于常识——课程内的基础概念也要挂号；既像常识又像本课概念的两可词，按概念处理（要求挂号）。四处皆无 = 挂号缺失，打回并指名该名词。
    - **批内提名本身不是出处**：某名词只有本批其它节点的 teaches 或本批铸名供给、而本节点不自教、也不在已教账/assumes 里，就是隐藏的批内先后（同批互不供给），照打——不要接受「批内兄弟会教」作为出处。
    - **概念名内嵌的上位词同样在审**：提名叫「研磨度的校准」，「研磨度」自己未在册、无人教、又非常识 = 挂号缺失，与显式名词同罪；名字里的每个构成词都要各自落到出处。
    - purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
@@ -1037,10 +1037,10 @@ const CRITERION_ONE_V1: &str = r#"1. 挂号充分：节点标题与 purpose 里�
 /// 框定/四入口措辞保留为表的语义说明，判据的程序出口是结论里的
 /// `term_provenance` 表（learnhub #169「判据在场 ≠ 判据被执行」的程序化
 /// 收口：原则形态下评审员可无声放行，程序形态下缺表/行伪至少留痕）。
-const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对，输出硬约束）**：把上面四入口的核对结果逐词落成结论里的 `term_provenance` 挂号表——本批每条 mints 铸名与 new_aliases 提名的**定义**里引用或预设的领域名词逐个一行，行形状与来源四值见下方【挂号表 term_provenance】段。评审接受前机械校验整表：缺表、漏行或行出处对不上 = 结论无效，带死因重试恰一次，仍败按 Degraded 保守放行并留痕。
+const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对，输出硬约束）**：把上面四入口的核对结果逐词落成结论里的 `term_provenance` 挂号表——本批每条 mints 铸名与 new_aliases 提名的**定义**里引用或预设的领域名词逐个一行，行形状与来源五值见下方【挂号表 term_provenance】段。评审接受前机械校验整表：缺表、漏行、行出处对不上、`已教` ref 在册未教、直接出处 term≠ref、自教兄弟供给 = 按执法档处理（enforce 档结论无效，带死因重试恰一次，仍败按 Degraded 保守放行并留痕；report-only 档留痕不挡门）。
 "#;
 
-/// 挂号表的输出契约段（m3，织入评审系统提示词尾部）：行形状 + 来源四值 +
+/// 挂号表的输出契约段（m3/Stage 1，织入评审系统提示词尾部）：行形状 + 来源五值 +
 /// 逐字规则 + 机械执法语义。词表与 `provenance::TERM_SOURCES` 互钉，改词表
 /// 须同步。rs2（learnhub #252）：同形词盲区注记（#176）退役——常识行撞名池
 /// 由机械归一接手（`provenance::validate_term_provenance` 三前提改判+
@@ -1052,14 +1052,16 @@ const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对�
 const TABLE_OUTPUT_CONTRACT: &str = r#"
 
 【挂号表 term_provenance——输出硬约束】
-- **自查首项：自教行 ref ≠ 本行 concept**——自己不能证明自己：`{ "concept": "X", "term": "T", "source": "自教", "ref": "X" }` 恒无效（T 是 X 定义里的词，不由 X 自己供给）。负例（真机病历同形）：`{ "concept": "手冲器具功能", "term": "滤杯", "source": "自教", "ref": "手冲器具功能" }` = 循环自证，机械核必拒。T 的出处必须落到既往批次的已教账、本节点 teaches 的**其他**概念、或常识。
+- **自查首项：自教行 ref ≠ 本行 concept**——自己不能证明自己：`{ "concept": "X", "term": "T", "source": "自教", "ref": "X" }` 恒无效（T 是 X 定义里的词，不由 X 自己供给）。负例（真机病历同形）：`{ "concept": "手冲器具功能", "term": "滤杯", "source": "自教", "ref": "手冲器具功能" }` = 循环自证，机械核必拒。T 的出处必须落到既往批次的已教账、**教本概念的节点自己的 teaches（多节点取交集；批内兄弟不供给）**、或课程外日常语。
 - 通过与打回的结论都必须携带 `term_provenance` 数组：批内每条提名至少一行，缺表或某条提名零行 = 结论无效。
-- 每行形状：{ "concept": "提名名", "term": "该提名定义里引用或预设的领域名词", "source": "已教|自教|常识|缺失", "ref": "出处概念名" }。
-- 报**已教**：`ref` 必填，逐字照抄已教账/登记表的正名或别名；ref 写了本批铸名或提名的名字 = 无效——本批产出不是已教出处。
-- 报**自教**：`ref` 必填，逐字照抄本批某节点 teaches 里的概念名；ref 指向本条提名自身 = 循环自证，无效（定义预设的词不由定义自身供给）；提名的名字本身不算 teaches。
-- 报**常识**：不写 `ref`；term 是课程外、无需教学、不承载本课知识功能的通用背景词，「简单」不等于常识。
+- 每行形状：{ "concept": "提名名", "term": "该提名定义里引用或预设的领域名词", "source": "已教|已会声明|自教|常识|缺失", "ref": "出处概念名" }。
+- 报**已教**：`ref` 必填，逐字照抄**已教账**的正名或别名——**登记表在册不等于已教**（在册只是身份，没教过就还不是已知）；ref 写了本批铸名或提名的名字 = 无效——本批产出不是已教出处。
+- 报**已会声明**：`ref` 必填，逐字照抄**已会声明**的正名或别名（学习者自报已会的概念，已在已教概念账里但来源另记）；ref 写了本批铸名或提名的名字 = 无效。
+- **直接出处（已教/已会声明/自教行）**：`term` 必须等于 `ref` 本身或其活跃别名——父概念/整体/描述短语不算直接出处。负例：`{concept:垃圾回收, term:堆对象, source:已教, ref:堆分配}`、`{concept:悬空引用, term:存储位置, source:已教, ref:值存储位置}` 恒无效；这些词要么由本批节点自教（写进 teaches、ref 同名），要么如实报缺失，要么走已会声明。
+- 报**自教**：`ref` 必填，逐字照抄**教本行 concept 的节点自己的 teaches** 里的概念名；多节点教同一概念时取交集；**批内兄弟不供给**（ref 在全批其它节点 teaches 里、但不在本概念节点 teaches 里 = 无效）；ref 指向本条提名自身 = 循环自证，无效（定义预设的词不由定义自身供给）；提名的名字本身不算 teaches。
+- 报**常识**：不写 `ref`；term 是课程外、无需教学、不承载本课知识功能的通用背景词，「简单」不等于常识，**登记表在册名也不是常识**。
 - 报**缺失**：查无出处时如实报缺失——不写 `ref`，且该结论必须 pass=false 并在 problems 里指名该名词；标缺失却 pass = 自相矛盾，结论无效。缺失是合法的自认通道，绝不要把查无出处的缺口洗成常识。
-- **常识/缺失行的 term 必须逐字取自该提名定义原文**（可带尾随括注，如「数（直线上点对应的数）」）；已教/自教行写的是定义所预设的概念名，不要求逐字出现在定义里。
+- **常识/缺失行的 term 必须逐字取自该提名定义原文**（可带尾随括注，如「数（直线上点对应的数）」）；已教/已会声明/自教行写的是定义所预设的概念名，不要求逐字出现在定义里。
 "#;
 
 /// advice 范围条款（m5 #175A，learnhub node-growth-review.md「advice 范围
@@ -1169,6 +1171,22 @@ fn review_provenance_enabled() -> bool {
     std::env::var(REVIEW_PROVENANCE_SWITCH_ENV)
         .map(|value| !is_review_provenance_disabled_value(&value))
         .unwrap_or(true)
+}
+
+/// Stage 1 分规则执法档（pg0 真机读数：直出违规 63.2%，不能一把 enforce）：
+/// `NOMI_LEARNING_REVIEW_PROVENANCE=stage1-enforce` = 全部 enforce；未设/
+/// 其它值 = staged（covered enforce、直出/同节点 report-only）。
+fn review_provenance_stage1_mode(covered_nonempty: bool) -> provenance::Stage1Mode {
+    let value = std::env::var(REVIEW_PROVENANCE_SWITCH_ENV).ok();
+    match value
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("stage1-enforce") => provenance::Stage1Mode::enforce_all(),
+        _ => provenance::Stage1Mode::staged(covered_nonempty),
+    }
 }
 
 /// 评审碎片裁决面的运维开关（m9 补接，learnhub #173 naming_list 同缝）：
@@ -1368,10 +1386,13 @@ pub struct GateOutcome {
     /// concept_id。撞池下复用是唯一不重命名的合法出路，直接走 j04 落池，
     /// 对应 `ng.mints.collision` 红条已被门面吸收。
     pub auto_reusals: HashMap<String, String>,
-    /// 评审挂号表机械核对的已知名池（m3；小写折叠）：已教账 ∪ 登记表活跃
-    /// 名+别名 ∪ 本批铸名/提名——learnhub 门面同构（known 含本批产出：已教
-    /// 行指向本批提名由校验器单独红）。
-    pub provenance_known: HashSet<String>,
+    /// 评审命名面的活跃名池（m3/Stage 1；小写折叠）：登记表活跃名+别名 ∪
+    /// 本批铸名/提名。**只服务命名掩码/常识事实矛盾核/rs2 归一**——在册
+    /// 不等于已知，已知域见 `provenance_domain`。
+    pub(crate) provenance_pool: HashSet<String>,
+    /// 评审挂号表的已知域（Stage 1）：`covered`（已教 ∪ 已会声明）/
+    /// `declared`（已会声明）/ `pool`（命名面）/ 名字↔正名解析面。
+    pub(crate) provenance_domain: crate::learning_graph::provenance::ProvenanceDomain,
     /// 本批复用命中的登记表概念锚（f1，评审前已知的机械两源；A1）：
     /// 挂号表行 concept 的批外放行域——评审输入的【本批复用命中】块与
     /// 校验放行域同源装配。
@@ -1822,6 +1843,16 @@ pub(crate) async fn concept_review(
             .collect()
     }
     let known: HashSet<String> = known_names.iter().map(|name| name.trim().to_lowercase()).collect();
+    // Stage 1 已知域：生产 gate 带三面域；回放/测试夹具 GateOutcome::default()
+    // 走 known_names 兼容构造（covered ∪ pool 同集）。执法档按域与开关取。
+    let fallback_domain;
+    let domain = if gate.provenance_domain.is_empty() {
+        fallback_domain = provenance::ProvenanceDomain::from_known_names(&known);
+        &fallback_domain
+    } else {
+        &gate.provenance_domain
+    };
+    let stage1_mode = review_provenance_stage1_mode(!domain.covered.is_empty());
     let mut feedback = String::new();
     let mut readout = provenance::ProvenanceReadout::default();
     let mut frag_readout = fragment_verdict::FragmentReadout::default();
@@ -2013,19 +2044,35 @@ pub(crate) async fn concept_review(
         if provenance_on {
             let mut anchors = gate.external_anchors_mech.clone();
             anchors.extend(verify_reuse_rulings(&verdict.reuse, gate));
-            match provenance::validate_term_provenance(
+            match provenance::validate_term_provenance_domain(
                 &mut verdict.term_provenance,
                 verdict.verdict == "pass",
                 batch,
-                &known,
+                domain,
                 &anchors,
+                stage1_mode,
             ) {
                 Ok(outcome) => {
                     readout.rows = outcome.rows;
                     readout.external_hits = outcome.external_hits;
                     readout.normalized = outcome.normalized.len();
+                    readout.declared_rows = outcome.declared_rows;
+                    readout.registry_only_refs = outcome.registry_only_refs;
+                    readout.direct_violations = outcome.direct_violations;
+                    readout.sibling_self_taught = outcome.sibling_self_taught;
                     normalization_findings =
                         provenance::normalization_findings(&outcome.normalized, batch);
+                    // Stage 1 报告模式：直出/同节点/在册未教留痕不挡门
+                    // （pg0 实测直出 63.2%，等提示词校准后再翻 enforce）。
+                    for message in &outcome.report_only {
+                        normalization_findings.push(ReviewFinding {
+                            node: "批".into(),
+                            field: "term_provenance".into(),
+                            issue: format!("出处门 Stage 1 报告模式：{message}"),
+                            advice: "留痕不挡门；按直接出处/同节点规则改写 term 与 ref，或改报缺失"
+                                .into(),
+                        });
+                    }
                 }
                 Err(reason) => {
                     readout.invalid += 1;
@@ -2153,8 +2200,8 @@ pub struct ReplayReviewVerdict {
 /// ——评审语义零分叉（同函数/同开关/同机械核/同重试预算/同超时），点名清
 /// 单在此按生产同源派生（调用方装配的已知面 ∪ 仓库级基础用语；课程层快照
 /// 缺席 = 空课程词表，豁免面仅剩 base）。零 DB 依赖：登记表/已教账快照由
-/// 调用方折进 `known_names`（小写折叠，与生产 `provenance_known` 同一投影
-/// 面；生产里 [`GateOutcome::provenance_known`] 的装配单源在 gate_batch）。
+/// 调用方折进 `known_names`（小写折叠，与生产 `provenance_pool` 同一投影
+/// 面；生产里 [`GateOutcome::provenance_pool`] 的装配单源在 gate_batch）。
 pub async fn replay_concept_review(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -3736,7 +3783,7 @@ mod tests {
         for phrase in [
             // 表键与来源四值（缺失承重）。
             "term_provenance",
-            "已教|自教|常识|缺失",
+            "已教|已会声明|自教|常识|缺失",
             // 判据①程序句（V2 框定措辞保留为语义说明）。
             "逐词落行",
             "登记表外名词",
@@ -3770,7 +3817,7 @@ mod tests {
         // off 臂零表条款：不要求表 = k07 后行为（提示词与机械校验都不在）。
         let _off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
         let plain = concept_review_system();
-        for phrase in ["term_provenance", "已教|自教|常识|缺失", "逐词落行"] {
+        for phrase in ["term_provenance", "已教|已会声明|自教|常识|缺失", "逐词落行"] {
             assert!(!plain.contains(phrase), "off 臂不得出现「{phrase}」");
         }
         assert!(plain.contains("登记表外名词"), "off 臂照常走 V2 措辞");
@@ -4023,7 +4070,7 @@ mod tests {
         );
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0, normalized: 0 }
+            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0, normalized: 0, ..Default::default() }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
@@ -4250,7 +4297,7 @@ mod tests {
         let completer = ScriptedReview(std::sync::Mutex::new((
             vec![pass_with_table(serde_json::json!([
                 { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
-                { "concept": "门口判读", "term": "判据", "source": "已教", "ref": "门口判读" }
+                { "concept": "门口判读", "term": "门口判读", "source": "已教", "ref": "门口判读" }
             ]))]
             .into_iter(),
             Vec::new(),
@@ -4433,7 +4480,7 @@ mod tests {
         assert!(review.findings.is_empty(), "恢复则不留痕：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0 }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, ..Default::default() }
         );
     }
 
@@ -4505,7 +4552,7 @@ mod tests {
         assert!(review.findings.is_empty(), "次轮干净结论恢复：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0 }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0, ..Default::default() }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(

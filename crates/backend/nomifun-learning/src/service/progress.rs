@@ -97,6 +97,34 @@ impl LearningService {
         .await
         .map_err(internal)?
         .flatten();
+        // 已结算/已完成的课时不可再置跳过（pg4：跳过 = 自报已会且未学；
+        // 已学完再置位是语义矛盾，也是「已学完 + 已跳过」双计的入口）。
+        // 撤销跳过（Skipped → NotStarted）不受限；存量重叠走读侧自愈。
+        if matches!(status, LessonStatus::Skipped) {
+            let current_status: Option<String> = sqlx::query_scalar(
+                "SELECT status FROM learning_lesson_progress \
+                 WHERE enrollment_id = ? AND lesson_id = ?",
+            )
+            .bind(&enrollment_id)
+            .bind(lesson_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+            let settled: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM learning_xp_events \
+                 WHERE user_id = ? AND node_id = ? AND kind = 'node-completed' LIMIT 1",
+            )
+            .bind(user_id.as_str())
+            .bind(lesson_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+            if current_status.as_deref() == Some("completed") || settled.is_some() {
+                return Err(AppError::Conflict(
+                    "这个课时已经学完，不需要跳过".into(),
+                ));
+            }
+        }
         let now = now_ms();
         let (started_at, completed_at) = match status {
             LessonStatus::NotStarted => (None, None),

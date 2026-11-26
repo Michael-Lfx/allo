@@ -395,6 +395,13 @@ async fn basis_declaration_and_block_semantics() {
         .await
         .unwrap();
     assert_eq!(out.blocks, vec!["块甲".to_owned()], "部分 door_refs 命中不算");
+    // Stage 1c：声明块 slug 可读（首批参考面减法的输入）。
+    let declared_blocks = service.declared_block_slugs(&course).await.unwrap();
+    assert_eq!(
+        declared_blocks.iter().cloned().collect::<Vec<_>>(),
+        vec!["block-a".to_owned()],
+        "声明块 slug 单源可读"
+    );
 
     // 只勾 G2：块乙缺 G1 不命中、块甲零命中 → 无目标块，如实拒绝。
     let completer2 = SequencedCompleter::new(vec![]);

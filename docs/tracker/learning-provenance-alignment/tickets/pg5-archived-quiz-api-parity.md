@@ -2,7 +2,7 @@
 id: pg5
 title: 归档课的按课 quiz 读数仍到期、直连 start 仍可开考——聚合面已筛，按课面没筛
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -91,3 +91,17 @@ learnhub #278（2026-11-26，票面自述「来源: allo t1 的同构面」）�
 - 归档课的复习卡/到期队列语义（`tests.rs:4321` 已覆盖，不动）。
 - 教练页/检测进度的呈现面（本仓无此面）。
 - 归档触发策略本身（ADR-0017 口径）。
+
+## Resolution（2026-11-26 施工）
+
+- `service/learning_graph.rs` 新增 `live_course_flags(course_id)` →
+  `(live, enabled)`（墓碑/不存在 = false,false）；不区分课程类型，quiz
+  两线共用。
+- `xp.rs::quiz_progress`：改用 flags；归档课保留 settled/trigger 读数但
+  `due = due && enabled`（恢复后按自然时间回来）；墓碑 NotFound。
+- `quiz.rs::quiz_start`：先查 flags；墓碑 404、归档 409「课程已归档，
+  恢复后可继续」，不再靠 due=false 落成含糊的 not-due。
+- 测试：`quiz_trigger_counts_learn_settlements_only` 增归档/恢复三段
+  （due=false、start 409、恢复 due 回来）；全量 1134/0。
+- UI 零改（已按 `course.enabled` 藏入口）；聚合 overview 已筛 enabled，
+  不重复改。欠账：无（仅 API 行为收紧，票面已记）。

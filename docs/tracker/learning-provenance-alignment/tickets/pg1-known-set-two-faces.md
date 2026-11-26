@@ -2,7 +2,7 @@
 id: pg1
 title: 出处门 Stage 1——已知集两面拆开：在册 ≠ 已知、直接出处、自教同节点、声明值
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [pg0]
 part_of: map.md
@@ -203,3 +203,45 @@ part_of: map.md
   加硬门会改变那个已裁定的默认；另票裁决。
 - 已会声明的块作用域（`subsumed`）/首批参考面裁剪——pg2。
 - 复用既有定义的前置核（评审判据 #2）——保持现状，不并入本表。
+
+## Resolution（2026-11-26 施工）
+
+### 落地
+
+- `provenance.rs`：`TermSource` 增 `已会声明`（serde `declared`；旧 `已教`
+  保留 `taught` alias、`常识` 保留 `plain` alias）；`TERM_SOURCES` 五值；
+  新增 `ProvenanceDomain`（`covered` / `declared` / `pool` / `canonical_of`
+  / `names_of`）与 `Stage1Mode`（`staged` = covered enforce、直出/同节点
+  report-only；`stage1-enforce` 全 enforce；`report_all` 回放臂）。
+- 机械核：`已教` ref 只认 covered（在册未教 → report-only/计数，enforce
+  档拒）；`已会声明` ref 只认 declared；`已教/已会声明/自教` 行 term 须
+  与 ref 同概念（别名归一）；`自教` ref 只认「教该 concept 的节点」teaches
+  交集（兄弟零供给）；`batch_names` 拒绝本批铸名/别名充作出处；rs2 归一
+  优先级 = 同节点自教 > 已会声明 > 已教，只在册未教不再归一。
+- 装配：`GateOutcome.provenance_pool`（命名面）+ `provenance_domain`
+  （已知面）；`service/learning_graph.rs::gate_batch` 从 coverage/
+  declared/registry/batch 装配三面；`derive_naming_list` 继续吃 pool。
+- 提示词：`TABLE_OUTPUT_CONTRACT` 五值 + 直接出处反例 + 同节点自教；
+  `CRITERION_ONE_V2/TABLE_CLAUSE` 同步；schema enum 随 `TERM_SOURCES`。
+- 读数：`ProvenanceReadout` / `GrowthRunStats` 增 `declared_rows` /
+  `registry_only_refs` / `direct_violations` / `sibling_self_taught`；
+  smoke 读数行同步。
+- 测试：`provenance.rs` 36 项（含 8 项 Stage 1 新用例）；`mod.rs` 提示词/
+  锚点测试更新；`growth_contract`/`basis_tests` 全绿。
+
+### 验证
+
+- `cargo test -p nomifun-learning --lib`：**1134 / 0**。
+- `cargo check -p nomifun-app`：通过。
+- `bun run typecheck` + learning UI 测试：529 / 0。
+- `bun run check`：全绿。
+- `NOMI_LEARNING_REVIEW_PROVENANCE=off` 行为不变；默认 = staged
+  （pg0 实测直出 63.2%，covered 0.3%）。
+
+### 欠账
+
+- **真机校准未跑**：提示词改写后的直出合规率未测；默认保持
+  report-only（直出/同节点），待一次小样本
+  `NOMI_LEARNING_REVIEW_PROVENANCE=stage1-enforce` 回放/冒烟确认后再翻
+  缺省。`stage1-enforce` 已可用（开关即执法档）。
+- 表完备性硬门未做（碎片面 report-only 默认，另票）。

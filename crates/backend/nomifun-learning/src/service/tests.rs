@@ -3687,6 +3687,24 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap(),
         );
+        // pg3：课程级观测/结构表也随课清（六表都带 course_id）。
+        for table in [
+            "learning_growth_batches",
+            "learning_structure_mounts",
+            "learning_structure_findings",
+            "learning_structure_repairs",
+            "learning_maintenance_state",
+            "learning_system_actions",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE course_id = ?"
+            ))
+            .bind(course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            orphans(table, count);
+        }
     }
 
     /// 软删零孤儿（t2 R1+R2）：目录删除按同一张 purge 清单清八张内容表，
@@ -3719,6 +3737,82 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(tombstones, 1, "soft delete must leave exactly one tombstone");
         assert_eq!(live, 0, "soft delete must not leave a live row");
         assert_course_content_fully_purged(pool, &course_id).await;
+    }
+
+    /// pg3：删课收尾——课程级观测表随课清 + 在途任务取消（可取消的）。
+    #[tokio::test]
+    async fn delete_course_purges_observation_tables_and_cancels_tasks() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let pool = service.pool_for_tests();
+        let course_id = seed_course_with_full_content(&service, "观测收尾课").await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        let now = now_ms();
+        let batch_id = LearningGrowthBatchId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_growth_batches \
+             (batch_id, course_id, seq, node_ids_json, status, created_at) \
+             VALUES (?, ?, 1, '[]', 'pending', ?)",
+        )
+        .bind(&batch_id)
+        .bind(&course_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_structure_findings \
+             (ts, course_id, seq, source, node, field, issue, advice) \
+             VALUES (?, ?, 1, 'concept-review', '', '', '测试留痕', '建议')",
+        )
+        .bind(now)
+        .bind(&course_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_structure_mounts \
+             (course_id, mounts_json, structure_hash, hash_version, updated_at) \
+             VALUES (?, '[]', 0, 2, ?)",
+        )
+        .bind(&course_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        let task_key = service
+            .generation_tasks
+            .pre_register(
+                crate::service::generation_tasks::KIND_GROWTH,
+                &course_id,
+                None,
+                "生长任务",
+            )
+            .unwrap();
+
+        service.delete_course(&course, &owner_id).await.unwrap();
+
+        for table in [
+            "learning_growth_batches",
+            "learning_structure_findings",
+            "learning_structure_mounts",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE course_id = ?"
+            ))
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 0, "{table} must be purged with the course");
+        }
+        let state = service
+            .generation_tasks
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == task_key)
+            .map(|row| row.state)
+            .unwrap_or_default();
+        assert_eq!(state, "cancelled", "在途生长任务随删课取消");
     }
 
     /// 硬删零孤儿（t2 R1+R2）：教程种子替换按同一张 purge 清单清八张内容
@@ -4609,6 +4703,79 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         assert_eq!(detail.course.skipped_lessons, 2, "unskip after full skip reverses");
+    }
+
+    /// pg4：已结算/已完成课时不可再置跳过（新入口拒绝）；存量「已完成 +
+    /// 跳过」行读侧按已学完算——skipped 读数排除有 node-completed 事件的
+    /// 节点，卡片分子（settled_or_completed）照常计入，不再双计。
+    #[tokio::test]
+    async fn completed_lesson_cannot_be_skipped_and_legacy_overlap_reads_as_learned() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let mut pack = valid_pack();
+        pack.modules[0].lessons = (0..3)
+            .map(|index| LessonPack {
+                title: format!("Lesson {index}"),
+                ..pack.modules[0].lessons[0].clone()
+            })
+            .collect();
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lessons: Vec<_> = detail.modules[0].lessons.to_vec();
+        let first = &lessons[0];
+
+        service
+            .update_lesson_progress(&first.id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        let error = service
+            .update_lesson_progress(&first.id, &user_id, LessonStatus::Skipped)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
+        assert!(error.to_string().contains("已经学完"), "{error}");
+
+        // 存量重叠（绕过新门直写）：读侧按已学完算，skipped 不计。
+        sqlx::query(
+            "UPDATE learning_lesson_progress SET status = 'skipped', completed_at = NULL \
+             WHERE lesson_id = ? AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments \
+               WHERE user_id = ? AND course_id = ?)",
+        )
+        .bind(first.id.as_str())
+        .bind(user_id.as_str())
+        .bind(course.course.id.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert_eq!(summary.skipped_lessons, 0, "有 node-completed 事件 = 已学完，不进 skipped");
+        assert_eq!(summary.settled_or_completed, 1, "已学完照常计入分子");
+        assert_eq!(summary.total_lessons, 3);
+        assert_eq!(
+            summary.total_lessons - summary.skipped_lessons,
+            3,
+            "已学完课时留在分母（skipped 不剔它）"
+        );
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 0, "detail 面同口径");
+
+        // 撤销跳过不受限（存量清理通道）。
+        service
+            .update_lesson_progress(&first.id, &user_id, LessonStatus::NotStarted)
+            .await
+            .unwrap();
     }
 
     /// x11：CourseSummary 显式带 pipeline——传统课程按来源计划列判定
@@ -11094,9 +11261,9 @@ async fn xp_reading_gauge_excludes_skipped_lessons() {
     );
 }
 
-/// c1/R-b 分子端：settled_nodes 与新分母同口径剔 skipped——完成过的课时
-/// 再被跳过（图工作区对已完成节点也开跳过钮）时，其结算不进分子，尺
-/// 永不倒挂（settled ≤ total 恒真）；unskip 后结算回分子。
+/// pg4：已结算课时不可再置跳过（新入口拒绝）；存量「完成后再跳过」重叠
+/// 读侧按已学完算——skipped 口径排除有 node-completed 事件的节点，分母
+/// 不剔它、分子保留结算，尺永不倒挂；撤销跳过可逆。
 #[tokio::test]
 async fn xp_reading_settled_nodes_follow_skip_denominator() {
     let database = nomifun_db::init_database_memory().await.unwrap();
@@ -11128,21 +11295,35 @@ async fn xp_reading_settled_nodes_follow_skip_denominator() {
     let reading = service.xp_reading(&user_id).await.unwrap();
     assert_eq!((reading.settled_nodes, reading.total_nodes), (1, 2));
 
-    // 完成后跳过同一课：分母剔它（2→1），分子同步剔它的结算（1→0）——
-    // 若分子照旧数账本，尺会读出 1/1 对 0 的倒挂。
-    service
+    // pg4：完成后再跳过 = 语义矛盾，新入口拒绝。
+    let error = service
         .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::Skipped)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(error.to_string().contains("已经学完"), "{error}");
+
+    // 存量重叠（绕过新门直写 skipped）：读侧按已学完算——分母不剔它
+    // （2 仍 2）、分子保留结算（1 仍 1），尺永不倒挂。
+    sqlx::query(
+        "UPDATE learning_lesson_progress SET status = 'skipped', completed_at = NULL \
+         WHERE lesson_id = ? AND enrollment_id IN (SELECT enrollment_id FROM learning_enrollments \
+           WHERE user_id = ? AND course_id = ?)",
+    )
+    .bind(lessons[0].id.as_str())
+    .bind(user_id.as_str())
+    .bind(course.course.id.as_str())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
     let reading = service.xp_reading(&user_id).await.unwrap();
     assert_eq!(
         (reading.settled_nodes, reading.total_nodes),
-        (0, 1),
-        "numerator drops the settled-then-skipped lesson; gauge never inverts"
+        (1, 2),
+        "settled wins on legacy overlap; gauge never inverts"
     );
     assert!(reading.settled_nodes <= reading.total_nodes, "尺永不倒挂");
 
-    // unskip：课时回分母，历史结算回分子（账本永远保留，尺口径可逆）。
+    // unskip：课时回原态，历史结算照旧在分子（账本永远保留）。
     service
         .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
         .await
@@ -11679,6 +11860,19 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let view = service.quiz_progress(&user_id, &course).await.unwrap();
         assert_eq!(view.settled_count, 6);
         assert!(view.due, "6 ≥ 6 到期");
+
+        // 归档课：读数保留但 due=false；直连 start 明确 409；恢复后 due 回来
+        // （与聚合 overview / 到期队列的启用态口径一致）。
+        service.set_course_archived(&course, true).await.unwrap();
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(view.settled_count, 6, "归档不改历史读数");
+        assert!(!view.due, "归档课不出到期");
+        let error = service.quiz_start(&user_id, &course).await.unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
+        assert!(error.to_string().contains("已归档"), "{error}");
+        service.set_course_archived(&course, false).await.unwrap();
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert!(view.due, "恢复后按自然时间回来");
 
         // quiz 结算后计数清零；其后新学新重新积累。
         sqlx::query(

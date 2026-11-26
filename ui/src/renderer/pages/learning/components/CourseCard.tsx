@@ -110,8 +110,10 @@ export function CourseCard({
   const [busy, setBusy] = useState(false);
   // f2 进度口径：分母剔除 skipped（可计课时 = total − skipped）；全跳 →
   // 分母 0 → percent 为 null，计数行呈「—」且不渲染进度条。
+  // pg4：分母与文本分子同口径（settled_or_completed）——已结算/已完成
+  // 课时即使用历史跳过也不应出现「1/1 课时 + 0% 条」的分裂读数。
   const denominator = progressDenominator(course);
-  const percent = progressPercent(course.completed_lessons, denominator);
+  const percent = progressPercent(course.settled_or_completed, denominator);
 
   const archive = () => {
     setBusy(true);

@@ -610,6 +610,31 @@ impl GenerationTaskRegistry {
         Ok(Some(STATE_CANCELLED))
     }
 
+    /// 取消某课程的全部可取消任务（删课收尾；key = `{kind}:{course_id}:{node}`）。
+    /// 在跑 lesson 任务不可远程取消，保持原样（发布路径有墓碑守卫）；
+    /// 排队 lesson 安全可取。返回实际取消数。
+    pub(crate) fn cancel_for_course(&self, course_id: &str) -> usize {
+        let keys: Vec<String> = {
+            let tasks = self.tasks.lock().expect("generation task registry poisoned");
+            tasks
+                .iter()
+                .filter(|(key, record)| {
+                    key.split(':').nth(1) == Some(course_id)
+                        && ((record.state == STATE_RUNNING && record.kind != KIND_LESSON)
+                            || record.state == STATE_QUEUED)
+                })
+                .map(|(key, _)| key.clone())
+                .collect()
+        };
+        let mut cancelled = 0;
+        for key in keys {
+            if self.cancel(&key).ok().flatten().is_some() {
+                cancelled += 1;
+            }
+        }
+        cancelled
+    }
+
     /// 取消全部在跑/排队任务（legacy 全局取消端点的转发面；在跑 lesson 跳过，
     /// 排队 lesson 安全可取）。返回实际取消数。
     pub(crate) fn cancel_running(&self) -> usize {
@@ -1824,5 +1849,46 @@ impl LearningCompleter for CountingCompleter<'_> {
             .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
             .await;
         self.count(input, result).await
+    }
+}
+
+#[cfg(test)]
+mod course_cancel_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_for_course_only_cancels_that_courses_active_tasks() {
+        let registry = GenerationTaskRegistry::with_gate(false, TASK_GATE_LIMIT);
+        registry
+            .pre_register(KIND_GROWTH, "course-a", None, "a")
+            .unwrap();
+        registry
+            .pre_register(KIND_STRUCTURE, "course-a", None, "a2")
+            .unwrap();
+        registry
+            .pre_register(KIND_GROWTH, "course-b", None, "b")
+            .unwrap();
+
+        assert_eq!(registry.cancel_for_course("course-a"), 2);
+        let snapshot = registry.snapshot();
+        let state = |key: &str| {
+            snapshot
+                .iter()
+                .find(|row| row.key == key)
+                .map(|row| row.state.as_str())
+                .unwrap_or("")
+        };
+        assert_eq!(state("growth:course-a:-"), STATE_CANCELLED);
+        assert_eq!(state("structure:course-a:-"), STATE_CANCELLED);
+        assert_eq!(state("growth:course-b:-"), STATE_RUNNING);
+    }
+
+    #[test]
+    fn running_lesson_task_stays_uncancellable_but_queued_lesson_is_taken() {
+        let registry = GenerationTaskRegistry::with_gate(false, TASK_GATE_LIMIT);
+        registry
+            .pre_register(KIND_LESSON, "course-a", Some("lesson-1"), "l")
+            .unwrap();
+        assert_eq!(registry.cancel_for_course("course-a"), 0, "running lesson 保留");
     }
 }

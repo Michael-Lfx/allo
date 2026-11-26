@@ -2,7 +2,7 @@
 id: pg3
 title: 删课收尾——在途生成任务/课时草稿/迟到写（t3 只收了 quiz 回合，没收这些）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -160,3 +160,24 @@ learnhub #275（2026-11-26，票面自述「来源: allo t3 的同构面」）�
 - 课程列表读侧「坏行单目录降级」——本仓无目录，不适用。
 - 为课时任务新增远程取消协议（若选「取消再删」则最小化：复用现有
   token/任务键，不扩 UI 协议）。
+
+## Resolution（2026-11-26 施工）
+
+- `generation_tasks.rs` 新增 `cancel_for_course(course_id)`：按
+  `{kind}:{course_id}:{node}` 取消在跑/排队的非 lesson 任务；在跑 lesson
+  仍不可远程取消（发布路径有墓碑守卫），排队 lesson 可取。
+- `LearningService` 新增 `cancel_course_generation_tasks` /
+  `clear_course_wakes`（growth + repair follow-up 两表）；
+  `lesson_draft.rs` 新增 `clear_lesson_drafts_for_course`（按课时 id 清
+  draft 与 lesson→draft 映射）。
+- `delete_course`：存在性检查后取消任务/清唤醒；purge 清单 8 → 14，新增
+  growth batches / mounts / findings / repairs / maintenance_state /
+  system_actions；提交后 best-effort 清草稿并打一行 info（含取消数/草稿数）。
+- 迟到写守卫：`apply_batch` 入口查存活（删/归档 → 可见失败、零写）；
+  结构快照两处 UPDATE 加 `deleted_at IS NULL AND enabled = 1` + rows_affected
+  检查；挂载 upsert 前查存活；课时发布 UPDATE 加课程存活子查询 + 零行回滚。
+- 测试：`delete_course_purges_observation_tables_and_cancels_tasks`（新）、
+  `cancel_for_course` 2 项（新）、既有软/硬删零孤儿测试扩查六表；全量
+  1134/0。
+- 欠账：在跑 lesson 任务无法取消是既有协议限制；它靠发布守卫失败可见，
+  不再写回墓碑课。UI pill 未加删除事件，任务被取消后由快照显示终态。

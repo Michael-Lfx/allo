@@ -191,6 +191,12 @@ pub struct GrowthRunStats {
     pub review_provenance_degraded: bool,
     pub review_provenance_external_hits: usize,
     pub review_provenance_normalized: usize,
+    /// Stage 1 读数：`已会声明` 行 / `已教` ref 在册未教 / 直接出处违规
+    /// （term≠ref）/ 自教兄弟供给（report-only 档不挡门，读数可观察）。
+    pub review_provenance_declared_rows: usize,
+    pub review_provenance_registry_only: usize,
+    pub review_provenance_direct_violations: usize,
+    pub review_provenance_sibling_self_taught: usize,
     /// 碎片裁决机械读数（m9 补接）：点名片段数 / 评审裁决行数 / 未处置片段
     /// 数（report-only 降 findings / enforce 合成打回）/ 两连败 Degraded。
     pub review_fragments_total: usize,
@@ -240,6 +246,26 @@ impl LearningService {
             growth_wakes: Arc::new(Mutex::new(HashMap::new())),
             growth_wake_notify: Arc::new(tokio::sync::Notify::new()),
             repair_followup_wakes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// 删课收尾：取消本课可取消的生成任务（在跑 lesson 任务保留，发布路径
+    /// 有墓碑守卫）；返回实际取消数。
+    pub(crate) fn cancel_course_generation_tasks(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> usize {
+        self.generation_tasks.cancel_for_course(course_id.as_str())
+    }
+
+    /// 删课收尾：清掉本课生长唤醒与修补重挂唤醒（内存态；后续轮次本会
+    /// 重新判存活并 no-op，这里只是省一次调度）。
+    pub(crate) fn clear_course_wakes(&self, course_id: &LearningCourseId) {
+        if let Ok(mut wakes) = self.growth_wakes.lock() {
+            wakes.remove(course_id);
+        }
+        if let Ok(mut wakes) = self.repair_followup_wakes.lock() {
+            wakes.remove(course_id);
         }
     }
 

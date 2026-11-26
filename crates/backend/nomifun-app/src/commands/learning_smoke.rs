@@ -1555,7 +1555,7 @@ async fn run_grow(
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
-                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={} normalized={}]  \
+                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={} normalized={} declared={} registry_only={} direct={} sibling={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [names: name_hints={}]  \
                  [redraft_spliced={}]  \
@@ -1568,6 +1568,10 @@ async fn run_grow(
                 stats.review_provenance_degraded,
                 stats.review_provenance_external_hits,
                 stats.review_provenance_normalized,
+                stats.review_provenance_declared_rows,
+                stats.review_provenance_registry_only,
+                stats.review_provenance_direct_violations,
+                stats.review_provenance_sibling_self_taught,
                 stats.review_fragments_total,
                 stats.review_fragments_rows,
                 stats.review_fragments_unhandled,
@@ -4692,7 +4696,7 @@ impl ReplayRunReadout {
 }
 
 /// 夹具批（两臂对照）：批 JSON + known surface 全在臂内装配——known 是
-/// 登记表/已教账快照的最小投影（生产 gate_batch 折进 `provenance_known`
+/// 登记表/已教账快照的最小投影（生产 gate_batch 折进 `provenance_pool`
 /// 的同一面；`replay_concept_review` 零 DB 依赖，靠它喂机械核与点名派生）。
 struct ReplayFixture {
     /// readout 行标签（reject-anchor / pass-anchor / live-real-batch；display
@@ -5414,7 +5418,7 @@ const T1_TAUGHT_DECLARED_NOTE: &str =
     "（尾部无 @ 档位者为学习者已会声明：视为已掌握，等同已知，不要再为其安排教学）";
 
 /// 已教概念账原文 → 已知名数组：顿号分条、剥掉尾部括注与 `@档位` 后缀，顺序
-/// 保留，同名只留首现一条（生产 `provenance_known` 是集合语义）。概念名里的
+/// 保留，同名只留首现一条（生产 `provenance_pool` 是集合语义）。概念名里的
 /// 「」等标点按原文保留，不改写不删减。
 fn t1_known_names(taught_summary: &str) -> Vec<String> {
     let body = taught_summary
@@ -5432,7 +5436,7 @@ fn t1_known_names(taught_summary: &str) -> Vec<String> {
 
 /// T1 真实批夹具装配：批 JSON（录制原文）+ 真实已教概念账原文 + 真实学习目标。
 /// `known` = 已教概念账的已知名 ∪ 本批铸名正名与别名（小写折叠）——生产
-/// `gate_batch` 装配 `provenance_known` 的同一道缝（已教账 ∪ 登记表活跃名与
+/// `gate_batch` 装配 `provenance_pool` 的同一道缝（已教账 ∪ 登记表活跃名与
 /// 别名 ∪ 本批铸名/提名；登记表名不在臂内，是票面已记录的保守偏差）。漏掉
 /// 本批铸名，批自己的教出名会以未着落片段的身份进点名清单——真机实录的
 /// 清单里没有它们。

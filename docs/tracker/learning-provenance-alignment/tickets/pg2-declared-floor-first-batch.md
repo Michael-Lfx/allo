@@ -2,7 +2,7 @@
 id: pg2
 title: 出处门 Stage 1c——首批参考面减去已会声明块（不裁未声明候选，不裁结构）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [pg1]
 part_of: map.md
@@ -122,3 +122,20 @@ part_of: map.md
 - 结构起点/深度水位/候选面裁剪（ADR-0015：结构只参考）。
 - 已会声明撤销后的回滚语义（现状：概念不灭、只删锚行）——不动。
 - 门口清单/覆盖读数的声明感知呈现——另议。
+
+## Resolution（2026-11-26 施工）
+
+- `service/learning_graph.rs` 新增 `declared_block_slugs(course_id)`：读本课
+  `learning_basis_declarations.blocks_json` 并集，空串滤掉，坏档走
+  `parse_anchor_row` 如实上抛。
+- `structure_view.rs` 新增 `render_terrain_list_with_declared(structure,
+  covered, note, declared_blocks, first_batch)`；旧 `render_terrain_list`
+  变薄包装（空集/非首批逐字节同旧）。首批剔声明块并加一行「已会声明块
+  （本批不装）」注记；未声明块全量保留、前置块被声明也不级联；无 slug
+  块永不命中。
+- `build_coach_context` 用 `lesson_titles.is_empty()` 判**真首批**（花名册
+  为空是更宽的「无就绪候选」，不等于首批），只首批读声明块、零非首批
+  开销。
+- 测试：`structure_view` 3 项（剔除/反级联、首批限定/空集逐字节、无 slug
+  不误删）；`basis_tests` 加声明块 slug 可读断言；全量 1134/0。
+- 欠账：真机两臂（勾声明 vs 不勾）未跑；单测已覆盖渲染面与读取面。

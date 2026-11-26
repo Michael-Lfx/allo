@@ -1213,20 +1213,22 @@ const LearningGraphWorkspace: React.FC<{
                       </Tag>
                     )}
                     <span className='flex-1' />
-                    <Button
-                      size='small'
-                      disabled={busyId !== null}
-                      onClick={() =>
-                        onProgress(
-                          selectedLesson,
-                          selectedLesson.status === 'skipped' ? 'not_started' : 'skipped'
-                        )
-                      }
-                    >
-                      {selectedLesson.status === 'skipped'
-                        ? t('learning.learningGraphUnskip')
-                        : t('learning.learningGraphSkip')}
-                    </Button>
+                    {selectedLesson.status !== 'completed' && (
+                      <Button
+                        size='small'
+                        disabled={busyId !== null}
+                        onClick={() =>
+                          onProgress(
+                            selectedLesson,
+                            selectedLesson.status === 'skipped' ? 'not_started' : 'skipped'
+                          )
+                        }
+                      >
+                        {selectedLesson.status === 'skipped'
+                          ? t('learning.learningGraphUnskip')
+                          : t('learning.learningGraphSkip')}
+                      </Button>
+                    )}
                   </div>
                   <div className='mt-12px'>
                     <LessonBlock

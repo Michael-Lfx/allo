@@ -279,7 +279,9 @@ impl LearningService {
         let skipped_scope = format!(
             "SELECT p.lesson_id \
              {SKIPPED_LESSON_FILTER} \
-             WHERE e.user_id = ? AND p.status = 'skipped'"
+             WHERE e.user_id = ? AND p.status = 'skipped' \
+               AND NOT EXISTS (SELECT 1 FROM learning_xp_events x \
+                 WHERE x.user_id = ? AND x.node_id = p.lesson_id AND x.kind = 'node-completed')"
         );
         let total_nodes: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_lessons l \
@@ -287,6 +289,7 @@ impl LearningService {
              WHERE m.course_id IN ({enabled_scope}) \
                AND l.lesson_id NOT IN ({skipped_scope})"
         ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .fetch_one(&self.pool)
@@ -302,6 +305,7 @@ impl LearningService {
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
+        .bind(user_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
@@ -313,6 +317,7 @@ impl LearningService {
                AND l.lesson_id NOT IN (SELECT node_id FROM learning_xp_events \
                  WHERE user_id = ? AND kind = 'node-completed' AND node_id IS NOT NULL)"
         ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -446,21 +451,15 @@ impl LearningService {
     }
 
     /// 每课程 N/K 读数（`GET /courses/{id}/quiz/progress`；读数面非门禁）。
-    /// 课程不在（未建或已删墓碑）= NotFound。
+    /// 课程不在（未建或已删墓碑）= NotFound；归档课保留读数但 `due=false`
+    /// （恢复后按自然时间回来，与聚合 overview 的启用态口径一致）。
     pub async fn quiz_progress(
         &self,
         user_id: &UserId,
         course_id: &LearningCourseId,
     ) -> Result<QuizProgressView, AppError> {
-        let exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM learning_courses \
-             WHERE course_id = ? AND deleted_at IS NULL",
-        )
-        .bind(course_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
-        if exists.is_none() {
+        let (live, enabled) = self.live_course_flags(course_id).await?;
+        if !live {
             return Err(AppError::NotFound(format!("learning course {course_id}")));
         }
         let settled_count = self
@@ -470,7 +469,7 @@ impl LearningService {
         Ok(QuizProgressView {
             settled_count,
             trigger_count,
-            due,
+            due: due && enabled,
         })
     }
 

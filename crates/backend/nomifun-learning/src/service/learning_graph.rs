@@ -452,9 +452,9 @@ impl LearningService {
                     previous_snapshot.as_deref(),
                 );
                 let snapshot = serde_json::to_string(&envelope).map_err(internal)?;
-                sqlx::query(
+                let updated = sqlx::query(
                     "UPDATE learning_courses SET structure_json = ?, updated_at = ? \
-                     WHERE course_id = ?",
+                     WHERE course_id = ? AND deleted_at IS NULL AND enabled = 1",
                 )
                 .bind(&snapshot)
                 .bind(now_ms())
@@ -462,6 +462,11 @@ impl LearningService {
                 .execute(&self.pool)
                 .await
                 .map_err(internal)?;
+                if updated.rows_affected() == 0 {
+                    return Err(AppError::Conflict(
+                        "课程已删除/归档，结构不再写回".into(),
+                    ));
+                }
                 let blocks = artifacts
                     .structure
                     .get("blocks")
@@ -881,6 +886,16 @@ impl LearningService {
             &block_slugs,
         );
         let payload = mounting::entries_json(&merged);
+        // pg3 迟到写守卫：墓碑/归档课不再写挂载（挂载是导航事实，删课会清）。
+        let (live, enabled) = self.live_course_flags(course_id).await?;
+        if !live {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        if !enabled {
+            return Err(AppError::Conflict(
+                "课程已归档，挂载不再写回".into(),
+            ));
+        }
         sqlx::query(
             "INSERT INTO learning_structure_mounts \
              (course_id, mounts_json, structure_hash, hash_version, updated_at) \
@@ -1317,14 +1332,22 @@ impl LearningService {
         // 在写盘之前先算。
         let mounts_stale = old_hash != new_hash;
         if !noop {
-            // 结构快照原子写（唯一权威）。
-            sqlx::query("UPDATE learning_courses SET structure_json = ?, updated_at = ? WHERE course_id = ?")
-                .bind(&new_structure_raw)
-                .bind(now_ms())
-                .bind(course_id.as_str())
-                .execute(&self.pool)
-                .await
-                .map_err(internal)?;
+            // 结构快照原子写（唯一权威；pg3：墓碑/归档课不再写回）。
+            let updated = sqlx::query(
+                "UPDATE learning_courses SET structure_json = ?, updated_at = ? \
+                 WHERE course_id = ? AND deleted_at IS NULL AND enabled = 1",
+            )
+            .bind(&new_structure_raw)
+            .bind(now_ms())
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+            if updated.rows_affected() == 0 {
+                return Err(AppError::Conflict(
+                    "课程已删除/归档，结构不再写回".into(),
+                ));
+            }
             // m2（R-b / D1）：结构已改 = 既有挂载整体失效 → 登记一次全量重挂。
             // 登记紧跟结构写盘（ADR-0019：结构已经变了就必须重挂）：修补审计
             // 行与 Done 账本行都排在它之后，且写了也可能失败并让本函数以 Err
@@ -1889,6 +1912,25 @@ impl LearningService {
 
     /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
     /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
+    /// 课程存活/启用两旗（quiz 读面与 start 守卫共用；不区分课程类型）：
+    /// 返回 `(live, enabled)`——墓碑/不存在 = `(false, false)`。
+    pub(super) async fn live_course_flags(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<(bool, bool), AppError> {
+        let row: Option<(Option<i64>, i64)> = sqlx::query_as(
+            "SELECT deleted_at, enabled FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(match row {
+            Some((None, enabled)) => (true, enabled != 0),
+            _ => (false, false),
+        })
+    }
+
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
         let row: Option<(String, Option<i64>, i64)> = sqlx::query_as(
             "SELECT course_kind, deleted_at, enabled FROM learning_courses WHERE course_id = ?",
@@ -2694,7 +2736,7 @@ impl LearningService {
             // 休眠，连 DB 读都没有）；课程层损坏 = fail loud（旁键坏了不能
             // 悄悄放行，与审计面同律）。
             let naming_list = if crate::learning_graph::review_fragments_enabled() {
-                self.derive_naming_list(course_id, &candidate, &outcome.provenance_known)
+                self.derive_naming_list(course_id, &candidate, &outcome.provenance_pool)
                     .await?
             } else {
                 Vec::new()
@@ -2732,7 +2774,7 @@ impl LearningService {
                 &candidate,
                 &context,
                 &candidates_text,
-                &outcome.provenance_known.iter().cloned().collect::<Vec<_>>(),
+                &outcome.provenance_pool.iter().cloned().collect::<Vec<_>>(),
                 &naming_list,
                 crate::lexicon_enforce_enabled(),
                 &outcome,
@@ -3221,6 +3263,10 @@ impl LearningService {
                 review_provenance_degraded: provenance.degraded,
                 review_provenance_external_hits: provenance.external_hits,
                 review_provenance_normalized: provenance.normalized,
+                review_provenance_declared_rows: provenance.declared_rows,
+                review_provenance_registry_only: provenance.registry_only_refs,
+                review_provenance_direct_violations: provenance.direct_violations,
+                review_provenance_sibling_self_taught: provenance.sibling_self_taught,
                 review_fragments_total: fragments.fragments,
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,
@@ -3302,6 +3348,14 @@ impl LearningService {
         // 里只取「位置事实」供折叠，不取判定。无结构快照 = 清单为空，也就
         // 不必读挂载表。
         let lesson_titles = self.lesson_titles(course_id).await?;
+        // Stage 1c：真首批（本课尚无节点）参考面减去本课已会声明块；非首批
+        // 零读（花名册为空是更宽的「无就绪候选」，不等于首批）。
+        let first_batch = lesson_titles.is_empty();
+        let declared_blocks = if first_batch {
+            self.declared_block_slugs(course_id).await?
+        } else {
+            std::collections::BTreeSet::new()
+        };
         let terrain_list = match structure.as_ref() {
             Some(structure) => {
                 let mount_row: Option<(String, i64, i64)> = sqlx::query_as(
@@ -3323,10 +3377,12 @@ impl LearningService {
                         .as_ref()
                         .map(|(mounts_json, hash, version)| (mounts_json.as_str(), *hash, *version)),
                 );
-                crate::learning_graph::structure_view::render_terrain_list(
+                crate::learning_graph::structure_view::render_terrain_list_with_declared(
                     structure,
                     &coverage.covered,
                     coverage.note,
+                    &declared_blocks,
+                    first_batch,
                 )
             }
             None => String::new(),
@@ -3649,7 +3705,8 @@ impl LearningService {
         // 已会声明并网（m2）：声明概念按「已会」= 满档供给——下游 assumes
         // 在生长语义门即判就绪（与 taught_ledger 投影同源，机械保证）。名字
         // 键 = 登记表正名（声明概念必在册；已删概念的声明引用在此无行可加，
-        // 自然降级）。
+        // 自然降级）。Stage 1 同时把声明正名收进独立的 declared 面。
+        let mut declared_canonicals: HashSet<String> = HashSet::new();
         for concept_id in self.declared_concept_ids().await? {
             let canonical: Option<String> = sqlx::query_scalar(
                 "SELECT canonical FROM learning_concept_registry \
@@ -3660,6 +3717,7 @@ impl LearningService {
             .await
             .map_err(internal)?;
             if let Some(canonical) = canonical {
+                declared_canonicals.insert(canonical.trim().to_lowercase());
                 let entry = coverage
                     .entry(canonical.trim().to_lowercase())
                     .or_insert(crate::learning_graph::ConceptTier::Teach);
@@ -3851,22 +3909,54 @@ impl LearningService {
         // 评审挂号表的已知名池（m3）：已教账 ∪ 登记表活跃名+别名 ∪ 本批
         // 铸名/提名（小写折叠）——机械校验所需的已知名字池，评审上下文已
         // 装配的机械面输入原样复用（learnhub `ReviewInput.known_names` 同缝）。
-        let mut provenance_known: HashSet<String> = coverage.keys().cloned().collect();
-        provenance_known.extend(registry_names.iter().cloned());
+        let mut provenance_pool: HashSet<String> = coverage.keys().cloned().collect();
+        provenance_pool.extend(registry_names.iter().cloned());
         for mint in &batch.mints {
-            provenance_known.insert(mint.canonical.trim().to_lowercase());
+            provenance_pool.insert(mint.canonical.trim().to_lowercase());
             for alias in &mint.aliases {
                 let alias = alias.trim();
                 if !alias.is_empty() {
-                    provenance_known.insert(alias.to_lowercase());
+                    provenance_pool.insert(alias.to_lowercase());
                 }
             }
         }
         for nomination in &batch.new_aliases {
             let name = nomination.name.trim();
             if !name.is_empty() {
-                provenance_known.insert(name.to_lowercase());
+                provenance_pool.insert(name.to_lowercase());
             }
+        }
+        // Stage 1 已知域三面：covered（已教 ∪ 已会声明）/ declared（已会
+        // 声明）/ pool（命名面）；名字↔正名解析面从登记表 + 本批 + 已教账
+        // 装配。covered 只认知识面，pool 在册 ≠ 已知。
+        let mut provenance_domain = crate::learning_graph::provenance::ProvenanceDomain {
+            covered: coverage.keys().cloned().collect(),
+            declared: declared_canonicals,
+            pool: provenance_pool.clone(),
+            ..Default::default()
+        };
+        for entry in &registry_entries {
+            provenance_domain.ensure_name(&entry.canonical);
+            for alias in &entry.active_aliases {
+                provenance_domain.register_name(alias, &entry.canonical);
+            }
+        }
+        for mint in &batch.mints {
+            provenance_domain.ensure_name(&mint.canonical);
+            for alias in &mint.aliases {
+                provenance_domain.register_name(alias, &mint.canonical);
+            }
+        }
+        for nomination in &batch.new_aliases {
+            provenance_domain.ensure_name(&nomination.name);
+        }
+        for node in &batch.nodes {
+            for teaches in &node.teaches {
+                provenance_domain.ensure_name(&teaches.name);
+            }
+        }
+        for name in coverage.keys() {
+            provenance_domain.ensure_name(name);
         }
         // f1：本批复用命中的机械锚（auto_reusals + direct_host 两源，评审
         // 前已知）——注入块与挂号表放行域同源装配。
@@ -3883,7 +3973,8 @@ impl LearningService {
             registry_concept_ids,
             registry_name_hosts,
             auto_reusals,
-            provenance_known,
+            provenance_pool,
+            provenance_domain,
             external_anchors_mech,
             name_hints,
         })
@@ -3901,7 +3992,7 @@ impl LearningService {
         &self,
         course_id: &LearningCourseId,
         batch: &crate::learning_graph::ProposedBatch,
-        provenance_known: &HashSet<String>,
+        provenance_pool: &HashSet<String>,
     ) -> Result<Vec<crate::learning_graph::fragment_verdict::NameFragment>, AppError> {
         let course: (String, String, Option<String>) = sqlx::query_as(
             "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
@@ -3916,7 +4007,7 @@ impl LearningService {
                 .map_err(AppError::Internal)?;
         let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
         let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
-        known.extend(provenance_known.iter().cloned());
+        known.extend(provenance_pool.iter().cloned());
         known.extend(course_context_terms(&course.0, &course.1));
         Ok(crate::learning_graph::fragment_verdict::derive_naming_list(
             batch, &known, &course_lexicon,
@@ -3935,6 +4026,17 @@ impl LearningService {
         rulings: &HashMap<String, String>,
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::alias_records::{register_alias_tx, AliasSpec};
+        // pg3 迟到写守卫：删课/归档后不再落批（可见失败、零写）。放在读
+        // module/position 之前——墓碑课的模块行已被 purge，先读会报内部错。
+        let (live, enabled) = self.live_course_flags(course_id).await?;
+        if !live {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        if !enabled {
+            return Err(AppError::Conflict(
+                "课程已归档，本批不再落库".into(),
+            ));
+        }
         // 模块与下一 position。
         let module_id: String = sqlx::query_scalar(
             "SELECT module_id FROM learning_modules WHERE course_id = ? \
@@ -5877,6 +5979,28 @@ impl LearningService {
             parse(blocks_json, "blocks")?,
             parse(concept_ids_json, "concepts")?,
         ))
+    }
+
+    /// 本课已会声明块 slug 并集（Stage 1c 首批参考面减法；跨多次声明累加）。
+    /// 只读 `blocks_json`；坏档走 [`Self::parse_anchor_row`] 如实上抛。
+    pub(super) async fn declared_block_slugs(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<std::collections::BTreeSet<String>, AppError> {
+        let mut slugs = std::collections::BTreeSet::new();
+        for (doors_json, blocks_json, concept_ids_json) in
+            self.declared_anchor_rows_for_course(course_id).await?
+        {
+            let (_, blocks, _) =
+                Self::parse_anchor_row(&doors_json, &blocks_json, &concept_ids_json)?;
+            for slug in blocks {
+                let slug = slug.trim();
+                if !slug.is_empty() {
+                    slugs.insert(slug.to_owned());
+                }
+            }
+        }
+        Ok(slugs)
     }
 
     /// 全局已声明 concept_id 并集（存活课程；已知集投影的声明面）。
