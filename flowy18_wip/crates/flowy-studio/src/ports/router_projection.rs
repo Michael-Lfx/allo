@@ -22,6 +22,7 @@ pub fn project_router_child_branches<FLines, FReceipts, FContract>(
     parent: &SessionSummary,
     child_works: &[ChildWorkSummary],
     overridden_hashes: &BTreeSet<String>,
+    localize: &dyn Fn(&str) -> String,
     mut lines_for: FLines,
     mut receipts_for: FReceipts,
     contract_for: FContract,
@@ -66,6 +67,7 @@ where
             &child_receipts,
             overridden_hashes,
             child_contract.clone(),
+            localize,
             &contract_for,
         );
 

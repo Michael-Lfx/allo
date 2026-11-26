@@ -25,11 +25,16 @@ pub fn display_path(path: &Path) -> String {
     display_path_str(&path.to_string_lossy())
 }
 
+fn strip_windows_unc_prefix(raw: &str) -> Option<&str> {
+    let prefix = raw.get(..8)?;
+    prefix.eq_ignore_ascii_case(r"\\?\unc\").then(|| &raw[8..])
+}
+
 /// String variant of [`display_path`] for persisted artifact or tool paths.
 #[must_use]
 pub fn display_path_str(raw: &str) -> String {
-    if raw.len() >= 8 && raw[..8].eq_ignore_ascii_case(r"\\?\unc\") {
-        format!(r"\\{}", &raw[8..])
+    if let Some(unc_tail) = strip_windows_unc_prefix(raw) {
+        format!(r"\\{unc_tail}")
     } else if let Some(stripped) = raw.strip_prefix(r"\\?\") {
         stripped.to_owned()
     } else {
@@ -197,7 +202,7 @@ fn normalize_reparse_target(
 
 fn strip_windows_verbatim_local(path: &Path) -> Option<PathBuf> {
     let raw = path.to_string_lossy();
-    if raw.len() >= 8 && raw[..8].eq_ignore_ascii_case(r"\\?\unc\") {
+    if strip_windows_unc_prefix(&raw).is_some() {
         return None;
     }
     if let Some(stripped) = raw.strip_prefix(r"\\?\") {
@@ -539,5 +544,49 @@ mod tests {
         let _ = std::fs::remove_dir(&chained);
         let _ = std::fs::remove_dir(&junction);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn multibyte_utf8_paths_do_not_panic_on_unc_prefix_checks() {
+        assert_eq!(display_path_str(r"C:\项目\报告.md"), r"C:\项目\报告.md");
+        assert_eq!(
+            display_path_str(r"\\?\C:\项目\报告.md"),
+            r"C:\项目\报告.md"
+        );
+        assert_eq!(
+            display_path_str(r"\\?\UNC\server\共享\报告.md"),
+            r"\\server\共享\报告.md"
+        );
+        assert_eq!(
+            display_path_str(r"\\?\unc\server\共享\报告.md"),
+            r"\\server\共享\报告.md"
+        );
+        assert_eq!(display_path_str("报告"), "报告");
+        assert_eq!(
+            display_path(Path::new(r"C:\项目\报告.md")),
+            r"C:\项目\报告.md"
+        );
+
+        assert_eq!(
+            strip_windows_verbatim_local(Path::new(r"C:\项目\报告.md")),
+            Some(PathBuf::from(r"C:\项目\报告.md"))
+        );
+        assert_eq!(
+            strip_windows_verbatim_local(Path::new(r"\\?\C:\项目\报告.md")),
+            Some(PathBuf::from(r"C:\项目\报告.md"))
+        );
+        assert!(
+            strip_windows_verbatim_local(Path::new(
+                r"\\?\UNC\server\共享\报告.md"
+            ))
+            .is_none()
+        );
+        assert!(
+            strip_windows_verbatim_local(Path::new(
+                r"\\?\unc\server\共享\报告.md"
+            ))
+            .is_none()
+        );
+        assert!(strip_windows_verbatim_local(Path::new("报告")).is_none());
     }
 }

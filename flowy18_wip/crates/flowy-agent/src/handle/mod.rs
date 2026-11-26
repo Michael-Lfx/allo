@@ -2103,13 +2103,10 @@ impl AgentHandle {
         let Some(engine) = lock(&self.inner.engine).clone() else {
             return;
         };
-        let mut children = engine.child_sessions(router_id);
-        if children.is_empty() {
+        let child_ids = engine.child_session_ids(router_id);
+        if child_ids.is_empty() {
             return;
         }
-        // Sort by monotonic worker id ascending so ordering stays stable across
-        // refresh and restart.
-        children.sort_by(|a, b| a.id.cmp(&b.id));
 
         let mut seen_artifacts: BTreeSet<String> = rows
             .iter()
@@ -2132,8 +2129,8 @@ impl AgentHandle {
         }
 
         let live = lock(&self.inner.state.live);
-        for child in &children {
-            let Some(child_live) = live.get(&child.id) else {
+        for child_id in &child_ids {
+            let Some(child_live) = live.get(child_id) else {
                 continue;
             };
             for line in &child_live.projection.lines {
@@ -2160,7 +2157,7 @@ impl AgentHandle {
                             semantic_hint: semantic_hint.clone(),
                             override_used: *override_used,
                             provenance_warnings: provenance_warnings.clone(),
-                            source_session_id: Some(child.id.clone()),
+                            source_session_id: Some(child_id.clone()),
                         };
                         if let Some(&existing_idx) = seen_reports.get(&key) {
                             rows[existing_idx] = card;

@@ -3469,6 +3469,203 @@ fn pr2b_two_workers_approval_isolation_child_card_projection_and_override() {
     assert_projected_once(&reopened);
 }
 
+#[test]
+fn chat_history_multi_router_and_active_workers_zero_clone_benchmark() {
+    use flowy_agent_core::{
+        ContentBlock, Message, MessageSource, Role, SessionOrigin,
+        SessionRecord, SessionRole, WorkAccessMode,
+    };
+
+    let sample_messages = |prefix: &str, count: usize| -> Vec<Message> {
+        (0..count)
+            .map(|idx| Message {
+                id: format!("{prefix}-m-{idx}"),
+                role: if idx % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: vec![ContentBlock::text(format!(
+                    "worker payload chunk {idx}"
+                ))],
+                source: MessageSource::User,
+                display_text: None,
+            })
+            .collect()
+    };
+
+    let root = temp_dir("m1-bench-zero-clone");
+    let handle =
+        AgentHandle::with_config(root.to_path_buf(), LlmConfig::default());
+    while handle.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let engine = lock(&handle.inner.engine)
+        .clone()
+        .expect("engine initialized");
+
+    for r in 0..50_usize {
+        let rid = format!("r-hist-{r:03}");
+        engine
+            .create_session_with_role(
+                rid.clone(),
+                1_000 + r as u64,
+                SessionOrigin::Home,
+                None,
+                SessionRole::Router,
+                None,
+                WorkAccessMode::ReadWrite,
+            )
+            .unwrap();
+        for w in 0..2_usize {
+            let wid = format!("w-hist-{r:03}-{w}");
+            engine
+                .insert_session(SessionRecord {
+                    id: wid.clone(),
+                    updated_at: 1_000 + r as u64,
+                    origin: SessionOrigin::Home,
+                    role: SessionRole::Worker,
+                    root_session_id: Some(rid.clone()),
+                    access_mode: WorkAccessMode::ReadOnly,
+                    messages: sample_messages(&wid, 20),
+                    ..SessionRecord::default()
+                })
+                .unwrap();
+        }
+    }
+
+    let active_router = "r-active-bench".to_owned();
+    engine
+        .create_session_with_role(
+            active_router.clone(),
+            5_000,
+            SessionOrigin::Home,
+            None,
+            SessionRole::Router,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
+        .unwrap();
+    for w in 1..=2_usize {
+        let wid = format!("w-active-{w}");
+        engine
+            .insert_session(SessionRecord {
+                id: wid.clone(),
+                updated_at: 5_000 + w as u64,
+                origin: SessionOrigin::Home,
+                role: SessionRole::Worker,
+                root_session_id: Some(active_router.clone()),
+                access_mode: WorkAccessMode::ReadOnly,
+                messages: sample_messages(&wid, 20),
+                ..SessionRecord::default()
+            })
+            .unwrap();
+    }
+    drop(engine);
+    drop(handle);
+
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), LlmConfig::default());
+    while reopened.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    reopened.select_session(&active_router).unwrap();
+    {
+        let mut live = lock(&reopened.inner.state.live);
+        let router_live = live
+            .get_mut(&active_router)
+            .expect("active router hydrated into live");
+        let mut router_lines = vec![
+            ChatLine::User {
+                text: "Run parallel tasks".into(),
+            },
+            ChatLine::Assistant {
+                text: "Dispatched two active workers.".into(),
+            },
+        ];
+        for step in 0..20_usize {
+            router_lines.push(ChatLine::ToolCall {
+                call_id: format!("step-{step}"),
+                name: "query_work_status".into(),
+                target: "w-active-1".into(),
+                running: false,
+            });
+        }
+        router_live.projection = ChatProjection::from_lines(router_lines);
+        for w in 1..=2_usize {
+            let wid = format!("w-active-{w}");
+            let worker_live = live
+                .get_mut(&wid)
+                .expect("active child worker hydrated into live");
+            let mut w_lines = Vec::with_capacity(24);
+            for s in 0..20_usize {
+                w_lines.push(ChatLine::Assistant {
+                    text: format!("stream chunk {s} for {wid}"),
+                });
+            }
+            w_lines.push(ChatLine::Verification {
+                report_id: format!("rep-bench-{w}"),
+                artifact_path: format!(r"C:\bench\out-{w}.md"),
+                artifact_hash: format!("hash-{w}"),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some(wid.clone()),
+            });
+            worker_live.projection = ChatProjection::from_lines(w_lines);
+        }
+    }
+
+    // Warm up once, then sample 100 chat_history() projections across 50 routers.
+    let warmup = reopened.chat_history();
+    assert_eq!(
+        reopened.active_session_id().as_deref(),
+        Some(active_router.as_str())
+    );
+    let has_verifications = |rows: &[ChatLine]| {
+        let has_w1 = rows.iter().any(|l| {
+            matches!(
+                l,
+                ChatLine::Verification {
+                    report_id,
+                    source_session_id: Some(src),
+                    ..
+                } if report_id == "rep-bench-1" && src == "w-active-1"
+            )
+        });
+        let has_w2 = rows.iter().any(|l| {
+            matches!(
+                l,
+                ChatLine::Verification {
+                    report_id,
+                    source_session_id: Some(src),
+                    ..
+                } if report_id == "rep-bench-2" && src == "w-active-2"
+            )
+        });
+        has_w1 && has_w2
+    };
+    assert!(
+        has_verifications(&warmup.rows),
+        "projected chat history must surface both active child Worker cards"
+    );
+
+    let start = std::time::Instant::now();
+    let mut last_rows = Vec::new();
+    for _ in 0..100 {
+        last_rows = reopened.chat_history().rows;
+    }
+    let elapsed_us = start.elapsed().as_micros();
+    println!(
+        "[M1-BENCH] 50 historical Routers + 2 active streaming Workers: chat_history() x100 = {elapsed_us}us ({:.2}us/call), visible_rows={}",
+        elapsed_us as f64 / 100.0,
+        last_rows.len()
+    );
+    assert!(has_verifications(&last_rows));
+}
+
 // =========================================================================
 // Test 20 (PR-2B Suite 4): Live-cloud Router 2-message non-blocking E2E.
 // Same Router conversation dispatches a real workspace Worker task, verifies
