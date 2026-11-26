@@ -70,7 +70,7 @@ impl AgentHandle {
         if record.role == flowy_agent_core::SessionRole::Worker {
             return Err("notice.agent_failed");
         }
-        let children = engine.child_sessions(session_id);
+        let children = engine.child_delete_summaries(session_id);
         let child_ids: Vec<String> =
             children.iter().map(|c| c.id.clone()).collect();
         self.inner.settle_finishing_fence(&engine, session_id);
@@ -92,7 +92,7 @@ impl AgentHandle {
                 .get(session_id)
                 .is_some_and(|s| s.status.is_busy())
             || children.iter().any(|child| {
-                child.status.is_busy()
+                child.is_busy
                     || engine.is_active(&child.id)
                     || lock(&self.inner.state.live)
                         .get(&child.id)
@@ -102,17 +102,27 @@ impl AgentHandle {
             return Err("notice.agent_busy");
         }
         let store = self.artifact_store()?;
-        let artifact_ids = std::iter::once(&record)
-            .chain(children.iter())
-            .flat_map(|rec| rec.delivery_commits.iter())
+        let artifact_ids = record
+            .delivery_commits
+            .iter()
             .flat_map(|commit| commit.artifact_ids.iter().cloned())
+            .chain(
+                children
+                    .iter()
+                    .flat_map(|child| child.artifact_ids.iter().cloned()),
+            )
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let submission_ids = std::iter::once(&record)
-            .chain(children.iter())
-            .flat_map(|rec| rec.delivery_commits.iter())
+        let submission_ids = record
+            .delivery_commits
+            .iter()
             .map(|commit| commit.submission_id.clone())
+            .chain(
+                children
+                    .iter()
+                    .flat_map(|child| child.submission_ids.iter().cloned()),
+            )
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();

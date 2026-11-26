@@ -14,6 +14,85 @@ use flowy_agent_core::{
     DraftTarget, SessionOrigin, SessionRole, SessionWorkspace,
 };
 
+const CLOCK_JUMP_THRESHOLD_MS: i128 = 5_000;
+
+static MONOTONIC_ORIGIN: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+static CLOCK_PROBE: std::sync::OnceLock<std::sync::Mutex<(u64, u64)>> =
+    std::sync::OnceLock::new();
+
+fn monotonic_now_ms() -> u64 {
+    let origin = MONOTONIC_ORIGIN.get_or_init(std::time::Instant::now);
+    let elapsed_ms =
+        u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX);
+    elapsed_ms.max(1)
+}
+
+const fn detect_clock_jump_ms(
+    prev_mono_ms: u64,
+    now_mono_ms: u64,
+    prev_wall_ms: u64,
+    now_wall_ms: u64,
+) -> Option<i64> {
+    let mono_delta = (now_mono_ms as i128) - (prev_mono_ms as i128);
+    let wall_delta = (now_wall_ms as i128) - (prev_wall_ms as i128);
+    let skew = wall_delta - mono_delta;
+    if skew.abs() >= CLOCK_JUMP_THRESHOLD_MS {
+        let clamped = if skew > i64::MAX as i128 {
+            i64::MAX
+        } else if skew < i64::MIN as i128 {
+            i64::MIN
+        } else {
+            skew as i64
+        };
+        Some(clamped)
+    } else {
+        None
+    }
+}
+
+fn check_clock_jump_with_probe(
+    probe: &mut (u64, u64),
+    now_mono: u64,
+    now_wall: u64,
+    drain_sleep_until_ms: &std::sync::atomic::AtomicU64,
+) -> Option<i64> {
+    let (prev_mono, prev_wall) = *probe;
+    *probe = (now_mono, now_wall);
+    let jump_ms =
+        detect_clock_jump_ms(prev_mono, now_mono, prev_wall, now_wall)?;
+    drain_sleep_until_ms.store(0, Ordering::Release);
+    tracing::warn!(
+        target: "flowy.acceptance",
+        event = "clock_jump_detected",
+        jump_ms,
+        prev_mono_ms = prev_mono,
+        now_mono_ms = now_mono,
+        prev_wall_ms = prev_wall,
+        now_wall_ms = now_wall,
+        "system clock jump detected; reset autonomous drain deadline"
+    );
+    Some(jump_ms)
+}
+
+fn probe_clock_jump(
+    drain_sleep_until_ms: &std::sync::atomic::AtomicU64,
+) -> Option<i64> {
+    let now_mono = monotonic_now_ms();
+    let now_wall = now_ms();
+    let probe =
+        CLOCK_PROBE.get_or_init(|| std::sync::Mutex::new((now_mono, now_wall)));
+    let mut guard = lock(probe);
+    let jump = check_clock_jump_with_probe(
+        &mut guard,
+        now_mono,
+        now_wall,
+        drain_sleep_until_ms,
+    );
+    drop(guard);
+    jump
+}
+
 impl AgentHandle {
     /// Accept a prompt that cannot run yet, and hand back a durable receipt.
     ///
@@ -336,6 +415,7 @@ impl Harness {
         self: &Arc<Self>,
     ) -> Result<Option<AcceptedRun>, &'static str> {
         let _drain = lock(&self.state.accept_drain);
+        probe_clock_jump(&self.state.drain_sleep_until_ms);
         if self.state.shutdown_requested.load(Ordering::Acquire)
             || !self.can_run_turns()
             || self.in_flight_work_count() >= self.max_concurrent_works()
@@ -363,12 +443,17 @@ impl Harness {
             );
         }
         let state = &self.state;
+        let active_claim_ids: std::collections::HashSet<String> =
+            lock(&state.active_claims).keys().cloned().collect();
         let queue = AcceptanceQueue::new(state.root.clone());
         let pending = queue
             .pending()
             .map_err(|_| "notice.session_storage_failed")?;
         let mut selected: Option<AcceptedMessage> = None;
         for receipt in pending {
+            if active_claim_ids.contains(&receipt.id) {
+                continue;
+            }
             if self.strict_target_missing(&receipt) {
                 if queue.cancel(&receipt.id, now_ms()).unwrap_or(false) {
                     state.push_update(AgentUpdate::Receipt {
@@ -759,6 +844,7 @@ impl Harness {
         {
             return;
         }
+        probe_clock_jump(&self.state.drain_sleep_until_ms);
         if self
             .state
             .drain_wakeup_scheduled
@@ -779,6 +865,7 @@ impl Harness {
             if !harness.state.autonomous_drain.load(Ordering::Acquire) {
                 return;
             }
+            probe_clock_jump(&harness.state.drain_sleep_until_ms);
             let max_slots = harness.max_concurrent_works();
             // Fill all currently available concurrency slots in a single pass
             // while bounding iterations in case multiple receipts immediately
@@ -808,7 +895,8 @@ impl Harness {
             let Some(delay_ms) = delay_ms else {
                 return;
             };
-            let target_ms = now_ms().saturating_add(delay_ms).max(1);
+            probe_clock_jump(&harness.state.drain_sleep_until_ms);
+            let target_ms = monotonic_now_ms().saturating_add(delay_ms).max(1);
             let mut scheduled = false;
             let mut observed =
                 harness.state.drain_sleep_until_ms.load(Ordering::Acquire);
@@ -852,6 +940,7 @@ impl Harness {
                         Ordering::AcqRel,
                         Ordering::Acquire,
                     );
+                    probe_clock_jump(&sleep_flag.drain_sleep_until_ms);
                 }
             }
             if let Some(harness) = weak.upgrade() {
@@ -1081,4 +1170,143 @@ pub(super) fn reconcile_committed_acceptances(
         }
     }
     reconciled
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use super::*;
+    use crate::config::LlmConfig;
+
+    #[test]
+    fn monotonic_now_ms_is_nonzero_and_nondecreasing() {
+        let first = monotonic_now_ms();
+        assert!(first >= 1, "monotonic_now_ms must reserve 0 as sentinel");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = monotonic_now_ms();
+        assert!(second >= first);
+    }
+
+    #[test]
+    fn detect_clock_jump_ms_handles_forward_backward_and_below_threshold() {
+        // Below 5_000 ms threshold -> None
+        assert_eq!(detect_clock_jump_ms(1_000, 2_000, 10_000, 15_999), None);
+        assert_eq!(detect_clock_jump_ms(1_000, 2_000, 10_000, 6_001), None);
+
+        // Exact thresholds (+/- 5_000 ms)
+        assert_eq!(
+            detect_clock_jump_ms(1_000, 2_000, 10_000, 16_000),
+            Some(5_000)
+        );
+        assert_eq!(
+            detect_clock_jump_ms(1_000, 2_000, 10_000, 6_000),
+            Some(-5_000)
+        );
+
+        // Large forward jump (e.g. OS sleep/wake) and backward NTP step
+        assert_eq!(
+            detect_clock_jump_ms(10_000, 10_500, 100_000, 160_500),
+            Some(60_000)
+        );
+        assert_eq!(
+            detect_clock_jump_ms(10_000, 11_000, 100_000, 70_000),
+            Some(-31_000)
+        );
+
+        // Probe resets drain_sleep_until_ms only when threshold is crossed.
+        let deadline = AtomicU64::new(987_654);
+        let mut probe = (1_000, 10_000);
+        assert_eq!(
+            check_clock_jump_with_probe(&mut probe, 2_000, 11_100, &deadline),
+            None
+        );
+        assert_eq!(deadline.load(Ordering::Acquire), 987_654);
+
+        assert_eq!(
+            check_clock_jump_with_probe(&mut probe, 2_100, 20_100, &deadline),
+            Some(8_900)
+        );
+        assert_eq!(deadline.load(Ordering::Acquire), 0);
+
+        deadline.store(123_456, Ordering::Release);
+        assert_eq!(
+            check_clock_jump_with_probe(&mut probe, 3_100, 10_100, &deadline),
+            Some(-11_000)
+        );
+        assert_eq!(deadline.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn run_accepted_once_skips_in_process_active_claim_even_when_lease_expired()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-queue-active-claim-skip-{}",
+            super::super::next_stamp()
+        ));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        handle.set_origin_for_new_sessions(SessionOrigin::Home);
+        let session_id = handle.create_session().expect("session");
+
+        // Create a receipt whose journal lease already expired in wall-clock
+        // time (e.g. OS slept past `expires_at_ms`), while remaining actively
+        // claimed in `self.state.active_claims`.
+        let queue = AcceptanceQueue::new(root.clone());
+        let r1 = queue
+            .accept(Some(&session_id), "claimed before sleep", 1_000)
+            .expect("accept r1");
+        let claimed = queue
+            .take(&r1.id, "attempt-live", 1_000, 10)
+            .expect("take r1")
+            .expect("claimed r1");
+        assert_eq!(claimed.attempts, 1);
+        assert_eq!(queue.pending().expect("pending").len(), 1);
+
+        // Keep `live[&session_id].status == TurnStatus::Idle` intentionally so
+        // only the `active_claims` guard in `run_accepted_once` prevents
+        // double-claiming.
+        lock(&handle.inner.state.active_claims).insert(
+            r1.id.clone(),
+            AcceptedClaim {
+                receipt_id: r1.id.clone(),
+                attempt_id: "attempt-live".into(),
+                session_id,
+                submission_id: "submission-live".into(),
+                attempts: 1,
+                heartbeat_cancel: CancelToken::new(),
+            },
+        );
+
+        assert!(
+            handle.run_accepted_once().expect("pump 1").is_none(),
+            "in-process active claim must be skipped even when wall-clock lease expired"
+        );
+        let r1_after = queue.get(&r1.id).expect("get").expect("present");
+        assert_eq!(r1_after.attempts, 1, "skip must not bump attempts");
+        assert_eq!(r1_after.last_attempt_id.as_deref(), Some("attempt-live"));
+
+        // A peer queued receipt not in `active_claims` must still be claimed.
+        let _s2 = handle.create_session().expect("session 2");
+        let r2 = handle
+            .accept_deferred("free peer prompt")
+            .expect("accept r2");
+        let run = handle
+            .run_accepted_once()
+            .expect("pump 2")
+            .expect("peer claimed");
+        assert_eq!(run.receipt_id, r2.id);
+
+        let r1_final = queue.get(&r1.id).expect("get").expect("present");
+        assert_eq!(r1_final.attempts, 1);
+        assert_eq!(r1_final.last_attempt_id.as_deref(), Some("attempt-live"));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
