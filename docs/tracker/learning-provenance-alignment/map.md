@@ -8,7 +8,8 @@
       复核立 pg0–pg5 六票并全部关票：Stage 0/1/1c + 三个衍生
       小修；Stage 2 先量后裁（pg0 样本 0 翻转），Stage 3 不搬。后端
       1137/0、UI 学习页 529/0、typecheck/check 绿；pg1/pg2/pg4 的真机
-      校准与拆读欠账见各票 Resolution。 -->
+      校准与拆读欠账见各票 Resolution。已并回 feat/learn1116 @67e8b362f
+      （已推）；main 未动。 -->
 
 ## 一、隔壁这波是什么（2026-11-26 复核）
 
