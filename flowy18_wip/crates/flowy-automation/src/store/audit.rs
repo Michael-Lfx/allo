@@ -421,8 +421,16 @@ pub(super) fn audit(
                     fields: parent_fields,
                 },
             ) => {
+                let removed_receipt = if name == "command_receipts"
+                    && relation.orphan_audit
+                        == OrphanAuditPolicy::AllowRemovedHistoricalSource
+                {
+                    "source_removed=1 AND state IN ('applied','rejected')"
+                } else {
+                    "0"
+                };
                 let sql = format!(
-                    "SELECT principal_authority,principal_user_id,{} FROM {name}",
+                    "SELECT principal_authority,principal_user_id,{},{removed_receipt} FROM {name}",
                     fields.join(",")
                 );
                 let mut statement = connection.prepare(&sql)?;
@@ -458,7 +466,14 @@ pub(super) fn audit(
                         parent_fields,
                         &values,
                         &owner,
-                    ) {
+                    ) && (!row.get::<_, bool>(fields.len() + 2)?
+                        || side_identity_exists(
+                            inventory,
+                            store,
+                            parent_fields,
+                            &values,
+                        ))
+                    {
                         finding(
                             &mut findings,
                             index,

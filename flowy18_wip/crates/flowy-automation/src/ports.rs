@@ -19,6 +19,8 @@ pub trait Clock: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessOperation {
+    Command,
+    Query,
     Start,
     ModelRequest,
     ModelRetry,

@@ -1,8 +1,8 @@
 use crate::{
     ActionSpec, AttemptId, AutomationId, CommandEnvelope, CommandOutcome,
-    DefinitionState, DeletionPlanId, GrantId, ManualAutomationInput,
-    OutboxState, PrincipalId, PrivateText, Revision, RunCompletion, RunId,
-    RunOutcome, RunPhase, RunSpec, SessionRef,
+    DefinitionState, DeletionPlanId, GenerationEpoch, GrantId,
+    ManualAutomationInput, OutboxState, PrincipalId, PrivateText, Revision,
+    RunCompletion, RunId, RunOutcome, RunPhase, RunSpec, SessionRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +134,29 @@ pub struct WatermarkRecord {
     pub source_removed: bool,
 }
 
+/// Per-principal command clock (schema 002).
+///
+/// The request high-water mark only
+/// moves forward, so purging receipts or a wall-clock rollback cannot reopen an
+/// expired request. The epoch is fixed at creation; the sequence advances once
+/// per committed command and is the dataset generation seen by subscribers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandClockRecord {
+    pub principal: PrincipalId,
+    pub request_high_water_ms: i64,
+    pub change_epoch: GenerationEpoch,
+    pub change_sequence: u64,
+    pub updated_at_ms: i64,
+}
+
+/// `epoch` is used only when the clock row is first created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandClockAdvance {
+    pub principal: PrincipalId,
+    pub observed_now_ms: i64,
+    pub epoch: GenerationEpoch,
+}
+
 #[derive(Clone, Debug)]
 pub enum StoreMutation {
     CreateAutomation {
@@ -151,6 +174,7 @@ pub enum StoreMutation {
     InsertOutbox(OutboxRecord),
     InsertDeletionPlan(DeletionPlanRecord),
     SetWatermark(WatermarkRecord),
+    AdvanceCommandClock(CommandClockAdvance),
     SetCurrentAttempt {
         run_id: RunId,
         expected: Option<AttemptId>,
@@ -164,6 +188,14 @@ pub(super) fn validate_definition(
     use super::StoreError;
     if input.title.expose().trim().is_empty() {
         return Err(StoreError::Invalid("empty automation title"));
+    }
+    if let Some(policy) = input.schedule
+        && (matches!(policy.trigger, crate::schedule::TriggerSpec::Manual)
+            || policy.trigger.next_after(0).is_err()
+            || crate::schedule::latest_start_at_ms(0, policy.max_lateness_ms)
+                .is_err())
+    {
+        return Err(StoreError::Invalid("invalid schedule policy"));
     }
     match &input.action {
         ActionSpec::Reminder { text } => {

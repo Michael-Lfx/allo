@@ -65,12 +65,13 @@ const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_MAX_CONCURRENT_WORKS: usize = 3;
 
 mod artifacts;
+mod automation_retention;
 mod detached;
 mod visibility;
 pub use detached::{
     DetachedArtifacts, DetachedAttempt, DetachedAttemptState,
     DetachedCompletion, DetachedError, DetachedPhase, DetachedRun,
-    DetachedRunResult, DetachedRunSpec,
+    DetachedRunResult, DetachedRunSpec, DetachedSessionTicket,
 };
 pub use visibility::result_visible;
 #[cfg(test)]
@@ -614,6 +615,8 @@ struct Harness {
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
     config: Mutex<LlmConfig>,
     skills: Mutex<Vec<InstalledSkill>>,
+    automation_tools:
+        Mutex<Option<crate::automation_tools::AutomationToolBridge>>,
 }
 
 struct SubmissionSelection<'a> {
@@ -701,6 +704,48 @@ impl Default for AgentHandle {
 }
 
 impl AgentHandle {
+    pub fn set_automation_tools(
+        &self,
+        bridge: Option<crate::automation_tools::AutomationToolBridge>,
+    ) {
+        *lock(&self.inner.automation_tools) = bridge;
+    }
+
+    pub fn rebind_automation_tools(
+        &self,
+        caller: crate::automation_tools::AutomationCallerFactory,
+    ) {
+        let mut tools = lock(&self.inner.automation_tools);
+        if let Some(bridge) = tools.as_mut() {
+            *bridge = bridge.with_caller(caller);
+        }
+    }
+
+    pub(crate) fn remove_automation_requests(
+        &self,
+        principal: &flowy_automation::PrincipalId,
+        session_id: &str,
+    ) -> Result<(), flowy_automation::PortError> {
+        let bridge = lock(&self.inner.automation_tools).clone();
+        bridge.map_or(Ok(()), |bridge| {
+            bridge.remove_requests_for_session(principal, session_id)
+        })
+    }
+
+    pub fn weak_tool_context_validator(
+        &self,
+    ) -> impl Fn(&crate::ToolRunContext, &crate::ToolCallArgs) -> bool
+    + Send
+    + Sync
+    + 'static {
+        let harness = Arc::downgrade(&self.inner);
+        move |context, args| {
+            harness
+                .upgrade()
+                .is_some_and(|inner| inner.validate_tool_context(context, args))
+        }
+    }
+
     /// Request cancellation for an explicit session and report its real commit
     /// boundary. A too-late result leaves finalizing UI state untouched.
     pub fn request_cancel_typed(
@@ -920,6 +965,7 @@ impl AgentHandle {
                 engine,
                 config: Mutex::new(config),
                 skills: Mutex::new(Vec::new()),
+                automation_tools: Mutex::new(None),
             }),
             _runtime: owner,
         }
@@ -3728,6 +3774,9 @@ impl Harness {
         let mut run_config = engine_config(&config, &cwd);
         run_config.registry =
             tool_registry(&cwd, &skills, active_skills.clone());
+        if let Some(bridge) = lock(&self.automation_tools).as_ref() {
+            bridge.register(&run_config.registry);
+        }
         run_config.pre_tool_hook = Some(build_pre_tool_hook(
             id.clone(),
             cwd.clone(),

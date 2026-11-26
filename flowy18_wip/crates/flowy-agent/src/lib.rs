@@ -7,6 +7,8 @@
 
 mod artifact_source;
 mod artifact_store;
+pub mod automation_executor;
+pub mod automation_tools;
 mod catalog;
 mod config;
 mod conversation_artifacts;
@@ -43,8 +45,8 @@ pub use flowy_agent_core::{
     RunBudget, RunBudgetCheckpoint, SessionCreateDisposition, SessionOrigin,
     SessionRole, SessionSpec, SessionWorkspace, StopHandoffManifest,
     SubmissionOutcome, ToolCallArgs, ToolRunContext, TrackedObject,
-    TrackedObjectKind, TurnCompletionEvidence, TurnExecutionOutcome,
-    WorkAccessMode, WorkContract,
+    TrackedObjectKind, TrustedToolCall, TurnCompletionEvidence,
+    TurnExecutionOutcome, WorkAccessMode, WorkContract,
     tools::{
         SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
         SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,
@@ -59,9 +61,9 @@ pub use handle::{
     CancelOutcome, CardAction, CardActionOutcome, CardSelection,
     ChildWorkSummary, DetachedArtifacts, DetachedAttempt, DetachedAttemptState,
     DetachedCompletion, DetachedError, DetachedPhase, DetachedRun,
-    DetachedRunResult, DetachedRunSpec, DispatchWorkResult, RoutedPendingCard,
-    SessionSearchHit, SessionSummary, StopWorkResult, TaskTarget, WorkStatus,
-    result_visible,
+    DetachedRunResult, DetachedRunSpec, DetachedSessionTicket,
+    DispatchWorkResult, RoutedPendingCard, SessionSearchHit, SessionSummary,
+    StopWorkResult, TaskTarget, WorkStatus, result_visible,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{

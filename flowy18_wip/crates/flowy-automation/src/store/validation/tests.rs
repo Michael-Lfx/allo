@@ -12,6 +12,7 @@ fn fixture() -> (Connection, Vec<AttemptRecord>) {
     let automation_id = AutomationId::generate();
     let revision = Revision::new(1).unwrap();
     let definition = ManualAutomationInput {
+        schedule: None,
         title: PrivateText::new("validation fixture"),
         action: ActionSpec::AgentTask {
             prompt: PrivateText::new("fixture prompt"),

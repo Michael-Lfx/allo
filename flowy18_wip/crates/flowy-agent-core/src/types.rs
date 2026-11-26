@@ -380,6 +380,37 @@ pub struct ToolRunContext {
     pub artifact_delivery_available: bool,
 }
 
+/// Dispatch identity supplied by the engine and registry, never deserialized
+/// from a model argument object. Authority and leases remain host-owned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedToolCall {
+    pub session_id: String,
+    pub submission_id: String,
+    pub call_id: String,
+}
+
+impl ToolRunContext {
+    pub fn trusted_call(&self, args: &ToolCallArgs) -> Option<TrustedToolCall> {
+        fn valid(value: &str) -> bool {
+            !value.is_empty()
+                && value.trim() == value
+                && !value.chars().any(char::is_control)
+        }
+        let session_id =
+            self.agent_id.as_deref().filter(|value| valid(value))?;
+        let submission_id =
+            self.submission_id.as_deref().filter(|value| valid(value))?;
+        if !valid(&args.call_id) {
+            return None;
+        }
+        Some(TrustedToolCall {
+            session_id: session_id.to_owned(),
+            submission_id: submission_id.to_owned(),
+            call_id: args.call_id.clone(),
+        })
+    }
+}
+
 impl std::fmt::Debug for ToolRunContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolRunContext")

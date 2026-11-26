@@ -15,8 +15,8 @@ pub use builtin::{
 };
 pub use pi::pi_shell_definition;
 pub use registry::{
-    BoxFuture, ToolDefinition, ToolGuard, ToolPolicy, ToolPolicyDecision,
-    ToolRegistry,
+    BoxFuture, ToolContextGuard, ToolDefinition, ToolGuard, ToolPolicy,
+    ToolPolicyDecision, ToolRegistry,
 };
 pub use sandbox::{
     SandboxAvailability, SandboxBackend, SandboxPolicy,

@@ -51,6 +51,7 @@ pub use types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageId,
     MessageSource, PromptTurn, Role, TodoItem, TodoSink, TodoStatus,
     ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema,
+    TrustedToolCall,
 };
 
 #[cfg(test)]

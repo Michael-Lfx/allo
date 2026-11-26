@@ -2231,6 +2231,7 @@ version = "1.8.0"
 dependencies = [
  "async-trait",
  "flowy-agent-core",
+ "flowy-automation",
  "flowy-skills",
  "getrandom 0.3.4",
  "roxmltree 0.21.2",

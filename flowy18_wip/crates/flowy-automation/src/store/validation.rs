@@ -124,6 +124,17 @@ pub(super) fn validate(
         all(connection, "delivery_outbox", repository::read_outbox)?;
     let plans: Vec<DeletionPlanRecord> =
         all(connection, "deletion_plans", repository::read_plan)?;
+    // Schema 001 is audited before its forward migration creates this table;
+    // after migration the live schema check proves the table is present.
+    let clocks_present: bool = connection.query_row(
+        "SELECT count(*) > 0 FROM sqlite_schema WHERE type='table' AND name='command_clocks'",
+        [],
+        |row| row.get(0),
+    )?;
+    if clocks_present {
+        let _: Vec<super::records::CommandClockRecord> =
+            all(connection, "command_clocks", repository::read_command_clock)?;
+    }
     let _: Vec<WatermarkRecord> = all(
         connection,
         "schedule_watermarks",
@@ -198,7 +209,8 @@ pub(super) fn validate(
             // only the immutable Run identity and revision bind every attempt.
             if spec.automation_id != run.automation_id
                 || spec.revision != run.revision
-                || spec.latest_start_at_ms != run.latest_start_at_ms
+                || (run.current_attempt_id.as_ref() == Some(&spec.attempt_id)
+                    && spec.latest_start_at_ms != run.latest_start_at_ms)
             {
                 add(&mut findings, "attempt_run_snapshot_mismatch");
             }
@@ -290,7 +302,87 @@ pub(super) fn validate(
                 (
                     AutomationCommand::CancelRun { run_id: requested },
                     CommandOutcome::CancelRequested { run_id, .. },
+                )
+                | (
+                    AutomationCommand::RetryDelivery { run_id: requested }
+                    | AutomationCommand::RetryDeliveryTarget {
+                        run_id: requested,
+                        ..
+                    }
+                    | AutomationCommand::AbandonPendingArtifacts {
+                        run_id: requested,
+                    },
+                    CommandOutcome::DeliveryRetryQueued { run_id },
                 ) => requested == run_id,
+                (
+                    AutomationCommand::RetryInterrupted { run_id: source },
+                    CommandOutcome::RunQueued { run_id },
+                ) => source == run_id,
+                (
+                    AutomationCommand::SetResultKept {
+                        run_id: requested,
+                        kept: requested_kept,
+                    },
+                    CommandOutcome::ResultKept { run_id, kept },
+                ) => requested == run_id && requested_kept == kept,
+                (
+                    AutomationCommand::UpdateManual {
+                        automation_id: requested,
+                        expected_revision,
+                        definition,
+                    },
+                    CommandOutcome::Updated {
+                        automation_id,
+                        revision,
+                    },
+                ) => {
+                    requested == automation_id
+                        && expected_revision.get().checked_add(1)
+                            == Some(revision.get())
+                        && revisions
+                            .iter()
+                            .find(|record| {
+                                record.principal == receipt.principal
+                                    && record.automation_id == *automation_id
+                                    && record.revision == *revision
+                            })
+                            .map_or(receipt.source_removed, |record| {
+                                record.definition == **definition
+                            })
+                }
+                (
+                    AutomationCommand::Pause {
+                        automation_id: requested,
+                        expected_revision,
+                    }
+                    | AutomationCommand::Resume {
+                        automation_id: requested,
+                        expected_revision,
+                    }
+                    | AutomationCommand::Archive {
+                        automation_id: requested,
+                        expected_revision,
+                    },
+                    CommandOutcome::StateChanged {
+                        automation_id,
+                        revision,
+                        state,
+                    },
+                ) => {
+                    requested == automation_id
+                        && expected_revision.get().checked_add(1)
+                            == Some(revision.get())
+                        && *state
+                            == match receipt.envelope.command {
+                                AutomationCommand::Pause { .. } => {
+                                    crate::DefinitionState::Paused
+                                }
+                                AutomationCommand::Resume { .. } => {
+                                    crate::DefinitionState::Enabled
+                                }
+                                _ => crate::DefinitionState::Archived,
+                            }
+                }
                 _ => false,
             };
             if !valid {

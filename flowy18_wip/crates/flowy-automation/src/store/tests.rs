@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "binding_tests.rs"]
 mod binding_tests;
+#[path = "command_tests.rs"]
+mod command_tests;
 
 struct TestRoot(PathBuf);
 impl TestRoot {
@@ -61,6 +63,7 @@ fn pair() -> (AutomationRecord, RevisionRecord) {
     let owner = principal();
     let revision = Revision::new(1).unwrap();
     let definition = ManualAutomationInput {
+        schedule: None,
         title: PrivateText::new("fixture task"),
         action: ActionSpec::AgentTask {
             prompt: PrivateText::new("fixture prompt"),
@@ -766,5 +769,47 @@ fn every_database_reference_is_audited_against_live_rows() {
             }
         }
         store.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn command_clock_high_water_never_regresses_and_is_per_principal() {
+    runtime().block_on(async {
+        let root = TestRoot::new();
+        let store = AutomationStore::open(root.0.clone(), Arc::new(()))
+            .await
+            .unwrap();
+        let epoch = GenerationEpoch::generate();
+        let advance = |now: i64| {
+            StoreMutation::AdvanceCommandClock(CommandClockAdvance {
+                principal: principal(),
+                observed_now_ms: now,
+                epoch: epoch.clone(),
+            })
+        };
+        // A wall-clock rollback (200 after 500) never lowers the mark.
+        for now in [500, 200, 700] {
+            store.commit(principal(), vec![advance(now)]).await.unwrap();
+        }
+        let clock = store.command_clock(principal()).await.unwrap().unwrap();
+        assert_eq!(
+            (clock.request_high_water_ms, clock.change_sequence),
+            (700, 3)
+        );
+        assert_eq!(clock.change_epoch, epoch);
+        let other = PrincipalId::cloud("test-authority", 8).unwrap();
+        assert_eq!(store.command_clock(other.clone()).await.unwrap(), None);
+        assert!(store.commit(other, vec![advance(900)]).await.is_err());
+        store.shutdown().await.unwrap();
+        let reopened = AutomationStore::open(root.0.clone(), Arc::new(()))
+            .await
+            .unwrap();
+        let persisted =
+            reopened.command_clock(principal()).await.unwrap().unwrap();
+        assert_eq!(
+            (persisted.request_high_water_ms, persisted.change_sequence),
+            (700, 3)
+        );
+        reopened.shutdown().await.unwrap();
     });
 }

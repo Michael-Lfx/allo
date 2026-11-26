@@ -88,6 +88,8 @@ pub struct AttemptEvidence {
     pub history_commit: HistoryCommitState,
     pub artifact_state: ArtifactState,
     pub commit_ref: Option<CommitRef>,
+    #[serde(default)]
+    pub stop_reason: Option<StopReason>,
 }
 
 pub trait CancellationSignal: Send + Sync {
@@ -130,6 +132,14 @@ pub trait RunExecutor: Send + Sync {
         attempt: &'a AttemptRef,
         commit: &'a CommitRef,
     ) -> PortFuture<'a, Result<AttemptEvidence, PortError>>;
+
+    fn abandon_commit<'a>(
+        &'a self,
+        _attempt: &'a AttemptRef,
+        _commit: &'a CommitRef,
+    ) -> PortFuture<'a, Result<AttemptEvidence, PortError>> {
+        Box::pin(async { Err(PortError::Unavailable) })
+    }
 }
 
 #[cfg(test)]

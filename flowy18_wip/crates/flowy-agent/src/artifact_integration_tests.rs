@@ -19,6 +19,7 @@ use crate::{
     AgentHandle, AgentWorkspace, ChatLine, LlmConfig, SessionOrigin, TurnStatus,
 };
 
+mod automation_executor;
 mod detached;
 
 const CSV: &str = "region,sales\nNorth,120\nSouth,80\n";

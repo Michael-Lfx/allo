@@ -1,4 +1,5 @@
-//! Immutable lineage bootstrap and validation of the live SQLite schema.
+//! Immutable lineage bootstrap, forward-only migration and validation of the
+//! live SQLite schema.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,8 +15,24 @@ use crate::schema_contract::{
     validate_product_ddl,
 };
 
-pub(super) const SCHEMA_VERSION: u32 = 1;
-pub(super) const SCHEMA_SQL: &str = include_str!("../../schema/001.sql");
+pub(super) const SCHEMA_VERSION: u32 = 4;
+/// Applied resources are immutable; a new version only appends a migration.
+const SCHEMA_001: &str = include_str!("../../schema/001.sql");
+const MIGRATION_002: &str = include_str!("../../schema/002.sql");
+const MIGRATION_003: &str = include_str!("../../schema/003.sql");
+const MIGRATION_004: &str = include_str!("../../schema/004.sql");
+pub(super) const SCHEMA_SQL: &str = concat!(
+    include_str!("../../schema/001.sql"),
+    "\n",
+    include_str!("../../schema/002.sql"),
+    "\n",
+    include_str!("../../schema/003.sql"),
+    "\n",
+    include_str!("../../schema/004.sql"),
+);
+/// Test-only crash point: a child process exits before the migration commits.
+#[cfg(test)]
+const MIGRATION_ABORT_ENV: &str = "FLOWY_AUTOMATION_MIGRATION_TEST_PATH";
 
 /// Existing data is inspected read-only before any setting that can change
 /// its journal or main file. A zero-byte existing file is not a new dataset.
@@ -32,13 +49,14 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
     };
+    let mut applied = SCHEMA_VERSION;
     if exists {
         let inspection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         inspection.busy_timeout(Duration::from_secs(5))?;
-        validate_live(&inspection)?;
+        applied = inspect_version(&inspection)?;
         validate_database_references(&inspection)?;
         drop(inspection);
     } else {
@@ -66,7 +84,7 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
     }
     // Recheck the actual read/write connection, even though the caller's
     // exclusive store owner normally excludes another initializer.
-    validate_live(&connection)?;
+    validate_version(&connection, applied)?;
     validate_database_references(&connection)?;
     let journal: String =
         connection
@@ -79,6 +97,11 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
         connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
     if synchronous != 2 {
         return Err(StoreError::Unavailable);
+    }
+    if applied < SCHEMA_VERSION {
+        migrate(&mut connection, applied)?;
+        validate_live(&connection)?;
+        validate_database_references(&connection)?;
     }
     Ok(connection)
 }
@@ -104,17 +127,115 @@ fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Reads the applied version and validates the dataset exactly as that
+/// version was applied. Unknown, zero or future versions are never touched.
+fn inspect_version(connection: &Connection) -> Result<u32, StoreError> {
+    let version: u32 =
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version == 0 || version > SCHEMA_VERSION {
+        return Err(StoreError::Incompatible(
+            "unknown or future automation schema version",
+        ));
+    }
+    validate_version(connection, version)?;
+    Ok(version)
+}
+
+/// Forward-only, single transaction: the appended DDL, metadata and
+/// `user_version` commit together or the dataset stays at its prior version.
+fn migrate(connection: &mut Connection, from: u32) -> Result<(), StoreError> {
+    if !matches!(from, 1..=3) {
+        return Err(StoreError::Incompatible(
+            "no registered automation schema migration path",
+        ));
+    }
+    let previous = checksum_for(from).ok_or(StoreError::Incompatible(
+        "unknown automation schema version",
+    ))?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if from == 1 {
+        transaction.execute_batch(&canonical(MIGRATION_002))?;
+    }
+    if from < 3 {
+        transaction.execute_batch(&canonical(MIGRATION_003))?;
+    }
+    transaction.execute_batch(&canonical(MIGRATION_004))?;
+    let updated = transaction.execute(
+        "UPDATE automation_schema SET version=?1, schema_sha256=?2 WHERE singleton=1 AND lineage=?3 AND version=?4 AND schema_sha256=?5",
+        params![
+            SCHEMA_VERSION,
+            schema_checksum(),
+            DATASET_LINEAGE,
+            from,
+            previous
+        ],
+    )?;
+    if updated != 1 {
+        return Err(StoreError::Incompatible(
+            "automation schema metadata changed during migration",
+        ));
+    }
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    migration_crash_point();
+    transaction.commit()?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn migration_crash_point() {
+    if std::env::var_os(MIGRATION_ABORT_ENV).is_some() {
+        std::process::exit(43);
+    }
+}
+
+#[cfg(not(test))]
+const fn migration_crash_point() {}
+
+fn canonical(sql: &str) -> String {
+    // Git may check immutable resources out with CRLF on Windows. The
+    // dataset fingerprint and stored DDL must be portable across platforms.
+    sql.replace("\r\n", "\n")
+}
+
+/// The complete DDL as applied at `version`, or None for unknown versions.
+fn schema_for(version: u32) -> Option<String> {
+    match version {
+        1 => Some(canonical(SCHEMA_001)),
+        2 => Some(canonical(&format!("{SCHEMA_001}\n{MIGRATION_002}"))),
+        3 => Some(canonical(&format!(
+            "{SCHEMA_001}\n{MIGRATION_002}\n{MIGRATION_003}"
+        ))),
+        SCHEMA_VERSION => Some(canonical_schema_sql()),
+        _ => None,
+    }
+}
+
+fn checksum_for(version: u32) -> Option<String> {
+    schema_for(version)
+        .map(|sql| format!("{:x}", Sha256::digest(sql.as_bytes())))
+}
+
 fn schema_checksum() -> String {
     format!("{:x}", Sha256::digest(canonical_schema_sql().as_bytes()))
 }
 
 fn canonical_schema_sql() -> String {
-    // Git may check this immutable resource out with CRLF on Windows. The
-    // dataset fingerprint and stored DDL must be portable across platforms.
-    SCHEMA_SQL.replace("\r\n", "\n")
+    canonical(SCHEMA_SQL)
 }
 
 pub(super) fn validate_live(connection: &Connection) -> Result<(), StoreError> {
+    validate_version(connection, SCHEMA_VERSION)
+}
+
+fn validate_version(
+    connection: &Connection,
+    expected: u32,
+) -> Result<(), StoreError> {
+    let expected_checksum = checksum_for(expected).ok_or(
+        StoreError::Incompatible("unknown or future automation schema version"),
+    )?;
     let mut integrity =
         connection.prepare("PRAGMA integrity_check").map_err(|_| {
             StoreError::Corrupt("SQLite integrity check could not run")
@@ -128,7 +249,7 @@ pub(super) fn validate_live(connection: &Connection) -> Result<(), StoreError> {
     let version: u32 =
         connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != SCHEMA_VERSION {
+    if version != expected {
         return Err(StoreError::Incompatible(
             "unknown or future automation schema version",
         ));
@@ -144,8 +265,8 @@ pub(super) fn validate_live(connection: &Connection) -> Result<(), StoreError> {
         ));
     };
     if lineage != DATASET_LINEAGE
-        || applied_version != SCHEMA_VERSION
-        || checksum != schema_checksum()
+        || applied_version != expected
+        || checksum != expected_checksum
     {
         return Err(StoreError::Incompatible(
             "automation lineage or applied schema checksum mismatch",
@@ -161,7 +282,7 @@ pub(super) fn validate_live(connection: &Connection) -> Result<(), StoreError> {
             "automation schema metadata is not singular",
         ));
     }
-    validate_structure(connection)
+    validate_structure(connection, expected)
 }
 
 type SchemaInventory = BTreeMap<(String, String, String), Option<String>>;
@@ -178,11 +299,18 @@ fn inventory(connection: &Connection) -> Result<SchemaInventory, StoreError> {
     Ok(entries)
 }
 
-fn validate_structure(connection: &Connection) -> Result<(), StoreError> {
+fn validate_structure(
+    connection: &Connection,
+    expected: u32,
+) -> Result<(), StoreError> {
+    let applied_sql = schema_for(expected).ok_or(StoreError::Incompatible(
+        "unknown or future automation schema version",
+    ))?;
     let reference = Connection::open_in_memory()?;
-    reference.execute_batch(&canonical_schema_sql())?;
+    reference.execute_batch(&applied_sql)?;
     let actual = inventory(connection)?;
-    if actual != inventory(&reference)? {
+    let reference_inventory = inventory(&reference)?;
+    if actual != reference_inventory {
         return Err(StoreError::Incompatible(
             "actual SQLite tables, indexes or constraints differ from applied schema",
         ));
@@ -194,6 +322,13 @@ fn validate_structure(connection: &Connection) -> Result<(), StoreError> {
             table.name.to_owned(),
             table.name.to_owned(),
         );
+        // A table appended by a later migration is absent from an older
+        // applied version; the inventory comparison above already proved
+        // the older dataset is exactly its applied schema.
+        if expected != SCHEMA_VERSION && !reference_inventory.contains_key(&key)
+        {
+            continue;
+        }
         let sql = actual.get(&key).and_then(Option::as_ref).ok_or(
             StoreError::Incompatible("registered product table is absent"),
         )?;
@@ -228,6 +363,11 @@ fn validate_structure(connection: &Connection) -> Result<(), StoreError> {
         {
             let key =
                 ("index".to_owned(), required.to_owned(), name.to_owned());
+            if expected != SCHEMA_VERSION
+                && !reference_inventory.contains_key(&key)
+            {
+                continue;
+            }
             if !actual.contains_key(&key) {
                 return Err(StoreError::Incompatible(
                     "registered relationship index is absent",

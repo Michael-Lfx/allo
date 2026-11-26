@@ -137,6 +137,8 @@ struct StoreInner {
 struct DeliveryMarker {
     schema_version: u32,
     commit: DeliveryCommit,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    abandoned: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -213,10 +215,10 @@ impl ArtifactStore {
     }
 
     /// Check the independent marker for the exact history-bound delivery.
-    pub(crate) fn has_delivery_marker(
+    pub(crate) fn delivery_abandoned(
         &self,
         commit: &DeliveryCommit,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Option<bool>> {
         validate_identifier(&commit.session_id)?;
         validate_identifier(&commit.submission_id)?;
         let _guard = self.lock();
@@ -233,7 +235,7 @@ impl ArtifactStore {
                 return Err(invalid("delivery marker is not a regular file"));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(false);
+                return Ok(None);
             }
             Err(error) => return Err(error),
         }
@@ -244,7 +246,98 @@ impl ArtifactStore {
         {
             return Err(invalid("delivery marker conflicts with history"));
         }
-        Ok(true)
+        if marker.abandoned {
+            self.cleanup_abandoned_locked(&marker.commit)?;
+        }
+        Ok(Some(marker.abandoned))
+    }
+
+    pub(crate) fn abandon_pending_delivery(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
+        use flowy_agent_core::ExecutionSource;
+        validate_identifier(&commit.session_id)?;
+        validate_identifier(&commit.submission_id)?;
+        if !matches!(
+            commit.execution.source,
+            ExecutionSource::Automation { .. }
+        ) || commit.artifact_ids.is_empty()
+        {
+            return Err(invalid(
+                "only a pending automation delivery can be abandoned",
+            ));
+        }
+        let _guard = self.lock();
+        let path =
+            self.delivery_path(&commit.session_id, &commit.submission_id);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                reject_link(&path)?;
+                let marker = self.read_delivery_marker(&path)?;
+                if marker.commit.execution != commit.execution
+                    || marker.commit.artifact_ids != commit.artifact_ids
+                {
+                    return Err(invalid(
+                        "delivery marker conflicts with history",
+                    ));
+                }
+                if marker.abandoned {
+                    self.cleanup_abandoned_locked(&marker.commit)?;
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        self.validate_abandoned_targets(commit)?;
+        self.write_metadata_locked(
+            &path,
+            &DeliveryMarker {
+                schema_version: 1,
+                commit: commit.clone(),
+                abandoned: true,
+            },
+        )?;
+        self.cleanup_abandoned_locked(commit)
+    }
+
+    fn validate_abandoned_targets(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
+        let scan = self.scan_locked()?;
+        for id in &commit.artifact_ids {
+            validate_identifier(id)?;
+            if scan.manifests.iter().any(|manifest| {
+                manifest.receipt.artifact_id == *id
+                    && (manifest.execution != commit.execution
+                        || manifest.receipt.session_id != commit.session_id
+                        || manifest.receipt.submission_id
+                            != commit.submission_id)
+            }) {
+                return Err(invalid("abandoned artifact binding mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_abandoned_locked(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
+        self.validate_abandoned_targets(commit)?;
+        for id in &commit.artifact_ids {
+            Self::remove_managed_dir(&self.item_dir(id))?;
+        }
+        let staging = self.inner.root.join("staging");
+        let session = staging.join(&commit.session_id);
+        if session.exists() {
+            reject_link(&staging)?;
+            reject_link(&session)?;
+            Self::remove_managed_dir(&session.join(&commit.submission_id))?;
+        }
+        Ok(())
     }
 
     /// Whether `(session_id, origin, source_relative_path, sha256)` already
@@ -348,6 +441,39 @@ impl ArtifactStore {
             max_items: MAX_STORED_ITEMS,
             max_bytes: MAX_STORE_BYTES,
         })
+    }
+
+    pub(crate) fn retention_protected(
+        &self,
+        session_id: &str,
+    ) -> io::Result<bool> {
+        let _guard = self.lock();
+        let scan = self.scan_locked()?;
+        let preferences = self.preferences_locked()?;
+        Ok(scan.manifests.iter().any(|manifest| {
+            manifest.receipt.session_id == session_id
+                && (preferences
+                    .get(&manifest.receipt.artifact_id)
+                    .is_some_and(|item| item.favorite)
+                    || scan.view_bytes != 0)
+        }))
+    }
+
+    pub(crate) fn resume_retention_deletion(
+        &self,
+        session_id: &str,
+    ) -> io::Result<()> {
+        let path = self.session_deletion_path(session_id);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+            Ok(_) => reject_link(&path)?,
+        }
+        self.commit_session_deletion(session_id)?;
+        self.cleanup_session_deletion(session_id)?;
+        self.complete_session_deletion(session_id)
     }
 
     pub fn pending_views(&self) -> io::Result<Vec<ViewCopy>> {
@@ -1806,6 +1932,9 @@ impl ArtifactStore {
                 && marker.commit.execution == commit.execution
             {
                 self.refresh_delivery_title_locked(commit)?;
+                if marker.abandoned {
+                    return self.cleanup_abandoned_locked(&marker.commit);
+                }
                 if marker.commit.origin_title_snapshot
                     != commit.origin_title_snapshot
                 {
@@ -1814,6 +1943,7 @@ impl ArtifactStore {
                         &DeliveryMarker {
                             schema_version: 1,
                             commit: commit.clone(),
+                            abandoned: false,
                         },
                     )?;
                 }
@@ -1941,6 +2071,7 @@ impl ArtifactStore {
         let marker = DeliveryMarker {
             schema_version: 1,
             commit: commit.clone(),
+            abandoned: false,
         };
         self.write_metadata_locked(&marker_path, &marker)?;
         if let Err(error) = self.prune_superseded_conversation_imports_locked()
@@ -2102,7 +2233,9 @@ impl ArtifactStore {
                     continue;
                 }
             };
-            ids.extend(marker.commit.artifact_ids);
+            if !marker.abandoned {
+                ids.extend(marker.commit.artifact_ids);
+            }
         }
         Ok(ids)
     }
@@ -2830,6 +2963,46 @@ mod tests {
             origin_title_snapshot: "Home task".into(),
             committed_at_ms: 42,
         }
+    }
+
+    #[test]
+    fn abandoned_automation_group_survives_restart_and_cannot_publish() {
+        let temp = Scratch::new();
+        let mut request = request(&temp.0, "outputs/pending.txt", "pending");
+        fs::write(
+            request.source_root.join(&request.relative_path),
+            b"pending result",
+        )
+        .unwrap();
+        request.execution = flowy_agent_core::ExecutionMetadata {
+            owner: Some(flowy_agent_core::ExecutionOwner {
+                authority: "test".into(),
+                subject: "7".into(),
+            }),
+            source: flowy_agent_core::ExecutionSource::Automation {
+                automation_id: "automation".into(),
+                run_id: "run".into(),
+                attempt_id: "attempt".into(),
+            },
+        };
+        let execution = request.execution.clone();
+        let artifacts = store(&temp.0);
+        let receipt = artifacts.prepare(request).unwrap();
+        let mut group = commit(&receipt);
+        group.execution = execution;
+        artifacts.abandon_pending_delivery(&group).unwrap();
+        let reopened = store(&temp.0);
+        reopened
+            .recover_commits(std::slice::from_ref(&group))
+            .unwrap();
+        assert_eq!(reopened.delivery_abandoned(&group).unwrap(), Some(true));
+        assert!(
+            !reopened
+                .committed_ids()
+                .unwrap()
+                .contains(&receipt.artifact_id)
+        );
+        assert!(reopened.get(&receipt.artifact_id).unwrap().is_none());
     }
 
     #[test]

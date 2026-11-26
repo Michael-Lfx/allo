@@ -1,8 +1,9 @@
 use super::StoreError;
 use super::records::{
-    AttemptRecord, AutomationRecord, DeletionPlanRecord, OutboxRecord,
-    ReceiptRecord, ReceiptState, RevisionRecord, RunRecord, StoreMutation,
-    WatermarkRecord, validate_definition,
+    AttemptRecord, AutomationRecord, CommandClockAdvance, CommandClockRecord,
+    DeletionPlanRecord, OutboxRecord, ReceiptRecord, ReceiptState,
+    RevisionRecord, RunRecord, StoreMutation, WatermarkRecord,
+    validate_definition,
 };
 use crate::{
     AutomationId, CommandOutcome, DeletionPlanId, PrincipalId, RequestKey,
@@ -51,14 +52,14 @@ fn principal(row: &Row<'_>) -> Result<PrincipalId, StoreError> {
     )
     .map_err(|_| StoreError::Corrupt("invalid principal"))
 }
-fn revision(row: &Row<'_>, column: &str) -> Result<Revision, StoreError> {
+fn parse_revision(row: &Row<'_>, column: &str) -> Result<Revision, StoreError> {
     let value = row.get::<_, i64>(column)?;
     u64::try_from(value)
         .ok()
         .and_then(Revision::new)
         .ok_or(StoreError::Corrupt("invalid revision"))
 }
-fn revision_value(value: Revision) -> Result<i64, StoreError> {
+pub(super) fn revision_value(value: Revision) -> Result<i64, StoreError> {
     i64::try_from(value.get())
         .map_err(|_| StoreError::Invalid("revision exceeds SQLite integer"))
 }
@@ -146,6 +147,16 @@ pub(super) fn commit(
 ) -> Result<(), StoreError> {
     let tx = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    apply_mutations(&tx, owner, mutations)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn apply_mutations(
+    tx: &Transaction<'_>,
+    owner: &PrincipalId,
+    mutations: Vec<StoreMutation>,
+) -> Result<(), StoreError> {
     for mutation in mutations {
         match mutation {
             StoreMutation::CreateAutomation {
@@ -159,7 +170,7 @@ pub(super) fn commit(
                     ));
                 }
                 tx.execute("INSERT INTO automations (automation_id,principal_authority,principal_user_id,current_revision,state,title_json,created_at_ms,updated_at_ms,source_removed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![a.automation_id.as_str(),owner.authority(),owner.external_user_id(),revision_value(a.current_revision)?,text(&a.state)?,encode(&a.title)?,a.created_at_ms,a.updated_at_ms,a.source_removed])?;
-                insert_revision(&tx, &r)?;
+                insert_revision(tx, &r)?;
             }
             StoreMutation::AdvanceRevision {
                 expected,
@@ -176,14 +187,14 @@ pub(super) fn commit(
                 if updated != 1 {
                     return Err(StoreError::Conflict);
                 }
-                insert_revision(&tx, &r)?;
+                insert_revision(tx, &r)?;
             }
             StoreMutation::InsertRun(r) => {
                 require_owner(&r.principal, owner)?;
-                require_revision(&tx, owner, &r.automation_id, r.revision)?;
+                require_revision(tx, owner, &r.automation_id, r.revision)?;
                 if let Some(retry) = &r.retry_of_run_id {
                     require_parent(
-                        &tx,
+                        tx,
                         "runs",
                         "run_id",
                         retry.as_str(),
@@ -238,7 +249,7 @@ pub(super) fn commit(
                 s.validate().map_err(|_| {
                     StoreError::Invalid("invalid attempt specification")
                 })?;
-                let Some(run) = run(&tx, owner, &s.run_id)? else {
+                let Some(run) = run(tx, owner, &s.run_id)? else {
                     return Err(StoreError::Reference(
                         "attempt run is missing",
                     ));
@@ -291,7 +302,7 @@ pub(super) fn commit(
                     outcome_parents(r.outcome.as_ref());
                 if let Some(id) = automation_id {
                     require_parent(
-                        &tx,
+                        tx,
                         "automations",
                         "automation_id",
                         id,
@@ -299,19 +310,13 @@ pub(super) fn commit(
                     )?;
                 }
                 if let Some(id) = run_id {
-                    require_parent(&tx, "runs", "run_id", id, owner)?;
+                    require_parent(tx, "runs", "run_id", id, owner)?;
                 }
                 tx.execute("INSERT INTO command_receipts (principal_authority,principal_user_id,request_key,issued_at_ms,expires_at_ms,content_digest,state,command_json,outcome_json,result_automation_id,result_run_id,source_removed,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![owner.authority(),owner.external_user_id(),r.envelope.request_key.as_str(),r.envelope.issued_at_ms,r.envelope.expires_at_ms,r.envelope.content_digest.as_slice(),text(&r.state)?,encode(&r.envelope.command)?,r.outcome.as_ref().map(encode).transpose()?,automation_id,run_id,r.source_removed,r.created_at_ms,r.updated_at_ms])?;
             }
             StoreMutation::InsertOutbox(r) => {
                 require_owner(&r.principal, owner)?;
-                require_parent(
-                    &tx,
-                    "runs",
-                    "run_id",
-                    r.run_id.as_str(),
-                    owner,
-                )?;
+                require_parent(tx, "runs", "run_id", r.run_id.as_str(), owner)?;
                 for value in [&r.delivery_key, &r.target, &r.message_kind] {
                     crate::identity::validate_reference(value).map_err(
                         |_| StoreError::Invalid("invalid delivery token"),
@@ -321,19 +326,16 @@ pub(super) fn commit(
             }
             StoreMutation::InsertDeletionPlan(r) => {
                 require_owner(&r.principal, owner)?;
-                require_parent(
-                    &tx,
-                    "runs",
-                    "run_id",
-                    r.run_id.as_str(),
-                    owner,
-                )?;
+                require_parent(tx, "runs", "run_id", r.run_id.as_str(), owner)?;
                 tx.execute("INSERT INTO deletion_plans (deletion_plan_id,principal_authority,principal_user_id,run_id,state,plan_json,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![r.deletion_plan_id.as_str(),owner.authority(),owner.external_user_id(),r.run_id.as_str(),text(&r.state)?,encode(&r.plan)?,r.created_at_ms,r.updated_at_ms])?;
+            }
+            StoreMutation::AdvanceCommandClock(c) => {
+                advance_command_clock(tx, owner, &c)?;
             }
             StoreMutation::SetWatermark(r) => {
                 require_owner(&r.principal, owner)?;
-                require_revision(&tx, owner, &r.automation_id, r.revision)?;
-                let previous = watermark(&tx, owner, &r.automation_id)?;
+                require_revision(tx, owner, &r.automation_id, r.revision)?;
+                let previous = watermark(tx, owner, &r.automation_id)?;
                 if previous.as_ref().is_some_and(|value| {
                     value.processed_through_ms > r.processed_through_ms
                 }) {
@@ -343,27 +345,91 @@ pub(super) fn commit(
             }
         }
     }
-    if !super::audit::database_findings(&tx)?.is_empty() {
+    if !super::audit::database_findings(tx)?.is_empty() {
         return Err(StoreError::Reference(
             "transaction leaves invalid logical references",
         ));
     }
-    tx.commit()?;
     Ok(())
+}
+
+fn sequence_value(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|_| {
+        StoreError::Invalid("change sequence exceeds SQLite integer")
+    })
+}
+
+/// Never lowers the high-water mark; the sequence CAS rejects a lost update.
+pub(super) fn advance_command_clock(
+    tx: &Transaction<'_>,
+    owner: &PrincipalId,
+    advance: &CommandClockAdvance,
+) -> Result<(), StoreError> {
+    require_owner(&advance.principal, owner)?;
+    match command_clock(tx, owner)? {
+        None => {
+            tx.execute("INSERT INTO command_clocks (principal_authority,principal_user_id,request_high_water_ms,change_epoch,change_sequence,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)",params![owner.authority(),owner.external_user_id(),advance.observed_now_ms,advance.epoch.as_str(),1i64,advance.observed_now_ms])?;
+        }
+        Some(clock) => {
+            let high = clock.request_high_water_ms.max(advance.observed_now_ms);
+            let next = clock
+                .change_sequence
+                .checked_add(1)
+                .ok_or(StoreError::Invalid("change sequence exhausted"))?;
+            let updated = tx.execute("UPDATE command_clocks SET request_high_water_ms=?1,change_sequence=?2,updated_at_ms=?3 WHERE principal_authority=?4 AND principal_user_id=?5 AND change_sequence=?6",params![high,sequence_value(next)?,advance.observed_now_ms,owner.authority(),owner.external_user_id(),sequence_value(clock.change_sequence)?])?;
+            if updated != 1 {
+                return Err(StoreError::Conflict);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn read_command_clock(
+    row: &Row<'_>,
+) -> Result<CommandClockRecord, StoreError> {
+    let sequence: i64 = row.get("change_sequence")?;
+    Ok(CommandClockRecord {
+        principal: principal(row)?,
+        request_high_water_ms: row.get("request_high_water_ms")?,
+        change_epoch: business(row, "change_epoch")?,
+        change_sequence: u64::try_from(sequence)
+            .map_err(|_| StoreError::Corrupt("negative change sequence"))?,
+        updated_at_ms: row.get("updated_at_ms")?,
+    })
+}
+
+pub(super) fn command_clock(
+    c: &Connection,
+    p: &PrincipalId,
+) -> Result<Option<CommandClockRecord>, StoreError> {
+    one(
+        c,
+        "SELECT * FROM command_clocks WHERE principal_authority=?1 AND principal_user_id=?2",
+        params![p.authority(), p.external_user_id()],
+        read_command_clock,
+    )
 }
 
 pub(super) const fn outcome_parents(
     outcome: Option<&CommandOutcome>,
 ) -> (Option<&str>, Option<&str>) {
     match outcome {
-        Some(CommandOutcome::Created { automation_id, .. }) => {
-            (Some(automation_id.as_str()), None)
-        }
+        Some(
+            CommandOutcome::Created { automation_id, .. }
+            | CommandOutcome::Updated { automation_id, .. }
+            | CommandOutcome::StateChanged { automation_id, .. },
+        ) => (Some(automation_id.as_str()), None),
         Some(
             CommandOutcome::RunQueued { run_id }
+            | CommandOutcome::DeliveryRetryQueued { run_id }
+            | CommandOutcome::ResultKept { run_id, .. }
             | CommandOutcome::CancelRequested { run_id, .. },
         ) => (None, Some(run_id.as_str())),
-        None => (None, None),
+        None
+        | Some(CommandOutcome::PendingApproval | CommandOutcome::Rejected) => {
+            (None, None)
+        }
     }
 }
 
@@ -397,7 +463,7 @@ pub(super) fn read_automation(
     Ok(AutomationRecord {
         automation_id: business(row, "automation_id")?,
         principal: principal(row)?,
-        current_revision: revision(row, "current_revision")?,
+        current_revision: parse_revision(row, "current_revision")?,
         state: enum_value(row.get("state")?)?,
         title: decode(&row.get::<_, String>("title_json")?)?,
         created_at_ms: row.get("created_at_ms")?,
@@ -411,7 +477,7 @@ pub(super) fn read_revision(
     Ok(RevisionRecord {
         automation_id: business(row, "automation_id")?,
         principal: principal(row)?,
-        revision: revision(row, "revision")?,
+        revision: parse_revision(row, "revision")?,
         definition: decode(&row.get::<_, String>("definition_json")?)?,
         context: decode(&row.get::<_, String>("context_json")?)?,
         grant_ref: optional_business(row, "grant_ref")?,
@@ -422,7 +488,7 @@ pub(super) fn read_run(row: &Row<'_>) -> Result<RunRecord, StoreError> {
     Ok(RunRecord {
         run_id: business(row, "run_id")?,
         automation_id: business(row, "automation_id")?,
-        revision: revision(row, "revision")?,
+        revision: parse_revision(row, "revision")?,
         principal: principal(row)?,
         current_attempt_id: optional_business(row, "current_attempt_id")?,
         retry_of_run_id: optional_business(row, "retry_of_run_id")?,
@@ -509,7 +575,7 @@ pub(super) fn read_watermark(
     Ok(WatermarkRecord {
         principal: principal(row)?,
         automation_id: business(row, "automation_id")?,
-        revision: revision(row, "revision")?,
+        revision: parse_revision(row, "revision")?,
         processed_through_ms: row.get("processed_through_ms")?,
         source_removed: row.get("source_removed")?,
     })
@@ -561,6 +627,25 @@ pub(super) fn attempts(
         "SELECT * FROM run_attempts WHERE principal_authority=?1 AND principal_user_id=?2 AND run_id=?3 ORDER BY started_at_ms",
         params![p.authority(), p.external_user_id(), id.as_str()],
         read_attempt,
+    )
+}
+
+pub(super) fn revision(
+    c: &Connection,
+    p: &PrincipalId,
+    id: &AutomationId,
+    revision: Revision,
+) -> Result<Option<RevisionRecord>, StoreError> {
+    one(
+        c,
+        "SELECT * FROM automation_revisions WHERE principal_authority=?1 AND principal_user_id=?2 AND automation_id=?3 AND revision=?4",
+        params![
+            p.authority(),
+            p.external_user_id(),
+            id.as_str(),
+            revision_value(revision)?
+        ],
+        read_revision,
     )
 }
 pub(super) fn receipt(

@@ -5,13 +5,19 @@
 //! an explicit service implementation; no permissive default backend exists.
 
 mod command;
+pub mod delivery;
 mod executor;
 mod identity;
 mod model;
 mod ports;
+pub mod recovery;
+pub mod retention;
 pub mod schedule;
 pub mod schema_contract;
+mod service;
 pub mod store;
+pub mod worker;
+pub use worker::{AutomationWorker, PreparedRun, RunPreparer, WorkerCycle};
 
 pub use command::*;
 pub use executor::*;
@@ -22,3 +28,4 @@ pub use identity::{
 };
 pub use model::*;
 pub use ports::*;
+pub use service::CommandService;

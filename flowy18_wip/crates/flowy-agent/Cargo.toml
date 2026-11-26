@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 flowy-agent-core = { workspace = true }
+flowy-automation = { workspace = true }
 flowy-skills = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

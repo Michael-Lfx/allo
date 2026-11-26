@@ -159,6 +159,7 @@ impl AgentHandle {
         &self,
         artifact_id: &str,
     ) -> io::Result<ViewCopy> {
+        let _dispatch = super::lock(&self.inner.state.dispatch);
         self.authorized_artifact_store(artifact_id)?
             .create_view_copy(artifact_id)
     }

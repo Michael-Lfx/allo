@@ -62,7 +62,7 @@ fn new_database_has_registered_tables_indexes_and_durable_pragmas() {
     let tables: u32 = connection.query_row(
         "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name <> 'automation_schema'", [], |row| row.get(0),
     ).unwrap();
-    assert_eq!(tables, 8);
+    assert_eq!(tables, 9);
     let journal: String = connection
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
         .unwrap();
@@ -138,9 +138,12 @@ fn existing_empty_and_corrupt_files_are_never_claimed_or_rewritten() {
 #[test]
 fn incompatible_versions_lineages_checksums_and_live_schema_preserve_bytes() {
     for mutation in [
-        "PRAGMA user_version = 2",
+        "PRAGMA user_version = 999",
+        "PRAGMA user_version = 0",
+        "DROP TABLE command_clocks",
         "UPDATE automation_schema SET lineage='unknown-lineage'",
-        "UPDATE automation_schema SET version=2",
+        "UPDATE automation_schema SET version=999",
+        "UPDATE automation_schema SET version=1",
         "UPDATE automation_schema SET schema_sha256='not-the-applied-resource'",
         "DELETE FROM automation_schema",
         "DROP INDEX runs_owner_revision",
@@ -280,6 +283,180 @@ fn process_exit_before_and_after_commit_recovers_atomic_product_state() {
     }
 }
 
+/// Builds a dataset exactly as schema 001 applied it, with one product row.
+fn create_version_one(path: &Path) {
+    let mut connection = Connection::open(path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    transaction.execute_batch(&canonical(SCHEMA_001)).unwrap();
+    transaction
+        .execute(
+            "INSERT INTO automation_schema(singleton, lineage, version, schema_sha256) VALUES(1, ?1, 1, ?2)",
+            params![DATASET_LINEAGE, checksum_for(1).unwrap()],
+        )
+        .unwrap();
+    transaction
+        .pragma_update(None, "user_version", 1u32)
+        .unwrap();
+    insert_fixture(&transaction);
+    transaction.commit().unwrap();
+}
+
+fn applied_version(path: &Path) -> u32 {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn version_one_dataset_migrates_forward_once_and_keeps_rows() {
+    let database = TestDatabase::new();
+    create_version_one(&database.path);
+    let connection = open(&database.path).unwrap();
+    validate_live(&connection).unwrap();
+    let (rows, clocks): (u32, u32) = connection
+        .query_row(
+            "SELECT (SELECT count(*) FROM automations WHERE automation_id=?1), (SELECT count(*) FROM command_clocks)",
+            [FIXTURE_AUTOMATION],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, clocks), (1, 0));
+    let migrated = inventory(&connection).unwrap();
+    drop(connection);
+    assert_eq!(applied_version(&database.path), SCHEMA_VERSION);
+    let connection = open(&database.path).unwrap();
+    assert_eq!(inventory(&connection).unwrap(), migrated);
+}
+
+#[test]
+fn tampered_version_one_dataset_is_never_migrated_or_rewritten() {
+    for mutation in [
+        "UPDATE automation_schema SET schema_sha256='not-the-applied-resource'",
+        "UPDATE automation_schema SET lineage='unknown-lineage'",
+        "CREATE TABLE command_clocks(id INTEGER PRIMARY KEY AUTOINCREMENT)",
+        "DROP INDEX runs_owner_revision",
+    ] {
+        let database = TestDatabase::new();
+        create_version_one(&database.path);
+        let connection = Connection::open(&database.path).unwrap();
+        connection.execute_batch(mutation).unwrap();
+        drop(connection);
+        let original = fs::read(&database.path).unwrap();
+        assert!(
+            matches!(open(&database.path), Err(StoreError::Incompatible(_))),
+            "{mutation}"
+        );
+        assert_eq!(fs::read(&database.path).unwrap(), original, "{mutation}");
+    }
+}
+
+#[test]
+fn process_exit_during_migration_keeps_version_one_and_retries() {
+    let database = TestDatabase::new();
+    create_version_one(&database.path);
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("store::schema::tests::migration_crash_fixture")
+        .arg("--nocapture")
+        .env(MIGRATION_ABORT_ENV, &database.path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(43),
+        "child stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Inspect before open() can retry: the abandoned transaction must not
+    // expose either the appended table or a partially advanced fingerprint.
+    let inspection = Connection::open_with_flags(
+        &database.path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    validate_version(&inspection, 1).unwrap();
+    let clocks: u32 = inspection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='command_clocks'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(clocks, 0);
+    drop(inspection);
+    let connection = open(&database.path).unwrap();
+    validate_live(&connection).unwrap();
+    let rows: u32 = connection
+        .query_row("SELECT count(*) FROM automations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+    drop(connection);
+    assert_eq!(applied_version(&database.path), SCHEMA_VERSION);
+}
+
+#[test]
+fn orphaned_version_one_dataset_is_rejected_before_migration() {
+    let database = TestDatabase::new();
+    create_version_one(&database.path);
+    let connection = Connection::open(&database.path).unwrap();
+    connection
+        .execute("DELETE FROM automation_revisions", [])
+        .unwrap();
+    drop(connection);
+    let original = fs::read(&database.path).unwrap();
+    assert!(matches!(
+        open(&database.path),
+        Err(StoreError::Corrupt("logical reference audit failed"))
+    ));
+    assert_eq!(applied_version(&database.path), 1);
+    assert_eq!(fs::read(&database.path).unwrap(), original);
+}
+
+#[test]
+fn full_database_migration_rolls_back_ddl_and_version_then_retries() {
+    let database = TestDatabase::new();
+    create_version_one(&database.path);
+    let mut connection = Connection::open(&database.path).unwrap();
+    let pages: u32 = connection
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .unwrap();
+    let limit: u32 = connection
+        .query_row(&format!("PRAGMA max_page_count = {pages}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(limit, pages);
+    let error = migrate(&mut connection, 1).unwrap_err();
+    assert!(matches!(
+        error,
+        StoreError::Sqlite(ref error)
+            if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull)
+    ));
+    validate_version(&connection, 1).unwrap();
+    connection
+        .query_row("PRAGMA max_page_count = 1073741823", [], |row| {
+            row.get::<_, u32>(0)
+        })
+        .unwrap();
+    migrate(&mut connection, 1).unwrap();
+    validate_live(&connection).unwrap();
+}
+
+#[test]
+fn migration_crash_fixture() {
+    let Some(path) = std::env::var_os(MIGRATION_ABORT_ENV) else {
+        return;
+    };
+    // The migration hook exits with 43 before commit; reaching here fails.
+    let _ = open(Path::new(&path));
+    std::process::exit(44);
+}
+
 #[test]
 fn transaction_crash_fixture() {
     let Some(path) = std::env::var_os(CHILD_PATH) else {
@@ -297,4 +474,43 @@ fn transaction_crash_fixture() {
     // Exit deliberately skips Transaction and Connection destructors. This is
     // a child-only durable crash point, never a production failpoint.
     std::process::exit(41);
+}
+
+#[test]
+fn version_two_upgrades_with_calendar_and_delivery_metadata_without_rewriting_rows()
+ {
+    let database = TestDatabase::new();
+    create_version_one(&database.path);
+    let c = Connection::open(&database.path).unwrap();
+    c.execute_batch(&canonical(MIGRATION_002)).unwrap();
+    c.execute(
+        "UPDATE automation_schema SET version=2,schema_sha256=?1",
+        [checksum_for(2).unwrap()],
+    )
+    .unwrap();
+    c.pragma_update(None, "user_version", 2).unwrap();
+    validate_version(&c, 2).unwrap();
+    drop(c);
+    let c = open(&database.path).unwrap();
+    validate_live(&c).unwrap();
+    assert_eq!(
+        c.query_row(
+            "SELECT count(*) FROM automations WHERE automation_id=?1",
+            [FIXTURE_AUTOMATION],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert!(
+        c.prepare("SELECT claim_until_ms,last_error FROM delivery_outbox")
+            .is_ok()
+    );
+    assert!(
+        c.prepare(
+            "SELECT scheduled_at_ms,covers_from_ms,next_recheck_at_ms FROM runs"
+        )
+        .is_ok()
+    );
+    assert_eq!(applied_version(&database.path), SCHEMA_VERSION);
 }

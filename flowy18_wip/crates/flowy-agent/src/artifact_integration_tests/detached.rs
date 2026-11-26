@@ -17,6 +17,8 @@ use crate::{
     SessionOrigin, SessionSpec, SessionWorkspace, TurnExecutionOutcome,
 };
 
+mod recovery;
+
 fn attempt(id: &str, submission: u128) -> DetachedAttempt {
     DetachedAttempt {
         session_id: id.into(),

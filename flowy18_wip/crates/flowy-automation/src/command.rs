@@ -6,6 +6,7 @@ use crate::{
     WorkspaceSpec,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::sync::Arc;
 
@@ -17,6 +18,9 @@ pub enum CallerSource {
         call_id: String,
     },
     UserInterface,
+    ConfirmedApproval {
+        session_id: SessionRef,
+    },
     AuthorizedAutomation {
         source_run_id: RunId,
     },
@@ -39,15 +43,33 @@ pub struct ManualAutomationInput {
     pub capabilities: CapabilityRequest,
     pub model: Option<ModelBinding>,
     pub budget: Option<RunBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<crate::schedule::SchedulePolicy>,
 }
 
-/// Initial manual slice. Scheduling and editing commands are added with their
-/// service behavior, rather than accepted before they can be persisted.
+/// Persistent manual commands shared by UI and trusted conversation callers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AutomationCommand {
     CreateManual {
         definition: Box<ManualAutomationInput>,
+    },
+    UpdateManual {
+        automation_id: AutomationId,
+        expected_revision: Revision,
+        definition: Box<ManualAutomationInput>,
+    },
+    Pause {
+        automation_id: AutomationId,
+        expected_revision: Revision,
+    },
+    Resume {
+        automation_id: AutomationId,
+        expected_revision: Revision,
+    },
+    Archive {
+        automation_id: AutomationId,
+        expected_revision: Revision,
     },
     RunNow {
         automation_id: AutomationId,
@@ -56,7 +78,43 @@ pub enum AutomationCommand {
     CancelRun {
         run_id: RunId,
     },
+    RetryInterrupted {
+        run_id: RunId,
+    },
+    AbandonPendingArtifacts {
+        run_id: RunId,
+    },
+    SetResultKept {
+        run_id: RunId,
+        kept: bool,
+    },
+    RetryDelivery {
+        run_id: RunId,
+    },
+    RetryDeliveryTarget {
+        run_id: RunId,
+        target: DeliveryTarget,
+    },
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryTarget {
+    Inbox,
+    SystemNotification,
+}
+
+impl DeliveryTarget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::SystemNotification => "system_notification",
+        }
+    }
+}
+
+/// Synthetic source key for approval requests started from the management UI.
+pub const UI_APPROVAL_SESSION: &str = "automation-ui";
 
 /// A host-stamped, immutable envelope reused during transport recovery. The
 /// service verifies its digest against the command and persists its receipt.
@@ -70,6 +128,46 @@ pub struct CommandEnvelope {
 }
 
 impl CommandEnvelope {
+    pub fn new(
+        request_key: RequestKey,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        command: AutomationCommand,
+    ) -> Result<Self, PortError> {
+        let content_digest =
+            Self::digest(issued_at_ms, expires_at_ms, &command)?;
+        Ok(Self {
+            request_key,
+            issued_at_ms,
+            expires_at_ms,
+            content_digest,
+            command,
+        })
+    }
+
+    fn digest(
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        command: &AutomationCommand,
+    ) -> Result<[u8; 32], PortError> {
+        let bytes = serde_json::to_vec(&(issued_at_ms, expires_at_ms, command))
+            .map_err(|_| PortError::InvalidRequest)?;
+        Ok(Sha256::digest(bytes).into())
+    }
+
+    pub fn verify_digest(&self) -> Result<(), PortError> {
+        if self.content_digest
+            != Self::digest(
+                self.issued_at_ms,
+                self.expires_at_ms,
+                &self.command,
+            )?
+        {
+            return Err(PortError::InvalidRequest);
+        }
+        Ok(())
+    }
+
     /// The service supplies its effective persisted wall-clock high-water mark.
     pub const fn validate_time(
         &self,
@@ -88,9 +186,23 @@ impl CommandEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandOutcome {
+    PendingApproval,
+    Rejected,
     Created {
         automation_id: AutomationId,
         revision: Revision,
+    },
+    Updated {
+        automation_id: AutomationId,
+        revision: Revision,
+    },
+    StateChanged {
+        automation_id: AutomationId,
+        revision: Revision,
+        state: DefinitionState,
+    },
+    DeliveryRetryQueued {
+        run_id: RunId,
     },
     RunQueued {
         run_id: RunId,
@@ -98,6 +210,10 @@ pub enum CommandOutcome {
     CancelRequested {
         run_id: RunId,
         disposition: CancelDisposition,
+    },
+    ResultKept {
+        run_id: RunId,
+        kept: bool,
     },
 }
 
@@ -109,19 +225,27 @@ pub struct CommandReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AutomationQuery {
+    List,
+    Inbox,
+    InboxRuns,
+    History { automation_id: AutomationId },
+    RecentHistory { automation_id: AutomationId },
     Automation { automation_id: AutomationId },
     Run { run_id: RunId },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AutomationSnapshot {
     pub automation_id: AutomationId,
     pub revision: Revision,
     pub state: DefinitionState,
     pub title: PrivateText,
+    pub definition: ManualAutomationInput,
+    pub next_run_at_ms: Option<i64>,
+    pub storage_suspended: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RunSnapshot {
     pub run_id: RunId,
     pub automation_id: AutomationId,
@@ -129,11 +253,36 @@ pub struct RunSnapshot {
     pub current_attempt_id: Option<AttemptId>,
     pub phase: RunPhase,
     pub outcome: Option<RunOutcome>,
+    pub blocked_reason: Option<crate::BlockedReason>,
+    pub scheduled_at_ms: Option<i64>,
+    pub covers_from_ms: Option<i64>,
+    pub latest_start_at_ms: i64,
+    pub delivery: Vec<DeliverySnapshot>,
+    pub title: PrivateText,
+    pub reminder: Option<PrivateText>,
+    pub result_session_id: Option<SessionRef>,
+    pub source_removed: bool,
+    pub kept: bool,
+    pub abandon_requested: bool,
+    pub artifacts_abandoned: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DeliverySnapshot {
+    pub target: String,
+    pub state: crate::OutboxState,
+    pub attempt_count: u32,
+    pub next_attempt_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum QuerySnapshot {
-    Automation(AutomationSnapshot),
+    Inbox(Vec<crate::store::OutboxRecord>),
+    Automations(Vec<AutomationSnapshot>),
+    History(Vec<RunSnapshot>),
+    Automation(Box<AutomationSnapshot>),
     Run(RunSnapshot),
 }
 

@@ -12,6 +12,16 @@ use flowy_agent_core::{Engine, RunError, TurnCompletionEvidence};
 use std::sync::Arc;
 
 impl AgentHandle {
+    /// Validate a tool context against authoritative structured history. This
+    /// exposes a verdict rather than raw owner or history records to callers.
+    pub fn validate_tool_context(
+        &self,
+        context: &crate::ToolRunContext,
+        args: &crate::ToolCallArgs,
+    ) -> bool {
+        self.inner.validate_tool_context(context, args)
+    }
+
     /// The host-side artifact catalog API. A missing store means startup
     /// storage initialization failed; callers should surface a storage error.
     pub fn artifact_store(&self) -> Result<ArtifactStore, &'static str> {
@@ -68,6 +78,13 @@ impl AgentHandle {
             return Err("library.loading");
         }
         let _dispatch = lock(&self.inner.state.dispatch);
+        self.delete_session_locked(session_id)
+    }
+
+    pub(super) fn delete_session_locked(
+        &self,
+        session_id: &str,
+    ) -> Result<(), &'static str> {
         if !self.session_visible(session_id) {
             return Err("notice.agent_failed");
         }
@@ -109,6 +126,12 @@ impl AgentHandle {
         if any_busy {
             return Err("notice.agent_busy");
         }
+        let request_principal =
+            record.execution.owner.as_ref().and_then(|owner| {
+                let subject = owner.subject.parse::<i64>().ok()?;
+                flowy_automation::PrincipalId::cloud(&owner.authority, subject)
+                    .ok()
+            });
         let store = self.artifact_store()?;
         let artifact_ids = std::iter::once(&record)
             .chain(children.iter())
@@ -285,6 +308,19 @@ impl AgentHandle {
             }
         }
 
+        // The source conversation is durably gone. Release its request
+        // identities now, even if artifact cleanup still needs recovery.
+        if let Some(principal) = request_principal.as_ref()
+            && let Err(error) =
+                self.remove_automation_requests(principal, session_id)
+        {
+            tracing::warn!(
+                %error,
+                "remove automation request journal for deleted session"
+            );
+            self.inner.state.report_storage_error();
+        }
+
         // The conversation removal is the logical deletion commit point. The
         // committed plan keeps artifacts hidden and makes physical cleanup
         // retryable even if the process exits midway.
@@ -370,6 +406,23 @@ impl AgentHandle {
         self.retry_delivery_commit_locked(&engine, session_id, submission_id)
     }
 
+    pub(crate) fn abandon_automation_delivery(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = self.completion_engine()?;
+        let store = self.artifact_store()?;
+        engine
+            .retry_delivery_commit_with(session_id, submission_id, |commit| {
+                store.abandon_pending_delivery(commit)
+            })
+            .map_err(|_| "chat.status_delivery_failed")?;
+        self.inner.state.push_update(AgentUpdate::Artifacts);
+        Ok(())
+    }
+
     fn retry_delivery_commit_locked(
         &self,
         engine: &Engine,
@@ -379,6 +432,11 @@ impl AgentHandle {
         let store = self.artifact_store()?;
         let commit = engine
             .retry_delivery_commit_with(session_id, submission_id, |commit| {
+                if store.delivery_abandoned(commit)? == Some(true) {
+                    return Err(std::io::Error::other(
+                        "delivery was abandoned",
+                    ));
+                }
                 store.recover_commits(std::slice::from_ref(commit))
             })
             .map_err(|error| {
@@ -534,6 +592,7 @@ impl AgentHandle {
         artifact_id: &str,
         favorite: bool,
     ) -> Result<(), std::io::Error> {
+        let _dispatch = lock(&self.inner.state.dispatch);
         self.authorized_artifact_store(artifact_id)?
             .set_favorite(artifact_id, favorite)
     }
@@ -940,4 +999,36 @@ fn finish_override_live_update(
         state.push_update(AgentUpdate::Session { id: root_id });
     }
     state.push_update(AgentUpdate::Sessions);
+}
+
+impl super::Harness {
+    pub(super) fn validate_tool_context(
+        &self,
+        context: &crate::ToolRunContext,
+        args: &crate::ToolCallArgs,
+    ) -> bool {
+        let Some(call) = context.trusted_call(args) else {
+            return false;
+        };
+        if context.signal.is_cancelled()
+            || *lock(&self.state.load_failed)
+            || *lock(&self.state.history_unavailable)
+        {
+            return false;
+        }
+        lock(&self.engine)
+            .as_ref()
+            .and_then(|engine| engine.session(&call.session_id))
+            .is_some_and(|record| {
+                let origin_matches = record.origin == context.session_origin;
+                origin_matches
+                    && record.execution == context.execution
+                    && record.messages.iter().any(|message| {
+                        message.id == call.submission_id
+                            && message.role == flowy_agent_core::Role::User
+                            && message.source
+                                == flowy_agent_core::MessageSource::User
+                    })
+            })
+    }
 }

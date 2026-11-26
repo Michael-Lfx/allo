@@ -1,14 +1,21 @@
 //! SQLite persistence owned by one dedicated thread. No connection or raw SQL
 //! crosses the repository boundary; callers await messages without doing I/O.
 
+mod approvals;
 mod audit;
+mod commands;
+mod delivery;
 mod records;
 mod repository;
+mod retention;
+mod runs;
+mod scheduler;
 mod schema;
 #[cfg(test)]
 mod tests;
 mod validation;
 
+pub use approvals::ApprovalProposal;
 pub use audit::{
     AuditFinding, AuditReport, InventoryCompleteness, SideRecord,
     SideStoreInventory,
@@ -18,7 +25,7 @@ pub use records::*;
 use crate::{AutomationId, DeletionPlanId, PrincipalId, RequestKey, RunId};
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use tokio::sync::oneshot;
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +46,10 @@ pub enum StoreError {
     Unavailable,
     #[error("automation storage revision conflict")]
     Conflict,
+    #[error("automation access denied")]
+    AccessDenied,
+    #[error("automation request expired")]
+    RequestExpired,
     #[error("automation logical reference failed: {0}")]
     Reference(&'static str),
 }
@@ -54,6 +65,7 @@ enum Message {
 #[derive(Clone)]
 pub struct AutomationStore {
     sender: mpsc::Sender<Message>,
+    retention_limits: Arc<OnceLock<crate::retention::RetentionLimits>>,
 }
 
 impl std::fmt::Debug for AutomationStore {
@@ -63,6 +75,61 @@ impl std::fmt::Debug for AutomationStore {
 }
 
 impl AutomationStore {
+    pub async fn observe_command_time(
+        &self,
+        principal: PrincipalId,
+        now_ms: i64,
+    ) -> Result<i64, StoreError> {
+        self.call(move |connection| {
+            commands::observe_time(connection, &principal, now_ms)
+        })
+        .await
+    }
+
+    pub async fn apply_command(
+        &self,
+        caller: crate::CallerContext,
+        request: crate::CommandEnvelope,
+        now_ms: i64,
+        decision: crate::HostAccessDecision,
+    ) -> Result<crate::CommandReceipt, StoreError> {
+        let limits = self.retention_limits.get().copied();
+        self.call(move |connection| {
+            commands::apply(
+                connection, &caller, request, now_ms, decision, None, limits,
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn apply_with_grant(
+        &self,
+        caller: crate::CallerContext,
+        request: crate::CommandEnvelope,
+        now_ms: i64,
+        decision: crate::HostAccessDecision,
+        grant: Option<crate::GrantId>,
+    ) -> Result<crate::CommandReceipt, StoreError> {
+        let limits = self.retention_limits.get().copied();
+        self.call(move |c| {
+            commands::apply(
+                c, &caller, request, now_ms, decision, grant, limits,
+            )
+        })
+        .await
+    }
+
+    pub async fn query(
+        &self,
+        principal: PrincipalId,
+        query: crate::AutomationQuery,
+    ) -> Result<crate::QuerySnapshot, StoreError> {
+        self.call(move |connection| {
+            commands::query(connection, &principal, query)
+        })
+        .await
+    }
+
     pub async fn open(
         root: PathBuf,
         owner: Arc<dyn Send + Sync>,
@@ -98,7 +165,17 @@ impl AutomationStore {
                 }
             })?;
         initialized.await.map_err(|_| StoreError::Unavailable)??;
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            retention_limits: Arc::new(OnceLock::new()),
+        })
+    }
+
+    pub(crate) fn install_retention_limits(
+        &self,
+        limits: crate::retention::RetentionLimits,
+    ) {
+        let _ = self.retention_limits.set(limits);
     }
 
     async fn call<T: Send + 'static>(
@@ -205,6 +282,15 @@ impl AutomationStore {
     ) -> Result<Option<WatermarkRecord>, StoreError> {
         self.call(move |connection| {
             repository::watermark(connection, &principal, &id)
+        })
+        .await
+    }
+    pub async fn command_clock(
+        &self,
+        principal: PrincipalId,
+    ) -> Result<Option<CommandClockRecord>, StoreError> {
+        self.call(move |connection| {
+            repository::command_clock(connection, &principal)
         })
         .await
     }

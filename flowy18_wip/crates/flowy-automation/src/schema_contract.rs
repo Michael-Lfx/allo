@@ -9,6 +9,11 @@ pub const DATASET_LINEAGE: &str = "flowy-gpui-automation-v1";
 pub const DATABASE_RELATIVE_PATH: &str = "automation/automations.sqlite3";
 pub const TECHNICAL_PRIMARY_KEY: &str = "id";
 
+/// C01 request envelopes are a bounded, independently validated host side store.
+/// They are not SQLite product rows and are not covered by the SQL orphan audit.
+pub const TOOL_REQUEST_JOURNAL_PATH: &str = "automation/tool-requests.json";
+pub const TOOL_REQUEST_JOURNAL_POLICY: &str = "principal/session/submission/call bind immutable envelope; fail closed on corruption; keep expired identities until source deletion is proven";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DdlShapeViolation {
     #[error("physical foreign keys are forbidden")]
@@ -293,6 +298,13 @@ pub const PRODUCT_TABLES: &[ProductTable] = &[
         business_key: None,
         natural_unique: &["automation_id"],
     },
+    // Schema 002: per-principal request high-water mark and change generation.
+    ProductTable {
+        name: "command_clocks",
+        technical_primary_key: TECHNICAL_PRIMARY_KEY,
+        business_key: None,
+        natural_unique: &["principal_authority", "principal_user_id"],
+    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -496,6 +508,17 @@ pub const LOGICAL_REFERENCES: &[LogicalReference] = &[
         orphan_audit: OrphanAuditPolicy::AllowRemovedHistoricalSource,
     },
     LogicalReference {
+        child: table("command_receipts", &["approval_session_id"]),
+        parent: side(SideStore::AgentHistory, &["session_id"]),
+        value_contract: ReferenceValueContract::OpaqueHostReference,
+        same_principal: true,
+        nullable: true,
+        required_index: Some("command_receipts_approval_session"),
+        delete_policy: DeletePolicy::KeepHistory,
+        rebuild_policy: RebuildPolicy::ReconcileSideStore,
+        orphan_audit: OrphanAuditPolicy::AllowRemovedHistoricalSource,
+    },
+    LogicalReference {
         child: table("command_receipts", &["result_run_id"]),
         parent: table("runs", &["run_id"]),
         value_contract: ReferenceValueContract::CanonicalUuidV7,
@@ -617,7 +640,7 @@ mod tests {
             .iter()
             .map(|table| table.name)
             .collect::<BTreeSet<_>>();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
         assert!(
             PRODUCT_TABLES
                 .iter()

@@ -92,6 +92,11 @@ impl ToolDefinition {
 /// A monotonic guard: `Some(reason)` denies the call.
 pub type ToolGuard = Arc<dyn Fn(&ToolCallArgs) -> Option<String> + Send + Sync>;
 
+/// Host context guard supplements the existing model-argument policy. A
+/// denial is monotonic and is evaluated immediately before body dispatch.
+pub type ToolContextGuard =
+    Arc<dyn Fn(&ToolRunContext, &ToolCallArgs) -> Option<String> + Send + Sync>;
+
 /// The host's allow/deny decision for one call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolPolicyDecision {
@@ -108,6 +113,7 @@ pub type ToolPolicy =
 struct Inner {
     tools: Mutex<HashMap<String, Arc<ToolDefinition>>>,
     guards: Mutex<Vec<ToolGuard>>,
+    context_guards: Mutex<Vec<ToolContextGuard>>,
     policy: Mutex<Option<ToolPolicy>>,
 }
 
@@ -122,6 +128,7 @@ impl Default for Inner {
         Self {
             tools: Mutex::new(HashMap::new()),
             guards: Mutex::new(Vec::new()),
+            context_guards: Mutex::new(Vec::new()),
             policy: Mutex::new(None),
         }
     }
@@ -162,6 +169,10 @@ impl ToolRegistry {
     /// Add a monotonic guard evaluated before every dispatch.
     pub fn add_guard(&self, guard: ToolGuard) {
         self.inner.guards.lock().unwrap().push(guard);
+    }
+
+    pub fn add_context_guard(&self, guard: ToolContextGuard) {
+        self.inner.context_guards.lock().unwrap().push(guard);
     }
 
     /// Model-facing schemas of every registered tool.
@@ -298,6 +309,23 @@ impl ToolRegistry {
             );
         }
 
+        let context_guards = self.inner.context_guards.lock().unwrap().clone();
+        for guard in &context_guards {
+            if let Some(reason) = guard(&run_ctx, &args) {
+                return ToolExecutionResult::error("DENIED", reason);
+            }
+        }
+        if run_ctx.signal.is_cancelled() {
+            return ToolExecutionResult::error(
+                "CANCELLED",
+                "tool call cancelled after context authorization",
+            );
+        }
+        if let Some(budget) = budget
+            && let Some(stop) = budget.stop_requested()
+        {
+            return ToolExecutionResult::error("RUN_BUDGET", stop.to_string());
+        }
         (tool.execute)(args, run_ctx).await
     }
 }
@@ -555,6 +583,70 @@ mod tests {
             checkpoints[1].stop_reason,
             Some(crate::BudgetStopReason::Deadline)
         );
+    }
+
+    #[tokio::test]
+    async fn context_guards_receive_host_identity_and_cannot_bypass_policy() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let registry = ToolRegistry::new();
+        registry.register(echo_tool(executed.clone()));
+        registry.add_context_guard(Arc::new(|context, args| {
+            let Some(call) = context.trusted_call(args) else {
+                return Some("missing host identity".into());
+            };
+            (call.session_id != "agent"
+                || call.submission_id != "host-submission")
+                .then(|| "wrong host identity".into())
+        }));
+        let mut context = ctx();
+        context.submission_id = Some("host-submission".into());
+        registry.set_policy(Arc::new(|_| {
+            ToolPolicyDecision::Deny("original policy".into())
+        }));
+        assert!(
+            registry
+                .execute(
+                    "call-1".into(),
+                    "echo".into(),
+                    json!({}),
+                    context.clone()
+                )
+                .await
+                .is_error()
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+        registry.set_policy(Arc::new(|_| ToolPolicyDecision::Allow));
+        context.agent_id = Some("forged".into());
+        assert!(
+            registry
+                .execute(
+                    "call-1".into(),
+                    "echo".into(),
+                    json!({"session_id":"agent"}),
+                    context
+                )
+                .await
+                .is_error()
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn context_guard_cancellation_is_rechecked_before_body() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let registry = ToolRegistry::new();
+        registry.register(echo_tool(executed.clone()));
+        registry.add_context_guard(Arc::new(|context, _| {
+            context.signal.cancel();
+            None
+        }));
+        assert!(
+            registry
+                .execute("call-1".into(), "echo".into(), json!({}), ctx())
+                .await
+                .is_error()
+        );
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

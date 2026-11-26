@@ -44,6 +44,21 @@ pub struct OccurrenceWindow {
     pub last_at_ms: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MisfirePolicy {
+    Skip,
+    RunOnce,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulePolicy {
+    pub trigger: TriggerSpec,
+    pub misfire: MisfirePolicy,
+    pub max_lateness_ms: NonZeroU64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ScheduleError {
     #[error("timestamp is outside the supported calendar range")]

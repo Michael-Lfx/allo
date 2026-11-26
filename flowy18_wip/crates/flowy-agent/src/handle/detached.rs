@@ -153,6 +153,7 @@ pub enum DetachedArtifacts {
     NotRequired,
     Pending(DeliveryCommit),
     Committed(DeliveryCommit),
+    Abandoned,
 }
 
 /// Read-only adjudication of one exact attempt. Only Terminal contains a
@@ -219,6 +220,43 @@ struct PreparedDetached {
     unproven_process_started: Arc<AtomicBool>,
 }
 
+/// Reserved before a new session exists. Its start is called only after the
+/// Automation database has durably recorded the exact attempt mapping.
+pub struct DetachedSessionTicket {
+    handle: AgentHandle,
+    session: SessionSpec,
+    spec: DetachedRunSpec,
+    permit: ExecutionPermit,
+}
+
+impl fmt::Debug for DetachedSessionTicket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DetachedSessionTicket")
+            .field("attempt", &self.spec.attempt)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DetachedSessionTicket {
+    pub fn start(self) -> Result<DetachedRun, DetachedError> {
+        let Self {
+            handle,
+            session,
+            spec,
+            permit,
+        } = self;
+        handle.create_detached(session)?;
+        let _dispatch = lock(&handle.inner.state.dispatch);
+        let prepared = handle.prepare_detached(&spec)?;
+        if !permit
+            .covers(ExecutionClass::Background, &prepared.resources(&spec)?)
+        {
+            return Err(DetachedError::WorkspaceUnavailable);
+        }
+        handle.launch_detached(spec, prepared, permit)
+    }
+}
+
 impl PreparedDetached {
     fn resources(
         &self,
@@ -244,6 +282,113 @@ const fn admission_error(error: AdmissionError) -> DetachedError {
 }
 
 impl AgentHandle {
+    /// Reserve launch resources before creating either the session or its
+    /// submission. Home uses a conservative device ticket until its private
+    /// workspace exists; Project uses the canonical requested directory.
+    pub async fn reserve_detached_session(
+        &self,
+        session: SessionSpec,
+        spec: DetachedRunSpec,
+        cancel: &CancelToken,
+    ) -> Result<DetachedSessionTicket, DetachedError> {
+        spec.attempt.validate()?;
+        if session.id != spec.attempt.session_id
+            || session.execution != spec.attempt.execution
+        {
+            return Err(DetachedError::BindingConflict);
+        }
+        self.detached_engine()?;
+        self.check_detached_intake()?;
+        let tools = spec.allowed_tools.iter().cloned().collect::<Vec<_>>();
+        let resources = match &session.origin {
+            SessionOrigin::Home if session.workspace.is_none() => {
+                WorkspaceRequest::DeviceWrite
+            }
+            SessionOrigin::Project {
+                project_id: Some(id),
+            } if !id.trim().is_empty() => {
+                let root = session
+                    .workspace
+                    .as_ref()
+                    .ok_or(DetachedError::WorkspaceUnavailable)?;
+                WorkspaceRequest::for_tools(&root.root, &tools)
+                    .and_then(|resources| {
+                        resources.with_skill_reads(
+                            spec.skills.iter().map(|skill| skill.root.clone()),
+                        )
+                    })
+                    .map_err(|_| DetachedError::WorkspaceUnavailable)?
+            }
+            _ => return Err(DetachedError::InvalidBinding),
+        };
+        let permit = self
+            .inner
+            .state
+            .coordinator
+            .acquire(ExecutionClass::Background, resources, cancel)
+            .await
+            .map_err(admission_error)?;
+        if cancel.is_cancelled() {
+            return Err(DetachedError::Cancelled);
+        }
+        Ok(DetachedSessionTicket {
+            handle: self.clone(),
+            session,
+            spec,
+            permit,
+        })
+    }
+    pub(crate) fn automation_attempt_binding(
+        &self,
+        reference: &flowy_automation::AttemptRef,
+    ) -> Result<Option<DetachedAttempt>, DetachedError> {
+        let engine = self.detached_engine()?;
+        let Some(record) = engine.session(reference.session_id.as_str()) else {
+            return Ok(None);
+        };
+        let owner = flowy_agent_core::ExecutionOwner {
+            authority: reference.principal.authority().to_owned(),
+            subject: reference.principal.external_user_id().to_string(),
+        };
+        if record.execution.owner.as_ref() != Some(&owner)
+            || !matches!(&record.execution.source, ExecutionSource::Automation { run_id, attempt_id, .. }
+                if run_id == reference.run_id.as_str() && attempt_id == reference.attempt_id.as_str())
+        {
+            return Err(DetachedError::BindingConflict);
+        }
+        let submission = reference
+            .submission_id
+            .as_str()
+            .strip_prefix("submission-")
+            .filter(|id| id.len() == 32)
+            .and_then(|id| u128::from_str_radix(id, 16).ok())
+            .ok_or(DetachedError::InvalidBinding)?;
+        let attempt = DetachedAttempt {
+            session_id: reference.session_id.as_str().to_owned(),
+            submission,
+            execution: record.execution,
+        };
+        if attempt.submission_id() != reference.submission_id.as_str() {
+            return Err(DetachedError::InvalidBinding);
+        }
+        Ok(Some(attempt))
+    }
+
+    pub(crate) fn automation_budget_stop(
+        &self,
+        attempt: &DetachedAttempt,
+    ) -> Option<flowy_agent_core::BudgetStopReason> {
+        self.detached_engine()
+            .ok()?
+            .run_budget_checkpoint(
+                &attempt.session_id,
+                &attempt.submission_id(),
+            )
+            .ok()
+            .flatten()
+            .and_then(|checkpoint| checkpoint.stop_reason)
+    }
+
     /// Persist a Home or Project session without selecting or projecting it.
     /// A Home workspace is allocated below the host's own sessions directory.
     pub fn create_detached(
@@ -281,11 +426,26 @@ impl AgentHandle {
                 {
                     return Err(DetachedError::BindingConflict);
                 }
-                session_home_workspace(
-                    &root,
-                    &spec.id,
-                    stored_workspace.is_none(),
-                )?
+                if stored_workspace.is_none()
+                    && let ExecutionSource::Automation { attempt_id, .. } =
+                        &spec.execution.source
+                    && spec.id.strip_prefix("automation-") == Some(attempt_id)
+                {
+                    let sessions = private_child(&root, "sessions", true)?;
+                    let workspaces =
+                        private_child(&sessions, "workspaces", true)?;
+                    super::automation_retention::initialize_owned_workspace(
+                        &workspaces,
+                        &spec.id,
+                    )
+                    .map_err(|_| DetachedError::WorkspaceUnavailable)?
+                } else {
+                    session_home_workspace(
+                        &root,
+                        &spec.id,
+                        stored_workspace.is_none(),
+                    )?
+                }
             }
             SessionOrigin::Project {
                 project_id: Some(project_id),
@@ -891,16 +1051,21 @@ fn check_delivery_marker(
 ) -> Result<DetachedAttemptState, DetachedError> {
     if let DetachedAttemptState::Terminal(completion) = &mut state
         && let DetachedArtifacts::Pending(commit) = &completion.artifacts
-        && store.has_delivery_marker(commit).map_err(|error| {
-            log_storage_io_error(
-                "read detached delivery marker",
-                store.root(),
-                &error,
-            );
-            DetachedError::Storage
-        })?
+        && let Some(abandoned) =
+            store.delivery_abandoned(commit).map_err(|error| {
+                log_storage_io_error(
+                    "read detached delivery marker",
+                    store.root(),
+                    &error,
+                );
+                DetachedError::Storage
+            })?
     {
-        completion.artifacts = DetachedArtifacts::Committed(commit.clone());
+        completion.artifacts = if abandoned {
+            DetachedArtifacts::Abandoned
+        } else {
+            DetachedArtifacts::Committed(commit.clone())
+        };
     }
     Ok(state)
 }
