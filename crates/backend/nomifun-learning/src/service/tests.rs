@@ -18579,13 +18579,14 @@ async fn coach_input_leaves_out_concept_gaps_whose_concepts_are_already_taught()
     }
 }
 
-/// m3 off 臂：开关未设（缺省）或显式 off 时，留痕里有缺口行教练也读不到
-/// ——缺口字段恒空，提示词不带块头也不带行。env 是进程全局态：`#[serial]`。
+/// m3 off 臂：显式 off 取值时留痕里有缺口行教练也读不到——缺口字段恒空，
+/// 提示词不带块头也不带行（缺省已翻 on，未设 = on 臂由 switches 的纯函数
+/// 测试钉住）。env 是进程全局态：`#[serial]`。
 #[tokio::test]
 #[serial_test::serial]
 async fn coach_input_leaves_concept_gaps_out_unless_the_switch_is_on() {
     use crate::switches::{COACH_FINDINGS_INPUT_SWITCH_ENV, switch_env_guard};
-    for switch in [None, Some("off")] {
+    for switch in [Some("off"), Some("0"), Some("false")] {
         let _switch = switch_env_guard(COACH_FINDINGS_INPUT_SWITCH_ENV, switch);
         let (service, _knowledge, owner) = job_test_service().await;
         let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
