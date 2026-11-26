@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -51,6 +51,10 @@ const ACCEPTED_RELEASE_MAX_MS: u64 = 5 * 60_000;
 /// is surfaced to the user; the tenth is terminal.
 const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 
+/// Maximum number of durable acceptance receipts that may execute concurrently
+/// across independent workspaces.
+const DEFAULT_MAX_CONCURRENT_WORKS: usize = 3;
+
 mod artifacts;
 mod guards;
 mod observer;
@@ -58,6 +62,7 @@ mod queue;
 #[cfg(test)]
 mod tests;
 mod work;
+mod workspace_lock;
 
 use self::guards::{
     build_pre_tool_hook, ensure_tool_cwd, session_working_directory,
@@ -79,6 +84,7 @@ use self::work::{
     latest_session_submission_id, reconcile_partial_work_after_override,
     submission_committed_in_session,
 };
+use self::workspace_lock::{WorkspaceAccessMode, WorkspaceLockTable};
 
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
@@ -238,7 +244,11 @@ struct UiState {
     /// resumed denial turn completes or a brand-new user turn starts.
     denied_tool_turns: Mutex<HashMap<String, String>>,
     active: Mutex<Option<String>>,
-    accepted_claim: Mutex<Option<AcceptedClaim>>,
+    /// Active acceptance receipt claims keyed by `receipt_id`.
+    active_claims: Mutex<HashMap<String, AcceptedClaim>>,
+    /// Normalized directory-level read/write leases across all running turns.
+    workspace_locks: WorkspaceLockTable,
+    max_concurrent_works: AtomicUsize,
     accepted_lease_ms: AtomicU64,
     autonomous_drain: AtomicBool,
     drain_wakeup_scheduled: AtomicBool,
@@ -289,7 +299,11 @@ impl UiState {
             approved_tool_calls: Mutex::new(HashMap::new()),
             denied_tool_turns: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
-            accepted_claim: Mutex::new(None),
+            active_claims: Mutex::new(HashMap::new()),
+            workspace_locks: WorkspaceLockTable::new(),
+            max_concurrent_works: AtomicUsize::new(
+                DEFAULT_MAX_CONCURRENT_WORKS,
+            ),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
             autonomous_drain: AtomicBool::new(false),
             drain_wakeup_scheduled: AtomicBool::new(false),
@@ -363,8 +377,8 @@ impl Drop for RuntimeOwner {
 
 /// Lock ordering invariant (outer -> inner; never acquire in reverse):
 /// `accept_drain` -> `dispatch` -> `engine` (clone & release) ->
-/// `index_write` -> `live` -> leaf locks (`active`, `accepted_claim`,
-/// `updates`, `tool_args`, `notified_quarantined`).
+/// `index_write` -> `live` -> leaf locks (`active`, `active_claims`,
+/// `workspace_locks`, `updates`, `tool_args`, `notified_quarantined`).
 struct Harness {
     runtime: tokio::runtime::Handle,
     state: Arc<UiState>,
@@ -1448,6 +1462,114 @@ impl Harness {
         })
     }
 
+    /// Count of distinct sessions currently executing or holding an unsettled
+    /// acceptance claim (combining foreground direct turns, card resumes,
+    /// active queue claims, and still-reaping engine turns).
+    pub(super) fn in_flight_work_count(&self) -> usize {
+        let sessions: BTreeSet<String> = {
+            let live = lock(&self.state.live);
+            let mut ids: BTreeSet<String> = live
+                .iter()
+                .filter(|(_, session)| session.status.is_busy())
+                .map(|(id, _)| id.clone())
+                .collect();
+            for claim in lock(&self.state.active_claims).values() {
+                ids.insert(claim.session_id.clone());
+            }
+            drop(live);
+            ids
+        };
+        let mut total = sessions.len();
+        let engine = lock(&self.engine).clone();
+        if let Some(engine) = engine {
+            for sid in engine.active_session_ids() {
+                if !sessions.contains(&sid) {
+                    self.settle_finishing_fence(&engine, &sid);
+                    if engine.is_active(&sid) {
+                        total += 1;
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Mirror [`Self::settle_finishing_fence`] for `workspace_locks`: if every
+    /// conflicting holder on `cwd` has already left busy/active state (its turn
+    /// ended and the monitor task is microseconds away from releasing its
+    /// `WorkspaceLease`), wait briefly so immediate back-to-back submits or
+    /// `ResolveCard` calls never observe a spurious `notice.agent_busy`.
+    fn settle_finishing_workspace_lease(&self, engine: &Engine, cwd: &Path) {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(150);
+        loop {
+            let holders = self
+                .state
+                .workspace_locks
+                .conflicting_holders(cwd, WorkspaceAccessMode::Write);
+            if holders.is_empty() {
+                return;
+            }
+            let all_finishing = {
+                let live = lock(&self.state.live);
+                let ok = holders.iter().all(|sid| {
+                    !live.get(sid).is_some_and(|s| s.status.is_busy())
+                        && !engine.is_cancelling(sid)
+                });
+                drop(live);
+                ok
+            };
+            if !all_finishing {
+                return;
+            }
+            for sid in &holders {
+                self.settle_finishing_fence(engine, sid);
+                if engine.is_active(sid) {
+                    return;
+                }
+            }
+            let remaining =
+                deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            if self.state.workspace_locks.wait_for_release_step(
+                cwd,
+                WorkspaceAccessMode::Write,
+                remaining.min(std::time::Duration::from_millis(25)),
+            ) {
+                return;
+            }
+        }
+    }
+
+    /// Resolve the working directory for `session_id` without mutating the
+    /// filesystem, matching the exact resolution in `submit_message_targeted_locked`.
+    pub(super) fn session_workspace_path(&self, id: &str) -> Option<PathBuf> {
+        let engine = lock(&self.engine).clone();
+        if let Some(root) = engine
+            .as_ref()
+            .and_then(|eng| {
+                eng.with_session(id, |rec| {
+                    rec.workspace.as_ref().map(|ws| ws.root.clone())
+                })
+            })
+            .flatten()
+        {
+            return Some(root);
+        }
+        lock(&self.state.live).get(id).map(|session| {
+            session
+                .session_workspace
+                .as_ref()
+                .map(|ws| ws.root.clone())
+                .or_else(|| {
+                    session.workspace.as_ref().map(|ws| ws.root.clone())
+                })
+                .unwrap_or_else(|| self.state.root.join("sessions").join("cwd"))
+        })
+    }
+
     /// Create a new durable Home session in the background without ever
     /// mutating the UI's active selection or `context_generation`.
     pub(super) fn create_background_home_session(
@@ -1646,7 +1768,8 @@ impl Harness {
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
             || engine.is_active(&id)
-            || (pending_claim.is_some() && self.has_busy_session())
+            || (pending_claim.is_some()
+                && self.in_flight_work_count() >= self.max_concurrent_works())
         {
             return Err("notice.agent_busy");
         }
@@ -1720,8 +1843,11 @@ impl Harness {
         }
         let mut run_config = engine_config(&config, &cwd);
         run_config.registry = tool_registry(&cwd, &skills, active_skills);
-        run_config.pre_tool_hook =
-            Some(build_pre_tool_hook(id.clone(), cwd, Arc::clone(state)));
+        run_config.pre_tool_hook = Some(build_pre_tool_hook(
+            id.clone(),
+            cwd.clone(),
+            Arc::clone(state),
+        ));
         let mut staged_intents_for_turn: Option<
             crate::publish_tool::StagedIntentLog,
         > = None;
@@ -1843,6 +1969,11 @@ impl Harness {
             );
         }
         run_config.system = append_skill_listing(&run_config.system, &skills);
+        self.settle_finishing_workspace_lease(&engine, &cwd);
+        let mut workspace_lease = state
+            .workspace_locks
+            .try_acquire(&cwd, WorkspaceAccessMode::Write, &id)
+            .ok_or("notice.agent_busy")?;
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -1922,7 +2053,7 @@ impl Harness {
         let turn_done_signal = if let Some(claim) = pending_claim {
             let hb = claim.heartbeat_cancel.clone();
             let receipt_id = claim.receipt_id.clone();
-            *lock(&state.accepted_claim) = Some(claim);
+            lock(&state.active_claims).insert(receipt_id.clone(), claim);
             state.push_update(AgentUpdate::Receipt {
                 id: receipt_id,
                 state: ReceiptState::Running,
@@ -2030,20 +2161,21 @@ impl Harness {
                     }
                 }
             }
+            // Release the directory lease strictly AFTER `turn.await` and
+            // artifact capture / staged-intent cleanup, and strictly BEFORE
+            // acquiring `accept_drain -> dispatch` (`finish_accepted_if_owned`),
+            // `queue.complete`, `kick_autonomous_drain`, or `generate_title`.
+            // This eliminates `_dispatch` lock-order inversion and unblocks
+            // back-to-back submits / same-workspace peers immediately.
+            workspace_lease.release();
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
                 // PendingCard::ToolApproval is durably persisted in
                 // `history.json`. Complete the AcceptanceQueue receipt (matching
                 // the Disambiguation handoff) so 30s lease expiry or a later
                 // `DenyTool` never causes autonomous_drain to re-run this prompt.
-                let claim = {
-                    let mut slot = lock(&state.accepted_claim);
-                    if slot.as_ref().is_some_and(|c| c.session_id == id) {
-                        slot.take()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(claim) = claim {
+                let matching_claims =
+                    take_session_claims(&state.active_claims, &id);
+                for claim in matching_claims {
                     claim.heartbeat_cancel.cancel();
                     let queue = AcceptanceQueue::new(state.root.clone());
                     if queue
@@ -2087,7 +2219,7 @@ impl Harness {
                 // for user OverrideDeliver / RetryDelivery — settle the queue
                 // receipt instead of re-running the entire prompt 10x. Never
                 // mark `LoopOutcome::Aborted` as Completed: host cancellations
-                // already cleared `accepted_claim` as Cancelled, while provider
+                // already cleared `active_claims` as Cancelled, while provider
                 // stream aborts must release for retry instead of completing.
                 let completed = matches!(outcome, Ok(LoopOutcome::Completed))
                     || live_delivery_failed
@@ -2221,6 +2353,25 @@ impl Harness {
         let origin = lock(&self.state.origin_for_new_sessions).clone();
         self.create_session_inner(origin, workspace, true)
     }
+}
+
+/// Remove and return all active receipt claims targeting `session_id`.
+fn take_session_claims(
+    claims: &Mutex<HashMap<String, AcceptedClaim>>,
+    session_id: &str,
+) -> Vec<AcceptedClaim> {
+    let mut map = lock(claims);
+    let mut removed = Vec::new();
+    map.retain(|_, claim| {
+        if claim.session_id == session_id {
+            removed.push(claim.clone());
+            false
+        } else {
+            true
+        }
+    });
+    drop(map);
+    removed
 }
 
 /// Internal sentinel returned when a receipt was cancelled/superseded between

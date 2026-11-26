@@ -5,9 +5,10 @@ use super::AcceptedSubmitHook;
 use super::{
     ACCEPTED_MAX_ATTEMPTS, ACCEPTED_RELEASE_BASE_MS, ACCEPTED_RELEASE_MAX_MS,
     AcceptanceQueue, AcceptedClaim, AcceptedMessage, AcceptedRun, AgentHandle,
-    AgentUpdate, Arc, ArtifactStore, CancelToken, Engine, Harness, Ordering,
-    Path, RECEIPT_SUPERSEDED_ERR, ReceiptState, TurnStatus, UiState, lock,
-    now_ms, submission_committed_in_session,
+    AgentUpdate, Arc, ArtifactStore, CancelToken, Engine, Harness, HashMap,
+    Live, Ordering, Path, RECEIPT_SUPERSEDED_ERR, ReceiptState, TurnStatus,
+    UiState, WorkspaceAccessMode, lock, now_ms,
+    submission_committed_in_session,
 };
 
 impl AgentHandle {
@@ -168,30 +169,100 @@ impl AgentHandle {
         self.inner.has_active_claim()
     }
 
-    /// Status of the session that owns the active receipt claim, independent of
-    /// whichever session the user is currently viewing.
+    /// Number of durable acceptance receipts currently claimed and executing.
+    #[must_use]
+    pub fn active_claim_count(&self) -> usize {
+        self.inner.active_claim_count()
+    }
+
+    /// Sorted session IDs currently owned by active acceptance claims.
+    #[must_use]
+    pub fn active_claimed_session_ids(&self) -> Vec<String> {
+        self.inner.active_claimed_session_ids()
+    }
+
+    /// Configured concurrency ceiling for simultaneous acceptance runs.
+    #[must_use]
+    pub fn max_concurrent_works(&self) -> usize {
+        self.inner.max_concurrent_works()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_concurrent_works_for_test(&self, limit: usize) {
+        self.inner
+            .state
+            .max_concurrent_works
+            .store(limit.max(1), Ordering::Release);
+    }
+
+    /// Status of the primary session that owns an active receipt claim,
+    /// independent of whichever session the user is currently viewing.
     #[must_use]
     pub fn claimed_session_status(&self) -> Option<TurnStatus> {
-        let session_id = lock(&self.inner.state.accepted_claim)
-            .as_ref()
-            .map(|claim| claim.session_id.clone())?;
-        lock(&self.inner.state.live)
-            .get(&session_id)
+        let live = lock(&self.inner.state.live);
+        let claim = {
+            let claims = lock(&self.inner.state.active_claims);
+            select_primary_claim_locked(&live, &claims)
+        }?;
+        live.get(&claim.session_id)
             .map(|session| session.status.clone())
     }
 
-    /// The attempt number of the receipt currently claimed, if any.
+    /// The attempt number of the primary receipt currently claimed, if any.
     #[must_use]
     pub fn accepted_attempts(&self) -> Option<u32> {
-        lock(&self.inner.state.accepted_claim)
-            .as_ref()
-            .map(|claim| claim.attempts)
+        self.inner.primary_claim().map(|claim| claim.attempts)
     }
 }
 
 impl Harness {
     pub(super) fn has_active_claim(&self) -> bool {
-        lock(&self.state.accepted_claim).is_some()
+        !lock(&self.state.active_claims).is_empty()
+    }
+
+    pub(super) fn active_claim_count(&self) -> usize {
+        lock(&self.state.active_claims).len()
+    }
+
+    pub(super) fn active_claimed_session_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = lock(&self.state.active_claims)
+            .values()
+            .map(|claim| claim.session_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    pub(super) fn max_concurrent_works(&self) -> usize {
+        self.state
+            .max_concurrent_works
+            .load(Ordering::Acquire)
+            .max(1)
+    }
+
+    fn primary_claim(&self) -> Option<AcceptedClaim> {
+        // Lock order: `live` -> leaf lock `active_claims`.
+        let live = lock(&self.state.live);
+        let claims = lock(&self.state.active_claims);
+        select_primary_claim_locked(&live, &claims)
+    }
+
+    fn is_receipt_workspace_locked(&self, receipt: &AcceptedMessage) -> bool {
+        let Some(sid) = receipt
+            .target_session_id
+            .as_deref()
+            .or(receipt.session_hint.as_deref())
+        else {
+            // Unbound receipts create a brand-new isolated Home workspace.
+            return false;
+        };
+        let Some(cwd) = self.session_workspace_path(sid) else {
+            return false;
+        };
+        self.state
+            .workspace_locks
+            .is_locked_for(&cwd, WorkspaceAccessMode::Write)
     }
 
     pub(super) fn run_accepted_once(
@@ -199,8 +270,7 @@ impl Harness {
     ) -> Result<Option<AcceptedRun>, &'static str> {
         let _drain = lock(&self.state.accept_drain);
         if !self.can_run_turns()
-            || self.has_active_claim()
-            || self.has_busy_session()
+            || self.in_flight_work_count() >= self.max_concurrent_works()
         {
             return Ok(None);
         }
@@ -229,11 +299,13 @@ impl Harness {
                 match target {
                     // A receipt belongs to the session it was bound/submitted
                     // from. While that session is running, reaping after cancel,
-                    // or parked in WaitingForUser, wait for it instead of taking
-                    // the receipt and inflating its attempt count.
+                    // parked in WaitingForUser, or its workspace directory is
+                    // exclusively locked by another turn, skip it cleanly
+                    // without inflating its attempt count or blocking free peers.
                     Some(sid) => {
                         !self.is_session_busy_or_active(sid)
                             && !self.is_session_waiting_for_user(sid)
+                            && !self.is_receipt_workspace_locked(receipt)
                     }
                     None => true,
                 }
@@ -262,11 +334,19 @@ impl Harness {
             Some(target) if lock(&state.live).contains_key(target) => {
                 if self.is_session_busy_or_active(target)
                     || self.is_session_waiting_for_user(target)
+                    || self.is_receipt_workspace_locked(&claimed)
                 {
                     // Lost the race after selection: wait with 0 ms backoff,
-                    // do not fork.
-                    let _ =
-                        queue.release(&claimed.id, &attempt_id, now_ms(), 0);
+                    // do not fork or write an unnecessary bind.
+                    if queue
+                        .release(&claimed.id, &attempt_id, now_ms(), 0)
+                        .unwrap_or(false)
+                    {
+                        state.push_update(AgentUpdate::Receipt {
+                            id: claimed.id,
+                            state: ReceiptState::Queued,
+                        });
+                    }
                     return Ok(None);
                 }
                 target.to_owned()
@@ -331,9 +411,10 @@ impl Harness {
             heartbeat_cancel: heartbeat_cancel.clone(),
         };
         // `submit_message_targeted` re-checks receipt liveness inside
-        // `dispatch`, starts the engine, transitions `live[session].status` to
-        // `Running`, and only then publishes `accepted_claim` +
-        // `AgentUpdate::Receipt(Running)` — closing both TOCTOU windows.
+        // `dispatch`, acquires the directory workspace lease, starts the
+        // engine, transitions `live[session].status` to `Running`, and only
+        // then publishes `active_claims` + `AgentUpdate::Receipt(Running)` —
+        // closing all TOCTOU windows.
         if let Err(error) = self.submit_message_targeted(
             Some(&session),
             &claimed.text,
@@ -448,16 +529,23 @@ impl Harness {
     ) -> Result<bool, &'static str> {
         let _drain = lock(&self.state.accept_drain);
         let _dispatch = lock(&self.state.dispatch);
-        let claim = lock(&self.state.accepted_claim).clone();
+        let claim = if let Some(session_id) = expected_session {
+            let Some(submission_id) = expected_submission else {
+                return Ok(false);
+            };
+            lock(&self.state.active_claims)
+                .values()
+                .find(|claim| {
+                    claim.session_id == session_id
+                        && claim.submission_id == submission_id
+                })
+                .cloned()
+        } else {
+            self.primary_claim()
+        };
         let Some(claim) = claim else {
             return Ok(false);
         };
-        if let Some(session_id) = expected_session
-            && (claim.session_id != session_id
-                || expected_submission != Some(claim.submission_id.as_str()))
-        {
-            return Ok(false);
-        }
         let queue = AcceptanceQueue::new(self.state.root.clone());
         let now = now_ms();
         let gave_up = !completed && claim.attempts >= ACCEPTED_MAX_ATTEMPTS;
@@ -484,12 +572,11 @@ impl Harness {
             Ok(applied) => {
                 claim.heartbeat_cancel.cancel();
                 {
-                    let mut slot = lock(&self.state.accepted_claim);
-                    if slot.as_ref().is_some_and(|current| {
-                        current.receipt_id == claim.receipt_id
-                            && current.attempt_id == claim.attempt_id
+                    let mut claims = lock(&self.state.active_claims);
+                    if claims.get(&claim.receipt_id).is_some_and(|current| {
+                        current.attempt_id == claim.attempt_id
                     }) {
-                        *slot = None;
+                        claims.remove(&claim.receipt_id);
                     }
                 }
                 if applied {
@@ -549,19 +636,29 @@ impl Harness {
             if !harness.state.autonomous_drain.load(Ordering::Acquire) {
                 return;
             }
-            let needs_wakeup = match harness.run_accepted_once() {
-                Ok(Some(_)) => !harness.has_active_claim(),
-                Ok(None) => true,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "flowy.acceptance",
-                        error,
-                        "autonomous drain could not start next receipt"
-                    );
-                    true
+            let max_slots = harness.max_concurrent_works();
+            // Fill all currently available concurrency slots in a single pass
+            // while bounding iterations in case multiple receipts immediately
+            // settle (e.g. disambiguation cards) without occupying a slot.
+            let max_passes = max_slots.saturating_add(16);
+            for _ in 0..max_passes {
+                if harness.in_flight_work_count() >= max_slots {
+                    break;
                 }
-            };
-            if !needs_wakeup {
+                match harness.run_accepted_once() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "flowy.acceptance",
+                            error,
+                            "autonomous drain could not start next receipt"
+                        );
+                        break;
+                    }
+                }
+            }
+            if harness.in_flight_work_count() >= max_slots {
                 return;
             }
             let delay_ms = harness.next_autonomous_wakeup_delay_ms();
@@ -624,33 +721,56 @@ impl Harness {
         if !self.can_run_turns() {
             return None;
         }
-        let live_busy = lock(&self.state.live)
-            .values()
-            .any(|session| session.status.is_busy());
-        if self.has_active_claim() || live_busy {
-            // A running turn will call `kick_autonomous_drain` upon completion.
+        if self.in_flight_work_count() >= self.max_concurrent_works() {
+            // Every concurrency slot is occupied; a finishing turn will call
+            // `kick_autonomous_drain` upon completion.
             return None;
         }
-        let engine_reaping = lock(&self.engine)
-            .clone()
-            .is_some_and(|engine| !engine.active_session_ids().is_empty());
+        let engine = lock(&self.engine).clone();
+        let active_claim_ids: std::collections::HashSet<String> =
+            lock(&self.state.active_claims).keys().cloned().collect();
+        let has_workspace_locks = !self.state.workspace_locks.is_empty();
         let now = now_ms();
         let receipts =
             AcceptanceQueue::new(self.state.root.clone()).all().ok()?;
+        let mut any_reaping_target = false;
         let next_ready = receipts
             .into_iter()
             .filter(|r| {
-                !r.dead
-                    && !r.cancelled
-                    && !r.quarantined
-                    && r.completed_at_ms.is_none()
-                    && !r
-                        .target_session_id
-                        .as_deref()
-                        .or(r.session_hint.as_deref())
-                        .is_some_and(|sid| {
-                            self.is_session_waiting_for_user(sid)
-                        })
+                if r.dead
+                    || r.cancelled
+                    || r.quarantined
+                    || r.completed_at_ms.is_some()
+                    || active_claim_ids.contains(&r.id)
+                {
+                    return false;
+                }
+                let target = r
+                    .target_session_id
+                    .as_deref()
+                    .or(r.session_hint.as_deref());
+                if let Some(sid) = target {
+                    if self.is_session_waiting_for_user(sid) {
+                        return false;
+                    }
+                    let live_busy = lock(&self.state.live)
+                        .get(sid)
+                        .is_some_and(|session| session.status.is_busy());
+                    if live_busy {
+                        // That session's own turn will kick drain upon exit.
+                        return false;
+                    }
+                    if engine.as_ref().is_some_and(|eng| eng.is_active(sid)) {
+                        any_reaping_target = true;
+                        return true;
+                    }
+                }
+                if has_workspace_locks && self.is_receipt_workspace_locked(r) {
+                    // Directory write lock is held by a running turn; its drop
+                    // calls `kick_autonomous_drain` immediately.
+                    return false;
+                }
+                true
             })
             .map(|r| {
                 let avail = r.available_at_ms.unwrap_or(0);
@@ -658,12 +778,34 @@ impl Harness {
                 avail.max(lease_exp)
             })
             .min()?;
-        if engine_reaping || next_ready <= now {
+        if any_reaping_target || next_ready <= now {
             Some(30)
         } else {
             Some(next_ready.saturating_sub(now).clamp(20, 30_000))
         }
     }
+}
+
+fn select_primary_claim_locked(
+    live: &HashMap<String, Live>,
+    claims: &HashMap<String, AcceptedClaim>,
+) -> Option<AcceptedClaim> {
+    if claims.is_empty() {
+        return None;
+    }
+    claims
+        .values()
+        .filter(|claim| {
+            live.get(&claim.session_id)
+                .is_none_or(|session| !session.status.is_busy())
+        })
+        .min_by(|a, b| a.receipt_id.cmp(&b.receipt_id))
+        .or_else(|| {
+            claims
+                .values()
+                .min_by(|a, b| a.receipt_id.cmp(&b.receipt_id))
+        })
+        .cloned()
 }
 
 fn settle_and_notify_failed_attempt(
