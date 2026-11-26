@@ -126,7 +126,35 @@ impl LibraryItem {
                 .trim_start_matches('.')
                 .to_ascii_lowercase()
                 .as_str(),
-            "jpg" | "jpeg" | "png" | "webp" | "pdf" | "pptx"
+            "jpg"
+                | "jpeg"
+                | "png"
+                | "webp"
+                | "pdf"
+                | "pptx"
+                | "md"
+                | "markdown"
+                | "txt"
+                | "log"
+                | "csv"
+                | "tsv"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "xml"
+                | "html"
+                | "htm"
+                | "css"
+                | "js"
+                | "ts"
+                | "tsx"
+                | "jsx"
+                | "py"
+                | "rs"
+                | "sql"
+                | "sh"
+                | "ps1"
         )
     }
 
@@ -416,5 +444,29 @@ mod tests {
         assert_eq!(known.availability, ArtifactAvailability::Available);
         assert!(records.iter().all(|item| item.source_session_id.is_empty()));
         assert_eq!(LibraryModel::default().items.len(), 0);
+    }
+
+    #[test]
+    fn inline_preview_supported_covers_images_docs_tables_and_code() {
+        let mut record = item("doc", "notes.md", Category::Document, "12:00");
+        for ext in [
+            "jpg", "jpeg", "png", "webp", "pdf", "pptx", "md", "markdown",
+            "txt", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "xml",
+            "html", "htm", "css", "js", "ts", "tsx", "jsx", "py", "rs", "sql",
+            "sh", "ps1", ".MD", "Csv",
+        ] {
+            record.extension = ext.into();
+            assert!(
+                record.inline_preview_supported(),
+                "{ext} should be inline previewable"
+            );
+        }
+        for ext in ["", "zip", "exe", "bin", "mp4", "docx"] {
+            record.extension = ext.into();
+            assert!(
+                !record.inline_preview_supported(),
+                "{ext} should not claim inline preview"
+            );
+        }
     }
 }

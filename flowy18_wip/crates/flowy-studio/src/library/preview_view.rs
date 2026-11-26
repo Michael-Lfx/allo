@@ -544,9 +544,12 @@ impl Render for PreviewPanel {
             f32::from(frame.width).max(200.) - 32.,
             (f32::from(frame.height) - 180.).max(100.),
         );
+        let paginated =
+            self.document.as_ref().is_some_and(|doc| doc.is_paginated());
         let dims = self
             .document
             .as_ref()
+            .filter(|doc| doc.is_paginated())
             .and_then(|doc| doc.dims.get(self.page))
             .copied();
         if let Some((w, h)) = dims {
@@ -684,7 +687,7 @@ impl Render for PreviewPanel {
             .min_h_0()
             .min_w_0()
             .bg(t.soft());
-        if self.document.is_none() {
+        if !paginated {
             body = body.rounded_b(t.modal_radius());
         }
         if let Some(error) = self.error {
@@ -755,6 +758,59 @@ impl Render for PreviewPanel {
                             .h(px(h))
                             .object_fit(gpui::ObjectFit::Contain),
                     ),
+            );
+        } else if let Some(src) =
+            self.document.as_ref().and_then(|doc| doc.markdown_source())
+        {
+            body = body.child(
+                div().w_full().p(px(16.)).child(
+                    div()
+                        .id("preview-markdown")
+                        .debug_selector(|| "preview-markdown".to_owned())
+                        .w_full()
+                        .p(px(20.))
+                        .rounded_lg()
+                        .bg(t.card())
+                        .border_1()
+                        .border_color(t.line())
+                        .text_color(t.ink())
+                        .child(crate::markdown::render(src, t, &self.i18n)),
+                ),
+            );
+        } else if let Some(table) =
+            self.document.as_ref().and_then(|doc| doc.table_data())
+        {
+            body = body.child(
+                div()
+                    .w_full()
+                    .p(px(16.))
+                    .child(render_table_preview(table, t)),
+            );
+        } else if let Some(text) =
+            self.document.as_ref().and_then(|doc| doc.code_text())
+        {
+            let mono = if cfg!(target_os = "windows") {
+                "Consolas"
+            } else {
+                "monospace"
+            };
+            body = body.child(
+                div().w_full().p(px(16.)).child(
+                    div()
+                        .id("preview-code")
+                        .debug_selector(|| "preview-code".to_owned())
+                        .w_full()
+                        .p(px(16.))
+                        .rounded_lg()
+                        .bg(t.card())
+                        .border_1()
+                        .border_color(t.line())
+                        .font_family(mono)
+                        .text_xs()
+                        .text_color(t.ink())
+                        .whitespace_normal()
+                        .child(text.to_owned()),
+                ),
             );
         } else {
             body = body.child(
@@ -834,10 +890,117 @@ impl Render for PreviewPanel {
             )
         })
         .child(body)
-        .when(self.document.is_some(), |dialog| {
-            dialog.child(self.controls(window, cx))
-        })
+        .when(paginated, |dialog| dialog.child(self.controls(window, cx)))
     }
+}
+
+fn table_cell_units(text: &str) -> usize {
+    text.lines()
+        .map(|line| {
+            line.chars()
+                .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn render_table_preview(
+    table: preview::TablePreview<'_>,
+    t: ui::ResolvedTheme,
+) -> gpui::Stateful<gpui::Div> {
+    let preview::TablePreview {
+        headers,
+        rows,
+        truncated_rows,
+    } = table;
+    let col_count = headers
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    let mut col_widths = vec![80.0_f32; col_count];
+    for (col, width) in col_widths.iter_mut().enumerate() {
+        let mut max_units = headers.get(col).map_or(0, |s| table_cell_units(s));
+        for row in rows {
+            if let Some(cell) = row.get(col) {
+                max_units = max_units.max(table_cell_units(cell));
+            }
+        }
+        *width = (max_units as f32).mul_add(8., 24.).clamp(80., 260.);
+    }
+    let table_rows = div()
+        .flex()
+        .flex_col()
+        .when(!headers.is_empty(), |col| {
+            col.child(
+                div()
+                    .flex()
+                    .bg(t.soft())
+                    .border_b_1()
+                    .border_color(t.line())
+                    .children((0..col_count).map(|c| {
+                        div()
+                            .w(px(col_widths[c]))
+                            .flex_none()
+                            .px(px(10.))
+                            .py(px(6.))
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(t.ink())
+                            .whitespace_normal()
+                            .when(c + 1 < col_count, |cell| {
+                                cell.border_r_1().border_color(t.line())
+                            })
+                            .child(headers.get(c).cloned().unwrap_or_default())
+                    })),
+            )
+        })
+        .children(rows.iter().enumerate().map(|(row_idx, row)| {
+            div()
+                .flex()
+                .when(row_idx + 1 < rows.len() || truncated_rows, |el| {
+                    el.border_b_1().border_color(t.line())
+                })
+                .children((0..col_count).map(|c| {
+                    div()
+                        .w(px(col_widths[c]))
+                        .flex_none()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .text_xs()
+                        .text_color(t.ink())
+                        .whitespace_normal()
+                        .when(c + 1 < col_count, |cell| {
+                            cell.border_r_1().border_color(t.line())
+                        })
+                        .child(row.get(c).cloned().unwrap_or_default())
+                }))
+        }))
+        .when(truncated_rows, |col| {
+            col.child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_xs()
+                    .text_color(t.muted())
+                    .child("…"),
+            )
+        });
+    div()
+        .id("preview-table")
+        .debug_selector(|| "preview-table".to_owned())
+        .w_full()
+        .rounded_lg()
+        .bg(t.card())
+        .border_1()
+        .border_color(t.line())
+        .overflow_hidden()
+        .child(
+            div()
+                .id("preview-table-scroll")
+                .w_full()
+                .overflow_x_scroll()
+                .child(table_rows),
+        )
 }
 
 fn raster_bytes(image: &RenderImage) -> usize {
@@ -1046,6 +1209,142 @@ mod tests {
                 panel.cache.keys().copied().collect::<Vec<_>>(),
                 [(2, 2)]
             );
+        });
+    }
+
+    fn open_panel_with_bytes<'a>(
+        cx: &'a mut TestAppContext,
+        extension: &str,
+        bytes: Vec<u8>,
+    ) -> (Entity<PreviewPanel>, &'a mut VisualTestContext) {
+        let ext = extension.to_owned();
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(ui::ThemeOptions::default(), false, cx);
+            PreviewPanel::new(
+                LibraryItem {
+                    id: format!("preview-{ext}"),
+                    title: format!("sample.{ext}"),
+                    original_name: format!("sample.{ext}"),
+                    description: String::new(),
+                    category: super::super::Category::Document,
+                    date: String::new(),
+                    time: String::new(),
+                    pending: false,
+                    preview: None,
+                    size_bytes: None,
+                    extension: ext.clone(),
+                    media_type: None,
+                    delivered_at_ms: 0,
+                    delivered_date: String::new(),
+                    delivered_time: String::new(),
+                    source_session_id: "session".into(),
+                    source_title: "Preview test".into(),
+                    source_deleted: false,
+                    source_unavailable: false,
+                    favorite: false,
+                    availability: ArtifactAvailability::Available,
+                    override_used: false,
+                },
+                1,
+                I18n::embedded("Flowy"),
+                ui,
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.set_bytes(1, Ok(bytes), cx);
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        cx.run_until_parked();
+        (panel, cx)
+    }
+
+    #[gpui::test]
+    fn markdown_preview_renders_without_pagination_footer(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, cx) = open_panel_with_bytes(
+            cx,
+            "md",
+            b"# Title\n\n- [x] Done\n\n~~old~~".to_vec(),
+        );
+        cx.read_entity(&panel, |panel, _| {
+            let doc = panel.document.as_ref().unwrap();
+            assert!(!doc.is_paginated());
+            assert!(doc.markdown_source().is_some());
+            assert!(panel.render_task.is_none());
+            assert!(panel.cache.is_empty());
+        });
+        assert!(cx.debug_bounds("preview-markdown").is_some());
+        assert!(cx.debug_bounds("preview-zoom-in").is_none());
+    }
+
+    #[gpui::test]
+    fn csv_and_tsv_preview_render_table_without_pagination_footer(
+        cx: &mut TestAppContext,
+    ) {
+        {
+            let (panel, cx) = open_panel_with_bytes(
+                cx,
+                "csv",
+                "\u{feff}name,note\r\n\"Alice, B.\",\"line1\n\"\"ok\"\"\"\r\n中文,42\r\n"
+                    .as_bytes()
+                    .to_vec(),
+            );
+            cx.read_entity(&panel, |panel, _| {
+                let doc = panel.document.as_ref().unwrap();
+                assert!(!doc.is_paginated());
+                let table = doc.table_data().unwrap();
+                assert_eq!(table.headers, ["name", "note"]);
+                assert_eq!(table.rows.len(), 2);
+                assert!(!table.truncated_rows);
+            });
+            assert!(cx.debug_bounds("preview-table").is_some());
+            assert!(cx.debug_bounds("preview-zoom-in").is_none());
+        }
+        let (panel, cx) =
+            open_panel_with_bytes(cx, "tsv", b"a\tb\n1\t2\n".to_vec());
+        cx.read_entity(&panel, |panel, _| {
+            let doc = panel.document.as_ref().unwrap();
+            let table = doc.table_data().unwrap();
+            assert_eq!(table.headers, ["a", "b"]);
+            assert_eq!(table.rows, vec![vec!["1", "2"]]);
+        });
+        assert!(cx.debug_bounds("preview-table").is_some());
+    }
+
+    #[gpui::test]
+    fn code_json_and_error_guards_render_cleanly(cx: &mut TestAppContext) {
+        {
+            let (panel, cx) =
+                open_panel_with_bytes(cx, "json", b"{\"hello\":true}".to_vec());
+            cx.read_entity(&panel, |panel, _| {
+                let doc = panel.document.as_ref().unwrap();
+                assert!(!doc.is_paginated());
+                assert!(doc.code_text().unwrap().contains('\n'));
+            });
+            assert!(cx.debug_bounds("preview-code").is_some());
+            assert!(cx.debug_bounds("preview-zoom-in").is_none());
+        }
+        {
+            let (panel, cx) =
+                open_panel_with_bytes(cx, "txt", b"bad\0binary".to_vec());
+            cx.read_entity(&panel, |panel, _| {
+                assert!(panel.document.is_none());
+                assert_eq!(panel.error, Some("library.error.unsupported"));
+            });
+        }
+        let (panel, cx) =
+            open_panel_with_bytes(cx, "rs", vec![b'x'; 1024 * 1024 + 1]);
+        cx.read_entity(&panel, |panel, _| {
+            assert!(panel.document.is_none());
+            assert_eq!(panel.error, Some("library.error.large"));
         });
     }
 }

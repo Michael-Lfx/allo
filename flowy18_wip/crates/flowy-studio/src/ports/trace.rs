@@ -78,7 +78,7 @@ pub fn collect_session_traces(
                     push(
                         TraceLevel::Error,
                         "tool_error",
-                        clip_label(text, 180),
+                        clip_error_tail(text, 120),
                     );
                 }
                 ChatLine::Verification {
@@ -451,6 +451,30 @@ fn push_redacted_segment(
     push_bounded(out, &path_safe);
 }
 
+/// Retains the final non-empty trimmed line of an error payload, keeping its
+/// trailing `max_chars` Unicode scalar values prefixed with `…` when longer.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "explicit crate-visible helper inside private trace module"
+)]
+pub(crate) fn clip_error_tail(raw: &str, max_chars: usize) -> String {
+    let last = raw
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if last.is_empty() || max_chars == 0 {
+        return String::new();
+    }
+    let count = last.chars().count();
+    if count <= max_chars {
+        return last.to_owned();
+    }
+    let tail: String = last.chars().skip(count - max_chars).collect();
+    format!("\u{2026}{tail}")
+}
+
 /// Masks secret tokens and clamps payload length before displaying or exporting trace text.
 ///
 /// Handles compact/spaced JSON key-value pairs, URL credentials/query/fragment
@@ -629,5 +653,33 @@ mod tests {
         let giant_blob = "x".repeat(128 * 1024);
         let clamped = redact_trace_text(&giant_blob);
         assert!(clamped.len() <= MAX_TRACE_SUMMARY_BYTES + 4);
+    }
+
+    #[test]
+    fn clip_error_tail_extracts_root_cause_line_and_retains_utf8_tail() {
+        let python_tb = "Traceback (most recent call last):\n  File \"main.py\", line 12, in <module>\n    run()\nValueError: invalid port number   \n\n  ";
+        assert_eq!(
+            clip_error_tail(python_tb, 120),
+            "ValueError: invalid port number"
+        );
+
+        let rust_tb = "thread 'main' panicked at src/lib.rs:42:9:\nassertion `left == right` failed\n  left: 1\n right: 2\n";
+        assert_eq!(clip_error_tail(rust_tb, 120), "right: 2");
+
+        assert_eq!(clip_error_tail("", 120), "");
+        assert_eq!(clip_error_tail("   \n\t\r\n  ", 120), "");
+        assert_eq!(clip_error_tail("Error: boom", 0), "");
+
+        let long_ascii = format!("prefix: {}_TAIL_END", "a".repeat(150));
+        let clipped_ascii = clip_error_tail(&long_ascii, 120);
+        assert!(clipped_ascii.starts_with('\u{2026}'));
+        assert!(clipped_ascii.ends_with("_TAIL_END"));
+        assert_eq!(clipped_ascii.chars().count(), 121);
+
+        let long_cjk = format!("错误详情：{}核心失败原因", "字".repeat(130));
+        let clipped_cjk = clip_error_tail(&long_cjk, 120);
+        assert!(clipped_cjk.starts_with('\u{2026}'));
+        assert!(clipped_cjk.ends_with("核心失败原因"));
+        assert_eq!(clipped_cjk.chars().count(), 121);
     }
 }
