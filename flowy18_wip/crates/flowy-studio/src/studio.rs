@@ -296,9 +296,11 @@ impl crate::panel::StudioPanel {
                 .when(selected, |row| row.child(theme::icons::check()));
             let row_id = SharedString::from(format!("tier-{}", tier_key(tier)));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_selected(...)`: in
+                // accesskit_consumer 0.38, `is_invocable()` requires
+                // `is_selected().is_none()`, so setting either strips Windows
+                // UIA `InvokePattern` on `Role::Button`.
                 theme::interactive(row_id, label, &self.theme)
-                    .role(gpui::Role::MenuItemRadio)
-                    .aria_selected(selected)
                     .w_full()
                     .px(self.theme.space(12.))
                     .py(self.theme.space(8.))
@@ -331,19 +333,36 @@ impl crate::panel::StudioPanel {
         // The embedded font has no "↻" glyph, so draw the refresh icon as an
         // SVG instead of relying on a Unicode character.
         menu = menu.child(
-            theme::menu_item(
-                "refresh-cloud-models",
-                self.t("model.refresh"),
-                self.catalog_loading,
-                &self.theme,
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(crate::panel::StudioEvent::RefreshModels);
-                }),
-            )
-            .flex()
-            .items_center()
-            .gap(self.theme.space(6.))
-            .child(theme::icons::refresh_cw()),
+            div()
+                .mt(px(4.))
+                .pt(px(4.))
+                .border_t_1()
+                .border_color(self.theme.line())
+                .child(
+                    theme::menu_item(
+                        "refresh-cloud-models",
+                        self.t("model.refresh"),
+                        self.catalog_loading,
+                        &self.theme,
+                        cx.listener(|_, _, _, cx| {
+                            cx.emit(crate::panel::StudioEvent::RefreshModels);
+                        }),
+                    )
+                    .w_full()
+                    .px(self.theme.space(12.))
+                    .py(px(6.))
+                    .rounded_lg()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(6.))
+                    .child(
+                        theme::icons::refresh_cw()
+                            .size(px(12.))
+                            .text_color(self.theme.muted()),
+                    ),
+                ),
         );
         menu
     }

@@ -471,7 +471,7 @@
   "settings.mail": "Mail {product}",
   "settings.mailbox": "Buzón",
   "settings.manage": "Manage",
-  "settings.notify": "El navegador te avisa cuando una tarea te necesita.",
+  "settings.notify": "Mostrar una notificación de escritorio cuando una tarea te necesita.",
   "settings.personal_plan": "Personal",
   "settings.personalization": "Personalización",
   "settings.phone": "Teléfono",

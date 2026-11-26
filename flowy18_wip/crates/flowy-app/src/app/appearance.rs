@@ -125,13 +125,9 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let selected = self.prefs.theme == mode;
         let id = SharedString::from(format!("theme-{}", mode.key()));
+        // Omit `Role::RadioButton` and `.aria_toggled(...)` so
+        // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
         theme::interactive(id, self.t(mode.key()), &self.theme)
-            .role(gpui::Role::RadioButton)
-            .aria_toggled(if selected {
-                gpui::accesskit::Toggled::True
-            } else {
-                gpui::accesskit::Toggled::False
-            })
             .w(px(108.))
             .h(px(76.))
             .rounded_xl()
@@ -264,13 +260,9 @@ impl FlowyApp {
             let selected = self.prefs.accent == accent;
             let id = SharedString::from(format!("accent-{}", accent.key()));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
+                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, self.t(accent.key()), &self.theme)
-                    .role(gpui::Role::MenuItemRadio)
-                    .aria_toggled(if selected {
-                        gpui::accesskit::Toggled::True
-                    } else {
-                        gpui::accesskit::Toggled::False
-                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
@@ -315,13 +307,9 @@ impl FlowyApp {
             let selected = self.prefs.density == density;
             let id = SharedString::from(format!("density-{}", density.key()));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
+                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, self.t(density.key()), &self.theme)
-                    .role(gpui::Role::MenuItemRadio)
-                    .aria_toggled(if selected {
-                        gpui::accesskit::Toggled::True
-                    } else {
-                        gpui::accesskit::Toggled::False
-                    })
                     .px_3()
                     .py_1()
                     .rounded_md()

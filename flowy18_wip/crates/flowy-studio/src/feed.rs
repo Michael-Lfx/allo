@@ -29,6 +29,7 @@ pub struct ChatFeed {
     copied_row: Option<(u64, u64)>,
     copy_epoch: u64,
     history: ChatHistory,
+    suppress_trailing_stopped: bool,
     projection: Projection,
     expanded_turns: HashMap<String, HashSet<usize>>,
     theme: ResolvedTheme,
@@ -276,6 +277,7 @@ impl ChatFeed {
             copied_row: None,
             copy_epoch: 0,
             history: ChatHistory::default(),
+            suppress_trailing_stopped: false,
             projection: Projection::default(),
             expanded_turns: HashMap::new(),
             theme,
@@ -361,6 +363,13 @@ impl ChatFeed {
         self.row_focus.get(self.row_ids.get(row)?).cloned()
     }
 
+    pub(crate) const fn set_suppress_trailing_stopped(
+        &mut self,
+        suppress: bool,
+    ) {
+        self.suppress_trailing_stopped = suppress;
+    }
+
     pub(crate) fn sync_history(
         &mut self,
         session: Option<String>,
@@ -387,12 +396,29 @@ impl ChatFeed {
         cx: &mut Context<'_, Self>,
     ) {
         let name = session.as_deref().unwrap_or_default();
-        let projection = Projection::build_live(
+        let mut projection = Projection::build_live(
             &self.history.rows,
             self.history.streaming,
-            self.history.status == TurnStatus::Completed,
+            !self.history.status.is_busy(),
             self.expanded_turns.get(name),
         );
+        // When a detailed StopHandoffManifest card already surfaces "已停止"
+        // directly below the feed, omit the redundant trailing status row at
+        // projection time so no empty list item or padding row is emitted.
+        // Fast-cancels and restored stopped sessions without a manifest keep
+        // the trailing status row visible.
+        if self.suppress_trailing_stopped
+            && matches!(self.history.status, TurnStatus::Stopped)
+            && projection.source_rows.last().is_some_and(|&idx| {
+                matches!(
+                    self.history.rows.get(idx),
+                    Some(ChatLine::Status { text })
+                        if text == "chat.status_stopped"
+                )
+            })
+        {
+            projection.source_rows.pop();
+        }
         let changed = projection != self.projection;
         let remeasure: Vec<_> = self
             .projection
@@ -730,14 +756,7 @@ impl ChatFeed {
                 if m.live {
                     self.tf("chat.steps_live_summary", &[("count", &count)])
                 } else {
-                    let base = self
-                        .tf("chat.steps_done_summary", &[("count", &count)]);
-                    if m.duration_secs > 0 {
-                        let dur = self.format_duration_secs(m.duration_secs);
-                        format!("{base} \u{00b7} {dur}")
-                    } else {
-                        base
-                    }
+                    self.tf("chat.steps_done_summary", &[("count", &count)])
                 }
             },
         );
@@ -940,7 +959,9 @@ impl ChatFeed {
                             .text_sm()
                             .whitespace_normal()
                             .child(if is_streaming {
-                                div().child(text.clone())
+                                markdown::render_streaming(
+                                    text, self.theme, &self.i18n,
+                                )
                             } else {
                                 markdown::render(text, self.theme, &self.i18n)
                             }),
@@ -2976,6 +2997,101 @@ mod tests {
     }
 
     #[gpui::test]
+    fn streaming_markdown_transition_keeps_row_identity_and_scroll_anchor(
+        cx: &mut TestAppContext,
+    ) {
+        let mut base_rows: Vec<ChatLine> = (0..60)
+            .map(|i| ChatLine::Assistant {
+                text: format!("Earlier reply {i}"),
+            })
+            .collect();
+        base_rows.push(ChatLine::User {
+            text: "Build a launch page".into(),
+        });
+        base_rows.push(ChatLine::Assistant {
+            text: "**Working** on it\n```html\n<main>draft".into(),
+        });
+
+        let initial_rows = base_rows.clone();
+        let tail_ix = initial_rows.len() - 1;
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed = ChatFeed::new(
+                ui,
+                I18n::embedded("Flowy"),
+                Some("stream-md".into()),
+                cx,
+            );
+            feed.sync_history(
+                Some("stream-md".into()),
+                ChatHistory {
+                    rows: initial_rows,
+                    streaming: Some(tail_ix),
+                    status: TurnStatus::Running,
+                },
+                cx,
+            );
+            feed
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // User scrolls up away from the streaming tail to read earlier history.
+        cx.update(|_, cx| {
+            feed.update(cx, |feed, cx| {
+                feed.list.scroll_to(ListOffset {
+                    item_ix: 12,
+                    offset_in_item: px(4.),
+                });
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let streaming_ids =
+            cx.read_entity(&feed, |feed, _| feed.row_ids.clone());
+        assert!(
+            cx.read_entity(&feed, |feed, _| feed
+                .projection
+                .streaming
+                .is_some()),
+            "tail row should be projected as streaming"
+        );
+
+        // Stream finishes and closes the code fence: row identity and scrolled-away
+        // anchor must remain untouched when transitioning from render_streaming
+        // to full markdown::render.
+        let mut finished_rows = base_rows;
+        *finished_rows.last_mut().unwrap() = ChatLine::Assistant {
+            text: "**Done** building\n```html\n<main>final</main>\n```".into(),
+        };
+        cx.update(|_, cx| {
+            feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some("stream-md".into()),
+                    ChatHistory {
+                        rows: finished_rows,
+                        streaming: None,
+                        status: TurnStatus::Idle,
+                    },
+                    cx,
+                );
+                assert_eq!(feed.row_ids, streaming_ids);
+                assert_eq!(feed.list.logical_scroll_top().item_ix, 12);
+                assert_eq!(
+                    feed.list.logical_scroll_top().offset_in_item,
+                    px(4.)
+                );
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.read_entity(&feed, |feed, _| {
+            assert!(feed.projection.streaming.is_none());
+            assert_eq!(feed.list.logical_scroll_top().item_ix, 12);
+            assert_eq!(feed.list.logical_scroll_top().offset_in_item, px(4.));
+        });
+    }
+
+    #[gpui::test]
     fn verification_card_renders_four_codes_hides_default_save_and_requires_checkbox(
         cx: &mut TestAppContext,
     ) {
@@ -3186,5 +3302,61 @@ mod tests {
             cx.debug_bounds("chat-verify-semantic-hint").is_some(),
             "L3 semantic hint must remain visible on collapsed passed cards"
         );
+    }
+
+    #[gpui::test]
+    fn trailing_stopped_row_suppressed_only_when_handoff_manifest_present(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let stopped_history = || ChatHistory {
+            rows: vec![
+                ChatLine::User {
+                    text: "stop me".into(),
+                },
+                ChatLine::Status {
+                    text: "chat.status_stopped".into(),
+                },
+            ],
+            status: TurnStatus::Stopped,
+            streaming: None,
+        };
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            ChatFeed::new(ui, i18n.clone(), Some("s-stop".into()), cx)
+        });
+
+        // Without a stop-handoff manifest, the stopped status row stays visible
+        // so fast cancels and restored sessions never look silent.
+        feed.update(cx, |feed, cx| {
+            feed.set_suppress_trailing_stopped(false);
+            feed.sync_history(Some("s-stop".into()), stopped_history(), cx);
+            assert_eq!(feed.lines.len(), 2);
+        });
+
+        // When a detailed stop-handoff card is visible right below the feed,
+        // projection omits the duplicate trailing row completely (zero empty row).
+        feed.update(cx, |feed, cx| {
+            feed.set_suppress_trailing_stopped(true);
+            feed.sync_history(Some("s-stop".into()), stopped_history(), cx);
+            assert_eq!(feed.lines.len(), 1);
+            assert!(matches!(feed.lines[0], ChatLine::User { .. }));
+        });
+
+        // Once a follow-up turn starts, historical stopped status stays in transcript.
+        feed.update(cx, |feed, cx| {
+            let mut next = stopped_history();
+            next.rows.push(ChatLine::User {
+                text: "continue".into(),
+            });
+            next.status = TurnStatus::Running;
+            feed.set_suppress_trailing_stopped(true);
+            feed.sync_history(Some("s-stop".into()), next, cx);
+            assert_eq!(feed.lines.len(), 3);
+            assert!(matches!(
+                &feed.lines[1],
+                ChatLine::Status { text } if text == "chat.status_stopped"
+            ));
+        });
     }
 }

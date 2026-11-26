@@ -14,7 +14,6 @@ pub struct Fold {
 pub struct FoldMeta {
     pub step_count: usize,
     pub live: bool,
-    pub duration_secs: u64,
     pub active_step: Option<String>,
 }
 
@@ -167,11 +166,10 @@ fn summarize_turn_process(
 ) -> FoldMeta {
     let mut primary_steps = 0usize;
     let mut fallback_results = 0usize;
-    let has_assistant = slice
-        .iter()
-        .any(|line| matches!(line, ChatLine::Assistant { .. }));
-    let mut live = turn_still_running && !has_assistant;
-    let mut duration_secs = 0u64;
+    // Keep the fold live for the entire busy turn even after intermediate
+    // assistant prose has flushed between tool calls; once the turn settles,
+    // stale `live`/`running` flags on interrupted rows must never pin it live.
+    let live = turn_still_running;
     let mut active_step: Option<String> = None;
 
     for line in slice {
@@ -179,19 +177,8 @@ fn summarize_turn_process(
             continue;
         }
         match line {
-            ChatLine::Reasoning {
-                text,
-                duration_secs: secs,
-                live: row_live,
-            } => {
+            ChatLine::Reasoning { .. } => {
                 primary_steps += 1;
-                duration_secs = duration_secs.saturating_add(*secs);
-                if *row_live {
-                    live = true;
-                    if let Some(snippet) = last_line_snippet(text, 44) {
-                        active_step = Some(snippet);
-                    }
-                }
             }
             ChatLine::ToolCall {
                 name,
@@ -200,8 +187,7 @@ fn summarize_turn_process(
                 ..
             } => {
                 primary_steps += 1;
-                if *running {
-                    live = true;
+                if turn_still_running && *running {
                     let summary = if target.trim().is_empty() {
                         name.clone()
                     } else {
@@ -233,7 +219,6 @@ fn summarize_turn_process(
     FoldMeta {
         step_count,
         live,
-        duration_secs,
         active_step,
     }
 }
@@ -389,5 +374,38 @@ mod tests {
         assert!(meta.live);
         assert_eq!(meta.step_count, 3);
         assert_eq!(meta.active_step.as_deref(), Some("verify_deck q3.pptx"));
+    }
+
+    #[test]
+    fn live_collapse_stays_live_after_intermediate_assistant_and_hides_cot_glimpse()
+     {
+        let lines = [
+            ChatLine::User {
+                text: "build landing page".into(),
+            },
+            ChatLine::Reasoning {
+                text: "I'll do a quick glob\n- Section A: unified".into(),
+                duration_secs: 4,
+                live: true,
+            },
+            ChatLine::ToolCall {
+                name: "glob".into(),
+                target: "*.html".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::Assistant {
+                text: "我先了解一下现有项目结构。".into(),
+            },
+        ];
+        // Turn is still running (`latest_completed == false`), even though an
+        // intermediate Assistant line flushed between tool steps.
+        let live = Projection::build_live(&lines, None, false, None);
+        let meta = &live.fold_meta[&1];
+        assert!(meta.live);
+        assert_eq!(meta.active_step, None);
+        // Once the turn settles (`latest_completed == true`), fold settles too.
+        let settled = Projection::build_live(&lines, None, true, None);
+        assert!(!settled.fold_meta[&1].live);
     }
 }

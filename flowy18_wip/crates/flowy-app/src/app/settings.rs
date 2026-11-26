@@ -226,12 +226,18 @@ impl FlowyApp {
             .border_r_1()
             .border_color(self.theme.line())
             .bg(self.theme.dock())
-            .child(self.profile_block(&name, &initial))
+            .child(self.profile_block(&name, &initial, cx))
             .child(self.settings_search(cx))
             .child(self.settings_links(&query, cx))
     }
 
-    fn profile_block(&self, name: &str, initial: &str) -> impl IntoElement {
+    fn profile_block(
+        &self,
+        name: &str,
+        initial: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let plan_key = self.studio.read(cx).plan.label_key();
         div()
             .px_4()
             .pt_4()
@@ -251,13 +257,14 @@ impl FlowyApp {
                             .text_size(self.theme.body_size())
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .truncate()
                             .child(name.to_string()),
                     )
                     .child(
                         div()
                             .text_size(self.theme.caption_size())
                             .text_color(self.theme.muted())
-                            .child(self.t("settings.personal_plan")),
+                            .child(self.t(plan_key)),
                     ),
             )
             .child(
@@ -338,13 +345,9 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let id = SharedString::from(format!("settings-{}", page.key()));
-        theme::interactive(id, label.clone(), &self.theme)
-            .role(gpui::Role::MenuItemRadio)
-            .aria_toggled(if selected {
-                gpui::accesskit::Toggled::True
-            } else {
-                gpui::accesskit::Toggled::False
-            })
+        // Omit `Role::MenuItemRadio`, `.aria_toggled(...)`, and `.aria_selected(...)`
+        // so `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
+        let link = theme::interactive(id, label.clone(), &self.theme)
             .mx_2()
             .px(self.theme.space(8.))
             .py(self.theme.space(4.))
@@ -362,7 +365,11 @@ impl FlowyApp {
                 app.settings.page = page;
                 app.settings.picker = Picker::None;
                 cx.notify();
-            }))
+            }));
+        #[cfg(test)]
+        let link =
+            link.debug_selector(move || format!("settings-nav-{}", page.key()));
+        link
     }
 
     fn settings_main(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -578,13 +585,9 @@ impl FlowyApp {
             let selected = self.i18n.locale() == locale;
             let id = SharedString::from(format!("locale-{}", locale.code()));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
+                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, locale.endonym(), &self.theme)
-                    .role(gpui::Role::MenuItemRadio)
-                    .aria_toggled(if selected {
-                        gpui::accesskit::Toggled::True
-                    } else {
-                        gpui::accesskit::Toggled::False
-                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
@@ -635,13 +638,9 @@ impl FlowyApp {
             let label = self.t(mode.key());
             let id = SharedString::from(format!("send-{}", mode.key()));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
+                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, label.clone(), &self.theme)
-                    .role(gpui::Role::MenuItemRadio)
-                    .aria_toggled(if selected {
-                        gpui::accesskit::Toggled::True
-                    } else {
-                        gpui::accesskit::Toggled::False
-                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
@@ -1004,6 +1003,7 @@ impl FlowyApp {
                             .text_size(self.theme.body_size())
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .truncate()
                             .child(value),
                     ),
             )
@@ -1146,4 +1146,38 @@ fn initial_mark(
             theme.body_size()
         })
         .child(initial.to_string())
+}
+
+#[cfg(test)]
+mod nav_click_tests {
+    use super::Page;
+    use crate::app::{FlowyApp, Screen, SessionStore};
+    use gpui::{AppContext as _, Modifiers, TestAppContext};
+
+    #[gpui::test]
+    fn clicking_settings_nav_link_switches_page(cx: &mut TestAppContext) {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-settings-nav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.screen = Screen::Main;
+                app.open_settings_page(Page::General, cx);
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let billing = cx
+            .debug_bounds("settings-nav-settings.billing")
+            .expect("billing nav link must render with bounds");
+        cx.simulate_click(billing.center(), Modifiers::none());
+        cx.run_until_parked();
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.settings.page, Page::Billing);
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

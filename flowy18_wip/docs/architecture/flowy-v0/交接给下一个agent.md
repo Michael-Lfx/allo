@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-26 修订 9.12 更新）**：**直接先读 §21（PR #497 已合入 `origin/main@eb30a4d21` + PR-2B `feat/flowy-router-ui` 修订 9.12 现役总账与 661/661 全量基线）**，再按需查 §19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§20 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §21 不一致处，**一律以 §21 为准**。
+> **现役唯一入口（2026-11-26 修订 9.13 更新）**：**直接先读 §22（PR #498 已合入 `origin/main@83a9aef16` + 修订 9.13 真云端 UX 收口与 669/669 全量基线）**，再按需查 §21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§21 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §22 不一致处，**一律以 §22 为准**。
 
 ---
 
@@ -723,3 +723,38 @@ cargo check --locked -p flowy-desktop                            # 0 error
 1. **合流 PR-2B（`feat/flowy-router-ui`）**：确认推送并合入 `main` 后，可按需在真实桌面再补 1 轮看板 Flowchart Modal 子 Worker 交互截图与 `FlowyPreview\flowy-app.exe` 刷新。
 2. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：按 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 在三端真机实测逃逸阻断后升级 `Enforced`。
 3. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。
+
+---
+
+## 22. 2026-11-26 现役最新总账（PR #498 已合入 `origin/main@83a9aef16` + 修订 9.13 真云端全链路 UX 修复与 669 基线）
+
+> **唯一最新真相（对应 `最终方案.md` 修订 9.13 §12.12 与 `证据.md` §11.40）**：PR #498（PR-2B Router UI）已合入 `origin/main@83a9aef16`；暖构建工作树 `.agents/worktrees/feat-flowy-local-receipt`（分支 `fix/flowy-live-cloud-ux-polish`）已完成零冲突线性 rebase、真云端全链路 8 项 UX 修复、PR #498 耦合优化（共享心跳本地化、投影层防重停、导航回 Chat 与 23 语种桌面通知文案）及两轮审查收口，通过 8-Crate **669 / 669** 全绿、真云端 `live_cloud_` **3 / 3** 全绿、9-Crate `clippy --all-targets -D warnings` 0 警告与双主题真云端桌面视觉 E2E（9 PNG 目检）。**保留该暖构建工作树（切勿删除）**以加速后续开发。
+
+### 22.1 修订 9.13 改动速查与核心不变量
+
+- **严格 0 触碰**：技能市场、`flowy-agent-core` / `flowy-skills` / V6 外发通道 / 根 workspace；主工作区 `d:/workSpace/git_clone_test/allo` 保持 100% 干净。
+- **`flowy-agent`（`handle/mod.rs`、`handle/router.rs`）**：共用 `BASE_BEHAVIOR_PROMPT` 锁死回复语种；`workspace_has_user_files` 识别历史 `outputs/<prior>` 防多轮误报空目录。
+- **`flowy-ui`（`overlays.rs`）**：`resolve_popover_vertical` 自动垂直翻转并贴边夹紧。
+- **`flowy-studio`（`markdown.rs`、`history.rs`、`pending_card.rs`、`composer.rs`、`router_works.rs`、`feed.rs`、`panel.rs`、`overview/{mod,flow_modal}.rs`）**：非交互流式 Markdown 与 CommonMark 围栏补全；共享本地化心跳 `localize_heartbeat_action` / `format_heartbeat_line_localized` 覆盖全部 6 类 observer 状态；删除 `FoldMeta::duration_secs`、结算锁定 `live = false`；`ChatFeed` 投影层条件省略冗余尾行 `已停止`；`set_surface(Chat)` 与全入聊路径置 `session_opened_by_user = true`；诚实看板进度与对称去省略号标题去重。
+- **`flowy-app` & `flowy-i18n`（`appearance.rs`、`flex.rs`、`settings.rs`、`dock.rs`、23 份 `locales/*.json`）**：8 处单选/选中控件（含 `theme_card`）恢复 Windows UIA `InvokePattern`；`dock.rs` 标题截断、邮箱去重与动态套餐徽章；23 语种 `settings.notify` 桌面通知文案（**933 键**对称，LF 换行）。
+
+### 22.2 现役验证命令与最新全量基线（修订 9.13 @ `origin/main@83a9aef16`）
+
+```powershell
+# 在 .agents/worktrees/feat-flowy-local-receipt 下严格串行执行（禁止并发跑 cargo）：
+bun flowy18_wip/scripts/check-ui-contracts.mjs --self-test                  # 24/24 passed
+bun flowy18_wip/scripts/check-ui-contracts.mjs                              # PASS
+cargo fmt --manifest-path flowy18_wip/Cargo.toml --all -- --check           # 0 diff
+cargo clippy --manifest-path flowy18_wip/Cargo.toml -p flowy-agent-core -p flowy-agent -p flowy-i18n -p flowy-ui -p flowy-studio -p flowy-app -p flowy-skills -p flowy-shell -p flowy-desktop --all-targets --locked -- -D warnings  # 0 warning
+cargo test --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-agent-core -p flowy-shell -p flowy-skills -p flowy-i18n -p flowy-ui -p flowy-studio -p flowy-app  # 117+1+66+8+47+124+57 = 420 passed
+cargo test --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-agent -- --test-threads=1  # 249 passed (4 ignored)
+cargo test --manifest-path flowy18_wip/Cargo.toml -p flowy-agent live_cloud_ -- --ignored --nocapture --test-threads=1  # 3/3 PASS
+cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 0 error
+# 8-Crate 合计：669 passed / 0 failed (6 ignored)；真云端 live_cloud_ 3/3 PASS；双主题桌面视觉 E2E 9 PNG 全绿
+# 预览包 FlowyPreview\flowy-app.exe SHA-256: F5ADC622E8CFCBBEFDDAB93C2AE092C3572315408797628476EC4704EF024FE1
+```
+
+### 22.3 下一 PR 接手优先级
+
+1. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：按 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 在三端真机实测逃逸阻断后升级 `Enforced`。
+2. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。

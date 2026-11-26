@@ -82,6 +82,88 @@ pub fn format_heartbeat_line(
     }
 }
 
+/// Formats the current action of a live [`BranchHeartbeat`] into one localized
+/// status phrase using existing locale keys (never leaking raw English
+/// observer literals like `"thinking"` or `"evaluating tool evidence"`).
+#[must_use]
+pub fn localize_heartbeat_action(
+    heartbeat: &BranchHeartbeat,
+    t: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let action = heartbeat.current_action.trim();
+    match action {
+        "" => {
+            if heartbeat.awaiting_evidence {
+                let waiting = t("card.heartbeat_waiting");
+                let waiting = waiting.trim();
+                (!waiting.is_empty()).then(|| waiting.to_owned())
+            } else {
+                None
+            }
+        }
+        "thinking" | "reasoning" => Some(t("chat.thinking")),
+        "saving_files" => Some(t("chat.status_saving_files")),
+        "waiting_for_user" => Some(t("chat.status_waiting_for_user")),
+        "stopping" => Some(t("chat.status_stopping")),
+        "evaluating tool evidence" => {
+            let status = t("chat.status_running");
+            if let Some(last) = heartbeat
+                .last_completed
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let tool = last.strip_suffix(" (error)").unwrap_or(last);
+                let safe = crate::ports::redact_trace_text(tool);
+                let safe = safe.trim();
+                if !safe.is_empty() {
+                    return Some(format!("{safe} \u{00b7} {status}"));
+                }
+            }
+            Some(status)
+        }
+        other => {
+            let safe = crate::ports::redact_trace_text(other);
+            let safe = safe.trim();
+            if safe.is_empty() {
+                None
+            } else {
+                Some(format!("{safe} \u{00b7} {}", t("chat.status_running")))
+            }
+        }
+    }
+}
+
+/// Formats a live [`BranchHeartbeat`] for multi-work pills and rows using
+/// localized observer actions (and omitting raw English `next_check_hint`
+/// strings).
+#[must_use]
+pub fn format_heartbeat_line_localized(
+    heartbeat: &BranchHeartbeat,
+    t: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let action = localize_heartbeat_action(heartbeat, t);
+    let last = (heartbeat.current_action.trim() != "evaluating tool evidence")
+        .then(|| {
+            heartbeat
+                .last_completed
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::ports::redact_trace_text)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        })
+        .flatten();
+    match (last, action) {
+        (Some(last), Some(action)) if last != action => {
+            Some(format!("{last} \u{00b7} {action}"))
+        }
+        (Some(last), _) => Some(last),
+        (None, action) => action,
+    }
+}
+
 impl StudioPanel {
     fn is_session_resolving(&self, session_id: &str) -> bool {
         self.resolving_cards
@@ -840,7 +922,7 @@ fn localize_rollback_hint(raw: &str, t: &dyn Fn(&str) -> String) -> String {
     }
 }
 
-fn stop_handoff_has_details(manifest: &StopHandoffManifest) -> bool {
+pub fn stop_handoff_has_details(manifest: &StopHandoffManifest) -> bool {
     !manifest.modified_files.is_empty()
         || !manifest.verified_effects.is_empty()
         || !manifest.pending_checks.is_empty()
@@ -877,6 +959,75 @@ mod tests {
 
         let empty = BranchHeartbeat::default();
         assert_eq!(format_heartbeat_line(&empty, "waiting"), None);
+    }
+
+    #[test]
+    fn localized_heartbeat_covers_all_observer_actions_and_redaction_edges() {
+        let fake_t = |key: &str| format!("<{key}>");
+
+        let cases = [
+            ("thinking", "<chat.thinking>"),
+            ("reasoning", "<chat.thinking>"),
+            ("saving_files", "<chat.status_saving_files>"),
+            ("waiting_for_user", "<chat.status_waiting_for_user>"),
+            ("stopping", "<chat.status_stopping>"),
+        ];
+        for (raw, expected) in cases {
+            let hb = BranchHeartbeat {
+                current_action: raw.into(),
+                next_check_hint: Some("raw english hint".into()),
+                awaiting_evidence: true,
+                ..BranchHeartbeat::default()
+            };
+            assert_eq!(
+                localize_heartbeat_action(&hb, &fake_t).as_deref(),
+                Some(expected),
+                "observer action {raw:?} should localize"
+            );
+            assert_eq!(
+                format_heartbeat_line_localized(&hb, &fake_t).as_deref(),
+                Some(expected),
+                "localized line should not leak raw English next_check_hint"
+            );
+        }
+
+        let evaluating = BranchHeartbeat {
+            last_completed: Some("powershell (error)".into()),
+            current_action: "evaluating tool evidence".into(),
+            next_check_hint: Some("awaiting next model step".into()),
+            ..BranchHeartbeat::default()
+        };
+        assert_eq!(
+            localize_heartbeat_action(&evaluating, &fake_t).as_deref(),
+            Some("powershell \u{00b7} <chat.status_running>")
+        );
+        // Should not duplicate `last_completed` when evaluating tool evidence.
+        assert_eq!(
+            format_heartbeat_line_localized(&evaluating, &fake_t).as_deref(),
+            Some("powershell \u{00b7} <chat.status_running>")
+        );
+
+        let evaluating_blank = BranchHeartbeat {
+            last_completed: Some("   ".into()),
+            current_action: "evaluating tool evidence".into(),
+            ..BranchHeartbeat::default()
+        };
+        assert_eq!(
+            localize_heartbeat_action(&evaluating_blank, &fake_t).as_deref(),
+            Some("<chat.status_running>")
+        );
+
+        let waiting_with_last = BranchHeartbeat {
+            last_completed: Some("已读取报价表".into()),
+            current_action: String::new(),
+            awaiting_evidence: true,
+            ..BranchHeartbeat::default()
+        };
+        assert_eq!(
+            format_heartbeat_line_localized(&waiting_with_last, &fake_t)
+                .as_deref(),
+            Some("已读取报价表 \u{00b7} <card.heartbeat_waiting>")
+        );
     }
 
     #[test]

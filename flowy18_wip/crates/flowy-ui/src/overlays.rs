@@ -841,7 +841,12 @@ fn popover_with_direction(
         .as_ref()
         .filter(|scope| scope.id == id)
         .map(|scope| scope.root.clone());
-    let position = if above {
+    let viewport_h: f32 = window.viewport_size().height.into();
+    let bounds_top: f32 = bounds.top().into();
+    let bounds_bottom: f32 = bounds.bottom().into();
+    let (effective_above, avail_h) =
+        resolve_popover_vertical(bounds_top, bounds_bottom, viewport_h, above);
+    let position = if effective_above {
         if rtl {
             point(bounds.right(), bounds.top())
         } else {
@@ -866,7 +871,7 @@ fn popover_with_direction(
         let outside_host = ui.overlays.downgrade();
         panel = panel
             .occlude()
-            .max_h((window.viewport_size().height - px(32.)).max(px(48.)))
+            .max_h(px(avail_h))
             .overflow_y_scroll()
             .on_mouse_down_out(move |event, _, cx| {
                 // Let the trigger perform its normal toggle rather than closing
@@ -898,7 +903,7 @@ fn popover_with_direction(
             if capture_pointer {
                 // Emerge from the trigger edge: `popover_above` rises up
                 // (`+8 -> 0`), downward `popover` drops down (`-8 -> 0`).
-                let offset_y = if above { 8.0_f32 } else { -8.0_f32 };
+                let offset_y = if effective_above { 8.0_f32 } else { -8.0_f32 };
                 gpui::AnimationExt::with_spring(
                     panel,
                     spring_id,
@@ -929,9 +934,9 @@ fn popover_with_direction(
         };
     deferred(
         anchored()
-            .anchor(if above && rtl {
+            .anchor(if effective_above && rtl {
                 Anchor::BottomRight
-            } else if above {
+            } else if effective_above {
                 Anchor::BottomLeft
             } else if rtl {
                 Anchor::TopRight
@@ -939,11 +944,41 @@ fn popover_with_direction(
                 Anchor::TopLeft
             })
             .position(position)
-            .offset(point(px(0.), if above { px(-4.) } else { px(4.) }))
+            .offset(point(
+                px(0.),
+                if effective_above { px(-4.) } else { px(4.) },
+            ))
             .snap_to_window_with_margin(px(8.))
             .child(panel),
     )
     .into_any_element()
+}
+
+/// Choose the vertical side for an anchored popover and clamp its max height
+/// to the available space on that side so `snap_to_window_with_margin` never
+/// pushes a tall popover back on top of its trigger button.
+fn resolve_popover_vertical(
+    bounds_top: f32,
+    bounds_bottom: f32,
+    viewport_h: f32,
+    prefer_above: bool,
+) -> (bool, f32) {
+    const MARGIN: f32 = 8.0;
+    const GAP: f32 = 4.0;
+    let space_above = (bounds_top - MARGIN - GAP).max(0.0);
+    let space_below = (viewport_h - bounds_bottom - MARGIN - GAP).max(0.0);
+    let effective_above = if prefer_above {
+        !(space_above < 420.0 && space_below > space_above)
+    } else {
+        space_below < 320.0 && space_above > space_below
+    };
+    let avail = if effective_above {
+        space_above
+    } else {
+        space_below
+    };
+    let max_h = avail.min((viewport_h - 32.0).max(48.0)).max(48.0);
+    (effective_above, max_h)
 }
 
 pub fn menu(
@@ -1399,5 +1434,30 @@ mod tests {
             });
         });
         drop(subscription);
+    }
+
+    #[test]
+    fn popover_vertical_flips_when_upper_space_is_tight_and_never_exceeds_side()
+    {
+        // Home composer `+` button sits near vertical center (~380px top,
+        // ~412px bottom on an 820px viewport): prefer_above must flip below
+        // where there is more room and clamp max_h strictly within space_below.
+        let (above, max_h) =
+            resolve_popover_vertical(380.0, 412.0, 820.0, true);
+        assert!(!above);
+        assert!(max_h <= 820.0 - 412.0 - 12.0);
+
+        // Chat composer at bottom (~750px top, ~782px bottom): stays above and
+        // clamps strictly within space_above so it never overlaps the trigger.
+        let (above, max_h) =
+            resolve_popover_vertical(750.0, 782.0, 820.0, true);
+        assert!(above);
+        assert!(max_h <= 750.0 - 12.0);
+
+        // Downward popover near bottom flips above when more room exists above.
+        let (above, max_h) =
+            resolve_popover_vertical(700.0, 732.0, 820.0, false);
+        assert!(above);
+        assert!(max_h <= 700.0 - 12.0);
     }
 }

@@ -471,7 +471,7 @@
   "settings.mail": "Mail {product}",
   "settings.mailbox": "信箱",
   "settings.manage": "管理",
-  "settings.notify": "任務需要你時，瀏覽器會收到通知。",
+  "settings.notify": "任務需要你時發送桌面通知。",
   "settings.personal_plan": "個人版",
   "settings.personalization": "個人化",
   "settings.phone": "電話",

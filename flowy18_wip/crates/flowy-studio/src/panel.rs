@@ -888,8 +888,16 @@ impl StudioPanel {
         let session = self.agent.active_session_id();
         let history = self.agent.chat_history();
         let status = history.status.clone();
-        self.feed
-            .update(cx, |feed, cx| feed.sync_history(session, history, cx));
+        let suppress_trailing_stopped = session
+            .as_deref()
+            .and_then(|sid| self.agent.session_stop_handoff(sid))
+            .is_some_and(|manifest| {
+                crate::pending_card::stop_handoff_has_details(&manifest)
+            });
+        self.feed.update(cx, |feed, cx| {
+            feed.set_suppress_trailing_stopped(suppress_trailing_stopped);
+            feed.sync_history(session, history, cx);
+        });
         if status != self.status {
             let was_busy = self.status.is_busy();
             self.status = status;
@@ -977,6 +985,9 @@ impl StudioPanel {
         surface: StudioSurface,
         cx: &mut Context<'_, Self>,
     ) {
+        if matches!(surface, StudioSurface::Chat) {
+            self.session_opened_by_user = true;
+        }
         if self.surface != surface {
             self.invalidate_submission(cx);
             self.surface = surface;
@@ -1281,6 +1292,7 @@ impl StudioPanel {
             && self.active_project_id.is_none()
             && self.agent.has_messages()
         {
+            self.session_opened_by_user = true;
             self.surface = StudioSurface::Chat;
             self.refresh_chat(cx);
             self.refresh_popover_works();
@@ -1589,6 +1601,7 @@ impl StudioPanel {
             .agent
             .active_workspace()
             .map(|workspace| workspace.project_id);
+        self.session_opened_by_user = true;
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
         self.clear_right_sheet();
@@ -1615,6 +1628,7 @@ impl StudioPanel {
             .agent
             .active_workspace()
             .map(|workspace| workspace.project_id);
+        self.session_opened_by_user = true;
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
         self.clear_right_sheet();
@@ -1833,6 +1847,7 @@ impl StudioPanel {
                         if draft_matches {
                             panel.set_prompt_text("", cx);
                         }
+                        panel.session_opened_by_user = true;
                         panel.surface = StudioSurface::Chat;
                         panel.refresh_chat(cx);
                         panel.refresh_board_snapshot();

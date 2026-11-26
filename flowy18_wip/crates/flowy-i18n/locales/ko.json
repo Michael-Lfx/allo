@@ -471,7 +471,7 @@
   "settings.mail": "Mail {product}",
   "settings.mailbox": "메일함",
   "settings.manage": "Manage",
-  "settings.notify": "작업에 사용자가 필요할 때 브라우저가 알립니다.",
+  "settings.notify": "작업에 사용자가 필요할 때 데스크톱 알림을 표시합니다.",
   "settings.personal_plan": "개인",
   "settings.personalization": "개인화",
   "settings.phone": "전화",

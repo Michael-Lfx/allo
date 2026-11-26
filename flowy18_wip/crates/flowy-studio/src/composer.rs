@@ -644,21 +644,21 @@ impl crate::panel::StudioPanel {
                 status_error_label(message, &|key: &str| self.t(key))
             }
             TurnStatus::Running => {
-                if let Some(session_id) = self.agent.active_session_id()
-                    && let Some(heartbeat) =
-                        self.agent.session_heartbeat(&session_id)
-                    && let Some(line) =
-                        crate::pending_card::format_heartbeat_line(
-                            &heartbeat,
-                            &self.t("card.heartbeat_waiting"),
-                        )
-                {
-                    return line;
-                }
                 let duration = self.agent.working_elapsed_secs().map_or_else(
                     || self.format_duration_secs(1),
                     |secs| self.format_duration_secs(secs),
                 );
+                if let Some(session_id) = self.agent.active_session_id()
+                    && let Some(heartbeat) =
+                        self.agent.session_heartbeat(&session_id)
+                    && let Some(label) =
+                        crate::pending_card::localize_heartbeat_action(
+                            &heartbeat,
+                            &|key: &str| self.t(key),
+                        )
+                {
+                    return format!("{label} \u{00b7} {duration}");
+                }
                 self.tf("chat.working_for", &[("duration", &duration)])
             }
             other => self.t(other.key()),

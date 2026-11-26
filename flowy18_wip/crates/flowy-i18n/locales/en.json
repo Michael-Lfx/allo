@@ -471,7 +471,7 @@
   "settings.mail": "Mail {product}",
   "settings.mailbox": "Mailbox",
   "settings.manage": "Manage",
-  "settings.notify": "The browser notifies you when a task needs you.",
+  "settings.notify": "Show a desktop notification when a task needs you.",
   "settings.personal_plan": "Personal",
   "settings.personalization": "Personalization",
   "settings.phone": "Phone",
