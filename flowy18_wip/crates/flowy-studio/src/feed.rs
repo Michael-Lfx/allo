@@ -390,7 +390,7 @@ impl ChatFeed {
         let projection = Projection::build_live(
             &self.history.rows,
             self.history.streaming,
-            self.history.status == TurnStatus::Completed,
+            !self.history.status.is_busy(),
             self.expanded_turns.get(name),
         );
         let changed = projection != self.projection;
@@ -730,14 +730,7 @@ impl ChatFeed {
                 if m.live {
                     self.tf("chat.steps_live_summary", &[("count", &count)])
                 } else {
-                    let base = self
-                        .tf("chat.steps_done_summary", &[("count", &count)]);
-                    if m.duration_secs > 0 {
-                        let dur = self.format_duration_secs(m.duration_secs);
-                        format!("{base} \u{00b7} {dur}")
-                    } else {
-                        base
-                    }
+                    self.tf("chat.steps_done_summary", &[("count", &count)])
                 }
             },
         );
@@ -940,7 +933,11 @@ impl ChatFeed {
                             .text_sm()
                             .whitespace_normal()
                             .child(if is_streaming {
-                                div().child(text.clone())
+                                markdown::render_streaming(
+                                    text,
+                                    self.theme,
+                                    &self.i18n,
+                                )
                             } else {
                                 markdown::render(text, self.theme, &self.i18n)
                             }),
@@ -1037,6 +1034,17 @@ impl ChatFeed {
                 .into_any_element()
             }
             ChatLine::Status { text } => {
+                // When the active turn just settled into Stopped, the dedicated
+                // StopHandoffManifest card / working status already presents
+                // "已停止" right below the feed; hide the redundant trailing
+                // status row while preserving it in history once a later turn
+                // appends new rows.
+                if matches!(self.history.status, TurnStatus::Stopped)
+                    && text == "chat.status_stopped"
+                    && index + 1 == self.lines.len()
+                {
+                    return div().into_any_element();
+                }
                 let label = if text.starts_with("chat.") {
                     self.t(text)
                 } else {
@@ -2972,6 +2980,100 @@ mod tests {
                     px(3.)
                 );
             });
+        });
+    }
+
+    #[gpui::test]
+    fn streaming_markdown_transition_keeps_row_identity_and_scroll_anchor(
+        cx: &mut TestAppContext,
+    ) {
+        let mut base_rows: Vec<ChatLine> = (0..60)
+            .map(|i| ChatLine::Assistant {
+                text: format!("Earlier reply {i}"),
+            })
+            .collect();
+        base_rows.push(ChatLine::User {
+            text: "Build a launch page".into(),
+        });
+        base_rows.push(ChatLine::Assistant {
+            text: "**Working** on it\n```html\n<main>draft".into(),
+        });
+
+        let initial_rows = base_rows.clone();
+        let tail_ix = initial_rows.len() - 1;
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed = ChatFeed::new(
+                ui,
+                I18n::embedded("Flowy"),
+                Some("stream-md".into()),
+                cx,
+            );
+            feed.sync_history(
+                Some("stream-md".into()),
+                ChatHistory {
+                    rows: initial_rows,
+                    streaming: Some(tail_ix),
+                    status: TurnStatus::Running,
+                    ..ChatHistory::default()
+                },
+                cx,
+            );
+            feed
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // User scrolls up away from the streaming tail to read earlier history.
+        cx.update(|_, cx| {
+            feed.update(cx, |feed, cx| {
+                feed.list.scroll_to(ListOffset {
+                    item_ix: 12,
+                    offset_in_item: px(4.),
+                });
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let streaming_ids =
+            cx.read_entity(&feed, |feed, _| feed.row_ids.clone());
+        assert!(
+            cx.read_entity(&feed, |feed, _| feed.projection.streaming.is_some()),
+            "tail row should be projected as streaming"
+        );
+
+        // Stream finishes and closes the code fence: row identity and scrolled-away
+        // anchor must remain untouched when transitioning from render_streaming
+        // to full markdown::render.
+        let mut finished_rows = base_rows;
+        *finished_rows.last_mut().unwrap() = ChatLine::Assistant {
+            text: "**Done** building\n```html\n<main>final</main>\n```".into(),
+        };
+        cx.update(|_, cx| {
+            feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some("stream-md".into()),
+                    ChatHistory {
+                        rows: finished_rows,
+                        streaming: None,
+                        status: TurnStatus::Idle,
+                        ..ChatHistory::default()
+                    },
+                    cx,
+                );
+                assert_eq!(feed.row_ids, streaming_ids);
+                assert_eq!(feed.list.logical_scroll_top().item_ix, 12);
+                assert_eq!(
+                    feed.list.logical_scroll_top().offset_in_item,
+                    px(4.)
+                );
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.read_entity(&feed, |feed, _| {
+            assert!(feed.projection.streaming.is_none());
+            assert_eq!(feed.list.logical_scroll_top().item_ix, 12);
+            assert_eq!(feed.list.logical_scroll_top().offset_in_item, px(4.));
         });
     }
 

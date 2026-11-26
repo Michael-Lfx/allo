@@ -1,6 +1,7 @@
 //! Bounded Markdown display for settled assistant text. The source stays
 //! in the conversation record; rendering has no file or network side effects.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 
 use flowy_i18n::I18n;
@@ -13,6 +14,7 @@ use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag};
 use url::Url;
 
 const MAX_BYTES: usize = 64 * 1024;
+const MAX_STREAMING_BYTES: usize = 16 * 1024;
 const MAX_EVENTS: usize = 4096;
 const MAX_DEPTH: usize = 32;
 
@@ -163,6 +165,7 @@ fn inline<'a>(
 struct Renderer<'a> {
     theme: &'a ResolvedTheme,
     i18n: &'a I18n,
+    interactive: bool,
     next_control: Cell<usize>,
 }
 
@@ -220,11 +223,23 @@ impl Renderer<'_> {
                     text.push_str(content);
                 }
                 Inline::Link { label, url } => {
+                    if !self.interactive {
+                        runs.push(TextRun {
+                            len: label.len(),
+                            font: body_font.clone(),
+                            color: Hsla::from(self.theme.accent()),
+                            underline: Some(UnderlineStyle::default()),
+                            ..Default::default()
+                        });
+                        text.push_str(&label);
+                        continue;
+                    }
                     result = append_text(
                         result,
                         &mut text,
                         &mut runs,
                         self.control(),
+                        self.interactive,
                     );
                     let styled =
                         StyledText::new(label.clone()).with_runs(vec![
@@ -255,12 +270,13 @@ impl Renderer<'_> {
                         &mut text,
                         &mut runs,
                         self.control(),
+                        self.interactive,
                     );
                     result = result.child(div().w_full().h(px(0.)));
                 }
             }
         }
-        append_text(result, &mut text, &mut runs, self.control())
+        append_text(result, &mut text, &mut runs, self.control(), self.interactive)
     }
 
     fn blocks(&self, nodes: &[Node<'_>]) -> Div {
@@ -313,15 +329,21 @@ impl Renderer<'_> {
         };
         match tag {
             Tag::Heading { level, .. } => {
-                let mut label = String::new();
-                plain_text(children, &mut label);
-                self.prose(children, &Font::default().bold(), self.theme.ink())
-                    .id(("markdown-heading", self.control()))
-                    .role(gpui::Role::Heading)
-                    .aria_level(*level as usize)
-                    .aria_label(label)
-                    .text_size(px(if *level as u8 <= 2 { 20. } else { 16. }))
-                    .into_any_element()
+                let heading = self
+                    .prose(children, &Font::default().bold(), self.theme.ink())
+                    .text_size(px(if *level as u8 <= 2 { 20. } else { 16. }));
+                if self.interactive {
+                    let mut label = String::new();
+                    plain_text(children, &mut label);
+                    heading
+                        .id(("markdown-heading", self.control()))
+                        .role(gpui::Role::Heading)
+                        .aria_level(*level as usize)
+                        .aria_label(label)
+                        .into_any_element()
+                } else {
+                    heading.into_any_element()
+                }
             }
             Tag::BlockQuote(_) => self
                 .blocks(children)
@@ -379,11 +401,14 @@ impl Renderer<'_> {
                                     .text_color(self.theme.muted())
                                     .child(language.to_owned()),
                             )
-                            .child(
-                                self.copy("markdown.copy_code", code.clone()),
-                            ),
+                            .when(self.interactive, |row| {
+                                row.child(self.copy(
+                                    "markdown.copy_code",
+                                    code.clone(),
+                                ))
+                            }),
                     )
-                    .child(
+                    .child(if self.interactive {
                         div()
                             .id(("markdown-code", self.control()))
                             .role(gpui::Role::Code)
@@ -392,8 +417,17 @@ impl Renderer<'_> {
                             .w_full()
                             .whitespace_nowrap()
                             .font_family(mono_font().family)
-                            .child(code),
-                    )
+                            .child(code)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .w_full()
+                            .overflow_hidden()
+                            .whitespace_normal()
+                            .font_family(mono_font().family)
+                            .child(code)
+                            .into_any_element()
+                    })
                     .into_any_element()
             }
             Tag::Table(_) => div()
@@ -458,29 +492,88 @@ fn append_text(
     text: &mut String,
     runs: &mut Vec<TextRun>,
     id: usize,
+    interactive: bool,
 ) -> Div {
     if text.is_empty() {
         return parent;
     }
     let text = std::mem::take(text);
-    parent.child(
-        div()
-            .id(("markdown-text", id))
-            .role(gpui::Role::Label)
-            .aria_label(text.clone())
-            .max_w_full()
-            .min_w_0()
-            .child(StyledText::new(text).with_runs(std::mem::take(runs))),
-    )
+    let styled = StyledText::new(text.clone()).with_runs(std::mem::take(runs));
+    if interactive {
+        parent.child(
+            div()
+                .id(("markdown-text", id))
+                .role(gpui::Role::Label)
+                .aria_label(text)
+                .max_w_full()
+                .min_w_0()
+                .child(styled),
+        )
+    } else {
+        parent.child(div().max_w_full().min_w_0().child(styled))
+    }
+}
+
+/// Closes an unclosed triple-backtick code fence on a borrowed/owned copy so
+/// streaming code blocks do not flash as plain text until the closing fence
+/// arrives.
+fn close_unclosed_fence(source: &str) -> Cow<'_, str> {
+    let mut open_fence = false;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            open_fence = !open_fence;
+        }
+    }
+    if open_fence {
+        let mut closed = String::with_capacity(source.len() + 5);
+        closed.push_str(source);
+        if !closed.ends_with('\n') {
+            closed.push('\n');
+        }
+        closed.push_str("```");
+        Cow::Owned(closed)
+    } else {
+        Cow::Borrowed(source)
+    }
 }
 
 pub fn render(source: &str, theme: ResolvedTheme, i18n: &I18n) -> Div {
     let renderer = Renderer {
         theme: &theme,
         i18n,
+        interactive: true,
         next_control: Cell::new(0),
     };
     let body = if let Some(nodes) = parse(source) {
+        renderer.blocks(&nodes)
+    } else {
+        div().whitespace_normal().child(source.to_owned())
+    };
+    div().flex().flex_col().min_w_0().text_sm().child(body)
+}
+
+/// Lightweight streaming Markdown renderer: avoids raw `**` / backtick leakage
+/// during live tokens while keeping interactive/a11y nodes off until the turn
+/// settles, closing partial code fences, and falling back cleanly past 16 KiB.
+pub fn render_streaming(source: &str, theme: ResolvedTheme, i18n: &I18n) -> Div {
+    if source.len() > MAX_STREAMING_BYTES {
+        return div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .text_sm()
+            .whitespace_normal()
+            .child(source.to_owned());
+    }
+    let normalized = close_unclosed_fence(source);
+    let renderer = Renderer {
+        theme: &theme,
+        i18n,
+        interactive: false,
+        next_control: Cell::new(0),
+    };
+    let body = if let Some(nodes) = parse(&normalized) {
         renderer.blocks(&nodes)
     } else {
         div().whitespace_normal().child(source.to_owned())
@@ -528,5 +621,21 @@ mod tests {
         }
         assert_eq!(text.trim(), "<b>raw</b> alt local relative action");
         assert_eq!(links, ["web"]);
+    }
+
+    #[test]
+    fn streaming_fence_helper_closes_partial_blocks_without_mutating_closed_ones()
+    {
+        use super::close_unclosed_fence;
+        use std::borrow::Cow;
+
+        let partial = "说明如下：\n```rust\nfn main() { println!(\"你好\"); }";
+        let closed = close_unclosed_fence(partial);
+        assert!(matches!(closed, Cow::Owned(_)));
+        let nodes = parse(&closed).unwrap();
+        assert!(nodes.iter().any(|n| matches!(n, Node::Element(Tag::CodeBlock(_), _))));
+
+        let complete = "```rust\nlet x = 1;\n```";
+        assert!(matches!(close_unclosed_fence(complete), Cow::Borrowed(_)));
     }
 }

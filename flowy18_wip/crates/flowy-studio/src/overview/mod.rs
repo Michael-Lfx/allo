@@ -46,6 +46,40 @@ pub enum FlowModalTab {
     Trace,
 }
 
+/// Detects when a running branch's fallback caption merely echoes the parent
+/// session title (including `clip_label`'s trailing `…` or `...`).
+fn duplicates_session_title(title: &str, caption: &str) -> bool {
+    let title = title.trim();
+    let trimmed = caption
+        .trim()
+        .trim_end_matches('\u{2026}')
+        .trim_end_matches("...")
+        .trim();
+    !title.is_empty()
+        && !trimmed.is_empty()
+        && (title.starts_with(trimmed) || trimmed.starts_with(title))
+}
+
+/// Returns an honest percentage only when backed by a real delivery or a
+/// concrete `WorkContract` deliverable denominator. Unbounded running/queued
+/// turns return `None` so the UI never displays fabricated percentages.
+pub(super) fn real_contract_progress_pct(
+    branch: &crate::ports::WorkBranchSummary,
+) -> Option<f32> {
+    if matches!(branch.phase, BranchPhase::Delivered { .. }) {
+        return Some(100.0);
+    }
+    let contract = branch.work_progress.as_ref()?;
+    let total = contract.required_labels.len();
+    if total == 0 {
+        return None;
+    }
+    Some(
+        ((contract.delivered_count.min(total) as f32 / total as f32) * 100.0)
+            .clamp(0.0, 100.0),
+    )
+}
+
 impl StudioPanel {
     pub(super) fn format_color(&self, format: DeliverableFormat) -> gpui::Rgba {
         match format {
@@ -547,9 +581,12 @@ impl StudioPanel {
                                     .text_xs()
                                     .text_color(self.theme.muted())
                                     .whitespace_nowrap()
-                                    .child(format!(
-                                        "{} / {}",
-                                        kpi.active_sessions, kpi.total_sessions
+                                    .child(self.tf(
+                                        "board.kpi_trend_sub",
+                                        &[(
+                                            "count",
+                                            &kpi.total_sessions.to_string(),
+                                        )],
                                     )),
                             ),
                     )
@@ -574,7 +611,7 @@ impl StudioPanel {
                             .child(self.kpi_dot_stat(
                                 self.theme.status_verified(),
                                 kpi.delivered_count,
-                                self.t("board.stat_done"),
+                                self.t("board.filter_delivered"),
                             )),
                     )
                     .child(div().flex().items_center().child(health_pill)),
@@ -1516,8 +1553,7 @@ impl StudioPanel {
         for branch in &group.branches {
             let sid_branch = group.session_id.clone();
             let bid = branch.id.clone();
-            let pct_rounded =
-                branch.progress_pct.clamp(0.0, 100.0).round() as u32;
+            let real_pct = real_contract_progress_pct(branch);
             let (dot_color, state_label, live) = match &branch.phase {
                 BranchPhase::NeedsApproval { .. } => (
                     self.theme.status_attention(),
@@ -1535,11 +1571,15 @@ impl StudioPanel {
                     } else {
                         step_label.clone()
                     };
-                    (
-                        self.theme.status_active(),
-                        format!("{pct_rounded}% \u{00b7} {step}"),
-                        true,
-                    )
+                    let label = if let Some(pct) = real_pct {
+                        format!(
+                            "{}% \u{00b7} {step}",
+                            pct.clamp(0.0, 100.0).round() as u32
+                        )
+                    } else {
+                        step
+                    };
+                    (self.theme.status_active(), label, true)
                 }
                 BranchPhase::Queued { state, .. } => {
                     self.receipt_state_visual(*state)
@@ -1581,18 +1621,29 @@ impl StudioPanel {
                     .into_any_element()
             };
             let has_file_deliverable = branch.deliverable_path.is_some();
-            let bar_ratio = if branch.progress_pct <= 0.0
-                || !branch.progress_pct.is_finite()
+            let bar_ratio = real_pct.map_or(0.0, |pct| {
+                if pct <= 0.0 || !pct.is_finite() {
+                    0.0
+                } else {
+                    (pct / 100.0).clamp(0.08, 1.0)
+                }
+            });
+            let branch_caption = if !has_file_deliverable
+                && matches!(branch.phase, BranchPhase::Running { .. })
+                && duplicates_session_title(
+                    &group.title,
+                    &branch.deliverable_name,
+                )
             {
-                0.0
+                self.t("chat.thinking")
             } else {
-                (branch.progress_pct / 100.0).clamp(0.08, 1.0)
+                branch.deliverable_name.clone()
             };
 
             branches_col = branches_col.child(
                 theme::interactive(
                     row_id,
-                    branch.deliverable_name.clone(),
+                    branch_caption.clone(),
                     &self.theme,
                 )
                 .w_full()
@@ -1657,7 +1708,7 @@ impl StudioPanel {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child(branch.deliverable_name.clone()),
+                                .child(branch_caption),
                         ),
                 )
                 .child(
@@ -1666,23 +1717,25 @@ impl StudioPanel {
                         .flex()
                         .items_center()
                         .gap(self.theme.space(8.))
-                        .child(
-                            div()
-                                .w(px(56.))
-                                .h(px(5.))
-                                .rounded_full()
-                                .overflow_hidden()
-                                .bg(self.theme.card())
-                                .when(bar_ratio > 0.0, |track| {
-                                    track.child(
-                                        div()
-                                            .h_full()
-                                            .rounded_full()
-                                            .bg(dot_color)
-                                            .w(gpui::relative(bar_ratio)),
-                                    )
-                                }),
-                        )
+                        .when(real_pct.is_some(), |right| {
+                            right.child(
+                                div()
+                                    .w(px(56.))
+                                    .h(px(5.))
+                                    .rounded_full()
+                                    .overflow_hidden()
+                                    .bg(self.theme.card())
+                                    .when(bar_ratio > 0.0, |track| {
+                                        track.child(
+                                            div()
+                                                .h_full()
+                                                .rounded_full()
+                                                .bg(dot_color)
+                                                .w(gpui::relative(bar_ratio)),
+                                        )
+                                    }),
+                            )
+                        })
                         .child(
                             div()
                                 .text_xs()

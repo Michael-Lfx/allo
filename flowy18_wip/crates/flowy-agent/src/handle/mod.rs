@@ -3144,7 +3144,9 @@ impl Harness {
                 read_only_tool_registry(&cwd, &skills, active_skills);
             run_config.pre_tool_hook = None;
             run_config.system = append_skill_listing(
-                "You are running in read-only inspection mode. Inspect files using only read_file, glob, and grep; do not attempt to modify files or execute shell commands.",
+                &format!(
+                    "{BASE_BEHAVIOR_PROMPT} You are running in read-only inspection mode. Inspect files using only read_file, glob, and grep; do not attempt to modify files or execute shell commands."
+                ),
                 &skills,
             );
         } else {
@@ -3269,10 +3271,17 @@ impl Harness {
                     ),
                 );
                 run_config.delivery_committer = Some(Arc::new(store));
+                let empty_hint = if workspace_has_user_files(&cwd) {
+                    ""
+                } else {
+                    " The session workspace is currently empty (only the turn output directory exists). Do not search parent directories or run redundant glob/shell discovery looking for existing project files; build deliverables directly from scratch in the output directory above."
+                };
                 run_config.system = format!(
-                    "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
+                    "{BASE_BEHAVIOR_PROMPT} Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.{empty_hint}",
                     output_root.display()
                 );
+            } else if run_config.system.trim().is_empty() {
+                run_config.system = BASE_BEHAVIOR_PROMPT.to_owned();
             }
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
@@ -3900,6 +3909,23 @@ fn prepare_skill_prompt(
     ))
 }
 
+const BASE_BEHAVIOR_PROMPT: &str = "Always respond in the same language as the user's latest message unless explicitly asked otherwise.";
+
+/// Returns `true` when `dir` contains at least one user-visible file or folder
+/// other than Flowy's internal `outputs` directory and dot-prefixed metadata.
+fn workspace_has_user_files(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return true;
+        };
+        name != "outputs" && !name.starts_with('.')
+    })
+}
+
 fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
     let listing = format_available_skills(skills);
     match (base.trim().is_empty(), listing.is_empty()) {
@@ -4105,4 +4131,29 @@ fn extract_match_snippet(text: &str, needle_lower: &str) -> String {
         snippet = format!("{}\u{2026}", snippet.trim_end());
     }
     snippet
+}
+
+#[cfg(test)]
+mod workspace_probe_tests {
+    use super::workspace_has_user_files;
+
+    #[test]
+    fn ignores_internal_outputs_and_dotfiles_but_detects_user_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "flowy-ws-probe-{}",
+            super::next_stamp()
+        ));
+        std::fs::create_dir_all(dir.join("outputs/submission-1")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        assert!(
+            !workspace_has_user_files(&dir),
+            "workspace with only outputs/ and dotfiles must be treated as empty"
+        );
+        std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
+        assert!(
+            workspace_has_user_files(&dir),
+            "workspace with user-visible files must be detected as non-empty"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

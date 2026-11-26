@@ -297,7 +297,8 @@ impl StudioPanel {
         let is_app = branch.phase.is_blocker();
         let is_run = branch.phase.is_running();
         let is_done = !is_app && !is_run;
-        let pct_rounded = branch.progress_pct.clamp(0.0, 100.0).round() as u32;
+        let real_pct = super::real_contract_progress_pct(branch);
+        let ring_pct = real_pct.unwrap_or(if is_run { 25.0 } else { 0.0 });
         let e1_color = if is_done {
             self.theme.status_verified()
         } else {
@@ -411,7 +412,7 @@ impl StudioPanel {
                 .child(progress_ring(
                     ("fm-ring", idx),
                     24.0,
-                    branch.progress_pct,
+                    ring_pct,
                     e1_color,
                     is_run,
                     &self.theme,
@@ -435,7 +436,19 @@ impl StudioPanel {
                             div()
                                 .text_xs()
                                 .text_color(self.theme.muted())
-                                .child(format!("{pct_rounded}%")),
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .truncate()
+                                .child(real_pct.map_or_else(
+                                    || gate_title.clone(),
+                                    |pct| {
+                                        format!(
+                                            "{}%",
+                                            pct.clamp(0.0, 100.0).round()
+                                                as u32
+                                        )
+                                    },
+                                )),
                         ),
                 ),
             )

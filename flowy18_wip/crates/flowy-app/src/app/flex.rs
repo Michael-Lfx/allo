@@ -248,17 +248,13 @@ impl FlowyApp {
             let id =
                 SharedString::from(format!("flex-provider-{}", provider.id()));
             menu = menu.child(
+                // Omit `Role::MenuItemRadio` and `.aria_selected(...)` so
+                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(
                     id,
                     self.t(provider.name_key()),
                     &self.theme,
                 )
-                .role(gpui::Role::MenuItemRadio)
-                .aria_toggled(if selected {
-                    gpui::accesskit::Toggled::True
-                } else {
-                    gpui::accesskit::Toggled::False
-                })
                 .px_3()
                 .py_2()
                 .rounded_md()

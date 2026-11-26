@@ -936,6 +936,7 @@ impl FlowyApp {
                     .flex_1()
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .truncate()
                     .text_size(self.theme.body_size())
                     .child(title),
             )
@@ -1389,7 +1390,7 @@ impl FlowyApp {
         .on_click(cx.listener(|_app, _event, _window, cx| {
             cx.stop_propagation();
         }))
-        .child(self.user_menu_header(&name, &initial))
+        .child(self.user_menu_header(&name, &initial, cx))
         .child(self.user_menu_credits(&credits, cx))
         .child(self.user_menu_row(
             "user-account",
@@ -1448,7 +1449,22 @@ impl FlowyApp {
         .child(self.user_menu_sign_out(cx))
     }
 
-    fn user_menu_header(&self, name: &str, initial: &str) -> impl IntoElement {
+    fn user_menu_header(
+        &self,
+        name: &str,
+        initial: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let subtitle = self
+            .auth
+            .session
+            .as_ref()
+            .map(|s| s.email.trim())
+            .filter(|email| !email.is_empty() && *email != name)
+            .map_or_else(
+                || self.t(self.studio.read(cx).plan.label_key()),
+                ToOwned::to_owned,
+            );
         div()
             .px_2()
             .py_1()
@@ -1468,13 +1484,17 @@ impl FlowyApp {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .truncate()
                             .child(name.to_string()),
                     )
                     .child(
                         div()
                             .text_size(self.theme.caption_size())
                             .text_color(self.theme.muted())
-                            .child(self.t("settings.personal_plan")),
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(subtitle),
                     ),
             )
             .child(

@@ -644,24 +644,69 @@ impl crate::panel::StudioPanel {
                 status_error_label(message, &|key: &str| self.t(key))
             }
             TurnStatus::Running => {
-                if let Some(session_id) = self.agent.active_session_id()
-                    && let Some(heartbeat) =
-                        self.agent.session_heartbeat(&session_id)
-                    && let Some(line) =
-                        crate::pending_card::format_heartbeat_line(
-                            &heartbeat,
-                            &self.t("card.heartbeat_waiting"),
-                        )
-                {
-                    return line;
-                }
                 let duration = self.agent.working_elapsed_secs().map_or_else(
                     || self.format_duration_secs(1),
                     |secs| self.format_duration_secs(secs),
                 );
+                if let Some(session_id) = self.agent.active_session_id()
+                    && let Some(heartbeat) =
+                        self.agent.session_heartbeat(&session_id)
+                    && let Some(label) = format_localized_heartbeat(
+                        &heartbeat,
+                        &|key: &str| self.t(key),
+                    )
+                {
+                    return format!("{label} \u{00b7} {duration}");
+                }
                 self.tf("chat.working_for", &[("duration", &duration)])
             }
             other => self.t(other.key()),
+        }
+    }
+}
+
+/// Formats a live [`flowy_agent::BranchHeartbeat`] into one localized status
+/// phrase using existing locale keys (never exposing raw English observer
+/// literals like `"evaluating tool evidence"` in non-English locales).
+fn format_localized_heartbeat(
+    heartbeat: &flowy_agent::BranchHeartbeat,
+    t: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let action = heartbeat.current_action.trim();
+    match action {
+        "" => {
+            if heartbeat.awaiting_evidence {
+                let waiting = t("card.heartbeat_waiting");
+                (!waiting.trim().is_empty()).then_some(waiting)
+            } else {
+                None
+            }
+        }
+        "thinking" | "reasoning" => Some(t("chat.thinking")),
+        "evaluating tool evidence" => {
+            let status = t("chat.status_running");
+            if let Some(last) = heartbeat
+                .last_completed
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let tool = last.strip_suffix(" (error)").unwrap_or(last);
+                Some(format!(
+                    "{} \u{00b7} {status}",
+                    crate::ports::redact_trace_text(tool)
+                ))
+            } else {
+                Some(status)
+            }
+        }
+        other => {
+            let safe = crate::ports::redact_trace_text(other);
+            if safe.is_empty() {
+                None
+            } else {
+                Some(format!("{safe} \u{00b7} {}", t("chat.status_running")))
+            }
         }
     }
 }
@@ -679,7 +724,8 @@ fn status_error_label(message: &str, t: &dyn Fn(&str) -> String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::status_error_label;
+    use super::{format_localized_heartbeat, status_error_label};
+    use flowy_agent::BranchHeartbeat;
 
     fn fake_t(key: &str) -> String {
         format!("<{key}>")
@@ -698,6 +744,32 @@ mod tests {
         assert_eq!(
             status_error_label("model reported an error", &fake_t),
             "<chat.status_error>"
+        );
+    }
+
+    #[test]
+    fn localized_heartbeat_translates_english_observer_phrases() {
+        let thinking = BranchHeartbeat {
+            current_action: "reasoning".into(),
+            next_check_hint: Some("awaiting next tool call or response".into()),
+            awaiting_evidence: true,
+            ..BranchHeartbeat::default()
+        };
+        assert_eq!(
+            format_localized_heartbeat(&thinking, &fake_t).as_deref(),
+            Some("<chat.thinking>")
+        );
+
+        let evaluating = BranchHeartbeat {
+            last_completed: Some("powershell".into()),
+            current_action: "evaluating tool evidence".into(),
+            next_check_hint: Some("awaiting next model step".into()),
+            awaiting_evidence: false,
+            ..BranchHeartbeat::default()
+        };
+        assert_eq!(
+            format_localized_heartbeat(&evaluating, &fake_t).as_deref(),
+            Some("powershell \u{00b7} <chat.status_running>")
         );
     }
 }
