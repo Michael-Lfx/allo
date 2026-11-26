@@ -10,6 +10,10 @@ const MAX_PIXELS: u32 = 16_000_000;
 const MAX_SIDE: u32 = 16_000;
 pub(super) const CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_INPUT: u64 = 128 * 1024 * 1024;
+const MAX_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
+const MAX_JSON_PRETTY_BYTES: usize = 256 * 1024;
+const MAX_CSV_ROWS: usize = 500;
+const MAX_CSV_COLS: usize = 64;
 const PPTX_READ_LIMITS: PackageReadLimits = PackageReadLimits {
     max_entries: 4096,
     max_part_uncompressed_bytes: 32 * 1024 * 1024,
@@ -25,9 +29,21 @@ pub(super) struct Document {
     pub file_size: u64,
     content: Content,
 }
+pub(super) struct TablePreview<'a> {
+    pub headers: &'a [String],
+    pub rows: &'a [Vec<String>],
+    pub truncated_rows: bool,
+}
 enum Content {
     Image(Arc<RenderImage>),
     Pdf(Pdf),
+    Markdown(String),
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+        truncated_rows: bool,
+    },
+    CodeText(String),
 }
 
 pub(super) fn load(
@@ -41,25 +57,95 @@ pub(super) fn load(
         .unwrap_or(Err("library.error.render"))
 }
 
+fn is_text_preview_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md" | "markdown"
+            | "txt"
+            | "log"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "xml"
+            | "html"
+            | "htm"
+            | "css"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "py"
+            | "rs"
+            | "sql"
+            | "sh"
+            | "ps1"
+    )
+}
+
 fn load_inner(
     source: &[u8],
     extension: &str,
 ) -> Result<Arc<Document>, &'static str> {
     let ext = extension.trim_start_matches('.').to_ascii_lowercase();
-    if !matches!(
-        ext.as_str(),
-        "jpg" | "jpeg" | "png" | "webp" | "pdf" | "pptx"
-    ) {
+    let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp");
+    let is_pdf_or_deck = matches!(ext.as_str(), "pdf" | "pptx");
+    let is_text = is_text_preview_ext(&ext);
+    if !is_image && !is_pdf_or_deck && !is_text {
         return Err("library.error.unsupported");
     }
     if source.is_empty() {
         return Err("library.error.missing");
     }
-    if source.len() as u64 > MAX_INPUT {
+    let file_size = source.len() as u64;
+    if is_text {
+        if file_size > MAX_TEXT_PREVIEW_BYTES {
+            return Err("library.error.large");
+        }
+        if source.contains(&0) {
+            return Err("library.error.unsupported");
+        }
+        let mut text = String::from_utf8_lossy(source).into_owned();
+        let content = match ext.as_str() {
+            "md" | "markdown" => Content::Markdown(text),
+            "csv" | "tsv" => {
+                let delimiter = if ext == "tsv" { '\t' } else { ',' };
+                let (headers, rows, truncated_rows) =
+                    parse_delimited_table(&text, delimiter);
+                Content::Table {
+                    headers,
+                    rows,
+                    truncated_rows,
+                }
+            }
+            "json" => {
+                if text.len() <= MAX_JSON_PRETTY_BYTES {
+                    let trimmed =
+                        text.strip_prefix('\u{feff}').unwrap_or(&text);
+                    if let Ok(value) =
+                        serde_json::from_str::<serde_json::Value>(trimmed)
+                        && let Ok(pretty) = serde_json::to_string_pretty(&value)
+                    {
+                        text = pretty;
+                    }
+                }
+                Content::CodeText(text)
+            }
+            _ => Content::CodeText(text),
+        };
+        return Ok(Arc::new(Document {
+            dims: Vec::new(),
+            warning: false,
+            file_size,
+            content,
+        }));
+    }
+    if file_size > MAX_INPUT {
         return Err("library.error.large");
     }
-    let file_size = source.len() as u64;
-    if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+    if is_image {
         let rgba = decode_image(source, MAX_PIXELS)?;
         let (w, h) = (rgba.width() as f32, rgba.height() as f32);
         return Ok(Arc::new(Document {
@@ -178,9 +264,123 @@ fn bounded_scale((width, height): (f32, f32), requested: f32) -> f32 {
         .min(MAX_SIDE as f32 / width.max(height))
 }
 
+fn parse_delimited_table(
+    raw: &str,
+    delimiter: char,
+) -> (Vec<String>, Vec<Vec<String>>, bool) {
+    let input = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    let mut all_rows: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut field_started = false;
+    let mut truncated_rows = false;
+    let mut chars = input.chars().peekable();
+
+    let push_field = |row: &mut Vec<String>, field: &mut String| {
+        let value = std::mem::take(field);
+        if row.len() < MAX_CSV_COLS {
+            row.push(value);
+        }
+    };
+
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(ch);
+            }
+        } else if ch == '"' && !field_started {
+            in_quotes = true;
+            field_started = true;
+        } else if ch == delimiter {
+            push_field(&mut row, &mut field);
+            field_started = false;
+        } else if ch == '\r' || ch == '\n' {
+            if ch == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            push_field(&mut row, &mut field);
+            field_started = false;
+            if all_rows.len() <= MAX_CSV_ROWS {
+                all_rows.push(std::mem::take(&mut row));
+            } else {
+                let trailing_blank = row.len() == 1
+                    && row[0].is_empty()
+                    && chars.peek().is_none();
+                row.clear();
+                if !trailing_blank {
+                    truncated_rows = true;
+                    break;
+                }
+            }
+        } else {
+            field_started = true;
+            field.push(ch);
+        }
+    }
+
+    if !truncated_rows
+        && (field_started || !field.is_empty() || !row.is_empty())
+    {
+        push_field(&mut row, &mut field);
+        if all_rows.len() <= MAX_CSV_ROWS {
+            all_rows.push(row);
+        } else {
+            truncated_rows = true;
+        }
+    }
+
+    if all_rows.is_empty() {
+        (Vec::new(), Vec::new(), false)
+    } else {
+        let headers = all_rows.remove(0);
+        (headers, all_rows, truncated_rows)
+    }
+}
+
 impl Document {
     pub(super) const fn is_image(&self) -> bool {
         matches!(self.content, Content::Image(_))
+    }
+
+    pub(super) const fn is_paginated(&self) -> bool {
+        matches!(self.content, Content::Image(_) | Content::Pdf(_))
+    }
+
+    pub(super) const fn markdown_source(&self) -> Option<&str> {
+        match &self.content {
+            Content::Markdown(text) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn table_data(&self) -> Option<TablePreview<'_>> {
+        match &self.content {
+            Content::Table {
+                headers,
+                rows,
+                truncated_rows,
+            } => Some(TablePreview {
+                headers: headers.as_slice(),
+                rows: rows.as_slice(),
+                truncated_rows: *truncated_rows,
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn code_text(&self) -> Option<&str> {
+        match &self.content {
+            Content::CodeText(text) => Some(text.as_str()),
+            _ => None,
+        }
     }
 
     pub(super) fn raster_bytes(
@@ -195,6 +395,9 @@ impl Document {
                 .map(<[u8]>::len)
                 .ok_or("library.error.render"),
             Content::Pdf(_) => raster_size(dims, scale).map(|(_, bytes)| bytes),
+            Content::Markdown(_)
+            | Content::Table { .. }
+            | Content::CodeText(_) => Err("library.error.unsupported"),
         }
     }
 }
@@ -262,6 +465,9 @@ pub(super) fn render(
                     .ok_or("library.error.render")?;
                 Ok(bgra_image(rgba))
             }
+            Content::Markdown(_)
+            | Content::Table { .. }
+            | Content::CodeText(_) => Err("library.error.unsupported"),
         }
     }))
     .unwrap_or(Err("library.error.render"))
@@ -482,5 +688,90 @@ mod tests {
             Err("library.error.unsupported")
         ));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn markdown_and_code_preview_enforce_size_and_binary_guards() {
+        let md = load(b"# Heading\n\n- [x] Ready\n".to_vec(), "md").unwrap();
+        assert!(!md.is_paginated());
+        assert_eq!(md.dims.len(), 0);
+        assert_eq!(md.markdown_source(), Some("# Heading\n\n- [x] Ready\n"));
+        assert!(render(&md, 0, 1.).is_err());
+
+        let json_doc =
+            load(b"\xef\xbb\xbf{\"b\":2,\"a\":1}".to_vec(), "json").unwrap();
+        let pretty = json_doc.code_text().unwrap();
+        assert!(
+            pretty.contains('\n'),
+            "valid small JSON should pretty-print"
+        );
+        assert!(pretty.contains("\"a\": 1"));
+
+        let bad_json =
+            load(b"{ // comment\n \"a\": 1".to_vec(), "json").unwrap();
+        assert_eq!(bad_json.code_text(), Some("{ // comment\n \"a\": 1"));
+
+        let big_json =
+            format!("{{\"k\":\"{}\"}}", "x".repeat(MAX_JSON_PRETTY_BYTES + 16));
+        let big_json_doc = load(big_json.clone().into_bytes(), "json").unwrap();
+        assert_eq!(big_json_doc.code_text(), Some(big_json.as_str()));
+
+        let non_utf8 = load(vec![0x68, 0x69, 0xff, 0x21], "log").unwrap();
+        assert_eq!(non_utf8.code_text(), Some("hi\u{fffd}!"));
+
+        assert!(matches!(
+            load(b"abc\0def".to_vec(), "txt"),
+            Err("library.error.unsupported")
+        ));
+        assert!(matches!(
+            load(vec![b'a'; (MAX_TEXT_PREVIEW_BYTES as usize) + 1], "md"),
+            Err("library.error.large")
+        ));
+    }
+
+    #[test]
+    fn csv_and_tsv_parse_rfc4180_and_clamp_bounds() {
+        use std::fmt::Write as _;
+
+        let csv = "\u{feff}name,note,amount\r\n\"Alice, B.\",\"line1\n\"\"quoted\"\"\",12\r\n中文名,plain,34\r\n";
+        let doc = load(csv.as_bytes().to_vec(), "csv").unwrap();
+        let table = doc.table_data().unwrap();
+        assert_eq!(table.headers, ["name", "note", "amount"]);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0], ["Alice, B.", "line1\n\"quoted\"", "12"]);
+        assert_eq!(table.rows[1], ["中文名", "plain", "34"]);
+        assert!(!table.truncated_rows);
+
+        let tsv = "col1\tcol2\nval1\tval2\n";
+        let tsv_doc = load(tsv.as_bytes().to_vec(), "tsv").unwrap();
+        let tsv_table = tsv_doc.table_data().unwrap();
+        assert_eq!(tsv_table.headers, ["col1", "col2"]);
+        assert_eq!(tsv_table.rows, vec![vec!["val1", "val2"]]);
+        assert!(!tsv_table.truncated_rows);
+
+        let wide_row = (0..80)
+            .map(|i| format!("c{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let wide_csv = format!("{wide_row}\n{wide_row}\n");
+        let wide_doc = load(wide_csv.into_bytes(), "csv").unwrap();
+        let wide_table = wide_doc.table_data().unwrap();
+        assert_eq!(wide_table.headers.len(), MAX_CSV_COLS);
+        assert_eq!(wide_table.rows[0].len(), MAX_CSV_COLS);
+
+        let mut exact_rows = String::from("h1,h2\n");
+        for i in 0..MAX_CSV_ROWS {
+            let _ = writeln!(exact_rows, "{i},v");
+        }
+        let exact_doc = load(exact_rows.clone().into_bytes(), "csv").unwrap();
+        let exact_table = exact_doc.table_data().unwrap();
+        assert_eq!(exact_table.rows.len(), MAX_CSV_ROWS);
+        assert!(!exact_table.truncated_rows);
+
+        exact_rows.push_str("extra,row\n");
+        let over_doc = load(exact_rows.into_bytes(), "csv").unwrap();
+        let over_table = over_doc.table_data().unwrap();
+        assert_eq!(over_table.rows.len(), MAX_CSV_ROWS);
+        assert!(over_table.truncated_rows);
     }
 }
