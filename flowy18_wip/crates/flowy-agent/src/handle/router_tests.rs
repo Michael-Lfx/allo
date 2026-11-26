@@ -2038,10 +2038,18 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
     *worker_id_slot.lock().unwrap() = w.work_id;
 
     // Attempt escalation ReadOnly -> ReadWrite: MUST be denied!
+    let tool_results_before = tool_outputs.lock().unwrap().len();
     handle
         .submit_router_message(&router_id, 13002, "try-escalate")
         .unwrap();
-    wait_idle(&handle, &router_id, "escalation attempt finished");
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            !handle.session_status(&router_id).is_busy()
+                && tool_outputs.lock().unwrap().len() > tool_results_before
+        },
+        "escalation attempt finished",
+    );
     assert!(
         tool_outputs
             .lock()
