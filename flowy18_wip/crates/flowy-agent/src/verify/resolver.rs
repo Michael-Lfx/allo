@@ -801,6 +801,7 @@ fn apply_scoped_facts_or_disambiguate(
     // Apply unambiguous unscoped facts globally and clear stale per-object
     // overrides on deliverables not explicitly targeted in this turn so old
     // overrides never shadow newer session-wide updates.
+    let has_unscoped_facts = !unscoped_facts.is_empty();
     for (key, value) in unscoped_facts {
         let explicitly_targeted = targeted_by_key.get(key.as_str());
         pinned_facts.insert(key.clone(), value);
@@ -815,15 +816,16 @@ fn apply_scoped_facts_or_disambiguate(
     }
 
     refresh_anchor_summaries(&mut objects, &pinned_facts);
-    let target_object_ids: Vec<String> = if clause_targets.is_empty() {
-        objects
-            .iter()
-            .filter(|o| o.kind == TrackedObjectKind::Deliverable)
-            .map(|o| o.object_id.clone())
-            .collect()
-    } else {
-        clause_targets.into_iter().collect()
-    };
+    let target_object_ids: Vec<String> =
+        if clause_targets.is_empty() || has_unscoped_facts {
+            objects
+                .iter()
+                .filter(|o| o.kind == TrackedObjectKind::Deliverable)
+                .map(|o| o.object_id.clone())
+                .collect()
+        } else {
+            clause_targets.into_iter().collect()
+        };
 
     let work = WorkContract {
         revision: prev.revision.saturating_add(1).max(1),

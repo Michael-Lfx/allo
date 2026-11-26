@@ -1982,8 +1982,10 @@ impl Harness {
                     &id,
                     completed_submission,
                 );
-            } else if matches!(outcome, Ok(LoopOutcome::Aborted))
-                && let Some(staged_log) = staged_intents_for_turn
+            } else if matches!(
+                outcome,
+                Ok(LoopOutcome::Aborted | LoopOutcome::WaitingForUser)
+            ) && let Some(staged_log) = staged_intents_for_turn
             {
                 let pending = std::mem::take(
                     &mut *staged_log
@@ -2009,13 +2011,19 @@ impl Harness {
                         let gate = crate::delivery::DeliveryStore::new(
                             state.root.join("delivery"),
                         );
+                        let reason = match &outcome {
+                            Ok(LoopOutcome::WaitingForUser) => {
+                                "turn_waiting_for_user"
+                            }
+                            _ => "turn_aborted",
+                        };
                         let now = now_ms();
                         for (delivery_id, artifact_path, sha256) in pending {
                             let _ = gate.abort_intent(
                                 &delivery_id,
                                 &artifact_path,
                                 &sha256,
-                                "turn_aborted",
+                                reason,
                                 now,
                             );
                         }

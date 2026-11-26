@@ -254,10 +254,14 @@ impl Harness {
         else {
             return Ok(None);
         };
-        let session = match claimed.session_hint.as_deref() {
-            Some(hint) if lock(&state.live).contains_key(hint) => {
-                if self.is_session_busy_or_active(hint)
-                    || self.is_session_waiting_for_user(hint)
+        let session = match claimed
+            .target_session_id
+            .as_deref()
+            .or(claimed.session_hint.as_deref())
+        {
+            Some(target) if lock(&state.live).contains_key(target) => {
+                if self.is_session_busy_or_active(target)
+                    || self.is_session_waiting_for_user(target)
                 {
                     // Lost the race after selection: wait with 0 ms backoff,
                     // do not fork.
@@ -265,7 +269,7 @@ impl Harness {
                         queue.release(&claimed.id, &attempt_id, now_ms(), 0);
                     return Ok(None);
                 }
-                hint.to_owned()
+                target.to_owned()
             }
             _ => match self.create_background_home_session() {
                 Ok(session) => session,

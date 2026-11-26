@@ -950,7 +950,7 @@ mod tests {
                     )
                 });
                 div()
-                    .w(px(640.))
+                    .size_full()
                     .flex()
                     .flex_col()
                     .gap(px(8.))
@@ -962,7 +962,19 @@ mod tests {
         let panel_clone = panel.clone();
         let (_preview, preview_cx) =
             cx.add_window_view(|_, _| CardPreview { panel: panel_clone });
-        preview_cx.run_until_parked();
+        preview_cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            preview_cx
+                .debug_bounds("chat-pending-disambig-card")
+                .is_some(),
+            "disambiguation card must paint"
+        );
+        assert!(
+            preview_cx
+                .debug_bounds("chat-pending-tool-approval-card")
+                .is_some(),
+            "tool approval card must paint"
+        );
         drop(panel);
         let _ = std::fs::remove_dir_all(&root);
     }

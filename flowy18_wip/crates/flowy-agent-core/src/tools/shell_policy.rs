@@ -253,7 +253,7 @@ fn is_unix_rm_recursive_flag(arg: &str) -> bool {
         && !short.starts_with('-')
     {
         return short.chars().all(|c| {
-            matches!(c, 'r' | 'R' | 'f' | 'i' | 'v' | 'd' | 'P' | 'W')
+            matches!(c, 'r' | 'R' | 'f' | 'i' | 'I' | 'v' | 'd' | 'P' | 'W')
         }) && short.chars().any(|c| matches!(c, 'r' | 'R'));
     }
     false
@@ -387,19 +387,22 @@ fn collect_delete_targets(
                 recursive = true;
                 continue;
             }
-            if let Some(val) = lower
-                .strip_prefix("-path:")
-                .or_else(|| lower.strip_prefix("-literalpath:"))
-            {
-                let offset = text.len() - val.len();
-                for part in text[offset..].split(',') {
-                    if !part.is_empty() {
-                        targets.push(part.to_owned());
+            if let Some((flag, val)) = text.split_once(':') {
+                let fl = flag.to_ascii_lowercase();
+                if is_ps_prefix(&fl, "-path", 3)
+                    || is_ps_prefix(&fl, "-literalpath", 3)
+                {
+                    for part in val.split(',') {
+                        if !part.is_empty() {
+                            targets.push(part.to_owned());
+                        }
                     }
+                    continue;
                 }
-                continue;
             }
-            if matches!(lower.as_str(), "-path" | "-literalpath") {
+            if is_ps_prefix(&lower, "-path", 3)
+                || is_ps_prefix(&lower, "-literalpath", 3)
+            {
                 continue;
             }
             if matches!(
@@ -748,7 +751,7 @@ pub fn evaluate_shell_command(
             ) {
                 if args.iter().any(|t| {
                     let l = t.text.to_ascii_lowercase();
-                    l.starts_with("hklm:") || l.contains("hkey_local_machine")
+                    l.contains("hklm:") || l.contains("hkey_local_machine")
                 }) {
                     return ShellPolicyDecision::Deny {
                         code: SHELL_SYSTEM_TAMPER,
@@ -774,11 +777,8 @@ pub fn evaluate_shell_command(
                 }
             } else if matches!(name.as_str(), "powershell" | "pwsh") {
                 if args.iter().any(|t| {
-                    is_ps_prefix(
-                        &t.text.to_ascii_lowercase(),
-                        "-encodedcommand",
-                        2,
-                    )
+                    let l = t.text.to_ascii_lowercase();
+                    l == "-ec" || is_ps_prefix(&l, "-encodedcommand", 2)
                 }) {
                     return ShellPolicyDecision::Deny {
                         code: SHELL_SYSTEM_TAMPER,
@@ -1196,6 +1196,28 @@ mod tests {
                     }
                 ),
                 "expected write curl / non-scratch Remove-Item to stay Ask: {ask_cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deny_catches_ps_ec_alias_colon_path_abbreviations_and_rm_capital_i() {
+        let cwd = Path::new("workspace");
+        for denied_cmd in [
+            "powershell -ec JAB4AD0AMQA=",
+            "pwsh -EC JAB4AD0AMQA=",
+            "Set-ItemProperty -Path:HKLM:\\Software\\Test -Name k -Value 1",
+            "Remove-Item -Recurse -Force -Pa:C:\\Windows",
+            "Remove-Item -Recurse -Li:HKLM:\\Software\\Test",
+            "rm -Irf /",
+        ] {
+            assert!(
+                matches!(
+                    evaluate_shell_command(denied_cmd, cwd),
+                    ShellPolicyDecision::Deny { .. }
+                ),
+                "expected Deny for {denied_cmd:?}, got {:?}",
+                evaluate_shell_command(denied_cmd, cwd)
             );
         }
     }
