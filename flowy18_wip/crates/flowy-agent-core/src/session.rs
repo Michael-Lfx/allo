@@ -481,6 +481,20 @@ pub struct SessionRecord {
     /// Five-element handoff manifest recorded after a cancelled turn finishes reaping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_stop_handoff: Option<StopHandoffManifest>,
+    /// User-pinned sessions float to the top of sidebar and board lists.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    /// Archived sessions stay durable on disk while hidden from default lists.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if passes the field by reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl SessionRecord {

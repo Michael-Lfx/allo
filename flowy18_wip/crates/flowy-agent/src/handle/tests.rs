@@ -301,7 +301,11 @@ mod background_init_tests {
                 ]),
                 title: "Home".into(),
                 titled: true,
+                pinned: false,
+                archived: false,
                 auto_title_pending: false,
+                auto_title_in_flight: false,
+                auto_title_attempts: 0,
                 title_signal: CancelToken::new(),
                 status: TurnStatus::DeliveryFailed,
                 updated_at: 1,
@@ -427,6 +431,8 @@ mod background_init_tests {
                 workspace: None,
                 origin: SessionOrigin::Home,
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         }
         .save(&root)
@@ -2190,6 +2196,158 @@ mod guard_tests {
             super::TurnStatus::WaitingForUser
         );
         assert_eq!(handle.session_pending_cards(&sid_a).len(), 1);
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_pin_archive_survive_index_deletion_and_history_rebuild() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-rename-pin-archive-{}", next_stamp()));
+        let cfg = || LlmConfig {
+            api_key: None,
+            ..LlmConfig::default()
+        };
+        let handle = AgentHandle::with_config(root.clone(), cfg());
+
+        let sid_a = handle.create_session().unwrap();
+        let sid_b = handle.create_session().unwrap();
+        assert_eq!(
+            handle.rename_session(&sid_a, "   "),
+            Err("chat.rename_empty")
+        );
+        handle.rename_session(&sid_a, "Q3 销售复盘").unwrap();
+        handle.set_session_pinned(&sid_a, true).unwrap();
+        handle.set_session_archived(&sid_b, true).unwrap();
+
+        let listed = handle.list_sessions();
+        assert_eq!(listed[0].id, sid_a, "pinned session must sort first");
+        assert_eq!(listed[0].title, "Q3 销售复盘");
+        assert!(listed[0].pinned && !listed[0].archived);
+        let b_row = listed.iter().find(|s| s.id == sid_b).unwrap();
+        assert!(!b_row.pinned && b_row.archived);
+        drop(handle);
+
+        // Falsification test (Attack Point #2): delete derived index.json and
+        // boot purely from authoritative history.json.
+        let _ = std::fs::remove_file(crate::index::SessionIndex::path(&root));
+        let rebooted = AgentHandle::with_config(root.clone(), cfg());
+
+        let restored = rebooted.list_sessions();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].id, sid_a);
+        assert_eq!(restored[0].title, "Q3 销售复盘");
+        assert!(restored[0].pinned && !restored[0].archived);
+        let b_restored = restored.iter().find(|s| s.id == sid_b).unwrap();
+        assert!(!b_restored.pinned && b_restored.archived);
+
+        drop(rebooted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_sessions_and_preview_strip_markdown_and_match_body() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-search-sessions-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+
+        let sid_weather = handle.create_session().unwrap();
+        handle.rename_session(&sid_weather, "今日天气").unwrap();
+        let sid_deck = handle.create_session().unwrap();
+        handle.rename_session(&sid_deck, "季度汇报 PPT").unwrap();
+        handle.set_session_pinned(&sid_deck, true).unwrap();
+
+        {
+            let mut live = super::lock(&handle.inner.state.live);
+            live.get_mut(&sid_weather).unwrap().projection.lines.push(
+                ChatLine::Assistant {
+                    text: "北京现在**只有 1.2 ℃**、体感偏冷，记得穿外套。"
+                        .into(),
+                },
+            );
+            live.get_mut(&sid_deck).unwrap().projection.lines.push(
+                ChatLine::Assistant {
+                    text: "已生成 [Q3 销售汇报](file:///deck.pptx) 共 12 页。"
+                        .into(),
+                },
+            );
+        }
+
+        let preview = handle.session_preview(&sid_weather).unwrap();
+        assert!(
+            !preview.contains("**"),
+            "preview must strip raw markdown bold markers: {preview}"
+        );
+        assert!(preview.contains("只有 1.2 ℃"));
+
+        let body_hits = handle.search_sessions("体感偏冷", 10);
+        assert_eq!(body_hits.len(), 1);
+        assert_eq!(body_hits[0].session_id, sid_weather);
+        assert!(
+            body_hits[0]
+                .snippet
+                .as_deref()
+                .is_some_and(|s| s.contains("体感偏冷") && !s.contains("**"))
+        );
+
+        let title_hits = handle.search_sessions("季度汇报", 10);
+        assert_eq!(title_hits.len(), 1);
+        assert_eq!(title_hits[0].session_id, sid_deck);
+        assert!(title_hits[0].pinned);
+
+        let empty_hits = handle.search_sessions("", 10);
+        assert_eq!(
+            empty_hits[0].session_id, sid_deck,
+            "pinned session leads empty query"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manual_rename_locks_out_pending_auto_title_and_bounds_retries() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-auto-title-lockout-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+
+        let sid = handle.create_session().unwrap();
+        if let Some(session) =
+            super::lock(&handle.inner.state.live).get_mut(&sid)
+        {
+            session.auto_title_pending = true;
+            session.auto_title_attempts = 1;
+        }
+        handle.rename_session(&sid, "手写最终标题").unwrap();
+        let (title, titled, pending, in_flight) = {
+            let live = super::lock(&handle.inner.state.live);
+            let session = live.get(&sid).unwrap();
+            let out = (
+                session.title.clone(),
+                session.titled,
+                session.auto_title_pending,
+                session.auto_title_in_flight,
+            );
+            drop(live);
+            out
+        };
+        assert_eq!(title, "手写最终标题");
+        assert!(titled);
+        assert!(!pending);
+        assert!(!in_flight);
 
         drop(handle);
         let _ = std::fs::remove_dir_all(&root);

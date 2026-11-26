@@ -935,6 +935,8 @@ mod tests {
             title: "Q3 Report".into(),
             updated_at: 42,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![
             ChatLine::Verification {
@@ -1068,6 +1070,8 @@ mod tests {
             title: "Pure Q&A".into(),
             updated_at: 100,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![
             ChatLine::User {
@@ -1155,6 +1159,8 @@ mod tests {
             title: "Bulk Deliverables".into(),
             updated_at: 200,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let mut lines = Vec::new();
         for i in 0..8 {
@@ -1242,6 +1248,8 @@ mod tests {
             title: "check api_key=sk-secret-do-not-leak".into(),
             updated_at: 42,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![ChatLine::User {
             text: "Bearer tok_1234567890abcdef".into(),

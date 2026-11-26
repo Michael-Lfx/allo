@@ -138,6 +138,8 @@ mod tests {
             title: "Renamed conversation".into(),
             updated_at: 1,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let current =
             items(vec![record()], &[session], &HashSet::new()).remove(0);

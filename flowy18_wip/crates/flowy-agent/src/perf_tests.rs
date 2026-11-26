@@ -104,6 +104,8 @@ fn offline_agent_baseline() {
                         workspace: None,
                         origin: flowy_agent_core::SessionOrigin::default(),
                         session_workspace: None,
+                        pinned: false,
+                        archived: false,
                     }],
                 }
                 .save(&root.0)

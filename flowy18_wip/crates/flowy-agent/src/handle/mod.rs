@@ -92,6 +92,21 @@ pub struct SessionSummary {
     pub title: String,
     pub updated_at: u64,
     pub project_id: Option<String>,
+    pub pinned: bool,
+    pub archived: bool,
+}
+
+/// One scored match returned by [`AgentHandle::search_sessions`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub updated_at: u64,
+    pub pinned: bool,
+    pub archived: bool,
+    pub snippet: Option<String>,
+    pub score: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -190,13 +205,23 @@ pub struct WorkStatus {
     pub missing_items: Vec<String>,
 }
 
+/// Maximum automatic LLM title attempts per session before falling back
+/// permanently to the graceful fallback title (prevents offline retry loops).
+const MAX_AUTO_TITLE_ATTEMPTS: u8 = 2;
+
 struct Live {
     projection: ChatProjection,
     title: String,
     titled: bool,
-    /// A sidecar title request is queued for this session.
+    pinned: bool,
+    archived: bool,
+    /// A sidecar title request is still needed for this session.
     auto_title_pending: bool,
-    /// Cancels the in-flight title request on stop.
+    /// Guards against spawning duplicate concurrent title requests.
+    auto_title_in_flight: bool,
+    /// Total sidecar title attempts already dispatched for this session.
+    auto_title_attempts: u8,
+    /// Cancels the in-flight title request on stop or manual rename.
     title_signal: CancelToken,
     status: TurnStatus,
     updated_at: u64,
@@ -719,7 +744,11 @@ impl AgentHandle {
                         projection: ChatProjection::from_lines(lines),
                         title: record.title,
                         titled: record.titled,
+                        pinned: record.pinned,
+                        archived: record.archived,
                         auto_title_pending: false,
+                        auto_title_in_flight: false,
+                        auto_title_attempts: 0,
                         title_signal: CancelToken::new(),
                         status,
                         updated_at: record.updated_at,
@@ -919,11 +948,271 @@ impl AgentHandle {
                     .workspace
                     .as_ref()
                     .map(|workspace| workspace.project_id.clone()),
+                pinned: session.pinned,
+                archived: session.archived,
             })
             .collect();
         drop(live);
-        rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
+        rows.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
         rows
+    }
+
+    /// Manually rename a session, persisting to both `history.json` and
+    /// `index.json` and locking out any subsequent automatic title overwrite.
+    pub fn rename_session(
+        &self,
+        session_id: &str,
+        new_title: &str,
+    ) -> Result<(), &'static str> {
+        let cleaned = title::clamp_title(new_title, TITLE_MAX_CHARS);
+        if cleaned.is_empty() {
+            return Err("chat.rename_empty");
+        }
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        if !lock(&self.inner.state.live).contains_key(session_id) {
+            return Err("notice.session_storage_failed");
+        }
+        if let Some(live) = lock(&self.inner.state.live).get(session_id) {
+            live.title_signal.cancel();
+        }
+        ensure_engine_session(&engine, session_id)
+            .and_then(|()| {
+                engine.set_session_title(session_id, cleaned.clone(), true)
+            })
+            .map_err(|error| {
+                log_storage_io_error(
+                    "rename session",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
+                );
+                self.inner.state.report_storage_error();
+                "notice.session_storage_failed"
+            })?;
+        observer::sync_artifact_title(&self.inner.state, &engine, session_id);
+        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+        {
+            session.title = cleaned;
+            session.titled = true;
+            session.auto_title_pending = false;
+            session.auto_title_in_flight = false;
+        }
+        persist_index(&self.inner.state).inspect_err(|_| {
+            self.inner.state.report_storage_error();
+        })?;
+        self.inner.state.push_update(AgentUpdate::Session {
+            id: session_id.to_owned(),
+        });
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        Ok(())
+    }
+
+    /// Pin or unpin a session durably across both `history.json` and
+    /// `index.json` without changing its activity timestamp.
+    pub fn set_session_pinned(
+        &self,
+        session_id: &str,
+        pinned: bool,
+    ) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        if !lock(&self.inner.state.live).contains_key(session_id) {
+            return Err("notice.session_storage_failed");
+        }
+        ensure_engine_session(&engine, session_id)
+            .and_then(|()| engine.set_session_pinned(session_id, pinned))
+            .map_err(|error| {
+                log_storage_io_error(
+                    "set session pinned",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
+                );
+                self.inner.state.report_storage_error();
+                "notice.session_storage_failed"
+            })?;
+        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+        {
+            session.pinned = pinned;
+        }
+        persist_index(&self.inner.state).inspect_err(|_| {
+            self.inner.state.report_storage_error();
+        })?;
+        self.inner.state.push_update(AgentUpdate::Session {
+            id: session_id.to_owned(),
+        });
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        Ok(())
+    }
+
+    /// Archive or unarchive a session durably across both `history.json` and
+    /// `index.json` without deleting history or artifacts.
+    pub fn set_session_archived(
+        &self,
+        session_id: &str,
+        archived: bool,
+    ) -> Result<(), &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        if !lock(&self.inner.state.live).contains_key(session_id) {
+            return Err("notice.session_storage_failed");
+        }
+        ensure_engine_session(&engine, session_id)
+            .and_then(|()| engine.set_session_archived(session_id, archived))
+            .map_err(|error| {
+                log_storage_io_error(
+                    "set session archived",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
+                );
+                self.inner.state.report_storage_error();
+                "notice.session_storage_failed"
+            })?;
+        if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
+        {
+            session.archived = archived;
+        }
+        persist_index(&self.inner.state).inspect_err(|_| {
+            self.inner.state.report_storage_error();
+        })?;
+        self.inner.state.push_update(AgentUpdate::Session {
+            id: session_id.to_owned(),
+        });
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        Ok(())
+    }
+
+    /// Zero-dependency in-memory search across session titles and projected
+    /// message lines. Empty queries return the most recent active sessions.
+    #[must_use]
+    pub fn search_sessions(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<SessionSearchHit> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .filter(|t| !t.is_empty())
+            .collect();
+        let full_query = tokens.join(" ");
+        let live = lock(&self.inner.state.live);
+        let mut hits = Vec::new();
+        for (id, session) in live.iter() {
+            let project_id =
+                session.workspace.as_ref().map(|ws| ws.project_id.clone());
+            if tokens.is_empty() {
+                if session.archived {
+                    continue;
+                }
+                let score = if session.pinned { 20 } else { 10 };
+                hits.push(SessionSearchHit {
+                    session_id: id.clone(),
+                    title: session.title.clone(),
+                    project_id,
+                    updated_at: session.updated_at,
+                    pinned: session.pinned,
+                    archived: session.archived,
+                    snippet: extract_session_preview(&session.projection.lines),
+                    score,
+                });
+                continue;
+            }
+            let title_lower = session.title.to_lowercase();
+            let mut best_score = score_text_match(
+                &title_lower,
+                &tokens,
+                &full_query,
+                120,
+                95,
+                75,
+                45,
+            );
+            let mut best_snippet = None;
+            for line in session.projection.lines.iter().rev() {
+                let raw_text = match line {
+                    ChatLine::User { text } | ChatLine::Assistant { text } => {
+                        text.as_str()
+                    }
+                    _ => continue,
+                };
+                let cleaned = title::strip_markdown_inline(raw_text);
+                if cleaned.is_empty() {
+                    continue;
+                }
+                let lower = cleaned.to_lowercase();
+                if tokens.iter().all(|tok| lower.contains(tok.as_str())) {
+                    let snippet = extract_match_snippet(&cleaned, &tokens[0]);
+                    best_score = best_score.max(55);
+                    best_snippet = Some(snippet);
+                    break;
+                }
+                if best_score == 0
+                    && best_snippet.is_none()
+                    && tokens.iter().all(|tok| {
+                        title_lower.contains(tok.as_str())
+                            || lower.contains(tok.as_str())
+                    })
+                {
+                    let first_body_tok = tokens
+                        .iter()
+                        .find(|tok| lower.contains(tok.as_str()))
+                        .map_or(tokens[0].as_str(), String::as_str);
+                    best_snippet =
+                        Some(extract_match_snippet(&cleaned, first_body_tok));
+                    best_score = 40;
+                }
+            }
+            if best_score == 0 {
+                continue;
+            }
+            if !session.archived {
+                best_score += 10;
+            }
+            if session.pinned {
+                best_score += 5;
+            }
+            if best_snippet.is_none() {
+                best_snippet =
+                    extract_session_preview(&session.projection.lines);
+            }
+            hits.push(SessionSearchHit {
+                session_id: id.clone(),
+                title: session.title.clone(),
+                project_id,
+                updated_at: session.updated_at,
+                pinned: session.pinned,
+                archived: session.archived,
+                snippet: best_snippet,
+                score: best_score,
+            });
+        }
+        drop(live);
+        hits.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+        hits.truncate(limit);
+        hits
     }
 
     pub fn active_session_id(&self) -> Option<String> {
@@ -1632,7 +1921,11 @@ impl Harness {
                 projection: ChatProjection::new(),
                 title: String::new(),
                 titled: false,
+                pinned: false,
+                archived: false,
                 auto_title_pending: false,
+                auto_title_in_flight: false,
+                auto_title_attempts: 0,
                 title_signal: CancelToken::new(),
                 status: TurnStatus::Idle,
                 updated_at: now,
@@ -2025,17 +2318,28 @@ impl Harness {
                 session.projection.push_user(text);
             }
             let title = if session.titled {
-                (None, None)
+                let signal = if session.auto_title_pending
+                    && !session.auto_title_in_flight
+                    && session.auto_title_attempts < MAX_AUTO_TITLE_ATTEMPTS
+                    && config.api_key.is_some()
+                {
+                    let signal = CancelToken::new();
+                    session.title_signal = signal.clone();
+                    Some(signal)
+                } else {
+                    None
+                };
+                (None, signal)
             } else {
                 session.title = title::clamp_title(
                     &title::fallback_title(text, TITLE_MAX_CHARS),
                     TITLE_MAX_CHARS,
                 );
                 session.titled = true;
+                session.auto_title_pending = true;
                 let signal = config.api_key.is_some().then(CancelToken::new);
                 if let Some(signal) = &signal {
                     session.title_signal = signal.clone();
-                    session.auto_title_pending = true;
                 }
                 (Some(session.title.clone()), signal)
             };
@@ -2311,6 +2615,7 @@ impl Harness {
                     TITLE_MAX_CHARS,
                 );
                 session.titled = true;
+                session.auto_title_pending = true;
                 Some(session.title.clone())
             };
             drop(live);
@@ -2580,4 +2885,81 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Scores a lowercased candidate string against tokenized lowercased search terms.
+fn score_text_match(
+    haystack_lower: &str,
+    tokens: &[String],
+    full_query: &str,
+    exact_score: u32,
+    prefix_score: u32,
+    substring_score: u32,
+    fuzzy_score: u32,
+) -> u32 {
+    if haystack_lower.is_empty() || tokens.is_empty() {
+        return 0;
+    }
+    if haystack_lower == full_query {
+        return exact_score;
+    }
+    if haystack_lower.starts_with(full_query) {
+        return prefix_score;
+    }
+    if tokens
+        .iter()
+        .all(|tok| haystack_lower.contains(tok.as_str()))
+    {
+        return substring_score;
+    }
+    if is_subsequence(haystack_lower, full_query) {
+        return fuzzy_score;
+    }
+    0
+}
+
+fn is_subsequence(haystack: &str, needle: &str) -> bool {
+    let mut needle_chars = needle.chars().filter(|ch| !ch.is_whitespace());
+    let Some(mut target) = needle_chars.next() else {
+        return false;
+    };
+    for ch in haystack.chars() {
+        if ch == target {
+            match needle_chars.next() {
+                Some(next) => target = next,
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
+/// Extracts a char-safe ~64-char snippet centered around the first match of
+/// `needle_lower` inside `text` (plain text with Markdown already stripped).
+fn extract_match_snippet(text: &str, needle_lower: &str) -> String {
+    const WINDOW: usize = 64;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= WINDOW {
+        return text.to_owned();
+    }
+    let lower_chars: Vec<char> = text.to_lowercase().chars().collect();
+    let needle: Vec<char> = needle_lower.chars().collect();
+    let match_pos = if needle.is_empty() || needle.len() > lower_chars.len() {
+        0
+    } else {
+        lower_chars
+            .windows(needle.len())
+            .position(|window| window == needle.as_slice())
+            .unwrap_or(0)
+    };
+    let start = match_pos.saturating_sub(18).min(chars.len());
+    let end = (start + WINDOW).min(chars.len());
+    let mut snippet: String = chars[start..end].iter().collect();
+    if start > 0 {
+        snippet = format!("\u{2026}{}", snippet.trim_start());
+    }
+    if end < chars.len() {
+        snippet = format!("{}\u{2026}", snippet.trim_end());
+    }
+    snippet
 }
