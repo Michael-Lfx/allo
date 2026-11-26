@@ -11,18 +11,18 @@
 | --- | --- |
 | `一页纸.md` | **3 分钟了解全貌。** 它是什么、交什么、不做什么 |
 | `实现对照.md` | **每个重要环节：我们选了什么 / 对比方案是什么 / 为什么不选 / 证据在哪。** 想挑刺先读这份 |
-| `最终方案.md` | **结论稿（修订 9.13）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.11 演进与落地账本、**§12.12 真云端全链路实测修复与 PR #498 合并后 Rebase 优化（修订 9.13）** |
-| `证据.md` | **全部实测记录（§11.1–§11.40）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.39 实测总账、**§11.40 真云端全链路 UX 修复、PR #498 线性 Rebase 优化、669/669 8-Crate 门禁与双主题实机视觉 E2E**及被推翻的结论 |
+| `最终方案.md` | **结论稿（修订 9.14）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.12 演进与落地账本、**§12.13 审查复核七项修复与收口账本（修订 9.14）** |
+| `证据.md` | **全部实测记录（§11.1–§11.41）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.40 实测总账、**§11.41 审查复核七项修复、678/678 8-Crate 门禁、`[M1-BENCH]` 零克隆实测与 9-Crate Clippy**及被推翻的结论 |
 | `跨平台沙箱与进程回收预留方案.md` | **【跨平台预留蓝图】** Windows 优先通用层（`RunFence` 两阶段回收 + MIT 净室 `shell_policy` + 诚实 `SandboxAvailability`）与 macOS Seatbelt / Linux `bwrap` / Windows AppContainer 接入规格与验收矩阵 |
 | `参照.md` | 五款工作台横评、AutoLoop 借鉴分级、sub agent 与 super agent 的区别、**§10.5 OpenAI Dot 四轮实测对照与老爷爷对抗审查分级** |
 | `先记.md` | 六件暂时不做的事，每件写明「什么时候该回来看」 |
 | `审查交接.md` | **【历史快照】** 2026-11-23 交给外部审查者的材料，含审查结论与修正清单 |
 | `V0-执行计划.md` | **【现役执行计划】** 经 2026-11-25 需求方拍板与真机巡检重订的 Phase 1–Phase 4 收口计划（文末完整归档首轮底稿） |
-| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §22（PR #498 已合入 `origin/main@83a9aef16` + 修订 9.13 真云端全链路 UX 修复与 669 基线）与 §21（PR-2B Router UI 接线）。** 唯一现役状态、模块速查、踩坑清单与实施指引 |
+| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §23（`fix/flowy-router-review-fixes` 审查复核七项修复与 678/678 基线）与 §22（PR #498 + 修订 9.13 真云端全链路 UX 修复）。** 唯一现役状态、模块速查、踩坑清单与实施指引 |
 
 ## 现状一句话
 
-**方案修订至 9.13（保留 9.1–9.12 全部正文），实测覆盖 §11.1–§11.40。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
+**方案修订至 9.14（保留 9.1–9.13 全部正文），实测覆盖 §11.1–§11.41。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
 
 **代码侧（2026-11-25 · `feat/flowy-v0-rc@f47804a9d`）**：工作树 `.agents/worktrees/feat-flowy-local-receipt` 已合流 `feat/flowy-super-ui` 并完成 10 轮纯内核可靠性加固与路线 1 v2 收口（`f8fb6b491`..`f47804a9d`，0 碰 UI）：拆解 `handle/` 与 `verify/` 目录、补齐 `RunFence` 两阶段取消回收、MIT 净室跨平台 Shell 静态安全策略 + 诚实沙箱能力层、单次 HTTP 工具调用 `complete_structured`（真云端 L3 实测提速 3.26×）与 §6.8 `PROVENANCE_INVALID` 溯源拦截（`flowy-agent-core` 90 / `flowy-agent` 168 / 真云端 L3 1 全绿，`clippy -D warnings` 0 警告，`cargo check -p flowy-app` 通过）；仅剩 V6 外发通道按 `BLOCKED.md` §5 停等拍板。
 
@@ -39,6 +39,8 @@
 **PR-2B 会话级 Router UI 接线、PR #497 耦合收敛与审查减脂（2026-11-26 · `feat/flowy-router-ui` / PR #498 已合入 `origin/main@83a9aef16` · 修订 9.12）**：在零改动 `flowy-agent-core` / `flowy-ui` / `flowy-skills` / V6 外发 / 根 workspace 边界内打通 Q1–Q6 全部 UI 交互——① 三入口（Home / 新建任务 / 项目 `+`）全部延迟到首发经 `submit_router_chat_if_active` 原子建 Router（零空会话、项目继承、切项目不串草稿、失败回滚，历史 `Standard` 兼容）；② 聊天状态槽与 Home 恢复胶囊统一消费事件驱动缓存 `popover_works`（O(1) 渲染零每帧锁扫），展示本会话/其他会话双区弹层、`awaiting_approval` 关注态与 `pending_router_followups` 队列胶囊；③ 子 Worker `Verification` / `Artifact` / `PendingCard` 直接投射并按真实 `owner_session_id` 路由覆盖交付、审批恢复、重试交付与单路停止（含进度看板 Flowchart Modal 子分支精准归属与 PR #497 7 日桶子 Worker `updated_at` 折叠）；④ 23 语种 **933 键**对称；经 `/code-review` + `/laoyeye`（`carl-idea-king` / `kaz-neat-freak`）+ `/ponytail` 全数修复 6 项 `[Required]` 缺陷并清理死 API `StudioPanel::create_task` / 重复包装与样板，全量通过 `check-ui-contracts.mjs`（24/24 + 全库）、9-crate `clippy --all-targets -D warnings` 0 警告、8-crate **661 / 661** 串行全绿、真云端同会话双消息非阻塞 E2E（`1/1`）与双主题双语桌面视觉审计（9 张 PNG，`ok=True, failures=0, log_errors=0`，详见 `最终方案.md` §12.11、`证据.md` §11.39 与 `交接给下一个agent.md` §21）。
 
 **真云端全链路实测 UX 修复、PR #498 线性 Rebase 优化与审查收口（2026-11-26 · `fix/flowy-live-cloud-ux-polish`，线性 rebase 至 `origin/main@83a9aef16` · 修订 9.13）**：在隔离 worktree `.agents/worktrees/feat-flowy-local-receipt` 实跑真云端接口与桌面 UI 巡检，一次收口 8 项自研核心缺陷并在 PR #498 合流后执行 `/laoyeye`（`carl-idea-king`）对抗审计与两轮去膨胀审查——① 聊天流式 Markdown（CommonMark 围栏闭合 + 非交互流式门控 + 滚动锚定）与统一本地化心跳（`localize_heartbeat_action` / `format_heartbeat_line_localized` 覆盖全部 6 类 observer 状态、消除中英混杂并直通 PR #498 后台任务胶囊与行）；② 语言防漂移（共享 `BASE_BEHAVIOR_PROMPT` + 多轮目录探测 `workspace_has_user_files` 防误报空工作区）与流式折叠胶囊（结算后锁定 `live = false`、移除死字段 `FoldMeta::duration_secs` 与 CoT 泄露）；③ 诚实进度看板（无真实契约分母时隐藏虚构 `%`、对称去省略号防重标题、`board.filter_delivered` 精准筛选）；④ `overlays.rs` 弹出层垂直自动翻转、向量化刷新图标、Windows UIA `InvokePattern` 全量修复（移除 8 处单选/选中属性含 `theme_card`）；⑤ `ChatFeed` 投影层精准省略重复尾行 `已停止`（无详情清单或后续新轮次保留）、`StudioPanel` 全入口补齐 `session_opened_by_user = true`（Home 首发/后退回 Chat 不踢回 Home）、用户动态套餐标签与 23 语种 `settings.notify` 桌面端文案对齐；全量通过 `check-ui-contracts.mjs`（24/24 + 全库）、9-crate `clippy --all-targets -D warnings` 0 警告、8-crate **669 / 669** 串行全绿（较 PR #498 净增 +8 回归单测）、真云端 `live_cloud_` **3 / 3** 全绿与双主题桌面视觉 E2E（Dark + Light 9 张 PNG 目检，`ok=True, failures=0, log_errors=0`，预览包同步 `SHA-256: F5ADC622...024FE1`，详见 `最终方案.md` §12.12、`证据.md` §11.40 与 `交接给下一个agent.md` §22）。
+
+**审查复核七项修复与收口（2026-11-26 · `fix/flowy-router-review-fixes`，基于 `origin/main@3099c4bbf` · 修订 9.14）**：① 修复 `local_path.rs` Windows UNC 前缀字节切片对多字节中文路径（`C:\项目\报告.md`）触发 UTF-8 边界 panic（改用 `strip_windows_unc_prefix` + `raw.get(..8)`）；② 修复冷启动未 Active 会话首发丢弃项目归属与 `SessionRole::Router` 意图（`AcceptanceQueue::accept_with_target` 落盘 `Option<Box<DraftTarget>>` 并沿重启/死信重试保真，`AgentHandle::accept_deferred_draft` 与 `Harness::create_background_session_with_role(..., make_active: false, ...)` 精准还原目标会话且不抢夺当前草稿焦点）；③ 修复模型目录加载期已有 Router 会话被误拒 `library.loading` 的断点（与新建 Router 草稿统一走 `AgentHandle::accept_deferred_router` 严格目标延迟入队，并移除了死分支 `library.loading`）；④ 修复 `collect_latest_deliverables` 核验项未按路径最终定论（`verification_settled`）过滤导致先过再败残留卡片的缺陷；⑤ 透传 `localize: &dyn Fn(&str) -> String` 统一 `board.rs` 看板心跳卡片本地化（并删除死函数 `format_heartbeat_line` 与 `Harness::create_background_home_session`）；⑥ 新增 `AgentHandle::collect_work_dispatch_turns` 与 `CardSlot` 将父对话子 Worker `Verification`/`Artifact` 锚定到对应 `dispatch_work`/`control_work(action="revise")` 轮次末尾并验证跨重启一致；⑦ 新增 `Engine::child_session_ids(root_id)` 消除父时间线扫描全量克隆子会话，`[M1-BENCH]` 50 历史 Router + 2 并发流式 Worker 实测 `chat_history() x100 = 1664us (16.64us/call)`；`[FYI]` #8 通知设置联动留待后续 PR；**8-Crate 串行测试 `678 / 678 PASS`（+9 净增回归用例，0 failed，6 ignored）、9-Crate `--all-targets` Clippy 0 告警、`check-ui-contracts` 与 `cargo fmt --check` 全绿**。
 
 ## 三条最容易踩的
 

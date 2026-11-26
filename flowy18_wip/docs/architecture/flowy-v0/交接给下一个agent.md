@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-26 修订 9.13 更新）**：**直接先读 §22（PR #498 已合入 `origin/main@83a9aef16` + 修订 9.13 真云端 UX 收口与 669/669 全量基线）**，再按需查 §21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§21 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §22 不一致处，**一律以 §22 为准**。
+> **现役唯一入口（2026-11-26 修订 9.14 更新）**：**直接先读 §23（`fix/flowy-router-review-fixes` 审查复核七项修复与 678/678 基线）**，再按需查 §22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§22 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §23 不一致处，**一律以 §23 为准**。
 
 ---
 
@@ -758,3 +758,22 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
 
 1. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：按 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 在三端真机实测逃逸阻断后升级 `Enforced`。
 2. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。
+
+---
+
+## 23. 审查复核七项修复与收口（2026-11-26 · `fix/flowy-router-review-fixes`）
+
+> 承接 `origin/main@3099c4bbf`（PR #501 合入后）接力审查结论，本分支（`.agents/worktrees/feat-router-kernel`，待提 PR）已完成全部 4 项 `[Required]` + 3 项 `[Optional]` 修复与审查清理，`[FYI]` #8（`flowy-shell::notify` 联动 `prefs.notify_browser` / `persona.rs`）显式保留到后续独立 PR。
+
+### 23.1 本分支关键改动清单
+
+1. **多字节中文路径安全（`flowy-studio/src/ports/local_path.rs`）**：抽取 `strip_windows_unc_prefix(raw: &str)` 使用 `raw.get(..8)?`，修复 `C:\项目\报告.md` 在 `display_path_str` 与 `strip_windows_verbatim_local` 字节切片触发 UTF-8 边界 panic。
+2. **冷启动项目与 `SessionRole::Router` 意图保真（`acceptance.rs`、`queue.rs`、`handle/mod.rs`、`panel.rs`）**：`AcceptedMessage` 与 `JournalEntry::Accepted` 持久化 `Option<Box<DraftTarget>>`（装箱维持枚举紧凑），配合 `AcceptanceQueue::accept_with_target`、`AgentHandle::accept_deferred_draft` / `accept_deferred_router`（`strict_target = true`）、`Harness::create_background_session_with_role(..., make_active: false, ...)`；模型目录加载期间，新项目草稿首发与已有 Router 续聊统一延迟入队（移除 `library.loading` 阻塞分支），并在消费者执行时精确落盘回原项目且不抢夺后来切换到的草稿焦点。
+3. **交付抽屉核验终态过滤（`flowy-studio/src/feed.rs`）**：`collect_latest_deliverables` 中的 `ChatLine::Verification` 统一校验 `verification_settled`，不再因先前“通过”条目而把后期复验失败产物放进抽屉。
+4. **看板心跳卡片本地化与死函数清理（`board.rs`、`router_projection.rs`、`work_actions.rs`、`pending_card.rs`）**：`BoardDataSource::build_board_snapshot` 至投影层统一透传 `localize: &dyn Fn(&str) -> String` 并改用 `format_heartbeat_line_localized`，删除未使用的 `format_heartbeat_line` 与 `Harness::create_background_home_session`。
+5. **父时间线子卡按调度轮次锚定 + 零克隆索引（`engine.rs`、`handle/mod.rs`、`router_tests.rs`）**：新增 `Engine::child_session_ids(root_id)` 消除克隆子会话历史（50 历史 Router + 2 并发流式 Worker `[M1-BENCH]` 实测 `chat_history() x100 = 1664us (16.64us/call)`）；新增 `AgentHandle::collect_work_dispatch_turns` 与 `CardSlot` 将子 Worker `Verification`/`Artifact` 锚定到对应 `dispatch_work` / `control_work(action="revise")` 轮次末尾，并验证重启持久化。
+
+### 23.2 当前基线与下一 PR 顺位
+
+- **本地已绿门禁（提交 `5edab274c` 对齐后）**：8-Crate 串行测试 **678 / 678 PASS**（+9 净增回归用例，0 失败，6 ignored）、9-Crate `--all-targets` Clippy **0 告警**、`cargo check -p flowy-desktop --locked` 通过、`cargo fmt --all -- --check` 通过、`check-ui-contracts.mjs` 通过；`--ignored` 真云端测试与桌面真机截图 E2E 未在本分支重跑。
+- **下一 PR 优先级**：`[FYI]` #8 桌面通知偏好联动（`flowy-shell::notify` ↔ `prefs.notify_browser` / `persona.rs`）→ **S5** → **V6**（阻塞中）。
