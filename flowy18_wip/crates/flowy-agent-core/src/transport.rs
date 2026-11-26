@@ -14,10 +14,11 @@ use rpi_ai::provider::Provider;
 use rpi_ai::providers::openai_completions::OpenAiCompletionsProvider;
 use rpi_ai::types::{
     Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason,
-    StopReason,
+    ErrorReason, StopReason,
 };
 
 use crate::loop_runner::ModelRoute;
+use crate::{ExecutionDenied, ExecutionGate, ExecutionMetadata};
 
 /// Stream function for local echo mode (no account credential configured).
 ///
@@ -71,7 +72,7 @@ pub fn openai_stream_fn(
     route: &ModelRoute,
     api_key: Option<String>,
 ) -> StreamFn {
-    openai_stream_fn_with_model(route.rpi_model(), route, api_key)
+    openai_stream_fn_with_model(route.rpi_model(), route, api_key, false)
 }
 
 /// Build a one-shot stream function that pins `tool_choice` to a single named
@@ -91,13 +92,21 @@ pub fn openai_structured_stream_fn(
         }),
     );
     model.sampling_params = Some(params);
-    openai_stream_fn_with_model(model, route, api_key)
+    openai_stream_fn_with_model(model, route, api_key, false)
+}
+
+pub(crate) fn bounded_openai_stream_fn(
+    route: &ModelRoute,
+    api_key: Option<String>,
+) -> StreamFn {
+    openai_stream_fn_with_model(route.rpi_model(), route, api_key, true)
 }
 
 fn openai_stream_fn_with_model(
     model: rpi_ai::Model,
     route: &ModelRoute,
     api_key: Option<String>,
+    bounded: bool,
 ) -> StreamFn {
     tracing::debug!(
         target: "flowy.prompt",
@@ -108,11 +117,21 @@ fn openai_stream_fn_with_model(
         has_key = api_key.is_some(),
         "provider ready"
     );
+    let client = if bounded {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .expect("build bounded Flowy HTTP client")
+    } else {
+        http_client()
+    };
     let provider =
         Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
             route.provider.clone(),
             api_key,
-            http_client(),
+            client,
             vec![model.clone()],
         ));
     rpi_agent::stream_fn(move |_requested, context, options| {
@@ -126,7 +145,10 @@ fn openai_stream_fn_with_model(
         let provider = Arc::clone(&provider);
         let model = model.clone();
         let context = context.clone();
-        let options = options.clone();
+        let mut options = options.clone();
+        if bounded {
+            options.max_retries = Some(0);
+        }
         let (mut producer, consumer) =
             rpi_ai::event_stream::create_assistant_message_event_stream();
         let cancel_token = producer.cancellation_token();
@@ -158,6 +180,148 @@ fn openai_stream_fn_with_model(
     })
 }
 
+/// Reserve every model invocation, including any host retry, before the
+/// underlying provider or scripted stream can observe a dispatch. Internal
+/// provider retries are disabled for budgeted production routes.
+pub(crate) fn budget_stream_fn(
+    budget: Arc<crate::run_budget::RunBudgetState>,
+    stream: StreamFn,
+) -> StreamFn {
+    rpi_agent::stream_fn(move |model, context, options| {
+        if let Err(stop) = budget.reserve_model() {
+            let mut error = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                model.provider.clone(),
+                model.id.clone(),
+                0,
+            );
+            error.stop_reason = StopReason::Error;
+            error.error_message = Some(stop.to_string());
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error,
+                    })
+                    .await;
+            });
+            consumer
+        } else {
+            stream(model, context, options)
+        }
+    })
+}
+
+/// One provider invocation per gated model dispatch. Provider retries and
+/// redirects cannot reuse a token after the account generation changes.
+pub(crate) fn guarded_openai_stream_fn(
+    route: &ModelRoute,
+    execution: ExecutionMetadata,
+    gate: Arc<dyn ExecutionGate>,
+) -> StreamFn {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .expect("build gated Flowy HTTP client");
+    let model = route.rpi_model();
+    let provider =
+        Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
+            route.provider.clone(),
+            None,
+            client,
+            vec![model.clone()],
+        ));
+    let route = route.clone();
+    rpi_agent::stream_fn(move |_, context, options| {
+        let model = model.clone();
+        let route = route.clone();
+        let execution = execution.clone();
+        let gate = Arc::clone(&gate);
+        let provider = Arc::clone(&provider);
+        let context = context.clone();
+        let mut options = options.clone();
+        let (mut producer, consumer) =
+            rpi_ai::event_stream::create_assistant_message_event_stream();
+        let cancel = producer.cancellation_token();
+        tokio::spawn(async move {
+            if cancel.is_cancelled() || options.signal.is_cancelled() {
+                return;
+            }
+            let credential = match gate.model_credential(&execution, &route) {
+                Ok(credential) => credential,
+                Err(denied) => {
+                    producer.push(denied_event(&model, denied)).await;
+                    return;
+                }
+            };
+            options.api_key = Some(credential);
+            options.max_retries = Some(0);
+            let mut inner = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return,
+                stream = provider.stream_simple(&model, &context, &options) => stream,
+            };
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => break,
+                    event = inner.next() => event,
+                };
+                let Some(event) = event else { break };
+                producer.push(event).await;
+            }
+            drop(inner);
+        });
+        consumer
+    })
+}
+
+/// The optional host-provided stream (for example a deterministic fixture)
+/// observes the same execution authorization as the default transport.
+pub(crate) fn guard_stream_fn(
+    route: &ModelRoute,
+    execution: ExecutionMetadata,
+    gate: Arc<dyn ExecutionGate>,
+    stream: StreamFn,
+) -> StreamFn {
+    let route = route.clone();
+    rpi_agent::stream_fn(move |model, context, options| {
+        match gate.model_credential(&execution, &route) {
+            Ok(_) => stream(model, context, options),
+            Err(denied) => {
+                let event = denied_event(model, denied);
+                let (mut producer, consumer) =
+                    rpi_ai::event_stream::create_assistant_message_event_stream(
+                    );
+                tokio::spawn(async move { producer.push(event).await });
+                consumer
+            }
+        }
+    })
+}
+
+fn denied_event(
+    model: &rpi_ai::Model,
+    denied: ExecutionDenied,
+) -> AssistantMessageEvent {
+    let mut error = AssistantMessage::empty(
+        Api::OpenaiCompletions,
+        model.provider.clone(),
+        model.id.clone(),
+        0,
+    );
+    error.stop_reason = StopReason::Error;
+    error.error_message = Some(denied.to_string());
+    AssistantMessageEvent::Error {
+        reason: ErrorReason::Error,
+        error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::openai_stream_fn;
@@ -172,6 +336,45 @@ mod tests {
             base_url: "https://example.invalid/claw/v1".into(),
             ..ModelRoute::default()
         }
+    }
+
+    #[tokio::test]
+    async fn revoked_lease_rejects_model_dispatch_even_with_a_supplied_stream()
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let route = route();
+        let gate = Arc::new(crate::execution_gate::tests::RevocableGate(
+            AtomicBool::new(true),
+        ));
+        let stream = super::guard_stream_fn(
+            &route,
+            super::ExecutionMetadata::default(),
+            gate.clone(),
+            super::echo_stream_fn("model reply".into()),
+        );
+        let model = route.rpi_model();
+        let context = rpi_ai::types::Context::default();
+        let options = rpi_ai::provider::SimpleStreamOptions::default();
+        let mut first = stream(&model, &context, &options);
+        assert!(matches!(
+            first.next().await,
+            Some(super::AssistantMessageEvent::Start { .. })
+        ));
+        drop(first);
+
+        gate.0.store(false, Ordering::SeqCst);
+        let mut next = stream(&model, &context, &options);
+        let Some(super::AssistantMessageEvent::Error { error, .. }) =
+            next.next().await
+        else {
+            panic!("revoked request reached the model");
+        };
+        drop(next);
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("execution authorization is no longer current")
+        );
     }
 
     #[test]

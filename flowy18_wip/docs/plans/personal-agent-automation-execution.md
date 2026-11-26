@@ -1,12 +1,17 @@
 # Personal Agent 自动化 · 分批实施与验证记录
 
+> **接续验收更新（2026-11-26）**：新增 PA-A06–PA-A10 验收完成，累计 **14/31**。本次最终回归 **671 passed / 0 failed / 5 ignored**，全目标严格 Clippy 与 workspace check 通过。详细结果、静止证明限制和剩余任务见[第 9 节](#pa-a06-a10)；以下旧进度保留作历史。
+
 > **状态**：实施中；2026-11-25。
+> **并行实施更新（2026-11-26）**：A01、A02、A03、A04、A05、A12、B01、B02、D01 共 **9/31** 已验证。B06 为隔离环境的手动运行与恢复验收，E06 保留首版总验收及生产开启。下文此前的分批状态留作历史。
 > **最新验证**：2026-11-26；PA-A02 完成，累计 4/31；2026-11-25 的已执行记录继续保留。
 > **计划**：[开发计划与 31 项任务书](personal-agent-automation-development-plan.md)。
 > **执行规则**：每项先修改、再验证、记录证据后才标记完成；Cargo 操作串行。全部目标仍为完整首版闭环，本记录不缩小原计划。
 > **代码分支**：`codex/personal-agent-automation`；实现基线 `22e6a195c72be18365229fe938984aa2af9043f8`。
 
 ## 1. 当前进度
+
+以下表格和说明为 A02 批次结束时的历史状态。当前实施证据见后续追加记录。
 
 | 阶段 | 完成/总数 | 当前状态 |
 |---|---|---|
@@ -226,3 +231,76 @@ PA-A02 的独立订阅、通知隔离、快照/lag/版本缺口恢复、共享�
 |---|---|---|
 | P0-A 共享宿主与独立会话 | 2/12 | PA-A01、PA-A04 已实现并验证；其余未完成 |
 | 合计 | **3/31** | 这是任务计数，不代表工期完成比例 |
+
+## 7. 当前分支复测与 PA-A03 收尾
+
+在 `codex/personal-agent-automation` 的 `2d07629ab` 上复测时，A05 的 Agent/core 库分别通过 **235/127** 项（忽略 3/2 项），包括无产物完成证据、无窗口重试和提交标记不匹配。B02 的自动化库 **39** 项通过，覆盖 SQLite 重开、逻辑归属、事务回滚和崩溃恢复。
+
+PA-A03 的共享 AppHost 实现已在基线提交中。最终失败项中，存储不可用时 `create_home_session()` 按 Agent 现有契约返回 `notice.session_storage_failed`。回归测试对齐该契约，并检查没有创建会话、原始文件未被改写。当前 `cargo test -p flowy-app --lib --locked -- --test-threads=1` 通过 **67** 项，`cargo check -p flowy-desktop --locked` 通过。
+
+## 8. PA-A12 和 PA-D01
+
+- **PA-A12**：托盘菜单、退出快捷键和无托盘关窗通过共享宿主协调退出。宿主先关闭启动入口，再在后台取消或等待提交，平台退出回调只进行短时间收尾。重复退出不重复启动收尾，未领取消息在下次启动后仍可查询。AppHost 定向测试 **17** 项通过，Agent **235** 项通过（忽略 3 项），Shell **1** 项通过。
+- **PA-D01**：新增一次性、每日和每周日历规则，持久保存 IANA 时区。规则跳过夏令时空档，重复时刻选择第一次。时区偏好只影响新规则。自动化库 **46** 项及 App 库 **70** 项通过，桌面编译通过。持久到期扫描由 D02 接入。
+
+<a id="pa-a06-a10"></a>
+
+## 9. PA-A06–PA-A10：独立执行、授权、仲裁与预算（2026-11-26）
+
+### 9.1 实现与验收范围
+
+| 任务 | 实现与回归证据 |
+|---|---|
+| PA-A06 | 显式绑定独立 session、submission、workspace、execution 和逐次配置；可等待执行句柄与阶段订阅；丢弃观察者不取消工作；创建、取消和对账不改变前台 active；缺配置不使用前台凭证或 echo；交付失败只重试已保存产物组 |
+| PA-A07 | Authority、generation 和 ExecutionGate 在每次实际模型请求及工具派发重验主体、模型路由和允许工具；关闭 provider 隐式重试及重定向；刷新凭证保持同主体，登出、切账户或撤权使旧租约失效 |
+| PA-A08 | grants.json 原子持久化审批、拒绝、撤权、版本和到期墓碑；同请求幂等，旧批准不能恢复撤权；损坏、未来版本和写失败关闭授权；租约持有数据根所有权直到最后一个句柄释放 |
+| PA-A09 | 前后台共用容量和完整资源许可；总容量 2、后台最多 1；读共享、写互斥，规范路径/别名/父子范围冲突；Shell 或不能证明范围的工具占设备许可；等待取消不保存 submission；工具与产物收尾期间保留写许可 |
+| PA-A10 | 每次派发先持久预留模型或工具计数；后台必须有正值有限预算；deadline 使用单调时钟执行并记录墙钟检查点；超限走原取消/提交协议，不丢弃整个运行 future；仅存预算检查点也阻止重跑清零 |
+
+覆盖证据包括 detached 前后台独立运行、逐次门禁拒绝写入、持久撤权与到期、授权句柄保锁、排队取消、多资源原子领取、防饥饿、目录别名、慢工具清理、真实 Shell 子进程、无限模型循环、多工具分别计数、卡住的 provider、初始和逐次检查点写失败、deadline 与持久交付竞态。这里验收的是这些底层接口；运行服务、调度、owner-aware 结果访问和生产 UI 仍按后续任务接线。
+
+### 9.2 接续时发现并修复的问题
+
+1. `detached_commit_retry_repairs_only_the_saved_artifact_group` 稳定失败：预期 Storage，却得到没有产物的 Completed。定向记录显示 write_file 成功、publish_file 被拒绝，未进入提交。Windows canonicalize 生成的标准 verbatim 磁盘/UNC 路径被发布器当作不支持的命名空间。发布器现在接受这两类完整路径，同时逐分量拒绝遍历、ADS、DOS 别名和非法名称；设备及泛化 verbatim 命名空间继续拒绝，原来的句柄锁与链接检查保留。定向测试从失败转为通过，并增强路径验证回归。
+2. Shell 审批测试执行固定清理命令后立即派发下一任务，被新隔离规则拒绝。隔离行为符合契约，测试已在确认该固定命令没有后代进程后，显式调用宿主静止确认再继续；生产启动路径没有自动解除隔离。
+3. 歧义卡片回归仅等待 Completed，可能早于产物捕获和写许可释放，偶发得到 agent_busy。其无进程 fixture 改为同时等待写许可 marker 消失，保留收尾期间的真实互斥。
+4. 严格全目标 Clippy 的可见性、显式默认值、断言、文档、Runtime 字段命名和锁释放提示已修正。账户锁仍覆盖撤权持久写入和凭证解析，未按过早释放建议拆开授权事务；并发批准测试仍先启动全部线程，再逐一 join。
+
+本地原始定位日志为 `.scratch/pa-resume-repro.log`、`pa-resume-probe.log`、`pa-resume-stage.log`、`pa-resume-repro-fixed.log`、`pa-resume-approval-before.log`、`pa-resume-approval-after.log`；临时调试输出已从源码删除。这些 fixture 只使用隔离目录和本地脚本 provider。
+
+### 9.3 冻结后的实际验证
+
+工作目录 `C:/code/flowy/allo/flowy18_wip`；2026-11-26（Asia/Singapore）。沿用 `.scratch/artifact-cargo.ps1` 提供现有 MSVC/SDK 库路径和隔离 TEMP/TMP，未修改工具链、registry、profile 或默认构建配置。Cargo 构建/测试串行执行。
+
+| 实际命令 | 最终结果 |
+|---|---|
+| `cargo test -p flowy-agent-core -p flowy-agent -p flowy-app -p flowy-automation -p flowy-shell -p flowy-i18n -p flowy-studio --locked --no-fail-fast -- --test-threads=1` | 0；Agent **260/0/3**、Core **147/0/2**、App **92/0/0**、Automation **46/0/0**、Shell **1/0/0**、i18n **10/0/0**、Studio **115/0/0**（passed/failed/ignored）；合计 **671 passed / 0 failed / 5 ignored**；文档测试通过 |
+| `cargo clippy -p flowy-agent-core -p flowy-agent -p flowy-automation -p flowy-shell -p flowy-ui -p flowy-i18n -p flowy-studio -p flowy-app --all-targets --locked -- -D warnings` | 0；八个 crate 全目标严格 Clippy 通过，包括 Core 测试目标 |
+| `cargo check --workspace --locked` | 0；整个 GPUI workspace 编译检查通过 |
+| `cargo build -p flowy-desktop --locked` | 0；桌面程序完整构建通过（2m18s） |
+| `cargo fmt --all -- --check` | 0；全工作区格式检查通过 |
+| `bun scripts/check-ui-contracts.mjs --self-test` | 0；24 fixture assertions passed |
+| `bun scripts/check-ui-contracts.mjs` | 0；UI contracts passed |
+| `git diff --check` | 0；空白检查通过 |
+
+忽略项为 Agent 手动离线性能基准、两个真实云模型测试，以及 Core 两个依赖外部 Shell 可执行文件的测试；均未计为通过。新增真实 Shell 后代隔离回归已实际执行并通过。隔离夹具主动制造的存储错误会产生预期 ERROR 日志，不表示测试失败。
+
+最终本地日志为 `.scratch/pa-resume-regression.log`、`pa-resume-clippy.log`、`pa-resume-workspace-check.log`、`pa-resume-fmt.log`；`.scratch` 不随 Git 分发。
+桌面构建日志为 `.scratch/pa-resume-desktop-build.log`；最终源码与日志摘要见 `.scratch/pa-resume-verification.json`。
+
+### 9.4 当前进度、限制与后续接线
+
+| 阶段 | 已验证/总数 | 剩余任务 |
+|---|---|---|
+| P0-A | 11/12 | PA-A11 owner-aware 会话与产物访问 |
+| P0-B | 2/6 | PA-B03–PA-B06 命令服务、运行状态机、真实宿主适配与内部验收 |
+| P0-C | 0/3 | 三项对话工具及批准恢复 |
+| P0-D | 1/4 | PA-D02–PA-D04 持久到期扫描、blocked 恢复与装配 |
+| P0-E | 0/6 | UI、结果投递、保留清理及生产总验收 |
+| 合计 | **14/31** | **17 项尚未完成** |
+
+PA-A09 对真实 Shell、验证器及未知进程能力工具采用保守静止策略：实际派发后保留设备写入 marker，后续启动被隔离，直到受信宿主明确确认没有存活写入者。即使简单 Shell 正常返回也不能自动视为后代静止；本批没有新增自动解除入口或进程树证明。该限制是可用性取舍，后续不得为提高通过率提前释放许可。
+
+PA-A06–PA-A10 的任务接口和本地回归条件已满足，可计入当前 14/31；不是 V2 全部 24 项端到端用例的总验收。PA-A11、PA-B03 等后续任务仍按依赖图实施，生产自动化保持关闭。本次未运行真实云模型、跨平台或中英浅深色人工操作；macOS/Linux 和实际通知、休眠、强杀验收留在后续交付矩阵。
+
+回退时先停止后台新运行并等待或隔离已有写入者，保留授权账本、generation 门禁、预算与完成检查点；不得通过删除记录或关闭门禁恢复执行。当前改动仍在 `codex/personal-agent-automation` 工作区，本次未提交、推送或改写历史。

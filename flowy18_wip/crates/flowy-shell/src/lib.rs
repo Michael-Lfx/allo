@@ -83,7 +83,12 @@ pub fn enqueue_urls(urls: Vec<String>) {
     deep_link::enqueue(urls);
 }
 
-pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
+pub fn install(
+    brand: Brand,
+    open_main: fn(&mut App),
+    request_shutdown: fn(&mut App),
+    cx: &mut App,
+) {
     tracing::debug!(
         target: "flowy.boot",
         stage = "shell::install",
@@ -95,8 +100,8 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
     cx.on_action(|_: &ShowMainWindow, cx| {
         ensure_main_window(cx);
     });
-    cx.on_action(|_: &QuitApp, cx| {
-        cx.quit();
+    cx.on_action(move |_: &QuitApp, cx| {
+        request_shutdown(cx);
     });
     cx.on_system_notification_response(|response, cx| {
         if response.action_id.as_deref() == Some("open") {

@@ -76,6 +76,42 @@ impl FlowyApp {
         }
     }
 
+    /// Every window observes the shared viewer independently. Notifications
+    /// cover idle windows; the render check also protects frames before the
+    /// next Agent update. Only a changed generation starts a catalog reload.
+    pub(super) fn sync_result_viewer(&mut self, cx: &mut Context<'_, Self>) {
+        let generation = self.studio.read(cx).agent.result_viewer_generation();
+        if generation != self.result_viewer_generation {
+            self.reset_results_for_account_change(cx);
+        }
+    }
+
+    /// Account change: close any open preview, invalidate in-flight preview
+    /// and navigation requests, and drop the previous account's rows before
+    /// the owner-filtered catalog reloads.
+    pub(super) fn reset_results_for_account_change(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // Set before notifying the shared Studio so its observer cannot
+        // schedule a second reset for this same account change.
+        self.result_viewer_generation =
+            self.studio.read(cx).agent.result_viewer_generation();
+        if self.active_dialog == ActiveDialog::ArtifactPreview {
+            self.active_dialog = ActiveDialog::None;
+        }
+        self.artifact_preview.request_id =
+            self.artifact_preview.request_id.wrapping_add(1);
+        self.artifact_navigation_generation =
+            self.artifact_navigation_generation.wrapping_add(1);
+        self.library
+            .update(cx, |panel, cx| panel.set_items(Vec::new(), cx));
+        self.studio
+            .update(cx, |panel, cx| panel.set_artifacts(Vec::new(), cx));
+        self.load_library(cx);
+        cx.notify();
+    }
+
     pub(super) fn sync_artifact_preview_locale(
         &self,
         cx: &mut Context<'_, Self>,
@@ -158,22 +194,23 @@ impl FlowyApp {
                 {
                     return;
                 }
-                let store = self.studio.read(cx).agent.artifact_store();
+                let agent = self.studio.read(cx).agent.clone();
+                let viewer_generation = agent.result_viewer_generation();
                 let artifact_id = artifact_id.clone();
                 let request_id = *request_id;
                 let job = cx.background_executor().spawn(async move {
-                    let result = store
-                        .map_err(|_| "library.error.catalog")?
-                        .read_payload(&artifact_id)
-                        .map_err(|error| match error.kind() {
-                            std::io::ErrorKind::NotFound => {
-                                "library.error.missing"
+                    let result =
+                        agent.read_artifact(&artifact_id).map_err(|error| {
+                            match error.kind() {
+                                std::io::ErrorKind::NotFound => {
+                                    "library.error.missing"
+                                }
+                                std::io::ErrorKind::InvalidData
+                                | std::io::ErrorKind::InvalidInput => {
+                                    "library.availability.corrupt"
+                                }
+                                _ => "library.error.read",
                             }
-                            std::io::ErrorKind::InvalidData
-                            | std::io::ErrorKind::InvalidInput => {
-                                "library.availability.corrupt"
-                            }
-                            _ => "library.error.read",
                         });
                     Ok::<_, &'static str>((artifact_id, result))
                 });
@@ -183,6 +220,12 @@ impl FlowyApp {
                         if app.artifact_preview.request_id != request_id
                             || app.active_dialog
                                 != ActiveDialog::ArtifactPreview
+                            || viewer_generation
+                                != app
+                                    .studio
+                                    .read(cx)
+                                    .agent
+                                    .result_viewer_generation()
                         {
                             return;
                         }

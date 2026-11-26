@@ -6,7 +6,9 @@
 
 pub mod acceptance;
 pub mod engine;
+mod execution_gate;
 pub mod loop_runner;
+mod run_budget;
 pub mod run_fence;
 pub mod session;
 pub mod tools;
@@ -20,11 +22,13 @@ pub use engine::{
     CancelDisposition, Engine, EngineConfig, EnqueueOutcome, RunError,
     TurnObserver,
 };
+pub use execution_gate::{ExecutionDenied, ExecutionGate};
 pub use loop_runner::{
     LoopOutcome, ModelRoute, PreToolDecision, PreToolHook, StructuredRequest,
     TurnRequest, TurnResult, canonical_tool_args_json, complete_structured,
     complete_structured_with_stream, complete_text, log_preview, run_turn,
 };
+pub use run_budget::{BudgetStopReason, RunBudget, RunBudgetCheckpoint};
 pub use run_fence::{PublishToken, RunFence, RunTicket};
 pub use session::{
     BranchHeartbeat, DeliveryCommit, DeliveryCommitter, DisambiguationOption,

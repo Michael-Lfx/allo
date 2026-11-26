@@ -6,6 +6,8 @@ mod artifact_cleanup;
 mod artifact_preview;
 #[cfg(test)]
 mod artifact_tests;
+mod automation_access;
+mod automation_grants;
 mod conversation_actions;
 mod dock;
 mod flex;
@@ -27,6 +29,10 @@ use crate::i18n::{I18n, file_stamps};
 use crate::prefs::Preferences;
 use crate::session::SessionStore;
 pub use app_host::{AppHost, OwnedBootstrap};
+pub use automation_access::AutomationLeaseRequest;
+pub use automation_grants::{
+    GrantBinding, GrantError, GrantRequest, GrantStatus,
+};
 use flowy_auth::{
     AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
     normalize_otp,
@@ -151,6 +157,7 @@ pub struct FlowyApp {
     pub studio: Entity<StudioPanel>,
     library: Entity<LibraryPanel>,
     library_generation: u64,
+    result_viewer_generation: u64,
     artifact_navigation_generation: u64,
     artifact_preview: artifact_preview::ArtifactPreviewState,
     artifact_cleanup: artifact_cleanup::ArtifactCleanupState,
@@ -401,16 +408,8 @@ impl FlowyApp {
             })
         };
         let subscriptions = vec![
-            cx.on_app_quit(|app, cx| {
-                // Run bounded graceful shutdown synchronously inside `on_app_quit`
-                // so GPUI's 200ms async `SHUTDOWN_TIMEOUT` does not abort
-                // `persist_index()` or finalizing delivery commits mid-flight.
-                let agent = app.studio.read(cx).agent.clone();
-                agent
-                    .prepare_shutdown_with_timeout(Duration::from_millis(1200));
-                async {}
-            }),
             cx.observe(&model_events, |app, _, cx| {
+                app.sync_result_viewer(cx);
                 if app.host.shared_model().is_none() {
                     app.studio.update(cx, |panel, cx| {
                         panel.cloud_ready = false;
@@ -432,7 +431,10 @@ impl FlowyApp {
                     app.close_overlay(scope.as_ref(), cx);
                 },
             ),
-            cx.observe(&studio, |_, _, cx| cx.notify()),
+            cx.observe(&studio, |app, _, cx| {
+                app.sync_result_viewer(cx);
+                cx.notify();
+            }),
             cx.observe(&library, |_, _, cx| cx.notify()),
             cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
             cx.observe(&ui.theme, |app, _, cx| {
@@ -573,6 +575,8 @@ impl FlowyApp {
         let expanded_projects =
             studio.read(cx).active_project_id.iter().cloned().collect();
         let initial_installed_skills = studio.read(cx).skill_catalog();
+        let result_viewer_generation =
+            studio.read(cx).agent.result_viewer_generation();
         let mut app = Self {
             host,
             active_dialog: state::ActiveDialog::None,
@@ -603,6 +607,7 @@ impl FlowyApp {
             studio,
             library,
             library_generation: 0,
+            result_viewer_generation,
             artifact_navigation_generation: 0,
             artifact_preview: artifact_preview::ArtifactPreviewState::default(),
             artifact_cleanup: artifact_cleanup::ArtifactCleanupState::default(),
@@ -1015,9 +1020,31 @@ impl FlowyApp {
             );
             return;
         }
-        let Some(session) = self.auth.session.clone() else {
+        let Some(mut session) = self.auth.session.clone() else {
             return;
         };
+        let authority_generation =
+            self.host.automation_authority().generation();
+        // The persisted authentication session is the source for a refreshed
+        // token; a different account's saved session is never adopted here.
+        if let Some(persisted) = self.store.load()
+            && persisted.user_id.is_some()
+            && persisted.user_id == session.user_id
+            && self
+                .host
+                .automation_authority()
+                .refresh_credential(&authority_generation, &persisted)
+        {
+            session = persisted;
+            self.auth.session = Some(session.clone());
+        }
+        if !self
+            .host
+            .automation_authority()
+            .credential_is_current(&authority_generation, &session)
+        {
+            return;
+        }
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::refresh_models",
@@ -1050,7 +1077,7 @@ impl FlowyApp {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         let generation = self.catalog_generation;
         let model_revision = self.host.model_revision();
-        let token = session.access_token;
+        let token = session.access_token.clone();
         let outcome = Arc::new(Mutex::new(None));
         let writer = Arc::clone(&outcome);
         std::thread::spawn(move || {
@@ -1079,7 +1106,12 @@ impl FlowyApp {
                     app.studio.update(cx, |panel, _| {
                         panel.catalog_loading = false;
                     });
-                    if !app.accept_model_refresh(model_revision, cx) {
+                    if !app
+                        .host
+                        .automation_authority()
+                        .credential_is_current(&authority_generation, &session)
+                        || !app.accept_model_refresh(model_revision, cx)
+                    {
                         return;
                     }
                     match result {
@@ -1112,6 +1144,12 @@ impl FlowyApp {
                                     .min(2),
                                 })
                                 .collect::<Vec<_>>();
+                            app.host.automation_authority().replace_routes(
+                                &authority_generation,
+                                &session,
+                                &models,
+                                app.effective_tier,
+                            );
                             app.prefs.model_account =
                                 account.clone().unwrap_or_default();
                             let catalog = flowy_agent::ProviderCatalog::new();
@@ -1354,6 +1392,8 @@ impl FlowyApp {
         self.auth.attempted_code.clone_from(&code);
         self.auth.generation = self.auth.generation.saturating_add(1);
         let generation = self.auth.generation;
+        let authority_generation =
+            self.host.automation_authority().generation();
         self.auth.phase = LoginPhase::Verifying;
         self.auth.message = Some("login.verifying");
         cx.notify();
@@ -1381,6 +1421,16 @@ impl FlowyApp {
                     if app.auth.generation != generation {
                         return;
                     }
+                    if !app
+                        .host
+                        .automation_authority()
+                        .is_current(&authority_generation)
+                    {
+                        app.auth.phase = LoginPhase::Idle;
+                        app.auth.message = None;
+                        cx.notify();
+                        return;
+                    }
                     match result {
                         Ok(session) => {
                             if let Err(error) = app.store.save(&session) {
@@ -1391,6 +1441,8 @@ impl FlowyApp {
                             }
                             app.auth.attempted_code.clear();
                             app.set_input_text(&app.auth.code, "", cx);
+                            app.host.start_automation_account(&session);
+                            app.reset_results_for_account_change(cx);
                             app.auth.session = Some(session);
                             app.auth.phase = LoginPhase::Success;
                             app.auth.message = Some("login.success");
@@ -1549,6 +1601,8 @@ impl FlowyApp {
     }
 
     pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
+        self.host.clear_automation_account();
+        self.reset_results_for_account_change(cx);
         self.host.publish_model(None);
         AppHost::notify_model(cx);
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
@@ -1955,6 +2009,9 @@ impl Render for FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        // A host account change can happen before this window's next Studio
+        // pump. Clear cached results before they are painted for a new viewer.
+        self.sync_result_viewer(cx);
         self.apply_pending_input_text(window, cx);
         let modal = self
             .active_dialog
@@ -2405,7 +2462,7 @@ pub fn run_owned(
             "application host already installed",
         ));
     }
-    cx.set_global(AppHost::start(bootstrap)?);
+    AppHost::start(bootstrap)?.install(cx);
     tracing::debug!(
         target: "flowy.boot",
         stage = "app::run",
@@ -2478,6 +2535,7 @@ pub fn run_owned(
         |cx| {
             ensure_shell_main_window(cx);
         },
+        AppHost::request_shutdown,
         cx,
     );
     tracing::debug!(
@@ -2555,7 +2613,7 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
                     window.minimize_window();
                     return false;
                 }
-                cx.quit();
+                AppHost::request_shutdown(cx);
                 false
             });
             app.apply_appearance(window, cx);

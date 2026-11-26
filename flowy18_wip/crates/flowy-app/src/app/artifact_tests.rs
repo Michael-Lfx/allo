@@ -161,6 +161,170 @@ fn assert_export_failure(cx: &TestAppContext, app: &Entity<FlowyApp>) {
 }
 
 #[gpui::test]
+fn shared_account_change_clears_another_windows_loaded_and_pending_preview(
+    cx: &mut TestAppContext,
+) {
+    use flowy_agent::{ExecutionOwner, ExecutionSource};
+    use gpui::VisualTestContext;
+    use std::time::Duration;
+
+    let fixture = Fixture::new();
+    // Both windows start signed out so no cloud request is needed. The host
+    // account change below exercises the same shared authority as real login.
+    let first = cx.add_window(|window, cx| {
+        let mut app = FlowyApp::new(
+            SessionStore::new(fixture.root.clone()),
+            false,
+            window,
+            cx,
+        );
+        app.ota.checked = true;
+        app
+    });
+    let second = cx.add_window(|window, cx| {
+        let mut app = FlowyApp::new(
+            SessionStore::new(fixture.root.clone()),
+            false,
+            window,
+            cx,
+        );
+        app.screen = Screen::Main;
+        app.section = Section::Library;
+        app.ota.checked = true;
+        app
+    });
+    let user = flowy_auth::Session {
+        access_token: "isolated-preview-owner".into(),
+        email: "preview-owner@example.invalid".into(),
+        display_name: "Preview owner".into(),
+        user_id: Some(71),
+    };
+    let host = first.update(cx, |app, _, _| app.host.clone()).unwrap();
+    host.start_automation_account(&user);
+    let (principal, _) = host.automation_account_binding().unwrap();
+    let execution = ExecutionMetadata {
+        owner: Some(ExecutionOwner {
+            authority: principal.authority().to_owned(),
+            subject: principal.external_user_id().to_string(),
+        }),
+        source: ExecutionSource::Automation {
+            automation_id: "preview-automation".into(),
+            run_id: "preview-run".into(),
+            attempt_id: "preview-attempt".into(),
+        },
+    };
+    let output = fixture.root.join("owned-preview-output");
+    fs::create_dir(&output).unwrap();
+    fs::write(
+        output.join("private.png"),
+        include_bytes!(
+            "../../../flowy-studio/examples/fixtures/preview/sample.png"
+        ),
+    )
+    .unwrap();
+    let receipt = fixture
+        .store
+        .prepare(PrepareArtifact {
+            execution: execution.clone(),
+            source_root: output,
+            relative_path: "private.png".into(),
+            source_relative_path: "private.png".into(),
+            conversation_import: false,
+            session_id: "owned-preview-session".into(),
+            submission_id: "owned-preview-submission".into(),
+            tool_call_id: "owned-preview-call".into(),
+            delivery_key: "private-preview".into(),
+            display_name: None,
+            origin: SessionOrigin::Home,
+        })
+        .unwrap();
+    fixture
+        .store
+        .recover_commits(&[DeliveryCommit {
+            execution,
+            session_id: receipt.session_id.clone(),
+            submission_id: receipt.submission_id.clone(),
+            artifact_ids: vec![receipt.artifact_id.clone()],
+            completed_successfully: true,
+            committed_at_ms: receipt.created_at_ms,
+            origin: SessionOrigin::Home,
+            origin_title_snapshot: "Private preview fixture".into(),
+        }])
+        .unwrap();
+    let artifact_id = receipt.artifact_id;
+    let mut visual = VisualTestContext::from_window(*second, cx);
+
+    for (pending, direct_viewer_change) in
+        [(false, false), (true, false), (false, true)]
+    {
+        host.start_automation_account(&user);
+        second
+            .update(cx, |app, _, cx| app.load_library(cx))
+            .unwrap();
+        cx.run_until_parked();
+        second
+            .update(cx, |app, _, cx| {
+                assert!(
+                    app.library
+                        .read(cx)
+                        .model
+                        .items
+                        .iter()
+                        .any(|item| item.id == artifact_id)
+                );
+                app.open_artifact_preview(&artifact_id, cx);
+            })
+            .unwrap();
+        if !pending {
+            cx.run_until_parked();
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            assert!(
+                visual.debug_bounds("preview-fit").is_some(),
+                "real PNG bytes must be loaded before switching accounts"
+            );
+        }
+        if direct_viewer_change {
+            // A host update does not publish a GPUI model event. Every
+            // window must also observe the shared Agent's viewer changes.
+            host.agent().set_result_viewer(None);
+        } else {
+            first.update(cx, |app, _, cx| app.sign_out(cx)).unwrap();
+        }
+        for _ in 0..4 {
+            cx.run_until_parked();
+            cx.background_executor
+                .advance_clock(Duration::from_millis(40));
+        }
+        cx.run_until_parked();
+        second
+            .update(cx, |app, _, cx| {
+                assert_eq!(
+                    app.active_dialog,
+                    ActiveDialog::None,
+                    "another window's account change must close loaded and pending previews"
+                );
+                assert!(!app.library.read(cx).model.items.iter().any(|item| item.id == artifact_id));
+            })
+            .unwrap();
+        visual.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert!(visual.debug_bounds("preview-fit").is_none());
+    }
+    first
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    second
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui::test]
 fn save_picker_cancellation_creates_no_export(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let app = app_with_loaded_artifact(cx, &fixture);

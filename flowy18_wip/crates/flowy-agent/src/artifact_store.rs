@@ -212,6 +212,41 @@ impl ArtifactStore {
         self.committed_ids_locked()
     }
 
+    /// Check the independent marker for the exact history-bound delivery.
+    pub(crate) fn has_delivery_marker(
+        &self,
+        commit: &DeliveryCommit,
+    ) -> io::Result<bool> {
+        validate_identifier(&commit.session_id)?;
+        validate_identifier(&commit.submission_id)?;
+        let _guard = self.lock();
+        let path =
+            self.delivery_path(&commit.session_id, &commit.submission_id);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && !flowy_agent_core::tools::is_windows_reparse_point(
+                        &metadata,
+                    ) => {}
+            Ok(_) => {
+                return Err(invalid("delivery marker is not a regular file"));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        }
+        let marker = self.read_delivery_marker(&path)?;
+        if marker.commit.artifact_ids != commit.artifact_ids
+            || marker.commit.origin != commit.origin
+            || marker.commit.execution != commit.execution
+        {
+            return Err(invalid("delivery marker conflicts with history"));
+        }
+        Ok(true)
+    }
+
     /// Whether `(session_id, origin, source_relative_path, sha256)` already
     /// matches the latest committed (or tombstoned) snapshot for that source.
     pub(crate) fn is_source_already_committed(

@@ -36,6 +36,7 @@ use crate::artifact_store::{
 use crate::config::LlmConfig;
 use crate::execution_host::{
     append_skill_listing, model_route, prepare_skill_prompt,
+    track_unproven_process_dispatches,
 };
 pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
@@ -44,6 +45,9 @@ use crate::projection::{
     VerificationIssue,
 };
 use crate::title::{self, TITLE_MAX_CHARS};
+use crate::workspace_arbiter::{
+    ExecutionClass, StartCoordinator, WorkspaceRequest,
+};
 
 /// The lease handed to a consumer claim; long enough for a normal turn.
 const ACCEPTED_LEASE_MS: u64 = 30_000;
@@ -61,6 +65,16 @@ const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_MAX_CONCURRENT_WORKS: usize = 3;
 
 mod artifacts;
+mod detached;
+mod visibility;
+pub use detached::{
+    DetachedArtifacts, DetachedAttempt, DetachedAttemptState,
+    DetachedCompletion, DetachedError, DetachedPhase, DetachedRun,
+    DetachedRunResult, DetachedRunSpec,
+};
+pub use visibility::result_visible;
+#[cfg(test)]
+mod arbitration_tests;
 mod guards;
 mod observer;
 mod queue;
@@ -348,6 +362,7 @@ type WorkerFaultHook =
 
 struct UiState {
     root: PathBuf,
+    coordinator: StartCoordinator,
     live: Mutex<HashMap<String, Live>>,
     /// File-tool arguments held between `tool_start` and `tool_end`, keyed by
     /// session and call id, so the change card never re-reads the file.
@@ -368,6 +383,7 @@ struct UiState {
     router_inboxes: Mutex<HashMap<String, work_events::RouterInbox>>,
     max_concurrent_works: AtomicUsize,
     accepted_lease_ms: AtomicU64,
+    accepting_runs: AtomicBool,
     autonomous_drain: AtomicBool,
     shutdown_requested: AtomicBool,
     drain_wakeup_scheduled: AtomicBool,
@@ -400,6 +416,9 @@ struct UiState {
     update_version: AtomicU64,
     update_publish: Mutex<()>,
     storage_error_revision: AtomicU64,
+    /// Host-assigned account allowed to see owned results (PA-A11).
+    result_viewer: Mutex<Option<flowy_agent_core::ExecutionOwner>>,
+    result_viewer_generation: AtomicU64,
     storage_owner: Option<Arc<dyn Send + Sync>>,
 }
 
@@ -426,8 +445,10 @@ impl UiState {
             let _ = store_slot.set(store);
         }
         let (update_sender, _) = broadcast::channel(UPDATE_CHANNEL_CAPACITY);
+        let coordinator = StartCoordinator::new(&root);
         Self {
             root,
+            coordinator,
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
             approved_tool_calls: Mutex::new(HashMap::new()),
@@ -440,6 +461,7 @@ impl UiState {
                 DEFAULT_MAX_CONCURRENT_WORKS,
             ),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
+            accepting_runs: AtomicBool::new(true),
             autonomous_drain: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
             drain_wakeup_scheduled: AtomicBool::new(false),
@@ -477,6 +499,8 @@ impl UiState {
             update_version: AtomicU64::new(0),
             update_publish: Mutex::new(()),
             storage_error_revision: AtomicU64::new(0),
+            result_viewer: Mutex::new(None),
+            result_viewer_generation: AtomicU64::new(0),
             storage_owner,
         }
     }
@@ -562,7 +586,7 @@ impl UiState {
 struct RuntimeOwner {
     state: Arc<UiState>,
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
-    _runtime: Option<tokio::runtime::Runtime>,
+    owned_runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl Drop for RuntimeOwner {
@@ -570,7 +594,7 @@ impl Drop for RuntimeOwner {
         self.state.shutdown_requested.store(true, Ordering::Release);
         self.state.autonomous_drain.store(false, Ordering::Release);
         self.state.drain_cancel.cancel();
-        if self._runtime.is_some() {
+        if self.owned_runtime.is_some() {
             let engine = lock(&self.engine).clone();
             if let Some(engine) = engine {
                 engine.cancel_all_active();
@@ -697,6 +721,25 @@ impl AgentHandle {
                 "notice.storage_error"
             })?;
         Ok(disposition)
+    }
+
+    /// Invalidate active automation work owned by a signed-out account. An
+    /// already committed result still completes its local finalization.
+    pub fn cancel_automation_owner(
+        &self,
+        owner: &flowy_agent_core::ExecutionOwner,
+    ) {
+        let engine = lock(&self.inner.engine).clone();
+        if let Some(engine) = engine
+            && let Err(error) = engine.cancel_automation_owner(owner)
+        {
+            log_storage_io_error(
+                "cancel account automation turns",
+                &flowy_agent_core::SessionIndex::path(&self.inner.state.root),
+                &error,
+            );
+            self.inner.state.report_storage_error();
+        }
     }
 
     #[must_use]
@@ -849,17 +892,16 @@ impl AgentHandle {
             model = %config.model,
             "enter"
         );
-        let (rt_handle, runtime) = match runtime {
-            Some(handle) => (handle, None),
-            None => {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .thread_name("flowy-agent")
-                    .build()
-                    .expect("tokio runtime for agent harness");
-                (runtime.handle().clone(), Some(runtime))
-            }
+        let (rt_handle, runtime) = if let Some(handle) = runtime {
+            (handle, None)
+        } else {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name("flowy-agent")
+                .build()
+                .expect("tokio runtime for agent harness");
+            (runtime.handle().clone(), Some(runtime))
         };
         let state = Arc::new(UiState::new(store_root, None, owner));
         if state.storage_owner.is_some() {
@@ -869,7 +911,7 @@ impl AgentHandle {
         let owner = Arc::new(RuntimeOwner {
             state: Arc::clone(&state),
             engine: Arc::clone(&engine),
-            _runtime: runtime,
+            owned_runtime: runtime,
         });
         Self {
             inner: Arc::new(Harness {
@@ -1150,6 +1192,15 @@ impl AgentHandle {
             drop(live);
             let _dispatch = lock(&state.dispatch);
             if state.context_generation.load(Ordering::Acquire) == 0 {
+                let viewer = lock(&state.result_viewer).clone();
+                let active = active.filter(|id| {
+                    lock(&state.live).get(id).is_some_and(|session| {
+                        visibility::result_visible(
+                            &session.execution,
+                            viewer.as_ref(),
+                        )
+                    })
+                });
                 let active_workspace = active.as_ref().and_then(|id| {
                     lock(&state.live)
                         .get(id)
@@ -1470,10 +1521,17 @@ impl AgentHandle {
     }
 
     pub fn list_sessions(&self) -> Vec<SessionSummary> {
+        let viewer = self.result_viewer();
         let live = lock(&self.inner.state.live);
         let mut rows: Vec<SessionSummary> = live
             .iter()
-            .filter(|(_, session)| session.role != SessionRole::Worker)
+            .filter(|(_, session)| {
+                session.role != SessionRole::Worker
+                    && visibility::result_visible(
+                        &session.execution,
+                        viewer.as_ref(),
+                    )
+            })
             .map(|(id, session)| SessionSummary {
                 id: id.clone(),
                 title: session.title.clone(),
@@ -2011,6 +2069,9 @@ impl AgentHandle {
     /// message in `session_id`, if any.
     #[must_use]
     pub fn session_preview(&self, session_id: &str) -> Option<String> {
+        if !self.session_visible(session_id) {
+            return None;
+        }
         lock(&self.inner.state.live)
             .get(session_id)
             .and_then(|session| {
@@ -2039,6 +2100,9 @@ impl AgentHandle {
     }
 
     fn single_session_needs_attention(&self, session_id: &str) -> bool {
+        if !self.session_visible(session_id) {
+            return false;
+        }
         let live_attention = lock(&self.inner.state.live)
             .get(session_id)
             .is_some_and(|session| {
@@ -2097,6 +2161,9 @@ impl AgentHandle {
     /// or cloning session history.
     #[must_use]
     pub fn session_status(&self, session_id: &str) -> TurnStatus {
+        if !self.session_visible(session_id) {
+            return TurnStatus::Idle;
+        }
         lock(&self.inner.state.live)
             .get(session_id)
             .map_or(TurnStatus::Idle, |session| session.status.clone())
@@ -2107,6 +2174,9 @@ impl AgentHandle {
     /// agent layer.
     #[must_use]
     pub fn session_lines(&self, session_id: &str) -> Vec<ChatLine> {
+        if !self.session_visible(session_id) {
+            return Vec::new();
+        }
         lock(&self.inner.state.live)
             .get(session_id)
             .map_or_default(|session| session.projection.lines.clone())
@@ -2116,6 +2186,9 @@ impl AgentHandle {
     /// `session_id` (disambiguation or tool-approval gates).
     #[must_use]
     pub fn session_pending_cards(&self, session_id: &str) -> Vec<PendingCard> {
+        if !self.session_visible(session_id) {
+            return Vec::new();
+        }
         let engine = lock(&self.inner.engine).clone();
         engine
             .as_ref()
@@ -2132,6 +2205,9 @@ impl AgentHandle {
         &self,
         session_id: &str,
     ) -> Option<StopHandoffManifest> {
+        if !self.session_visible(session_id) {
+            return None;
+        }
         let engine = lock(&self.inner.engine).clone();
         engine.as_ref().and_then(|engine| {
             engine.with_session(session_id, |rec| rec.last_stop_handoff.clone())
@@ -2144,6 +2220,9 @@ impl AgentHandle {
         &self,
         session_id: &str,
     ) -> Option<BranchHeartbeat> {
+        if !self.session_visible(session_id) {
+            return None;
+        }
         lock(&self.inner.state.live)
             .get(session_id)
             .and_then(|session| session.heartbeat.clone())
@@ -2433,6 +2512,9 @@ impl AgentHandle {
         let Some(active_id) = lock(&self.inner.state.active).clone() else {
             return ChatHistory::default();
         };
+        if !self.session_visible(&active_id) {
+            return ChatHistory::default();
+        }
         let Some((mut rows, streaming, status, role)) =
             lock(&self.inner.state.live).get(&active_id).map(|session| {
                 (
@@ -2700,6 +2782,7 @@ impl AgentHandle {
 
     pub fn session_title(&self) -> String {
         let active = lock(&self.inner.state.active).clone();
+        let active = active.filter(|id| self.session_visible(id));
         active
             .and_then(|id| {
                 lock(&self.inner.state.live)
@@ -2736,6 +2819,9 @@ impl AgentHandle {
     fn select_session_locked(&self, id: &str) -> Result<(), &'static str> {
         if self.is_initializing() {
             return Err("library.loading");
+        }
+        if !self.session_visible(id) {
+            return Err("notice.agent_failed");
         }
         let workspace = lock(&self.inner.state.live)
             .get(id)
@@ -3356,6 +3442,9 @@ impl Harness {
             return Err("library.loading");
         }
         let state = &self.state;
+        if !state.accepting_runs.load(Ordering::Acquire) {
+            return Err("notice.agent_busy");
+        }
         if *lock(&state.load_failed) {
             return Err("notice.session_storage_failed");
         }
@@ -3637,6 +3726,26 @@ impl Harness {
             lock(&state.approved_tool_calls).remove(&id);
         }
         let mut run_config = engine_config(&config, &cwd);
+        run_config.registry =
+            tool_registry(&cwd, &skills, active_skills.clone());
+        run_config.pre_tool_hook = Some(build_pre_tool_hook(
+            id.clone(),
+            cwd.clone(),
+            Arc::clone(state),
+        ));
+        let resources =
+            WorkspaceRequest::for_tools(&cwd, &run_config.registry.list())
+                .and_then(|resources| {
+                    resources.with_skill_reads(
+                        skills.iter().map(|skill| skill.root.clone()),
+                    )
+                })
+                .map_err(|_| "notice.session_storage_failed")?;
+        let execution_permit = state
+            .coordinator
+            .try_acquire(ExecutionClass::Foreground, resources)
+            .map_err(|_| "notice.storage_error")?
+            .ok_or("notice.agent_busy")?;
         let mut staged_intents_for_turn: Option<
             crate::publish_tool::StagedIntentLog,
         > = None;
@@ -3806,6 +3915,19 @@ impl Harness {
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
         }
+        let resources =
+            WorkspaceRequest::for_tools(&cwd, &run_config.registry.list())
+                .and_then(|resources| {
+                    resources.with_skill_reads(
+                        skills.iter().map(|skill| skill.root.clone()),
+                    )
+                })
+                .map_err(|_| "notice.session_storage_failed")?;
+        if !execution_permit.covers(ExecutionClass::Foreground, &resources) {
+            return Err("notice.storage_error");
+        }
+        let unproven_process_started =
+            track_unproven_process_dispatches(&run_config.registry);
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)
         {
@@ -3828,15 +3950,17 @@ impl Harness {
             base_url = %config.base_url,
             "→ Engine::start_with_config"
         );
-        let turn = engine
-            .start_with_config(
-                id.clone(),
-                prompt.clone(),
-                run_config,
-                stream,
-                submission,
-            )
-            .map_err(|error| {
+        let turn = engine.start_with_config(
+            id.clone(),
+            prompt.clone(),
+            run_config,
+            stream,
+            submission,
+        );
+        let turn = match turn {
+            Ok(turn) => turn,
+            Err(error) => {
+                execution_permit.complete();
                 if let RunError::Storage(storage_error) = &error {
                     log_storage_io_error(
                         "start agent turn",
@@ -3844,12 +3968,14 @@ impl Harness {
                         storage_error,
                     );
                 }
-                match error {
+                return Err(match error {
                     RunError::Storage(_) => "notice.session_storage_failed",
                     RunError::Busy => "notice.agent_busy",
                     _ => "notice.agent_failed",
-                }
-            })?;
+                });
+            }
+        };
+        let execution_permit = execution_permit.started();
         let (fallback_title, title_signal) = {
             let mut live = lock(&state.live);
             let session = live.get_mut(&id).expect("active session exists");
@@ -4030,6 +4156,11 @@ impl Harness {
             if let Some(lease) = workspace_lease.as_mut() {
                 lease.release();
             }
+            // File capture/abort bookkeeping and the real tool futures have
+            // finished. Native shells may still have live descendants: retain
+            // quarantine in that case rather than infer physical quiescence.
+            execution_permit
+                .settle(unproven_process_started.load(Ordering::Acquire));
             let expected_sub =
                 completed_submission.map(|s| format!("submission-{s:032x}"));
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
@@ -4419,6 +4550,8 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         delivery_committer: None,
         work_contract: None,
         pre_tool_hook: None,
+        execution_gate: None,
+        run_budget: None,
     }
 }
 

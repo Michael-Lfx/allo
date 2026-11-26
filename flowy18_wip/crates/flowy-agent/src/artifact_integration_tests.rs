@@ -19,6 +19,8 @@ use crate::{
     AgentHandle, AgentWorkspace, ChatLine, LlmConfig, SessionOrigin, TurnStatus,
 };
 
+mod detached;
+
 const CSV: &str = "region,sales\nNorth,120\nSouth,80\n";
 const SUBMISSION: u128 = 0x1234;
 
@@ -65,8 +67,13 @@ enum ProviderMode {
         content: String,
     },
     StageThenFail,
+    DetachedDelivery,
     DelayedText {
         delay_ms: u64,
+        reply: String,
+    },
+    HeldText {
+        released: Arc<AtomicBool>,
         reply: String,
     },
     ToolApprovalScenario {
@@ -104,6 +111,15 @@ impl ProviderFixture {
             delay_ms,
             reply: reply.into(),
         })
+    }
+
+    fn start_held_text(reply: &str) -> (Self, Arc<AtomicBool>) {
+        let released = Arc::new(AtomicBool::new(false));
+        let fixture = Self::start_with(ProviderMode::HeldText {
+            released: Arc::clone(&released),
+            reply: reply.into(),
+        });
+        (fixture, released)
     }
 
     fn start_tool_approval_scenario(
@@ -259,6 +275,34 @@ impl ProviderFixture {
                                         }
                                     }
                                 }
+                                ProviderMode::DetachedDelivery => {
+                                    let root =
+                                        state.2.lock().unwrap().clone().expect(
+                                            "host assigned output root",
+                                        );
+                                    match index {
+                                        0 => tool_delta(
+                                            "detached-write",
+                                            "write_file",
+                                            json!({
+                                                "path": root.join("sales.csv").display().to_string(),
+                                                "content": CSV
+                                            }),
+                                        ),
+                                        1 => tool_delta(
+                                            "detached-publish",
+                                            "publish_file",
+                                            json!({
+                                                "path": "sales.csv",
+                                                "delivery_key": "sales"
+                                            }),
+                                        ),
+                                        _ => (
+                                            json!({"role":"assistant","content":"Detached artifact complete."}),
+                                            "stop",
+                                        ),
+                                    }
+                                }
                                 ProviderMode::DelayedText {
                                     delay_ms,
                                     reply,
@@ -266,6 +310,17 @@ impl ProviderFixture {
                                     thread::sleep(Duration::from_millis(
                                         *delay_ms,
                                     ));
+                                    (
+                                        json!({"role":"assistant","content": reply}),
+                                        "stop",
+                                    )
+                                }
+                                ProviderMode::HeldText { released, reply } => {
+                                    while !released.load(Ordering::SeqCst)
+                                        && !state.0.load(Ordering::SeqCst)
+                                    {
+                                        thread::sleep(Duration::from_millis(5));
+                                    }
                                     (
                                         json!({"role":"assistant","content": reply}),
                                         "stop",
@@ -1266,7 +1321,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
             let expected = crate::delivery::hash_bytes(checked);
             let receipt =
                 store.prepare(crate::artifact_store::PrepareArtifact {
-                    execution: Default::default(),
+                    execution: crate::ExecutionMetadata::default(),
                     source_root: output_dir.clone(),
                     relative_path: "sales.csv".into(),
                     source_relative_path: format!("outputs/{sub_id}/sales.csv"),
@@ -1318,7 +1373,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
             },
         ],
         delivery_commits: vec![DeliveryCommit {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             session_id: session_id.clone(),
             submission_id: sub_id.clone(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -2181,6 +2236,23 @@ fn pre_tool_ask_persists_across_restart_blocks_hash_mismatch_unblocks_session_b_
         rev_after_approve, 1,
         "ApproveTool resume must NEVER increment or evolve WorkContract.revision"
     );
+
+    // The approved fixture ran a real shell. Its command only removes the
+    // fixture directory and creates no descendants; explicitly confirm this
+    // known quiescence before asking the host to admit another writer.
+    let quiet_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match reopened.confirm_workspace_quiescence(true) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < quiet_deadline);
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                panic!("fixture quiescence confirmation failed: {error}")
+            }
+        }
+    }
 
     // 6) DenyTool triggers turn-scoped UserDenied anti-bypass: adversarial
     //    model trying `write_file` in the same resumed turn is blocked by host!

@@ -1,13 +1,67 @@
 //! Shared model and skill prompt setup for agent entry points.
 
-use flowy_agent_core::{ModelRoute, PromptTurn};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use flowy_agent_core::{
+    ModelRoute, PromptTurn,
+    tools::{ToolDefinition, ToolRegistry},
+};
 use flowy_skills::{
     InstalledSkill, SkillId, format_available_skills, format_skill_invocation,
 };
 
 use crate::config::LlmConfig;
 
-pub(super) fn model_route(config: &LlmConfig) -> ModelRoute {
+/// Track real body dispatch, after policy, guards, account gate and budgets.
+/// The locked pi shell intentionally leaves normally spawned descendants
+/// alive, so its returned future is not a writer-quiescence proof. Unknown
+/// extension bodies receive the same conservative treatment. Merely exposing
+/// a schema (or rejecting a call) does not contaminate this turn.
+pub fn track_unproven_process_dispatches(
+    registry: &ToolRegistry,
+) -> Arc<AtomicBool> {
+    let dispatched = Arc::new(AtomicBool::new(false));
+    for name in registry.list() {
+        if matches!(
+            name.as_str(),
+            "read_file"
+                | "write_file"
+                | "edit_file"
+                | "glob"
+                | "grep"
+                | "create_deck"
+                | "verify_deck"
+                | "verify_artifact"
+                | "publish_file"
+                | "todo_write"
+        ) {
+            continue;
+        }
+        let Some(definition) = registry.get(&name) else {
+            continue;
+        };
+        let execute = Arc::clone(&definition.execute);
+        let flag = Arc::clone(&dispatched);
+        let mut tracked = ToolDefinition::new(
+            definition.name.clone(),
+            definition.description.clone(),
+            definition.parameters.clone(),
+            move |args, context| {
+                flag.store(true, Ordering::Release);
+                execute(args, context)
+            },
+        );
+        tracked.is_concurrency_safe = definition.is_concurrency_safe;
+        if definition.supports_artifact_delivery() {
+            tracked = tracked.with_artifact_delivery();
+        }
+        registry.register(Arc::new(tracked));
+    }
+    dispatched
+}
+
+pub fn model_route(config: &LlmConfig) -> ModelRoute {
     ModelRoute {
         provider: if config.provider.is_empty() {
             "flowy".into()
@@ -25,7 +79,7 @@ pub(super) fn model_route(config: &LlmConfig) -> ModelRoute {
     }
 }
 
-pub(super) fn prepare_skill_prompt(
+pub fn prepare_skill_prompt(
     text: &str,
     skills: &[InstalledSkill],
 ) -> Result<(PromptTurn, Vec<SkillId>), &'static str> {
@@ -60,10 +114,7 @@ pub(super) fn prepare_skill_prompt(
     ))
 }
 
-pub(super) fn append_skill_listing(
-    base: &str,
-    skills: &[InstalledSkill],
-) -> String {
+pub fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
     let listing = format_available_skills(skills);
     match (base.trim().is_empty(), listing.is_empty()) {
         (true, true) => String::new(),

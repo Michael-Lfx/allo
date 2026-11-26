@@ -1,4 +1,5 @@
 pub use flowy_agent::{FlexProvider, LlmConfig, Model, Plan};
+use flowy_automation::schedule::IanaTimeZone;
 use flowy_i18n::Locale;
 pub use flowy_ui::{Accent, Density, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,7 @@ pub struct Preferences {
     pub activity: bool,
     pub telemetry_opt_out: bool,
     pub launch_at_login: bool,
+    pub automation_time_zone: Option<String>,
     pub flex_provider: Option<FlexProvider>,
     pub flex_api_key: String,
     pub skills: Vec<String>,
@@ -83,6 +85,8 @@ struct File {
     telemetry_opt_out: bool,
     #[serde(default)]
     launch_at_login: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automation_time_zone: Option<String>,
     #[serde(default)]
     flex_provider: Option<FlexProvider>,
     #[serde(default)]
@@ -125,6 +129,7 @@ impl Default for Preferences {
             activity: false,
             telemetry_opt_out: false,
             launch_at_login: false,
+            automation_time_zone: None,
             flex_provider: None,
             flex_api_key: String::new(),
             skills: Vec::new(),
@@ -177,6 +182,7 @@ impl Preferences {
             activity: false,
             telemetry_opt_out: false,
             launch_at_login: false,
+            automation_time_zone: None,
             flex_provider: None,
             flex_api_key: String::new(),
             skills: Vec::new(),
@@ -213,6 +219,7 @@ impl Preferences {
             activity: file.activity,
             telemetry_opt_out: file.telemetry_opt_out,
             launch_at_login: file.launch_at_login,
+            automation_time_zone: file.automation_time_zone,
             flex_provider: file.flex_provider,
             flex_api_key: file.flex_api_key,
             skills: file.skills,
@@ -228,6 +235,23 @@ impl Preferences {
     pub fn shows_model_info(&self) -> bool {
         self.plan == Plan::Free
             && self.model_info_version != Self::app_version()
+    }
+
+    /// Resolves the default for new calendar rules. Existing rules retain the
+    /// timezone set on their revision.
+    #[must_use]
+    pub fn default_automation_time_zone(&self) -> Option<IanaTimeZone> {
+        self.automation_time_zone_with(|| iana_time_zone::get_timezone().ok())
+    }
+
+    fn automation_time_zone_with(
+        &self,
+        detect: impl FnOnce() -> Option<String>,
+    ) -> Option<IanaTimeZone> {
+        match self.automation_time_zone.as_deref() {
+            Some(zone) => zone.parse().ok(),
+            None => detect()?.parse().ok(),
+        }
     }
 
     pub fn save(&self, root: &Path) {
@@ -254,6 +278,7 @@ impl Preferences {
             activity: self.activity,
             telemetry_opt_out: self.telemetry_opt_out,
             launch_at_login: self.launch_at_login,
+            automation_time_zone: self.automation_time_zone.clone(),
             flex_provider: self.flex_provider,
             flex_api_key: self.flex_api_key.clone(),
             skills: self.skills.clone(),
@@ -333,7 +358,60 @@ mod tests {
         assert_eq!(prefs.font_size, 14);
         assert_eq!(prefs.density, super::Density::Compact);
         assert!(!prefs.activity);
+        assert_eq!(prefs.automation_time_zone, None);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn calendar_time_zone_preference_is_explicit_and_round_trips() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let dir = std::env::temp_dir().join(format!("flowy-zone-{nanos}"));
+        fs::create_dir(&dir).unwrap();
+        let mut prefs = Preferences {
+            automation_time_zone: Some("America/New_York".into()),
+            ..Preferences::default()
+        };
+        prefs.save_checked(&dir).unwrap();
+        let restored = Preferences::load(&dir);
+        assert_eq!(
+            restored.default_automation_time_zone(),
+            "America/New_York".parse().ok()
+        );
+
+        prefs.automation_time_zone = Some("not/a-zone".into());
+        assert_eq!(
+            prefs.automation_time_zone_with(|| Some("Asia/Shanghai".into())),
+            None
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn system_time_zone_is_a_default_only_for_new_rules() {
+        let prefs = Preferences {
+            locale: Locale::ZhCn,
+            ..Preferences::default()
+        };
+        let original = prefs
+            .automation_time_zone_with(|| Some("America/New_York".into()))
+            .unwrap();
+        let rule = flowy_automation::schedule::CalendarRule {
+            time_zone: original,
+            local_time: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            frequency: flowy_automation::schedule::CalendarFrequency::Daily,
+        };
+        assert_eq!(
+            prefs.automation_time_zone_with(|| Some("Asia/Shanghai".into())),
+            "Asia/Shanghai".parse().ok()
+        );
+        assert_eq!(rule.time_zone.name(), "America/New_York");
+        assert_eq!(prefs.automation_time_zone_with(|| None), None);
+        assert_eq!(
+            prefs.automation_time_zone_with(|| Some("not/a-zone".into())),
+            None
+        );
     }
 
     #[test]

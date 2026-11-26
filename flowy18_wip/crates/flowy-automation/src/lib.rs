@@ -9,6 +9,7 @@ mod executor;
 mod identity;
 mod model;
 mod ports;
+pub mod schedule;
 pub mod schema_contract;
 pub mod store;
 

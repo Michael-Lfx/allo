@@ -333,3 +333,13 @@ registered references. New database absence permits initialization; corrupt,
 unknown, or future automation lineage preserves the data and stops execution.
 Actual schema and side-store audits are required when persistence is added;
 a registry inventory alone is not evidence that a live database passed audit.
+
+The GPUI host's `<store_root>/execution-in-progress.lock` is a recovery control
+sentinel registered by the 2026-11-26 addendum to ADR-0018. It has no business
+identity or entity references, contains no account or task data, and grants no
+process ownership; `instance.lock` remains the sole ownership lock. Therefore
+it is not a product table or an owner-scoped side-store entity. A surviving or
+unreadable sentinel stops admission until the trusted host explicitly confirms
+writer quiescence. It must not be silently deleted during initialization,
+database repair, or cleanup. Grant records remain registered side-store
+entities, and per-submission budget checkpoints remain owned by Agent history.

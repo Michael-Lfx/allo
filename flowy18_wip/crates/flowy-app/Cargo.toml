@@ -13,6 +13,7 @@ chrono = { workspace = true }
 directories = { workspace = true }
 flowy-agent = { workspace = true }
 flowy-auth = { workspace = true }
+flowy-automation = { workspace = true }
 flowy-core = { workspace = true }
 flowy-i18n = { workspace = true }
 flowy-obs = { workspace = true }
@@ -25,6 +26,7 @@ tracing = { workspace = true }
 getrandom = { workspace = true }
 gpui = { workspace = true }
 gpui-kit = { workspace = true }
+iana-time-zone = { workspace = true }
 open = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

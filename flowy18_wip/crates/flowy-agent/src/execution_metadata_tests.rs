@@ -153,16 +153,29 @@ fn unowned_automation_index_cannot_become_runnable_history() {
     let handle = handle(&root);
     let empty: [HistoryRecord; 0] = [];
     assert_eq!(History::load(&root.0).unwrap().sessions, empty);
-    handle.select_session("automation-session").unwrap();
+    // PA-A11: the quarantined session is not restored as active and cannot be
+    // selected, so a submission can never execute inside it.
+    assert_eq!(handle.active_session_id(), None);
     assert_eq!(
-        handle.submit_chat(7, "must not execute"),
-        Err("notice.storage_error")
+        handle.select_session("automation-session"),
+        Err("notice.agent_failed")
     );
-    assert_eq!(History::load(&root.0).unwrap().sessions, empty);
-    assert_eq!(
-        SessionIndex::load(&root.0).unwrap().sessions[0].execution,
-        execution
+    let submitted = handle.submit_chat(7, "must not execute").unwrap();
+    assert_ne!(submitted, "automation-session");
+    assert!(
+        History::load(&root.0)
+            .unwrap()
+            .sessions
+            .iter()
+            .all(|record| record.id != "automation-session")
     );
+    let index = SessionIndex::load(&root.0).unwrap();
+    let quarantined = index
+        .sessions
+        .iter()
+        .find(|record| record.id == "automation-session")
+        .expect("quarantined index record is preserved");
+    assert_eq!(quarantined.execution, execution);
     drop(handle);
 }
 

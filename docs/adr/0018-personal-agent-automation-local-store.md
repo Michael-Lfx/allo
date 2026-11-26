@@ -115,3 +115,21 @@ sequenceDiagram
 PA-B01 及其中完整归档的 V2；V2 的旧附录仅作追溯，不覆盖本决议的数据调整。
 本机锁文件已有 uuid 1.29.2；其缓存 Cargo.toml 声明 Apache-2.0 OR MIT、
 MSRV 1.89，并附两份许可证，满足当前 GPUI MIT workspace 的使用条件。
+
+## 2026-11-26 补充：执行崩溃隔离控制文件
+
+PA-A09 在 `<store_root>/execution-in-progress.lock` 保存无业务引用的写入哨兵。
+它只表示此前宿主管理的写入者可能尚未静止，不授予进程所有权，不是第二把
+`instance.lock`，也不参与 SQLite 产品表或带 owner 的侧存储实体清单。文件中
+不保存主体、任务正文、凭证、session/run/attempt ID。
+
+首个写资源许可在实际执行前创建并同步哨兵；最后一个写入者在真实执行 future
+及产物捕获收尾完成后移除。异常丢弃已启动许可、重启时发现哨兵、读写失败或
+移除失败均关闭新启动入口。新进程不得根据 UI 的 Stopped 或仅凭 PID 缺失自动
+清除；可信宿主必须先确认无残留写入者，再在没有活动或等待写入者时显式恢复。
+缺失哨兵只表示本隔离协议没有未决证据，不证明数据库或跨存储恢复已完成。
+
+Grant 仍属于原先登记的 `automation/grants.json` 侧存储，grant_id 遵守 UUIDv7
+契约；每 submission 的预算起点、计数与停止原因归既有 Agent history 所有者
+原子持久化，submission key 继续采用宿主 opaque 引用。此补充不改变父产品库
+的 lineage、DDL、迁移、重建或 reset 规则。

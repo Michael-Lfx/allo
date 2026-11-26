@@ -224,12 +224,13 @@ fn validate_windows_root(root: &Path) -> io::Result<()> {
     let mut components = root.components();
     match components.next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::Disk(_) => {}
-            Prefix::UNC(server, share) => {
+            Prefix::Disk(_) | Prefix::VerbatimDisk(_) => {}
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
                 validate_windows_name(server)?;
                 validate_windows_name(share)?;
             }
-            // Verbatim and device namespaces bypass Win32 path handling.
+            // Canonical disk/UNC paths still validate every name below.
+            // Generic verbatim and device namespaces are never file roots.
             _ => {
                 return Err(invalid(
                     "publisher root uses an unsupported path namespace",
@@ -538,18 +539,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_root_validation_accepts_drive_and_unc_but_rejects_namespaces() {
+    fn windows_root_validation_accepts_canonical_paths_but_rejects_devices() {
         use super::validate_windows_root;
         assert!(validate_windows_root(Path::new(r"C:\host\outputs")).is_ok());
         assert!(
             validate_windows_root(Path::new(r"\\server\share\host\outputs"))
                 .is_ok()
         );
+        for root in [r"\\?\C:\outputs", r"\\?\UNC\server\share\outputs"] {
+            assert!(validate_windows_root(Path::new(root)).is_ok());
+        }
         for root in [
             r"C:relative",
             r"\rooted",
-            r"\\?\C:\outputs",
-            r"\\?\UNC\server\share\outputs",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\outputs",
+            r"\\?\C:\host.\outputs",
+            r"\\?\C:\host\..\outputs",
+            r"\\?\C:\host:stream\outputs",
             r"\\.\C:\outputs",
             r"C:\host\..\outputs",
             r"C:\host:stream\outputs",

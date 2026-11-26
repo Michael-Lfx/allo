@@ -810,7 +810,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -825,7 +825,7 @@ mod background_init_tests {
             .unwrap();
         let mut record = engine.session("home").unwrap();
         record.delivery_commits.push(DeliveryCommit {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             session_id: "home".into(),
             submission_id: "submission-1".into(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -841,7 +841,7 @@ mod background_init_tests {
         lock(&state.live).insert(
             "home".into(),
             Live {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 projection: ChatProjection::from_lines(vec![
                     ChatLine::Status {
                         text: "chat.status_delivery_failed".into(),
@@ -936,7 +936,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -950,7 +950,7 @@ mod background_init_tests {
             })
             .unwrap();
         let delivery = DeliveryCommit {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             session_id: "home".into(),
             submission_id: "submission-1".into(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -973,7 +973,7 @@ mod background_init_tests {
         crate::index::SessionIndex {
             active: Some("home".into()),
             sessions: vec![IndexRecord {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 id: "home".into(),
                 title: "stale".into(),
                 updated_at: 1,
@@ -1041,7 +1041,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -1056,7 +1056,7 @@ mod background_init_tests {
             .unwrap();
         store
             .recover_commits(std::slice::from_ref(&DeliveryCommit {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 session_id: "legacy".into(),
                 submission_id: "submission-legacy".into(),
                 artifact_ids: vec![receipt.artifact_id.clone()],
@@ -1178,7 +1178,7 @@ mod background_init_tests {
         let output_root = workspace.join("outputs").join(&submission_id);
         std::fs::create_dir_all(&output_root).unwrap();
         let context = flowy_agent_core::ToolRunContext {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             signal: CancelToken::new(),
             agent_id: Some("s-home".into()),
             cwd: Some(workspace.display().to_string()),
@@ -1813,7 +1813,7 @@ mod guard_tests {
             None,
         );
         let context = flowy_agent_core::ToolRunContext {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             signal: CancelToken::new(),
             agent_id: Some("s-l3".to_owned()),
             cwd: Some(root.display().to_string()),
@@ -2110,7 +2110,14 @@ mod guard_tests {
         std::fs::create_dir_all(&root).unwrap();
         let wait_idle = |handle: &AgentHandle, sid: &str| {
             for _ in 0..200 {
-                if !handle.session_status(sid).is_busy() {
+                // Completed is projected before artifact capture finishes.
+                // These echo-only turns spawn no processes; the writer
+                // marker disappears once their post-turn I/O is also done.
+                if !handle.session_status(sid).is_busy()
+                    && !root
+                        .join(crate::workspace_arbiter::EXECUTION_MARKER)
+                        .exists()
+                {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));

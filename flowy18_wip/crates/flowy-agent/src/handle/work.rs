@@ -105,6 +105,9 @@ impl AgentHandle {
     /// requiring callers to construct internal `submission-*` IDs.
     #[must_use]
     pub fn session_work_status(&self, session_id: &str) -> Option<WorkStatus> {
+        if !self.session_visible(session_id) {
+            return None;
+        }
         let record = lock(&self.inner.engine)
             .as_ref()
             .and_then(|engine| engine.session(session_id))?;
@@ -900,6 +903,17 @@ impl AgentHandle {
         self.prepare_shutdown_with_timeout(std::time::Duration::from_secs(2));
     }
 
+    /// Close intake before the host starts its asynchronous shutdown work.
+    /// The first caller owns the shutdown request.
+    pub fn begin_shutdown(&self) -> bool {
+        let state = &self.inner.state;
+        let first = state.accepting_runs.swap(false, Ordering::AcqRel);
+        state.autonomous_drain.store(false, Ordering::Release);
+        state.drain_cancel.cancel();
+        state.coordinator.close();
+        first
+    }
+
     /// Bounded variant of [`Self::prepare_shutdown`] so UI frameworks with
     /// strict quit deadlines can align the grace wait without losing the
     /// initial `persist_index` flush.
@@ -908,11 +922,10 @@ impl AgentHandle {
             .state
             .shutdown_requested
             .store(true, Ordering::Release);
-        self.inner
-            .state
-            .autonomous_drain
-            .store(false, Ordering::Release);
-        self.inner.state.drain_cancel.cancel();
+        self.begin_shutdown();
+        // Wait for an admission that passed the gate just before shutdown to
+        // publish its fence. Callers in the desktop host run this off the UI thread.
+        drop(lock(&self.inner.state.dispatch));
         // Persist immediately so index updates survive even if the host exits
         // before child-process reaping completes.
         let _ = persist_index(&self.inner.state);
@@ -929,17 +942,22 @@ impl AgentHandle {
             if self.inner.is_session_waiting_for_user(&session_id) {
                 continue;
             }
-            match self.cancel_task(TaskTarget::Session(session_id.clone())) {
-                Ok(
+            let cancelled = {
+                let _dispatch = lock(&self.inner.state.dispatch);
+                self.inner.cancel_session_locked(&session_id)
+            };
+            match cancelled {
+                Ok((
                     CancelOutcome::Cancelled
                     | CancelOutcome::FinalizingNotCancellable,
-                ) => {
+                    _,
+                )) => {
                     // Wait for both cancelled turns reaping child processes AND
                     // finalizing deliveries finishing their atomic commit.
                     wait_list.push(session_id);
                 }
-                Ok(CancelOutcome::AlreadySettled) => {
-                    // May still be reaping after an earlier cancel.
+                Ok((CancelOutcome::AlreadySettled, _)) | Err(_) => {
+                    // Earlier cancellation or a failed save may leave the tool reaping.
                     if engine
                         .as_ref()
                         .is_some_and(|eng| eng.is_active(&session_id))
@@ -947,7 +965,6 @@ impl AgentHandle {
                         wait_list.push(session_id);
                     }
                 }
-                Err(_) => {}
             }
         }
         if !wait_list.is_empty()

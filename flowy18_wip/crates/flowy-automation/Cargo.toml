@@ -9,6 +9,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true, features = ["serde"] }
+chrono-tz = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

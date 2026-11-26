@@ -4,9 +4,26 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use flowy_agent::{AgentHandle, AgentInitialization, Model, ProviderCatalog};
+use flowy_agent::{
+    AgentHandle, AgentInitialization, ExecutionDenied, ExecutionGate, Model,
+    ProviderCatalog,
+};
+use flowy_auth::{Config, Session, SessionStore};
+use flowy_automation::{AccountGeneration, GrantId, PrincipalId};
 use tokio::runtime::Runtime;
+use tokio::task::JoinHandle;
+
+use super::automation_access::{
+    Authority, AutomationLeaseRequest, GrantAuthority, current_time_ms,
+};
+use super::automation_grants::{
+    GrantBinding, GrantError, GrantRequest, GrantStatus,
+};
+
+const QUIT_GRACE: Duration = Duration::from_millis(1_250);
+const PLATFORM_QUIT_GRACE: Duration = Duration::from_millis(150);
 
 /// Acquire before reading preferences, account state, or agent history.
 /// Moving this token into a host never locks the file a second time.
@@ -68,6 +85,8 @@ struct HostInner {
     runtime: Option<Runtime>,
     owner: Arc<StoreOwner>,
     cloud: Mutex<CloudState>,
+    authority: Authority,
+    grants: GrantAuthority,
 }
 
 #[derive(Debug, Default)]
@@ -77,8 +96,7 @@ struct CloudState {
 }
 
 /// Window display state for the currently configured shared agent. No token
-/// is copied into this projection; account credentials stay in the existing
-/// account flow until the execution authority is introduced in A07.
+/// is copied into this projection; automation credentials stay in Authority.
 #[derive(Clone, Debug)]
 pub(super) struct SharedCloudModel {
     pub account: String,
@@ -91,8 +109,7 @@ impl Drop for HostInner {
     fn drop(&mut self) {
         // A final host may also be dropped from an async context. The agent's
         // observers, initialization worker and artifact handles retain the
-        // store owner until their actual work has stopped. A12 adds the
-        // bounded cooperative quit protocol before this final runtime teardown.
+        // store owner until their actual work has stopped.
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -100,6 +117,12 @@ impl Drop for HostInner {
 }
 
 impl gpui::Global for AppHost {}
+
+struct QuitFallback {
+    _subscription: gpui::Subscription,
+}
+
+impl gpui::Global for QuitFallback {}
 
 #[derive(Debug)]
 pub(super) struct ModelSignal;
@@ -113,6 +136,62 @@ impl AppHost {
         Self::with_mode(bootstrap, true)
     }
 
+    pub(super) fn install(self, cx: &mut gpui::App) {
+        cx.set_global(self);
+        let subscription = cx.on_app_quit(|cx| {
+            let shutdown = cx
+                .try_global::<Self>()
+                .and_then(|host| host.start_shutdown(PLATFORM_QUIT_GRACE));
+            async move {
+                if let Some(shutdown) = shutdown {
+                    let _ = shutdown.await;
+                }
+            }
+        });
+        cx.set_global(QuitFallback {
+            _subscription: subscription,
+        });
+    }
+
+    /// Coordinate an explicit quit before entering the platform's short
+    /// quit hook. Repeated requests share the first request's deadline.
+    pub fn request_shutdown(cx: &mut gpui::App) {
+        let Some(host) = cx.try_global::<Self>() else {
+            cx.quit();
+            return;
+        };
+        if let Some(shutdown) = host.start_shutdown(QUIT_GRACE) {
+            cx.spawn(async move |cx| {
+                let _ = shutdown.await;
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
+    }
+
+    fn start_shutdown(&self, grace: Duration) -> Option<JoinHandle<()>> {
+        let runtime = self.inner.runtime.as_ref()?;
+        if !self.inner.agent.begin_shutdown() {
+            return None;
+        }
+        let host = self.clone();
+        Some(runtime.spawn(async move {
+            let until = grace.saturating_sub(Duration::from_millis(50));
+            let finish = tokio::task::spawn_blocking(move || {
+                host.inner.agent.prepare_shutdown_with_timeout(until);
+            });
+            match tokio::time::timeout(grace, finish).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "application shutdown worker failed");
+                }
+                Err(_) => {
+                    tracing::warn!("application shutdown exceeded its grace period");
+                }
+            }
+        }))
+    }
+
     fn with_mode(
         bootstrap: OwnedBootstrap,
         background: bool,
@@ -123,6 +202,17 @@ impl AppHost {
             .thread_name("flowy-agent")
             .build()?;
         let owner = bootstrap.owner;
+        let stored_session = SessionStore::new(owner.root.clone()).load();
+        let authority = Authority::new(
+            Config::default().effective_base_url(),
+            stored_session.as_ref(),
+        );
+        let grant_guard: Arc<dyn Send + Sync> = owner.clone();
+        let grants = GrantAuthority::open_guarded(
+            authority.clone(),
+            &owner.root,
+            grant_guard,
+        );
         let guard: Arc<dyn Send + Sync> = owner.clone();
         let config = super::FlowyApp::disconnected_config();
         let agent = if background {
@@ -141,12 +231,15 @@ impl AppHost {
             )
         };
         agent.set_autonomous_drain(background);
+        agent.set_result_viewer(authority.current_owner());
         Ok(Self {
             inner: Arc::new(HostInner {
                 agent,
                 runtime: Some(runtime),
                 owner,
                 cloud: Mutex::new(CloudState::default()),
+                authority,
+                grants,
             }),
         })
     }
@@ -161,6 +254,141 @@ impl AppHost {
 
     pub(super) fn agent(&self) -> AgentHandle {
         self.inner.agent.clone()
+    }
+
+    pub(super) fn automation_authority(&self) -> &Authority {
+        &self.inner.authority
+    }
+
+    pub(super) fn start_automation_account(&self, session: &Session) {
+        if let Some(previous) = self.inner.authority.sign_in(session) {
+            self.inner.agent.cancel_automation_owner(&previous);
+        }
+        self.publish_result_viewer();
+    }
+
+    pub(super) fn clear_automation_account(&self) {
+        if let Some(previous) = self.inner.authority.sign_out() {
+            self.inner.agent.cancel_automation_owner(&previous);
+        }
+        self.publish_result_viewer();
+    }
+
+    /// Every account change advances the viewer generation, including a
+    /// same-account re-login, so late result callbacks are discarded.
+    fn publish_result_viewer(&self) {
+        self.inner
+            .agent
+            .set_result_viewer(self.inner.authority.current_owner());
+    }
+
+    #[cfg(test)]
+    pub(super) fn result_viewer_generation(&self) -> u64 {
+        self.inner.agent.result_viewer_generation()
+    }
+
+    /// Invalidate active automation leases before signaling their attempts.
+    pub fn invalidate_automation_leases(&self) {
+        if let Some(previous) = self.inner.authority.revoke_leases() {
+            self.inner.agent.cancel_automation_owner(&previous);
+        }
+    }
+
+    /// The current stable cloud account, if automation can bind an owner.
+    pub fn automation_account_binding(
+        &self,
+    ) -> Option<(PrincipalId, AccountGeneration)> {
+        self.inner.authority.account_binding()
+    }
+
+    /// Bind one attempt to an immutable owner/route and an existing durable
+    /// grant. Every actual dispatch rechecks the current account and ledger.
+    pub fn automation_lease(
+        &self,
+        request: AutomationLeaseRequest,
+    ) -> Result<Arc<dyn ExecutionGate>, ExecutionDenied> {
+        self.inner.grants.lease(request)
+    }
+
+    pub fn automation_grants_available(&self) -> bool {
+        self.inner.grants.available()
+    }
+
+    /// Call on a background worker: a successful return means the exact
+    /// principal, generation, command binding and decision were persisted.
+    pub fn decide_automation_grant(
+        &self,
+        request: GrantRequest,
+        approved: bool,
+    ) -> Result<GrantStatus, GrantError> {
+        self.inner
+            .grants
+            .decide(request, approved, current_time_ms())
+    }
+
+    /// Recovery can query a prior request under a new live generation of
+    /// the same principal, but cannot change its original approval binding.
+    pub fn automation_grant_status(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+        request: GrantRequest,
+    ) -> Result<Option<GrantStatus>, GrantError> {
+        self.inner.grants.status_for_request(
+            principal,
+            generation,
+            request,
+            current_time_ms(),
+        )
+    }
+
+    pub fn automation_grant_binding(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+        grant_id: &GrantId,
+    ) -> Result<GrantBinding, GrantError> {
+        self.inner.grants.binding(
+            principal,
+            generation,
+            grant_id,
+            current_time_ms(),
+        )
+    }
+
+    /// Revocation first invalidates live leases, then persists the tombstone.
+    /// Failed persistence remains an error and never reports durable success.
+    pub fn revoke_automation_grant(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+        grant_id: &GrantId,
+    ) -> Result<bool, GrantError> {
+        let result = self.inner.grants.revoke(
+            principal,
+            generation,
+            grant_id,
+            current_time_ms(),
+        );
+        if !self.inner.authority.is_current(generation) {
+            self.inner.agent.cancel_automation_owner(
+                &flowy_agent::ExecutionOwner {
+                    authority: principal.authority().to_owned(),
+                    subject: principal.external_user_id().to_string(),
+                },
+            );
+        }
+        result
+    }
+
+    /// Historic IDs remain queryable for their current owner, including
+    /// revoked records, without revealing another account's references.
+    pub fn automation_grants(
+        &self,
+        principal: &PrincipalId,
+        generation: &AccountGeneration,
+    ) -> Result<Vec<GrantId>, GrantError> {
+        self.inner.grants.inventory(principal, generation)
     }
 
     pub(super) fn model_revision(&self) -> u64 {
@@ -210,7 +438,7 @@ impl AppHost {
         }
         let bootstrap = OwnedBootstrap::acquire(root)?;
         let host = Self::with_mode(bootstrap, !cfg!(test))?;
-        cx.set_global(host.clone());
+        host.clone().install(cx);
         Ok(host)
     }
 }

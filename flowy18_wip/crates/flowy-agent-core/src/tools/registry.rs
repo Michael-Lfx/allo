@@ -197,6 +197,31 @@ impl ToolRegistry {
         arguments: Value,
         run_ctx: ToolRunContext,
     ) -> ToolExecutionResult {
+        self.execute_under_gate(call_id, name, arguments, run_ctx, None)
+            .await
+    }
+
+    pub(crate) async fn execute_under_gate(
+        &self,
+        call_id: String,
+        name: String,
+        arguments: Value,
+        run_ctx: ToolRunContext,
+        gate: Option<&dyn crate::ExecutionGate>,
+    ) -> ToolExecutionResult {
+        self.execute_with_limits(call_id, name, arguments, run_ctx, gate, None)
+            .await
+    }
+
+    pub(crate) async fn execute_with_limits(
+        &self,
+        call_id: String,
+        name: String,
+        arguments: Value,
+        run_ctx: ToolRunContext,
+        gate: Option<&dyn crate::ExecutionGate>,
+        budget: Option<&crate::run_budget::RunBudgetState>,
+    ) -> ToolExecutionResult {
         let args = ToolCallArgs {
             call_id,
             name: name.clone(),
@@ -240,6 +265,39 @@ impl ToolRegistry {
             );
         }
 
+        if let Some(budget) = budget
+            && let Err(error) = budget.reserve_tool()
+        {
+            return ToolExecutionResult::error("RUN_BUDGET", error.to_string());
+        }
+        // A budget checkpoint can involve slow storage. Recheck cancellation
+        // and resolve current authority after it, immediately before dispatch.
+        if run_ctx.signal.is_cancelled() {
+            return ToolExecutionResult::error(
+                "CANCELLED",
+                "tool call cancelled before dispatch",
+            );
+        }
+        if let Some(gate) = gate
+            && let Err(error) = gate.authorize_tool(&run_ctx, &args)
+        {
+            return ToolExecutionResult::error("DENIED", error.to_string());
+        }
+        // Authorization may wait on host-owned locks or durable ledger work.
+        // Recheck both stop conditions after it so a slow gate cannot dispatch
+        // a tool after cancellation or the monotonic deadline.
+        if let Some(budget) = budget
+            && let Some(stop) = budget.stop_requested()
+        {
+            return ToolExecutionResult::error("RUN_BUDGET", stop.to_string());
+        }
+        if run_ctx.signal.is_cancelled() {
+            return ToolExecutionResult::error(
+                "CANCELLED",
+                "tool call cancelled before dispatch",
+            );
+        }
+
         (tool.execute)(args, run_ctx).await
     }
 }
@@ -253,6 +311,30 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DispatchGate<F>(F);
+
+    impl<F> crate::ExecutionGate for DispatchGate<F>
+    where
+        F: Fn(&ToolRunContext) + Send + Sync,
+    {
+        fn model_credential(
+            &self,
+            _: &crate::ExecutionMetadata,
+            _: &crate::ModelRoute,
+        ) -> Result<String, crate::ExecutionDenied> {
+            Ok("fixture".into())
+        }
+
+        fn authorize_tool(
+            &self,
+            context: &ToolRunContext,
+            _: &ToolCallArgs,
+        ) -> Result<(), crate::ExecutionDenied> {
+            (self.0)(context);
+            Ok(())
+        }
+    }
 
     fn echo_tool(executed: Arc<AtomicBool>) -> Arc<ToolDefinition> {
         Arc::new(ToolDefinition::new(
@@ -355,6 +437,124 @@ mod tests {
                 panic!("unknown tool must not succeed")
             }
         }
+    }
+
+    #[tokio::test]
+    async fn revoked_authority_is_rechecked_before_the_next_tool_dispatch() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let registry = ToolRegistry::new();
+        registry.register(echo_tool(Arc::clone(&executed)));
+        let gate =
+            crate::execution_gate::tests::RevocableGate(AtomicBool::new(true));
+        assert!(
+            !registry
+                .execute_under_gate(
+                    "call-6".into(),
+                    "echo".into(),
+                    json!({"text":"first"}),
+                    ctx(),
+                    Some(&gate),
+                )
+                .await
+                .is_error()
+        );
+        assert!(executed.swap(false, Ordering::SeqCst));
+
+        gate.0.store(false, Ordering::SeqCst);
+        let result = registry
+            .execute_under_gate(
+                "call-7".into(),
+                "echo".into(),
+                json!({"text":"after revoke"}),
+                ctx(),
+                Some(&gate),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            ToolExecutionResult::Error { code, .. } if code == "DENIED"
+        ));
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_authorization_skips_tool_dispatch() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let registry = ToolRegistry::new();
+        registry.register(echo_tool(Arc::clone(&executed)));
+        let gate = DispatchGate(|context: &ToolRunContext| {
+            context.signal.cancel();
+        });
+        let result = registry
+            .execute_under_gate(
+                "cancel-during-gate".into(),
+                "echo".into(),
+                json!({"text":"must not execute"}),
+                ctx(),
+                Some(&gate),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            ToolExecutionResult::Error { code, .. } if code == "CANCELLED"
+        ));
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn deadline_during_authorization_skips_tool_dispatch() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let authorized = AtomicBool::new(false);
+        let registry = ToolRegistry::new();
+        registry.register(echo_tool(Arc::clone(&executed)));
+        let limits = crate::RunBudget::new(1_000, 1, 1).unwrap();
+        let start =
+            crate::run_budget::RunBudgetStart::new(limits, 1_000).unwrap();
+        let past_deadline = Instant::now() + Duration::from_secs(1);
+        let checkpoints = Arc::new(Mutex::new(Vec::new()));
+        let saved = Arc::clone(&checkpoints);
+        let budget = start.track(move |checkpoint| {
+            saved.lock().unwrap().push(checkpoint);
+            Ok(())
+        });
+        let gate = DispatchGate(|_: &ToolRunContext| {
+            authorized.store(true, Ordering::SeqCst);
+            // Wait through the known monotonic boundary while the synchronous
+            // gate prevents the outer supervisor from being polled.
+            while let Some(remaining) =
+                past_deadline.checked_duration_since(Instant::now())
+            {
+                std::thread::sleep(remaining);
+            }
+        });
+        let result = registry
+            .execute_with_limits(
+                "deadline-during-gate".into(),
+                "echo".into(),
+                json!({"text":"must not execute"}),
+                ctx(),
+                Some(&gate),
+                Some(&budget),
+            )
+            .await;
+        assert!(authorized.load(Ordering::SeqCst));
+        assert!(matches!(
+            result,
+            ToolExecutionResult::Error { code, .. } if code == "RUN_BUDGET"
+        ));
+        assert!(!executed.load(Ordering::SeqCst));
+        let checkpoints = checkpoints.lock().unwrap();
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].tool_calls, 1);
+        assert_eq!(checkpoints[1].tool_calls, 1);
+        assert_eq!(
+            checkpoints[1].stop_reason,
+            Some(crate::BudgetStopReason::Deadline)
+        );
     }
 
     #[tokio::test]

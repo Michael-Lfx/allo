@@ -767,6 +767,8 @@ mod tests {
         // SQLite owns durable data on a dedicated thread; Tokio is used only
         // for asynchronous replies, with the runtime supplied by the host.
         const RUNTIME_ALLOWED: &[&str] = &[
+            "chrono",
+            "chrono-tz",
             "serde",
             "thiserror",
             "uuid",

@@ -174,6 +174,37 @@ fn host_without_windows_initializes_and_executes_on_its_runtime() {
 }
 
 #[test]
+fn shutdown_is_idempotent_and_preserves_unclaimed_work() {
+    let root = TestRoot::new();
+    let host = root.host();
+    let agent = host.agent();
+    let pending = agent.accept_deferred("resume after restart").unwrap();
+    let shutdown = host.start_shutdown(super::QUIT_GRACE).unwrap();
+
+    assert!(host.start_shutdown(super::QUIT_GRACE).is_none());
+    assert_eq!(agent.send("new run"), Err("notice.agent_busy"));
+    assert!(matches!(
+        agent.accept_deferred("new receipt"),
+        Err("notice.agent_busy")
+    ));
+    assert!(agent.run_accepted_once().unwrap().is_none());
+    wait_until(|| shutdown.is_finished());
+    host.inner
+        .runtime
+        .as_ref()
+        .unwrap()
+        .block_on(shutdown)
+        .unwrap();
+    assert_locked(root.path());
+    assert_eq!(agent.pending_acceptances()[0].id, pending.id);
+    drop(agent);
+    drop(host);
+
+    let reopened = root.host();
+    assert_eq!(reopened.agent().pending_acceptances()[0].id, pending.id);
+}
+
+#[test]
 fn initialization_distinguishes_quarantined_files_and_unavailable_storage() {
     for name in ["index", "history"] {
         let root = TestRoot::new();
@@ -209,7 +240,12 @@ fn initialization_distinguishes_quarantined_files_and_unavailable_storage() {
     );
     assert_eq!(
         host.agent().create_home_session(),
-        Err("notice.storage_error")
+        Err("notice.session_storage_failed")
+    );
+    assert!(host.agent().list_sessions().is_empty());
+    assert_eq!(
+        fs::read(root.path().join("sessions")).unwrap(),
+        b"blocks history directory"
     );
 }
 
@@ -346,6 +382,194 @@ fn killed_owner_process_releases_lock_without_deleting_lock_file() {
     child.wait().unwrap();
     assert!(root.path().join("instance.lock").is_file());
     assert!(OwnedBootstrap::acquire(root.path()).is_ok());
+}
+
+#[test]
+fn invalid_grant_ledgers_preserve_foreground_host_and_original_bytes() {
+    for bytes in [
+        b"broken-grant-ledger".as_slice(),
+        b"{\"format_version\":999,\"entries\":[]}".as_slice(),
+    ] {
+        let root = TestRoot::new();
+        fs::create_dir(root.path().join("automation")).unwrap();
+        let path = root.path().join("automation/grants.json");
+        fs::write(&path, bytes).unwrap();
+        let host = root.host();
+        assert!(!host.automation_grants_available());
+        assert_eq!(
+            host.initialization_state(),
+            flowy_agent::AgentInitialization::Ready
+        );
+        assert!(host.agent().create_home_session().is_ok());
+        let user = flowy_auth::Session {
+            access_token: "isolated-grant-account".into(),
+            email: "grants@example.invalid".into(),
+            display_name: "Grant test".into(),
+            user_id: Some(91),
+        };
+        host.start_automation_account(&user);
+        let (principal, generation) =
+            host.automation_account_binding().unwrap();
+        let mut request = crate::app::automation_grants::tests::request();
+        request.principal = principal.clone();
+        request.account_generation = generation.clone();
+        let now = crate::app::automation_access::current_time_ms();
+        request.requested_at_ms = now - 10;
+        request.request_expires_at_ms = now + 60_000;
+        request.grant_expires_at_ms = now + 3_600_000;
+        assert!(matches!(
+            host.decide_automation_grant(request, true),
+            Err(crate::app::GrantError::Unavailable),
+        ));
+        assert!(matches!(
+            host.automation_grants(&principal, &generation),
+            Err(crate::app::GrantError::Unavailable),
+        ));
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn host_grant_revocation_survives_reopen_without_implicit_reapproval() {
+    let root = TestRoot::new();
+    let host = root.host();
+    assert!(host.automation_grants_available());
+    let user = flowy_auth::Session {
+        access_token: "isolated-grant-account".into(),
+        email: "grants@example.invalid".into(),
+        display_name: "Grant test".into(),
+        user_id: Some(91),
+    };
+    host.start_automation_account(&user);
+    let (principal, generation) = host.automation_account_binding().unwrap();
+    assert_eq!(
+        host.automation_grants(&principal, &generation)
+            .unwrap()
+            .len(),
+        0
+    );
+    let mut request = crate::app::automation_grants::tests::request();
+    request.principal = principal.clone();
+    request.account_generation = generation.clone();
+    let now = crate::app::automation_access::current_time_ms();
+    request.requested_at_ms = now - 10;
+    request.request_expires_at_ms = now + 60_000;
+    request.grant_expires_at_ms = now + 3_600_000;
+    let crate::app::GrantStatus::Approved(binding) =
+        host.decide_automation_grant(request.clone(), true).unwrap()
+    else {
+        panic!("expected persisted grant");
+    };
+    assert_eq!(
+        host.automation_grants(&principal, &generation).unwrap(),
+        vec![binding.grant_id.clone()]
+    );
+    assert!(
+        host.revoke_automation_grant(
+            &principal,
+            &generation,
+            &binding.grant_id
+        )
+        .unwrap()
+    );
+    drop(host);
+    wait_until(|| OwnedBootstrap::acquire(root.path()).is_ok());
+    let reopened = root.host();
+    reopened.start_automation_account(&user);
+    let (principal, generation) =
+        reopened.automation_account_binding().unwrap();
+    assert!(matches!(
+        reopened.automation_grant_binding(
+            &principal,
+            &generation,
+            &binding.grant_id
+        ),
+        Err(crate::app::GrantError::Revoked),
+    ));
+    assert_eq!(
+        reopened
+            .automation_grant_status(&principal, &generation, request.clone())
+            .unwrap(),
+        Some(crate::app::GrantStatus::Revoked),
+    );
+    assert!(matches!(
+        reopened.decide_automation_grant(request, true),
+        Err(crate::app::GrantError::LeaseExpired),
+    ));
+}
+
+#[test]
+fn automation_gate_retains_exclusive_store_ownership_after_host_drop() {
+    let root = TestRoot::new();
+    let host = root.host();
+    let user = flowy_auth::Session {
+        access_token: "isolated-grant-owner-token".into(),
+        email: "grants@example.invalid".into(),
+        display_name: "Grant test".into(),
+        user_id: Some(91),
+    };
+    host.start_automation_account(&user);
+    let (principal, generation) = host.automation_account_binding().unwrap();
+    let route = flowy_agent::ModelRoute {
+        provider: "flowy".into(),
+        model: "retained-grant-fixture".into(),
+        base_url: "https://grant.example.invalid/v1".into(),
+        ..flowy_agent::ModelRoute::default()
+    };
+    host.automation_authority().replace_routes(
+        &generation,
+        &user,
+        &[flowy_agent::CatalogModel {
+            id: route.model.clone(),
+            endpoint: route.base_url.clone(),
+            ..flowy_agent::CatalogModel::default()
+        }],
+        0,
+    );
+    let mut request = crate::app::automation_grants::tests::request();
+    request.principal = principal.clone();
+    request.account_generation = generation.clone();
+    let now = crate::app::automation_access::current_time_ms();
+    request.requested_at_ms = now - 10;
+    request.request_expires_at_ms = now + 60_000;
+    request.grant_expires_at_ms = now + 3_600_000;
+    let crate::app::GrantStatus::Approved(binding) =
+        host.decide_automation_grant(request.clone(), true).unwrap()
+    else {
+        panic!("expected persisted grant");
+    };
+    let execution = flowy_agent::ExecutionMetadata {
+        owner: Some(flowy_agent::ExecutionOwner {
+            authority: principal.authority().to_owned(),
+            subject: principal.external_user_id().to_string(),
+        }),
+        source: flowy_agent::ExecutionSource::Automation {
+            automation_id: "retained-automation".into(),
+            run_id: "retained-run".into(),
+            attempt_id: "retained-attempt".into(),
+        },
+    };
+    let gate = host
+        .automation_lease(crate::app::AutomationLeaseRequest {
+            principal,
+            account_generation: generation,
+            execution: execution.clone(),
+            route: route.clone(),
+            capabilities: request.scope,
+            grant: binding,
+        })
+        .unwrap();
+    drop(host);
+    assert_eq!(
+        OwnedBootstrap::acquire(root.path()).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists,
+    );
+    assert_eq!(
+        gate.model_credential(&execution, &route).unwrap(),
+        "isolated-grant-owner-token",
+    );
+    drop(gate);
+    wait_until(|| OwnedBootstrap::acquire(root.path()).is_ok());
 }
 
 #[gpui::test]
@@ -650,4 +874,45 @@ fn windows_adopt_shared_model_and_reject_an_obsolete_catalog_refresh(
     cx.update(|cx| drop(cx.remove_global::<AppHost>()));
     cx.run_until_parked();
     wait_until(|| OwnedBootstrap::acquire(root.path()).is_ok());
+}
+#[test]
+fn account_changes_advance_result_viewer_generation() {
+    // PA-A11: every account change, including a same-account re-login,
+    // invalidates results loaded for the previous viewer. Unowned foreground
+    // sessions keep their visibility across these transitions.
+    let root = TestRoot::new();
+    let host = root.host();
+    let legacy = host.agent().create_home_session().unwrap();
+    let visible = |host: &AppHost| {
+        host.agent()
+            .list_sessions()
+            .iter()
+            .any(|session| session.id == legacy)
+    };
+    let started = host.result_viewer_generation();
+    assert!(started > 0, "startup installs the initial viewer");
+    assert!(visible(&host));
+    let a = flowy_auth::Session {
+        access_token: "isolated-viewer-a".into(),
+        email: "viewer-a@example.invalid".into(),
+        display_name: "Viewer A".into(),
+        user_id: Some(101),
+    };
+    let b = flowy_auth::Session {
+        access_token: "isolated-viewer-b".into(),
+        email: "viewer-b@example.invalid".into(),
+        display_name: "Viewer B".into(),
+        user_id: Some(102),
+    };
+    let mut previous = started;
+    for step in [Some(&a), Some(&a), Some(&b), None] {
+        match step {
+            Some(session) => host.start_automation_account(session),
+            None => host.clear_automation_account(),
+        }
+        let current = host.result_viewer_generation();
+        assert!(current > previous, "viewer generation must advance");
+        assert!(visible(&host));
+        previous = current;
+    }
 }

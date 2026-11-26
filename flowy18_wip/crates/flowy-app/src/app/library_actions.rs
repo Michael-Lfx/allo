@@ -21,10 +21,11 @@ impl FlowyApp {
         if agent.is_initializing() {
             return;
         }
-        let store = agent.artifact_store();
+        let viewer_generation = agent.result_viewer_generation();
         let job = cx.background_executor().spawn(async move {
-            let store = store.map_err(|_| "library.error.catalog")?;
-            let records = store.list().map_err(|_| "library.error.catalog")?;
+            // Owner-filtered catalog: another account's results never load.
+            let records =
+                agent.artifacts().map_err(|_| "library.error.catalog")?;
             let sessions = agent.list_sessions();
             let source_ids = records
                 .iter()
@@ -56,19 +57,20 @@ impl FlowyApp {
                     unavailable.contains(&item.source_session_id);
                 item.override_used |= overridden_ids.contains(&item.id);
             }
-            let usage = store.usage().ok().map(|usage| LibraryUsage {
+            let usage = agent.artifact_usage().ok().map(|usage| LibraryUsage {
                 staging_bytes: usage.staging_bytes,
                 view_bytes: usage.view_bytes,
             });
-            let has_diagnostics = store
-                .diagnostics()
-                .map_or(true, |issues| !issues.is_empty());
+            let has_diagnostics = agent.artifact_catalog_has_issues();
             Ok::<_, &'static str>((items, usage, has_diagnostics))
         });
         cx.spawn(async move |weak, cx| {
             let result = job.await;
             let _ = weak.update(cx, |app, cx| {
-                if generation != app.library_generation {
+                if generation != app.library_generation
+                    || viewer_generation
+                        != app.studio.read(cx).agent.result_viewer_generation()
+                {
                     return;
                 }
                 if let Ok((items, _, _)) = &result {
@@ -113,17 +115,24 @@ impl FlowyApp {
             } => {
                 let id = artifact_id.clone();
                 let request_id = *request_id;
-                let store = self.studio.read(cx).agent.artifact_store();
+                let agent = self.studio.read(cx).agent.clone();
+                let viewer_generation = agent.result_viewer_generation();
                 let job = cx.background_executor().spawn(async move {
-                    store
-                        .map_err(|_| "library.error.catalog")?
-                        .read_payload(&id)
-                        .map_err(preview_error)
+                    agent.read_artifact(&id).map_err(preview_error)
                 });
                 let id = artifact_id.clone();
                 cx.spawn(async move |weak, cx| {
                     let result = job.await;
                     let _ = weak.update(cx, |app, cx| {
+                        if viewer_generation
+                            != app
+                                .studio
+                                .read(cx)
+                                .agent
+                                .result_viewer_generation()
+                        {
+                            return;
+                        }
                         app.library.update(cx, |panel, cx| {
                             panel
                                 .set_preview_bytes(&id, request_id, result, cx);
@@ -166,16 +175,21 @@ impl FlowyApp {
     ) {
         let feedback = self.artifact_feedback(artifact_id);
         let id = artifact_id.to_owned();
-        let store = self.studio.read(cx).agent.artifact_store();
+        let agent = self.studio.read(cx).agent.clone();
+        let viewer_generation = agent.result_viewer_generation();
         let job_id = id;
         let job = cx.background_executor().spawn(async move {
-            let store = store.map_err(io::Error::other)?;
             match action {
                 ArtifactAction::Favorite(favorite) => {
-                    store.set_favorite(&job_id, favorite)
+                    agent.set_artifact_favorite(&job_id, favorite)
                 }
                 ArtifactAction::Open => {
-                    let copy = store.create_view_copy(&job_id)?;
+                    // Do not materialize a copy for a request issued under
+                    // a previous account.
+                    if agent.result_viewer_generation() != viewer_generation {
+                        return Err(io::Error::from(io::ErrorKind::NotFound));
+                    }
+                    let copy = agent.create_artifact_view_copy(&job_id)?;
                     // Launching an external app does not prove when it releases the
                     // file. Keep and account for its copy until release is confirmed.
                     open::that(copy.path).map_err(io::Error::other)
@@ -185,6 +199,9 @@ impl FlowyApp {
         cx.spawn(async move |weak, cx| {
             let result = job.await;
             let _ = weak.update(cx, |app, cx| match result {
+                _ if viewer_generation
+                    != app.studio.read(cx).agent.result_viewer_generation() => {
+                }
                 Ok(()) => app.load_library(cx),
                 Err(_) => app.report_artifact_feedback(
                     &feedback,
@@ -310,7 +327,8 @@ impl FlowyApp {
             .unwrap_or_default();
         let selected =
             cx.prompt_for_new_path(&directory, Some(&suggested_name));
-        let store = self.studio.read(cx).agent.artifact_store();
+        let agent = self.studio.read(cx).agent.clone();
+        let viewer_generation = agent.result_viewer_generation();
         let id = artifact_id.to_owned();
         let feedback = self.artifact_feedback(artifact_id);
         cx.spawn(async move |weak, cx| {
@@ -331,7 +349,11 @@ impl FlowyApp {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    store.map_err(io::Error::other)?.copy_to(&id, &destination)
+                    // The native save dialog may outlive an account switch.
+                    if agent.result_viewer_generation() != viewer_generation {
+                        return Err(io::Error::from(io::ErrorKind::NotFound));
+                    }
+                    agent.copy_artifact_to(&id, &destination)
                 })
                 .await;
             let _ = weak.update(cx, |app, cx| {

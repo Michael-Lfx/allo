@@ -1,9 +1,13 @@
 # Personal Agent 对话式自动化 · 开发计划
 
+> **接续验收更新（2026-11-26）**：PA-A06、PA-A07、PA-A08、PA-A09、PA-A10 已完成接口与回归验收，累计 **14/31**。最终七个 crate **671 passed / 0 failed / 5 ignored**，八个 crate 全目标严格 Clippy、workspace check、格式和 UI 契约通过。Shell 执行后的静止证明仍采用保守隔离；自动化生产功能尚未开启。当前证据与剩余范围见[第 9 节验收记录](personal-agent-automation-execution.md#pa-a06-a10)。以下旧状态逐字保留作历史。
+
 > **状态**：计划，待实施；2026-11-25。
 > **代码基线**：`22e6a195c72be18365229fe938984aa2af9043f8`，工作区 `C:/code/flowy/allo/flowy18_wip`。
 > **核心原则**：对话和 UI 使用同一自动化服务；共享一个执行宿主，每次运行绑定独立会话、账户、任务版本和工作区。执行、产物提交、通知交付分别保存证据。
 > **交付范围**：本文件是开发计划，不代表 31 项任务已实施或验收通过。测试命令均为后续步骤，本轮仅执行文档校验。
+
+> **并行实施更新（2026-11-26）**：当前分支已验证 **9/31**，包括新完成的 PA-A03、PA-A12 和 PA-D01。PA-B06 是手动运行和重启恢复的内部验收节点，生产开启仍由 PA-E06 验收。见[实施与验证记录](personal-agent-automation-execution.md)。
 
 > **最新执行更新（2026-11-26）**：PA-A02 已完成并验证，累计 **4/31**；Agent 121 passed / 1 ignored、Studio 79 passed，消费者编译与严格 Clippy 通过。下一项 PA-A03；见[PA-A02 验证记录](personal-agent-automation-execution.md#pa-a02)。下列 2026-11-25 更新及原计划保留为历史记录。
 
@@ -487,6 +491,8 @@ cargo build -p flowy-desktop --locked
 - **回退与主要不确定性**：生产共享前可回旧泵，共享后保留独立订阅；风险是事件/快照版本竞态。
 
 #### PA-A03：AppHost 与唯一存储所有者
+
+> **执行状态**：已完成并验证（2026-11-26）。App 库 67 项通过，桌面编译通过，存储不可用时保留原文件并拒绝创建会话。
 
 - **目标、依赖、复杂度**：宿主独立于窗口；前置 PA-A02；L。
 - **crate、文件、符号**：flowy-app/flowy-desktop；新增 `app/app_host.rs`；`app/app/mod.rs::{run,open_main_window,FlowyApp::new}`；`desktop/main.rs::InstanceLock`；flowy-app/Cargo.toml。

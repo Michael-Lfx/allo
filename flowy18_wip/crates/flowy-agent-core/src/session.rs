@@ -642,6 +642,9 @@ pub struct SessionRecord {
     /// Per-submission durable terminal outcomes (`submission-<id>` -> outcome).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub submission_outcomes: BTreeMap<String, SubmissionOutcome>,
+    /// Reserved dispatches and stop reason for each host-owned submission.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub run_budget_checkpoints: BTreeMap<String, crate::RunBudgetCheckpoint>,
     /// Active versioned work contract inherited across revisions in this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_contract: Option<WorkContract>,

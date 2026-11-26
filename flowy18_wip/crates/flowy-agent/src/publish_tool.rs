@@ -409,7 +409,7 @@ mod tests {
         std::fs::create_dir_all(&output_root).unwrap();
         std::fs::write(output_root.join("deck.pptx"), b"PK deck").unwrap();
         let context = ToolRunContext {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             signal: CancelToken::new(),
             agent_id: Some("session-1".to_owned()),
             cwd: Some(root.display().to_string()),
@@ -461,7 +461,7 @@ mod tests {
             .unwrap();
         std::fs::write(output_root.join("sales.csv"), b"col\n1\n").unwrap();
         let make_ctx = || ToolRunContext {
-            execution: Default::default(),
+            execution: crate::ExecutionMetadata::default(),
             signal: CancelToken::new(),
             agent_id: Some("session-2".to_owned()),
             cwd: Some(root.display().to_string()),
@@ -553,7 +553,7 @@ mod tests {
                 }),
             },
             ToolRunContext {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 signal: CancelToken::new(),
                 agent_id: Some("session-3".to_owned()),
                 cwd: Some(root.display().to_string()),
@@ -620,7 +620,7 @@ mod tests {
                 }),
             },
             ToolRunContext {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 signal: CancelToken::new(),
                 agent_id: Some("session-prefix".to_owned()),
                 cwd: Some(root.display().to_string()),
@@ -685,7 +685,7 @@ mod tests {
                 }),
             },
             ToolRunContext {
-                execution: Default::default(),
+                execution: crate::ExecutionMetadata::default(),
                 signal: CancelToken::new(),
                 agent_id: Some("session-rev".to_owned()),
                 cwd: Some(root.display().to_string()),

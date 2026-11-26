@@ -14,7 +14,10 @@ use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
 use crate::loop_runner::{
-    LoopOutcome, ModelRoute, PreToolHook, TurnRequest, run_turn,
+    LoopOutcome, ModelRoute, PreToolHook, TurnRequest, run_turn_with_budget,
+};
+use crate::run_budget::{
+    BudgetCheckpointError, BudgetStop, RunBudgetStart, RunBudgetState,
 };
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
@@ -30,6 +33,10 @@ use crate::types::{
     ArtifactReceipt, ContentBlock, Message, MessageSource, PromptTurn, Role,
     TodoSink, ToolRunContext,
 };
+
+#[cfg(test)]
+#[path = "run_budget/engine_tests.rs"]
+mod budget_tests;
 
 /// UI-facing turn events. All methods have no-op defaults so a caller may
 /// implement only what it renders. Callbacks are synchronous and must not
@@ -92,6 +99,10 @@ pub struct EngineConfig {
     pub work_contract: Option<WorkContract>,
     /// Optional host pre-tool gate wired into `rpi_agent`'s `before_tool_call`.
     pub pre_tool_hook: Option<PreToolHook>,
+    /// Resolve credentials and scope for each model request and tool dispatch.
+    pub execution_gate: Option<Arc<dyn crate::ExecutionGate>>,
+    /// Finite host-enforced limits; required for automation-origin sessions.
+    pub run_budget: Option<crate::RunBudget>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -120,6 +131,7 @@ pub enum RunError {
     DuplicateSubmission,
     NotFound(String),
     NoCredential,
+    MissingBudget,
     Storage(std::io::Error),
     Loop(String),
 }
@@ -134,6 +146,9 @@ impl std::fmt::Display for RunError {
             Self::NotFound(id) => write!(f, "session {id} not found"),
             Self::NoCredential => {
                 write!(f, "no account credential for this run")
+            }
+            Self::MissingBudget => {
+                write!(f, "automation requires a finite run budget")
             }
             Self::Storage(error) => {
                 write!(f, "could not save the submission: {error}")
@@ -170,12 +185,13 @@ struct PreparedTurn {
     origin: SessionOrigin,
     execution: ExecutionMetadata,
     output_root: Option<PathBuf>,
+    budget_start: Option<RunBudgetStart>,
 }
 
 /// Owns the durable index and the per-session run fences.
 pub struct Engine {
     root: PathBuf,
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
     observer: Arc<dyn TurnObserver>,
 }
 
@@ -218,12 +234,12 @@ impl Engine {
         let index = SessionIndex::load(&root)?;
         Ok(Self {
             root,
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 index,
                 config,
                 fences: HashMap::new(),
                 finalizing: HashSet::new(),
-            }),
+            })),
             observer,
         })
     }
@@ -245,6 +261,32 @@ impl Engine {
             .index
             .sessions
             .clone()
+    }
+
+    /// Read durable reservations without inferring completion or restarting
+    /// the submission. Invalid accounting cannot be interpreted as unused.
+    pub fn run_budget_checkpoint(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> std::io::Result<Option<crate::RunBudgetCheckpoint>> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(record) = inner.index.get(session_id) else {
+            return Ok(None);
+        };
+        let checkpoint =
+            record.run_budget_checkpoints.get(submission_id).copied();
+        drop(inner);
+        if checkpoint.is_some_and(|checkpoint| !checkpoint.is_valid()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid persisted run budget",
+            ));
+        }
+        Ok(checkpoint)
     }
 
     #[must_use]
@@ -419,7 +461,9 @@ impl Engine {
             .iter()
             .find_map(|record| {
                 let in_history = record.messages.iter().any(|message| {
-                    message.role == Role::User && message.id == message_id
+                    message.role == Role::User
+                        && matches!(message.source, MessageSource::User)
+                        && message.id == message_id
                 });
                 let in_followups = record
                     .pending_router_followups
@@ -1257,6 +1301,38 @@ impl Engine {
         }
     }
 
+    /// Cancel currently active automations belonging to the invalidated owner.
+    /// The target-specific cancel API preserves runs past the commit point.
+    pub fn cancel_automation_owner(
+        &self,
+        owner: &crate::ExecutionOwner,
+    ) -> std::io::Result<()> {
+        let sessions = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .fences
+                .iter()
+                .filter(|(_, fence)| fence.is_active())
+                .filter_map(|(id, _)| {
+                    let record = inner.index.get(id)?;
+                    (record.execution.owner.as_ref() == Some(owner)
+                        && matches!(
+                            record.execution.source,
+                            crate::ExecutionSource::Automation { .. }
+                        ))
+                    .then(|| id.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut result = Ok(());
+        for id in sessions {
+            if let Err(error) = self.request_cancel_typed(&id) {
+                result = Err(error);
+            }
+        }
+        result
+    }
+
     /// Wait up to `timeout` for session `id`'s active/cancelling run to finish
     /// reaping and release its fence. Returns `true` if idle.
     #[must_use]
@@ -1537,11 +1613,28 @@ impl Engine {
         let (prepared, saved) = {
             let mut inner = self.inner.lock().unwrap();
             let config = config.unwrap_or_else(|| inner.config.clone());
-            if needs_credential && config.api_key.is_none() {
+            if needs_credential
+                && config.api_key.is_none()
+                && config.execution_gate.is_none()
+            {
                 return Err(RunError::NoCredential);
             }
-            if inner.index.get(session_id).is_none() {
+            let Some(record) = inner.index.get(session_id) else {
                 return Err(RunError::NotFound(session_id.to_owned()));
+            };
+            if matches!(
+                record.execution.source,
+                crate::ExecutionSource::Automation { .. }
+            ) && config.execution_gate.is_none()
+            {
+                return Err(RunError::NoCredential);
+            }
+            if matches!(
+                record.execution.source,
+                crate::ExecutionSource::Automation { .. }
+            ) && config.run_budget.is_none()
+            {
+                return Err(RunError::MissingBudget);
             }
             let submission_id =
                 submission.map(|id| format!("submission-{id:032x}"));
@@ -1549,7 +1642,9 @@ impl Engine {
                 let record =
                     inner.index.get(session_id).expect("record exists");
                 record.messages.iter().any(|message| {
-                    message.role == Role::User && message.id == *submission_id
+                    message.role == Role::User
+                        && matches!(message.source, MessageSource::User)
+                        && message.id == *submission_id
                 }) || record
                     .turn_completions
                     .iter()
@@ -1558,6 +1653,7 @@ impl Engine {
                         .delivery_commits
                         .iter()
                         .any(|commit| commit.submission_id == *submission_id)
+                    || record.run_budget_checkpoints.contains_key(submission_id)
             }) {
                 return Err(RunError::DuplicateSubmission);
             }
@@ -1571,6 +1667,19 @@ impl Engine {
                 return Err(RunError::Busy);
             };
             let now = now_ms();
+            let budget_start = config
+                .run_budget
+                .map(|limits| {
+                    let started = i64::try_from(now).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "run start exceeds supported clock range",
+                        )
+                    })?;
+                    RunBudgetStart::new(limits, started)
+                })
+                .transpose()
+                .map_err(RunError::Storage)?;
             let record =
                 inner.index.get_mut(session_id).expect("record exists");
             let history = record.messages.clone();
@@ -1590,7 +1699,13 @@ impl Engine {
                 record.work_contract.clone(),
                 record.submission_revisions.clone(),
                 record.pending_router_followups.clone(),
+                record.run_budget_checkpoints.clone(),
             );
+            if let Some(start) = &budget_start {
+                record
+                    .run_budget_checkpoints
+                    .insert(completion_id.clone(), start.checkpoint());
+            }
             if let Some(contract) = &config.work_contract {
                 if let Some(sub_id) = submission_id.as_deref() {
                     record
@@ -1614,7 +1729,7 @@ impl Engine {
             record.status = TurnState::Running;
             record.updated_at = now;
             let saved = inner.index.save(&self.root);
-            if submission.is_some()
+            if (submission.is_some() || budget_start.is_some())
                 && let Err(error) = saved
             {
                 let record =
@@ -1626,6 +1741,7 @@ impl Engine {
                     record.work_contract,
                     record.submission_revisions,
                     record.pending_router_followups,
+                    record.run_budget_checkpoints,
                 ) = previous;
                 ticket.finish();
                 drop(inner);
@@ -1640,6 +1756,7 @@ impl Engine {
                 origin,
                 execution,
                 output_root,
+                budget_start,
             };
             drop(inner);
             (prepared, saved)
@@ -1654,8 +1771,97 @@ impl Engine {
         &self,
         session_id: &str,
         prompt: &str,
+        mut prepared: PreparedTurn,
+        stream: Option<StreamFn>,
+    ) -> Result<LoopOutcome, RunError> {
+        let budget = prepared.budget_start.take().map(|start| {
+            let inner = Arc::clone(&self.inner);
+            let root = self.root.clone();
+            let session = session_id.to_owned();
+            let submission = prepared.completion_id.clone();
+            let publisher = prepared.ticket.publisher();
+            Arc::new(start.track(move |checkpoint| {
+                let mut inner = inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // The same run must still own the fence. A completed history
+                // may be finalizing its marker, so keep recording its deadline.
+                if !publisher.is_current() {
+                    return Err(BudgetCheckpointError::StaleSubmission);
+                }
+                let Some(record) = inner.index.get_mut(&session) else {
+                    return Err(BudgetCheckpointError::StaleSubmission);
+                };
+                if record
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| {
+                        message.role == Role::User
+                            && matches!(message.source, MessageSource::User)
+                    })
+                    .is_none_or(|message| message.id != submission)
+                {
+                    return Err(BudgetCheckpointError::StaleSubmission);
+                }
+                let previous = record
+                    .run_budget_checkpoints
+                    .insert(submission.clone(), checkpoint);
+                if inner.index.save(&root).is_err() {
+                    let record = inner
+                        .index
+                        .get_mut(&session)
+                        .expect("session exists under the engine lock");
+                    if let Some(previous) = previous {
+                        record
+                            .run_budget_checkpoints
+                            .insert(submission.clone(), previous);
+                    } else {
+                        record.run_budget_checkpoints.remove(&submission);
+                    }
+                    return Err(BudgetCheckpointError::Storage);
+                }
+                drop(inner);
+                Ok(())
+            }))
+        });
+        let run = self.run_prepared_inner(
+            session_id,
+            prompt,
+            prepared,
+            stream,
+            budget.clone(),
+        );
+        tokio::pin!(run);
+        if let Some(budget) = budget {
+            tokio::select! {
+                biased;
+                stop = budget.wait_for_stop() => {
+                    // Request cancellation, then keep polling the original
+                    // future until its tools have settled. TooLate continues
+                    // the same durable commit; no timeout or abort drops it.
+                    if stop == BudgetStop::Storage {
+                        self.observer.storage_error(session_id);
+                    }
+                    if self.request_cancel(session_id).is_err() {
+                        self.observer.storage_error(session_id);
+                    }
+                    run.await
+                }
+                result = &mut run => result,
+            }
+        } else {
+            run.await
+        }
+    }
+
+    async fn run_prepared_inner(
+        &self,
+        session_id: &str,
+        prompt: &str,
         prepared: PreparedTurn,
         stream: Option<StreamFn>,
+        budget: Option<Arc<RunBudgetState>>,
     ) -> Result<LoopOutcome, RunError> {
         let PreparedTurn {
             ticket,
@@ -1666,6 +1872,7 @@ impl Engine {
             origin,
             execution,
             output_root,
+            budget_start: _,
         } = prepared;
         let cancel_trace = Arc::new(Mutex::new(CancelTrace::default()));
         if !ticket.is_current() {
@@ -1684,12 +1891,38 @@ impl Engine {
             proof?;
             return Ok(LoopOutcome::Aborted);
         }
-        let stream = stream.unwrap_or_else(|| {
-            crate::transport::openai_stream_fn(
+        let stream = match (stream, config.execution_gate.clone()) {
+            (Some(stream), Some(gate)) => crate::transport::guard_stream_fn(
                 &config.route,
-                config.api_key.clone(),
-            )
-        });
+                execution.clone(),
+                gate,
+                stream,
+            ),
+            (None, Some(gate)) => crate::transport::guarded_openai_stream_fn(
+                &config.route,
+                execution.clone(),
+                gate,
+            ),
+            (Some(stream), None) => stream,
+            (None, None) => {
+                if budget.is_some() {
+                    crate::transport::bounded_openai_stream_fn(
+                        &config.route,
+                        config.api_key.clone(),
+                    )
+                } else {
+                    crate::transport::openai_stream_fn(
+                        &config.route,
+                        config.api_key.clone(),
+                    )
+                }
+            }
+        };
+        let stream = if let Some(budget) = &budget {
+            crate::transport::budget_stream_fn(Arc::clone(budget), stream)
+        } else {
+            stream
+        };
         let delivery_committer = config.delivery_committer.clone();
         let artifact_receipts = Arc::new(Mutex::new(Vec::new()));
         let tool_context = ToolRunContext {
@@ -1703,8 +1936,12 @@ impl Engine {
             output_root,
             artifact_delivery_available: config.delivery_committer.is_some(),
         };
-        let tools =
-            build_tools(&config, tool_context, Arc::clone(&artifact_receipts));
+        let tools = build_tools(
+            &config,
+            tool_context,
+            Arc::clone(&artifact_receipts),
+            budget.clone(),
+        );
         tracing::debug!(
             target: "flowy.prompt",
             stage = "Engine::run_prepared",
@@ -1731,7 +1968,22 @@ impl Engine {
             publisher: ticket.publisher(),
             trace: Some(Arc::clone(&cancel_trace)),
         });
-        let result = run_turn(request, stream, emitter).await;
+        let result =
+            run_turn_with_budget(request, stream, emitter, budget.clone())
+                .await;
+        // A scripted/ready provider can consume an entire loop in one poll.
+        // Settle a limit through the same cancel path even when the supervisor
+        // has not had another chance to observe its stop notification.
+        if let Some(stop) =
+            budget.as_ref().and_then(|budget| budget.stop_requested())
+        {
+            if stop == BudgetStop::Storage {
+                self.observer.storage_error(session_id);
+            }
+            if self.request_cancel(session_id).is_err() {
+                self.observer.storage_error(session_id);
+            }
+        }
         let stored = {
             let mut inner = self.inner.lock().unwrap();
             if !ticket.is_current() {
@@ -1795,7 +2047,9 @@ impl Engine {
                     // The loop echoes the prompt back; the engine already
                     // stored it, so drop the duplicate.
                     if new_messages.first().is_some_and(|message| {
-                        message.role == Role::User && message.text() == prompt
+                        message.role == Role::User
+                            && matches!(message.source, MessageSource::User)
+                            && message.text() == prompt
                     }) {
                         new_messages.remove(0);
                     }
@@ -2106,7 +2360,9 @@ impl Engine {
         }
         if record.execution != *execution
             || !record.messages.iter().any(|message| {
-                message.role == Role::User && message.id == submission_id
+                message.role == Role::User
+                    && matches!(message.source, MessageSource::User)
+                    && message.id == submission_id
             })
         {
             return Err(RunError::Storage(std::io::Error::new(
@@ -2150,7 +2406,9 @@ fn valid_completion(
         && evidence.execution == record.execution
         && evidence.execution.is_valid()
         && record.messages.iter().any(|message| {
-            message.role == Role::User && message.id == evidence.submission_id
+            message.role == Role::User
+                && matches!(message.source, MessageSource::User)
+                && message.id == evidence.submission_id
         })
         && record
             .turn_completions
@@ -2204,6 +2462,7 @@ fn valid_saved_commit(record: &SessionRecord, commit: &DeliveryCommit) -> bool {
                 && proofs[0].artifact_ids == commit.artifact_ids
                 && record.messages.iter().any(|message| {
                     message.role == Role::User
+                        && matches!(message.source, MessageSource::User)
                         && message.id == commit.submission_id
                 })))
 }
@@ -2391,6 +2650,7 @@ fn build_tools(
     config: &EngineConfig,
     run_ctx: ToolRunContext,
     artifact_receipts: Arc<Mutex<Vec<ArtifactReceipt>>>,
+    budget: Option<Arc<RunBudgetState>>,
 ) -> Vec<Arc<dyn rpi_agent::AgentTool>> {
     config
         .registry
@@ -2403,6 +2663,8 @@ fn build_tools(
                 definition,
                 run_ctx.clone(),
                 Some(Arc::clone(&artifact_receipts)),
+                config.execution_gate.clone(),
+                budget.clone(),
             )
             .ok()
             .map(|tool| {
@@ -3048,6 +3310,8 @@ mod tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: None,
+            execution_gate: None,
+            run_budget: None,
         }
     }
 
@@ -4776,6 +5040,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_one_automation_owner_keeps_another_owners_turn() {
+        let scratch = Scratch::new("automation-cancel-owner");
+        let mut cfg = config();
+        cfg.run_budget = crate::RunBudget::new(60_000, 10, 10);
+        cfg.execution_gate =
+            Some(Arc::new(crate::execution_gate::tests::RevocableGate(
+                std::sync::atomic::AtomicBool::new(true),
+            )));
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                cfg.clone(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        let owner = |subject: &str| crate::ExecutionOwner {
+            authority: "test-authority".into(),
+            subject: subject.into(),
+        };
+        for id in ["account-a", "account-b"] {
+            engine
+                .create_if_absent(crate::SessionSpec {
+                    id: id.into(),
+                    created_at_ms: 1,
+                    origin: SessionOrigin::Home,
+                    workspace: Some(SessionWorkspace {
+                        root: scratch.0.join(id),
+                    }),
+                    execution: crate::ExecutionMetadata {
+                        owner: Some(owner(id)),
+                        source: crate::ExecutionSource::Automation {
+                            automation_id: id.into(),
+                            run_id: id.into(),
+                            attempt_id: id.into(),
+                        },
+                    },
+                })
+                .unwrap();
+        }
+        let start = |id: &str, submission| {
+            engine
+                .start_with_config(
+                    id.into(),
+                    "run automation".into(),
+                    cfg.clone(),
+                    Some(text_stream("complete")),
+                    Some(submission),
+                )
+                .unwrap()
+        };
+        let a = start("account-a", 101);
+        let b = start("account-b", 102);
+        engine.cancel_automation_owner(&owner("account-a")).unwrap();
+        assert_eq!(a.await.unwrap(), LoopOutcome::Aborted);
+        assert_eq!(b.await.unwrap(), LoopOutcome::Completed);
+    }
+
+    #[tokio::test]
     async fn automation_execution_identity_reaches_each_tool_context() {
         let scratch = Scratch::new("automation-context");
         let expected = crate::ExecutionMetadata {
@@ -4791,7 +5114,12 @@ mod tests {
         };
         let captured = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
-        let cfg = config();
+        let mut cfg = config();
+        cfg.run_budget = crate::RunBudget::new(60_000, 10, 10);
+        cfg.execution_gate =
+            Some(Arc::new(crate::execution_gate::tests::RevocableGate(
+                std::sync::atomic::AtomicBool::new(true),
+            )));
         cfg.registry.register(Arc::new(ToolDefinition::new(
             "publish_file",
             "record host context",
@@ -4829,6 +5157,18 @@ mod tests {
                 access_mode: WorkAccessMode::ReadWrite,
             })
             .unwrap();
+        let mut ungated = cfg.clone();
+        ungated.execution_gate = None;
+        assert!(matches!(
+            engine.start_with_config(
+                "automation-session".into(),
+                "must not run unguarded".into(),
+                ungated,
+                Some(delivery_stream(StopReason::Stop)),
+                Some(37),
+            ),
+            Err(RunError::NoCredential)
+        ));
         let result = engine
             .start_with_config(
                 "automation-session".into(),

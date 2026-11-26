@@ -24,6 +24,8 @@ pub struct RegistryTool {
     schema: Tool,
     run_ctx: ToolRunContext,
     artifact_receipts: Option<Arc<Mutex<Vec<ArtifactReceipt>>>>,
+    execution_gate: Option<Arc<dyn crate::ExecutionGate>>,
+    budget: Option<Arc<crate::run_budget::RunBudgetState>>,
 }
 
 impl std::fmt::Debug for RegistryTool {
@@ -40,7 +42,9 @@ impl RegistryTool {
         definition: Arc<ToolDefinition>,
         run_ctx: ToolRunContext,
     ) -> Result<Self, String> {
-        Self::new_with_artifact_sink(registry, definition, run_ctx, None)
+        Self::new_with_artifact_sink(
+            registry, definition, run_ctx, None, None, None,
+        )
     }
 
     pub(crate) fn new_with_artifact_sink(
@@ -48,6 +52,8 @@ impl RegistryTool {
         definition: Arc<ToolDefinition>,
         run_ctx: ToolRunContext,
         artifact_receipts: Option<Arc<Mutex<Vec<ArtifactReceipt>>>>,
+        execution_gate: Option<Arc<dyn crate::ExecutionGate>>,
+        budget: Option<Arc<crate::run_budget::RunBudgetState>>,
     ) -> Result<Self, String> {
         let core_schema = definition.schema();
         let parameters = serde_json::from_value(core_schema.parameters)
@@ -68,6 +74,8 @@ impl RegistryTool {
             },
             run_ctx,
             artifact_receipts,
+            execution_gate,
+            budget,
         })
     }
 }
@@ -106,11 +114,13 @@ impl AgentTool for RegistryTool {
         let expected_call_id = tool_call_id.to_owned();
         let result = self
             .registry
-            .execute(
+            .execute_with_limits(
                 tool_call_id.to_owned(),
                 self.definition.name.clone(),
                 params,
                 run_ctx,
+                self.execution_gate.as_deref(),
+                self.budget.as_deref(),
             )
             .await;
         match result {

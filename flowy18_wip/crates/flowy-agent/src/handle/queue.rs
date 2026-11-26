@@ -17,8 +17,8 @@ use flowy_agent_core::{
 impl AgentHandle {
     /// Accept a prompt that cannot run yet, and hand back a durable receipt.
     ///
-    /// Unlike [`Self::submit_message`], this never answers `agent_busy`. A
-    /// message that arrives while a turn is running is still accepted; it only
+    /// A message that arrives while another turn is running is still accepted
+    /// while the host is open for new work; it only
     /// has to wait. The receipt lives in its own file, so a restart can still
     /// show what was accepted before anything ran it.
     pub fn accept_deferred(
@@ -74,6 +74,10 @@ impl AgentHandle {
         }
         if self.is_initializing() {
             return Err("library.loading");
+        }
+        let _dispatch = lock(&self.inner.state.dispatch);
+        if !self.inner.state.accepting_runs.load(Ordering::Acquire) {
+            return Err("notice.agent_busy");
         }
         let receipt = AcceptanceQueue::new(self.inner.state.root.clone())
             .accept_with_target(
@@ -194,6 +198,8 @@ impl AgentHandle {
     /// Tokio runtime (no UI polling required). Defaults to `false` so legacy
     /// caller-driven loops remain deterministic.
     pub fn set_autonomous_drain(&self, enabled: bool) {
+        let enabled =
+            enabled && self.inner.state.accepting_runs.load(Ordering::Acquire);
         self.inner
             .state
             .autonomous_drain
@@ -337,7 +343,10 @@ impl Harness {
     ) -> Result<Option<AcceptedRun>, &'static str> {
         let _drain = lock(&self.state.accept_drain);
         if self.state.shutdown_requested.load(Ordering::Acquire)
+            || !self.state.accepting_runs.load(Ordering::Acquire)
             || !self.can_run_turns()
+            || self.has_active_claim()
+            || self.has_busy_session()
             || self.in_flight_work_count() >= self.max_concurrent_works()
         {
             return Ok(None);
@@ -745,7 +754,8 @@ impl Harness {
     }
 
     pub(super) fn kick_autonomous_drain(self: &Arc<Self>) {
-        if !self.state.autonomous_drain.load(Ordering::Acquire)
+        if !self.state.accepting_runs.load(Ordering::Acquire)
+            || !self.state.autonomous_drain.load(Ordering::Acquire)
             || self.is_initializing()
         {
             return;

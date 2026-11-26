@@ -48,6 +48,9 @@ impl AgentHandle {
         if *lock(&self.inner.state.load_failed) {
             return false;
         }
+        if !self.session_visible(session_id) {
+            return false;
+        }
         let record = lock(&self.inner.engine)
             .as_ref()
             .and_then(|engine| engine.session(session_id));
@@ -65,6 +68,9 @@ impl AgentHandle {
             return Err("library.loading");
         }
         let _dispatch = lock(&self.inner.state.dispatch);
+        if !self.session_visible(session_id) {
+            return Err("notice.agent_failed");
+        }
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
@@ -404,6 +410,9 @@ impl AgentHandle {
     ) -> Result<(), &'static str> {
         let session_id = session_id.ok_or("chat.status_delivery_failed")?;
         let dispatch = lock(&self.inner.state.dispatch);
+        if !self.session_visible(session_id) {
+            return Err("chat.status_delivery_failed");
+        }
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
@@ -492,24 +501,32 @@ impl AgentHandle {
     }
 
     pub fn artifacts(&self) -> Result<Vec<ArtifactRecord>, std::io::Error> {
-        self.inner
+        let mut records = self
+            .inner
             .state
             .artifact_store
             .get()
             .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
-            .list()
+            .list()?;
+        let viewer = self.result_viewer();
+        records.retain(|record| {
+            super::result_visible(&record.manifest.execution, viewer.as_ref())
+        });
+        Ok(records)
     }
 
     pub fn artifact(
         &self,
         artifact_id: &str,
     ) -> Result<Option<ArtifactRecord>, std::io::Error> {
-        self.inner
+        let record = self
+            .inner
             .state
             .artifact_store
             .get()
             .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
-            .get(artifact_id)
+            .get(artifact_id)?;
+        Ok(record.filter(|record| self.artifact_visible(record)))
     }
 
     pub fn set_artifact_favorite(
@@ -517,11 +534,7 @@ impl AgentHandle {
         artifact_id: &str,
         favorite: bool,
     ) -> Result<(), std::io::Error> {
-        self.inner
-            .state
-            .artifact_store
-            .get()
-            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+        self.authorized_artifact_store(artifact_id)?
             .set_favorite(artifact_id, favorite)
     }
 
@@ -529,11 +542,7 @@ impl AgentHandle {
         &self,
         artifact_id: &str,
     ) -> Result<(), std::io::Error> {
-        self.inner
-            .state
-            .artifact_store
-            .get()
-            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+        self.authorized_artifact_store(artifact_id)?
             .trash(artifact_id)
     }
 
@@ -541,11 +550,7 @@ impl AgentHandle {
         &self,
         artifact_id: &str,
     ) -> Result<(), std::io::Error> {
-        self.inner
-            .state
-            .artifact_store
-            .get()
-            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+        self.authorized_artifact_store(artifact_id)?
             .restore_from_trash(artifact_id)
     }
 
@@ -553,11 +558,7 @@ impl AgentHandle {
         &self,
         artifact_id: &str,
     ) -> Result<(), std::io::Error> {
-        self.inner
-            .state
-            .artifact_store
-            .get()
-            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+        self.authorized_artifact_store(artifact_id)?
             .permanently_delete(artifact_id)
     }
 
@@ -565,11 +566,7 @@ impl AgentHandle {
         &self,
         artifact_id: &str,
     ) -> Result<Vec<u8>, std::io::Error> {
-        self.inner
-            .state
-            .artifact_store
-            .get()
-            .ok_or_else(|| std::io::Error::other("artifact store unavailable"))?
+        self.authorized_artifact_store(artifact_id)?
             .read_payload(artifact_id)
     }
 
@@ -607,6 +604,9 @@ impl AgentHandle {
         }
         let state = &self.inner.state;
         let _dispatch = lock(&state.dispatch);
+        if !self.session_visible(session_id) {
+            return Err("chat.publish.context");
+        }
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;

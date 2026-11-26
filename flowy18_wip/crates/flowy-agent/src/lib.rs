@@ -23,6 +23,7 @@ mod publish_tool;
 mod semantic_verify;
 mod title;
 mod verify;
+mod workspace_arbiter;
 
 pub use artifact_store::{
     ArtifactManifest, ArtifactPreference, ArtifactRecord, ArtifactStore,
@@ -34,12 +35,14 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, CancelDisposition,
-    DeliveryCommit, DisambiguationOption, ExecutionMetadata, ExecutionOwner,
-    ExecutionSource, FactEntry, FactStatus, ObjectVerifyState, PendingCard,
-    PendingRouterFollowup, ReceiptState, RequiredDeliverable,
-    SessionCreateDisposition, SessionOrigin, SessionRole, SessionSpec,
-    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, BudgetStopReason,
+    CancelDisposition, CancelToken, DeliveryCommit, DisambiguationOption,
+    ExecutionDenied, ExecutionGate, ExecutionMetadata, ExecutionOwner,
+    ExecutionSource, FactEntry, FactStatus, ModelRoute, ObjectVerifyState,
+    PendingCard, PendingRouterFollowup, ReceiptState, RequiredDeliverable,
+    RunBudget, RunBudgetCheckpoint, SessionCreateDisposition, SessionOrigin,
+    SessionRole, SessionSpec, SessionWorkspace, StopHandoffManifest,
+    SubmissionOutcome, ToolCallArgs, ToolRunContext, TrackedObject,
     TrackedObjectKind, TurnCompletionEvidence, TurnExecutionOutcome,
     WorkAccessMode, WorkContract,
     tools::{
@@ -54,8 +57,11 @@ pub use handle::{
     AcceptedRun, AgentHandle, AgentInitialization, AgentSnapshot,
     AgentSubscription, AgentUpdate, AgentUpdateBatch, AgentWorkspace,
     CancelOutcome, CardAction, CardActionOutcome, CardSelection,
-    ChildWorkSummary, DispatchWorkResult, RoutedPendingCard, SessionSearchHit,
-    SessionSummary, StopWorkResult, TaskTarget, WorkStatus,
+    ChildWorkSummary, DetachedArtifacts, DetachedAttempt, DetachedAttemptState,
+    DetachedCompletion, DetachedError, DetachedPhase, DetachedRun,
+    DetachedRunResult, DetachedRunSpec, DispatchWorkResult, RoutedPendingCard,
+    SessionSearchHit, SessionSummary, StopWorkResult, TaskTarget, WorkStatus,
+    result_visible,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{

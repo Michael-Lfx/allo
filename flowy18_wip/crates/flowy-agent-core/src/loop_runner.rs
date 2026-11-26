@@ -218,6 +218,15 @@ pub async fn run_turn(
     stream_fn: StreamFn,
     emit: Arc<dyn AgentEmitter>,
 ) -> Result<TurnResult, String> {
+    run_turn_with_budget(request, stream_fn, emit, None).await
+}
+
+pub(crate) async fn run_turn_with_budget(
+    request: TurnRequest,
+    stream_fn: StreamFn,
+    emit: Arc<dyn AgentEmitter>,
+    budget: Option<Arc<crate::run_budget::RunBudgetState>>,
+) -> Result<TurnResult, String> {
     tracing::debug!(
         target: "flowy.prompt",
         stage = "run_turn",
@@ -403,8 +412,12 @@ pub async fn run_turn(
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(trip.clone());
             }
-            let stop =
-                awaiting_approval || hit_cap || same_error_trip.is_some();
+            let stop = awaiting_approval
+                || hit_cap
+                || same_error_trip.is_some()
+                || budget
+                    .as_ref()
+                    .is_some_and(|budget| budget.stop_requested().is_some());
             Box::pin(async move { stop })
         });
     let signal = request.signal.inner();
@@ -2215,7 +2228,7 @@ mod tests {
                 registry,
                 def,
                 crate::types::ToolRunContext {
-                    execution: Default::default(),
+                    execution: crate::ExecutionMetadata::default(),
                     signal: CancelToken::new(),
                     agent_id: None,
                     cwd: None,
