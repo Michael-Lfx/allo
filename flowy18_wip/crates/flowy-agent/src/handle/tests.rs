@@ -317,6 +317,8 @@ mod background_init_tests {
                 role: SessionRole::Standard,
                 root_session_id: None,
                 access_mode: WorkAccessMode::ReadWrite,
+                active_turn_is_internal: false,
+                active_turn_prev_status: None,
             },
         );
 

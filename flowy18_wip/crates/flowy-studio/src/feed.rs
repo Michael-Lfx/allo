@@ -462,6 +462,18 @@ impl ChatFeed {
                     })
                     .copied(),
             )
+            .chain(
+                self.projection
+                    .ack_rows
+                    .symmetric_difference(&projection.ack_rows)
+                    .copied(),
+            )
+            .chain(
+                self.projection
+                    .process_rows
+                    .symmetric_difference(&projection.process_rows)
+                    .copied(),
+            )
             .collect();
         let rows = projection
             .source_rows
@@ -712,16 +724,18 @@ impl ChatFeed {
     ) -> gpui::AnyElement {
         let line = &self.lines[index];
         let Some(fold) = self.projection.folds.get(&index).copied() else {
-            let is_nested_process = matches!(
-                line,
-                ChatLine::Reasoning { .. }
-                    | ChatLine::ToolCall { .. }
-                    | ChatLine::Tool { .. }
-                    | ChatLine::ToolResult {
-                        is_error: false,
-                        ..
-                    }
-            );
+            let is_nested_process =
+                self.projection.process_rows.contains(&index)
+                    || matches!(
+                        line,
+                        ChatLine::Reasoning { .. }
+                            | ChatLine::ToolCall { .. }
+                            | ChatLine::Tool { .. }
+                            | ChatLine::ToolResult {
+                                is_error: false,
+                                ..
+                            }
+                    );
             if is_nested_process {
                 return div()
                     .w_full()
@@ -904,15 +918,27 @@ impl ChatFeed {
                 let ink = self.theme.ink();
                 let verified = self.theme.status_verified();
                 let muted = self.theme.muted();
-                let show_identity = index == 0
-                    || !matches!(
-                        self.lines[index - 1],
-                        ChatLine::Assistant { .. }
-                    );
+                let is_ack = self.projection.ack_rows.contains(&index);
+                let is_process = self.projection.process_rows.contains(&index);
+                let has_prior_visible_assistant_in_turn = (0..index)
+                    .rev()
+                    .take_while(|&prev| {
+                        !matches!(self.lines[prev], ChatLine::User { .. })
+                    })
+                    .any(|prev| {
+                        matches!(self.lines[prev], ChatLine::Assistant { .. })
+                            && !self.projection.process_rows.contains(&prev)
+                    });
+                let show_identity =
+                    !is_process && !has_prior_visible_assistant_in_turn;
                 div()
                     .id(("chat-assistant", row_id))
                     .w_full()
-                    .py(self.theme.space(6.))
+                    .py(if is_process {
+                        self.theme.space(2.)
+                    } else {
+                        self.theme.space(6.)
+                    })
                     .flex()
                     .flex_col()
                     .gap(self.theme.space(6.))
@@ -952,7 +978,7 @@ impl ChatFeed {
                     .child(
                         div()
                             .w_full()
-                            .pl(px(28.))
+                            .pl(if is_process { px(0.) } else { px(28.) })
                             .text_sm()
                             .whitespace_normal()
                             .child(if is_streaming {
@@ -963,62 +989,71 @@ impl ChatFeed {
                                 markdown::render(text, self.theme, &self.i18n)
                             }),
                     )
-                    .when(!is_streaming && !text.trim().is_empty(), |col| {
-                        let label = if is_copied {
-                            self.t("chat.copied")
-                        } else {
-                            self.t("chat.copy_reply")
-                        };
-                        let icon = if is_copied {
-                            theme::icons::check().size(px(13.))
-                        } else {
-                            theme::icons::copy().size(px(13.))
-                        };
-                        let hover_fg = if is_copied { verified } else { ink };
-                        col.child(
-                            div()
-                                .w_full()
-                                .h(px(26.))
-                                .pl(px(28.))
-                                .flex()
-                                .items_center()
-                                .child(
-                                    theme::interactive(
-                                        ("chat-copy-reply", row_id),
-                                        label,
-                                        &self.theme,
-                                    )
-                                    .size(px(24.))
-                                    .rounded_md()
+                    .when(
+                        !is_streaming
+                            && !text.trim().is_empty()
+                            && !is_ack
+                            && !is_process,
+                        |col| {
+                            let label = if is_copied {
+                                self.t("chat.copied")
+                            } else {
+                                self.t("chat.copy_reply")
+                            };
+                            let icon = if is_copied {
+                                theme::icons::check().size(px(13.))
+                            } else {
+                                theme::icons::copy().size(px(13.))
+                            };
+                            let hover_fg =
+                                if is_copied { verified } else { ink };
+                            col.child(
+                                div()
+                                    .w_full()
+                                    .h(px(26.))
+                                    .pl(px(28.))
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .text_color(if is_copied {
-                                        verified
-                                    } else {
-                                        muted
-                                    })
-                                    .when(!is_copied, |btn| btn.opacity(0.45))
-                                    .hover(move |style| {
-                                        style
-                                            .opacity(1.0)
-                                            .bg(soft)
-                                            .text_color(hover_fg)
-                                    })
-                                    .child(icon)
-                                    .on_click(cx.listener(
-                                        move |feed, _, _, cx| {
-                                            feed.copy_assistant_row(
-                                                row_id,
-                                                copy_text.clone(),
-                                                cx,
-                                            );
-                                        },
-                                    )),
-                                ),
-                        )
-                    })
+                                    .child(
+                                        theme::interactive(
+                                            ("chat-copy-reply", row_id),
+                                            label,
+                                            &self.theme,
+                                        )
+                                        .size(px(24.))
+                                        .rounded_md()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .text_color(if is_copied {
+                                            verified
+                                        } else {
+                                            muted
+                                        })
+                                        .when(!is_copied, |btn| {
+                                            btn.opacity(0.45)
+                                        })
+                                        .hover(move |style| {
+                                            style
+                                                .opacity(1.0)
+                                                .bg(soft)
+                                                .text_color(hover_fg)
+                                        })
+                                        .child(icon)
+                                        .on_click(cx.listener(
+                                            move |feed, _, _, cx| {
+                                                feed.copy_assistant_row(
+                                                    row_id,
+                                                    copy_text.clone(),
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                    ),
+                            )
+                        },
+                    )
                     .into_any_element()
             }
             ChatLine::Reasoning {

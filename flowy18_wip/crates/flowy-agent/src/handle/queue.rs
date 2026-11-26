@@ -344,12 +344,21 @@ impl Harness {
         }
         let engine = lock(&self.engine).clone();
         if let Some(engine) = engine {
+            // Skip claims actively finishing in this process so we never write
+            // `Completed` to the journal before `finish_accepted_if_owned` clears
+            // `active_claims` and cancels heartbeats.
+            let live_attempts: Vec<(String, String)> =
+                lock(&self.state.active_claims)
+                    .iter()
+                    .map(|(id, claim)| (id.clone(), claim.attempt_id.clone()))
+                    .collect();
             push_reconciled_receipt_updates(
                 &self.state,
                 reconcile_committed_acceptances(
                     &self.state.root,
                     &engine,
                     self.state.artifact_store.get(),
+                    &live_attempts,
                 ),
             );
         }
@@ -1013,6 +1022,7 @@ pub(super) fn reconcile_committed_acceptances(
     root: &Path,
     engine: &Engine,
     _store: Option<&ArtifactStore>,
+    live_attempts: &[(String, String)],
 ) -> Vec<(String, ReceiptState)> {
     let mut reconciled = Vec::new();
     let queue = AcceptanceQueue::new(root.to_path_buf());
@@ -1037,6 +1047,12 @@ pub(super) fn reconcile_committed_acceptances(
         let committed_on_disk =
             (|| {
                 let attempt_id = receipt.last_attempt_id.as_deref()?;
+                if live_attempts
+                    .iter()
+                    .any(|(id, att)| id == &receipt.id && att == attempt_id)
+                {
+                    return None;
+                }
                 let session_id = receipt.target_session_id.as_deref()?;
                 let submission_id = receipt.submission_id.as_deref()?;
                 let record = engine.session(session_id)?;

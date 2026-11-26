@@ -1980,14 +1980,15 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
                     )]);
                 }
                 let wid = wid_c.lock().unwrap().clone();
-                if req.last_user == "try-escalate"
-                    && req.last_tool_result.is_none()
-                {
-                    return MockReply::ToolCalls(vec![(
-                        "c-2".into(),
-                        "dispatch_work".into(),
-                        json!({"brief": "edit code", "mode": "read_write", "target_work_id": wid, "request_id": "ro-esc"}),
-                    )]);
+                if req.last_user == "try-escalate" {
+                    if req.last_tool_result.is_none() {
+                        return MockReply::ToolCalls(vec![(
+                            "c-2".into(),
+                            "dispatch_work".into(),
+                            json!({"brief": "edit code", "mode": "read_write", "target_work_id": wid, "request_id": "ro-esc"}),
+                        )]);
+                    }
+                    g.record_arrival("escalation-checked");
                 }
                 if req.last_user == "resume-ro"
                     && req.last_tool_result.is_none()
@@ -2039,6 +2040,7 @@ fn project_worker_preserves_workspace_binding_and_readonly_worker_cannot_escalat
     handle
         .submit_router_message(&router_id, 13002, "try-escalate")
         .unwrap();
+    gate.wait_for_key("escalation-checked", Duration::from_secs(5));
     wait_idle(&handle, &router_id, "escalation attempt finished");
     assert!(
         tool_outputs
@@ -4310,4 +4312,198 @@ fn collect_work_dispatch_turns_pairs_batched_tools_and_resets_across_turns() {
         AgentHandle::collect_work_dispatch_turns(&rows, &user_positions);
     assert_eq!(turns.get("w-batch"), Some(&1));
     assert_eq!(turns.get("w-stale"), None);
+}
+
+#[test]
+fn extract_session_preview_skips_mid_turn_tool_preambles() {
+    let during_tools = vec![
+        ChatLine::User {
+            text: "查一下深圳天气".into(),
+        },
+        ChatLine::Assistant {
+            text: "我先试一下：".into(),
+        },
+        ChatLine::ToolCall {
+            name: "dispatch_work".into(),
+            target: "weather".into(),
+            call_id: "c1".into(),
+            running: false,
+        },
+        ChatLine::ToolResult {
+            text: "{\"work_id\":\"w1\"}".into(),
+            is_error: false,
+        },
+    ];
+    assert_eq!(
+        observer::extract_session_preview(&during_tools).as_deref(),
+        Some("查一下深圳天气")
+    );
+
+    let mut settled = during_tools;
+    settled.push(ChatLine::Assistant {
+        text: "深圳今天多云，26°C。".into(),
+    });
+    assert_eq!(
+        observer::extract_session_preview(&settled).as_deref(),
+        Some("深圳今天多云，26°C。")
+    );
+}
+
+#[test]
+fn router_announcement_failure_restores_prior_status_without_error_banner() {
+    let root = temp_dir("announce-failure-isolation");
+    let gate = PromptGate::new();
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, g| {
+            if is_router_req(req) {
+                if req.last_user == "run-ok-then-bad-announce"
+                    && req.last_tool_result.is_none()
+                {
+                    return MockReply::ToolCalls(vec![(
+                        "c-1".into(),
+                        "dispatch_work".into(),
+                        json!({"brief": "bg-task", "request_id": "req-iso"}),
+                    )]);
+                }
+                if req.last_user.starts_with("[WorkEventBatch]") {
+                    g.record_arrival("announce-failed");
+                    return MockReply::Error(
+                        "transient upstream timeout".into(),
+                    );
+                }
+                return MockReply::Text("任务已受理".into());
+            }
+            MockReply::Text("worker done".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+
+    handle
+        .submit_router_message(&router_id, 10020, "run-ok-then-bad-announce")
+        .unwrap();
+    gate.wait_for_key("announce-failed", Duration::from_secs(5));
+    wait_idle(&handle, &router_id, "failed announcement settled");
+
+    assert!(
+        !matches!(handle.turn_status(), TurnStatus::Error { .. }),
+        "background [WorkEventBatch] failure must not flip healthy session to Error: {:?}",
+        handle.turn_status()
+    );
+    let lines = handle.session_lines(&router_id);
+    assert!(
+        !lines.iter().any(|l| matches!(
+            l,
+            ChatLine::Status { text } if text == "chat.status_error"
+        )),
+        "failed background announcement must not append chat.status_error: {lines:?}"
+    );
+}
+
+#[test]
+fn work_event_batch_and_prompt_surface_active_sibling_discipline() {
+    let root = temp_dir("sibling-discipline");
+    let gate = PromptGate::new();
+    let seen_batches = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sb_c = Arc::clone(&seen_batches);
+    let sibling_prompt = Arc::new(Mutex::new(String::new()));
+    let sp_c = Arc::clone(&sibling_prompt);
+
+    let handle_slot: Arc<Mutex<Option<AgentHandle>>> =
+        Arc::new(Mutex::new(None));
+    let hs_c = Arc::clone(&handle_slot);
+    let rid_slot = Arc::new(Mutex::new(String::new()));
+    let rs_c = Arc::clone(&rid_slot);
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, g| {
+            if is_router_req(req) {
+                if req.last_user == "two-workers"
+                    && req.last_tool_result.is_none()
+                {
+                    return MockReply::ToolCalls(vec![
+                        (
+                            "c-fast".into(),
+                            "dispatch_work".into(),
+                            json!({"brief": "fast task", "request_id": "req-fast"}),
+                        ),
+                        (
+                            "c-slow".into(),
+                            "dispatch_work".into(),
+                            json!({"brief": "slow task", "request_id": "req-slow"}),
+                        ),
+                    ]);
+                }
+                if req.last_user.starts_with("[WorkEventBatch]") {
+                    sb_c.lock().unwrap().push(req.last_user.clone());
+                    if let (Some(h), rid) = (
+                        hs_c.lock().unwrap().as_ref(),
+                        rs_c.lock().unwrap().clone(),
+                    ) && !rid.is_empty()
+                        && sp_c.lock().unwrap().is_empty()
+                    {
+                        *sp_c.lock().unwrap() =
+                            super::router::build_router_system_prompt(
+                                &h.inner, &rid, true,
+                            );
+                    }
+                    if req.last_user.contains("active_running=1") {
+                        g.record_arrival("fast-finished-while-slow-running");
+                    }
+                    g.record_arrival("batch-settled");
+                    return MockReply::Text("快任务已完成。".into());
+                }
+                return MockReply::Text("已派发两项任务。".into());
+            }
+            if req.last_user.contains("slow task") {
+                g.enter_and_wait("slow-worker-gate");
+            }
+            MockReply::Text("done".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    *handle_slot.lock().unwrap() = Some(handle.clone());
+    *rid_slot.lock().unwrap() = router_id.clone();
+
+    handle
+        .submit_router_message(&router_id, 10021, "two-workers")
+        .unwrap();
+    gate.wait_for_key(
+        "fast-finished-while-slow-running",
+        Duration::from_secs(5),
+    );
+    gate.release("slow-worker-gate");
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            handle
+                .child_works(&router_id)
+                .iter()
+                .all(|w| w.state == "completed")
+        },
+        "all workers completed",
+    );
+    wait_idle(&handle, &router_id, "all workers settled");
+
+    let batches = seen_batches.lock().unwrap().clone();
+    assert!(
+        batches
+            .iter()
+            .any(|b| b
+                .contains("[SiblingWorks active_running=1 waiting_user=0]")),
+        "first [WorkEventBatch] must report 1 active sibling: {batches:?}"
+    );
+    let interim_prompt = sibling_prompt.lock().unwrap().clone();
+    assert!(
+        interim_prompt.contains("Emit ONLY ONE short progress sentence"),
+        "announcement prompt with active siblings must enforce 1-sentence brief: {interim_prompt}"
+    );
 }

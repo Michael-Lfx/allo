@@ -763,12 +763,20 @@ pub(super) fn build_router_system_prompt(
         "{} You are Flowy's lightweight conversation Router. Follow strict turn discipline: (1) Before calling tools or `dispatch_work`, emit at most ONE short opening acknowledgement sentence — never write filler narration between tool calls (no \"已派发，我看一下结果\" / \"还在跑，稍等我再查\"). (2) Delegate file editing, document creation, shell/network commands (`curl`), and verification to Worker sessions via `dispatch_work`; note `read_only` Workers only have `read_file`/`glob`/`grep` (no shell), so shell/network queries require `read_write` with read-only constraints in the brief. (3) After dispatching background Workers, stop and yield the turn immediately so Workers run asynchronously — do NOT poll `query_work_status` repeatedly in a loop unless the user explicitly asked for an immediate status check. (4) Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing.",
         super::BASE_BEHAVIOR_PROMPT
     );
-    if is_announcement {
-        out.push_str(
-            "\nThis is an automatic `[WorkEventBatch]` progress announcement turn. Summarize the authoritative Worker state honestly for the user without dispatching or retrying work.",
-        );
-    }
     let works = harness.child_works(router_id);
+    if is_announcement {
+        let (active_running, waiting_user) =
+            super::work_events::sibling_work_counts(&works);
+        if active_running > 0 && waiting_user == 0 {
+            out.push_str(
+                "\nThis is an automatic `[WorkEventBatch]` progress announcement turn while other sibling Workers are STILL running (`active_running > 0`). Emit ONLY ONE short progress sentence reporting the completed/failed item and remaining background work — do NOT write a multi-section wrap-up, options list, or final conclusion until sibling Workers settle, and do not dispatch or retry work.",
+            );
+        } else {
+            out.push_str(
+                "\nThis is an automatic `[WorkEventBatch]` progress announcement turn. Summarize the authoritative Worker state honestly for the user without dispatching or retrying work.",
+            );
+        }
+    }
     if works.is_empty() {
         return out;
     }
@@ -1033,6 +1041,8 @@ impl Harness {
                             role: SessionRole::Worker,
                             root_session_id: Some(router_id.to_owned()),
                             access_mode: mode,
+                            active_turn_is_internal: false,
+                            active_turn_prev_status: None,
                         },
                     );
                     let _ = engine.set_session_title(

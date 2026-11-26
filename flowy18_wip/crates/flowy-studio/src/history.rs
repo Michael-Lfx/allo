@@ -23,6 +23,10 @@ pub struct Projection {
     pub folds: HashMap<usize, Fold>,
     pub fold_meta: HashMap<usize, FoldMeta>,
     pub hidden: HashMap<usize, usize>,
+    /// Display row indices of opening acknowledgements placed above a fold pill.
+    pub ack_rows: HashSet<usize>,
+    /// Display row indices belonging to an expanded process block.
+    pub process_rows: HashSet<usize>,
     pub streaming: Option<usize>,
 }
 
@@ -158,6 +162,10 @@ impl Projection {
                 if is_folded(source) {
                     deferred_folded.push(source);
                 } else {
+                    let display_row = result.source_rows.len();
+                    if Some(source) == opening_ack {
+                        result.ack_rows.insert(display_row);
+                    }
                     result.push(source, streaming);
                 }
             }
@@ -175,6 +183,8 @@ impl Projection {
 
             for source in deferred_folded {
                 if expanded {
+                    let display_row = result.source_rows.len();
+                    result.process_rows.insert(display_row);
                     result.push(source, streaming);
                 } else {
                     result.hidden.insert(source, button_row);
@@ -185,6 +195,10 @@ impl Projection {
                 if !expanded && is_folded(source) {
                     result.hidden.insert(source, button_row);
                     continue;
+                }
+                let display_row = result.source_rows.len();
+                if is_folded(source) {
+                    result.process_rows.insert(display_row);
                 }
                 result.push(source, streaming);
             }
@@ -555,6 +569,59 @@ mod tests {
         assert!(expanded.folds[&2].expanded);
         assert_eq!(expanded.source_rows, [0, 2, 3, 1, 4, 5, 6, 7, 8, 9]);
         assert!(expanded.hidden.is_empty());
+        // Display indices: 1=ack(src 2), 2=fold_pill(src 3), 3..=8=expanded process rows, 9=final.
+        assert_eq!(collapsed.ack_rows, HashSet::from([1]));
+        assert!(collapsed.process_rows.is_empty());
+        assert_eq!(expanded.ack_rows, HashSet::from([1]));
+        assert_eq!(expanded.process_rows, HashSet::from([3, 4, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn multi_turn_ack_and_process_rows_preserve_standalone_final_replies() {
+        let lines = [
+            ChatLine::User {
+                text: "查一下天气".into(),
+            },
+            ChatLine::Assistant {
+                text: "我先派后台去查一下。".into(),
+            },
+            ChatLine::ToolCall {
+                name: "dispatch_work".into(),
+                target: "weather".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "{\"work_id\":\"w1\"}".into(),
+                is_error: false,
+            },
+            ChatLine::Assistant {
+                text: "中间播报：拿到初步天气。".into(),
+            },
+            ChatLine::Assistant {
+                text: "深圳晴，26°C。".into(),
+            },
+            ChatLine::User {
+                text: "谢谢".into(),
+            },
+            ChatLine::Assistant {
+                text: "不客气！".into(),
+            },
+        ];
+
+        let expanded = Projection::build_live(
+            &lines,
+            None,
+            true,
+            Some(&HashSet::from([2])),
+        );
+        assert_eq!(expanded.source_rows, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(expanded.ack_rows, HashSet::from([1]));
+        assert_eq!(expanded.process_rows, HashSet::from([3, 4]));
+        assert!(!expanded.process_rows.contains(&5));
+        assert!(!expanded.ack_rows.contains(&5));
+        assert!(!expanded.ack_rows.contains(&7));
+        assert!(!expanded.process_rows.contains(&7));
     }
 
     #[test]
@@ -581,5 +648,7 @@ mod tests {
         assert_eq!(folded.source_rows, [0, 1, 2]);
         assert_eq!(folded.hidden[&3], 2);
         assert_eq!(folded.fold_meta[&2].step_count, 1);
+        assert_eq!(folded.ack_rows, HashSet::from([1]));
+        assert!(folded.process_rows.is_empty());
     }
 }

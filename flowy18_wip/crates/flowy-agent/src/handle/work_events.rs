@@ -91,6 +91,24 @@ fn parse_submission_u128(submission_id: &str) -> Option<u128> {
     u128::from_str_radix(hex, 16).ok()
 }
 
+/// Count non-terminal `(active_running, waiting_user)` sibling Workers so
+/// both `[WorkEventBatch]` metadata and Router prompts stay consistent.
+pub(super) fn sibling_work_counts(
+    works: &[super::router::ChildWorkSummary],
+) -> (usize, usize) {
+    let mut active_running = 0_usize;
+    let mut waiting_user = 0_usize;
+    for work in works {
+        if matches!(work.state.as_str(), "running" | "queued") {
+            active_running += 1;
+        }
+        if work.state == "waiting_for_user" || !work.pending_cards.is_empty() {
+            waiting_user += 1;
+        }
+    }
+    (active_running, waiting_user)
+}
+
 /// Format `[WorkEventBatch]` ONLY after re-reading each Worker's authoritative
 /// current state and `contract_revision`, ensuring delayed older-revision
 /// events can never overwrite or misrepresent a newer revision.
@@ -145,6 +163,11 @@ fn format_work_event_batch(
             }
         }
     }
+    let (active_running, waiting_user) = sibling_work_counts(&works);
+    let _ = writeln!(
+        out,
+        "[SiblingWorks active_running={active_running} waiting_user={waiting_user}]"
+    );
     out
 }
 
