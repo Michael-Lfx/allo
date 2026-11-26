@@ -100,6 +100,7 @@ panel.set_prompt_text(..)  // 写（入队）
 | --- | --- | --- |
 | 元素 prepaint 钩子 | `.on_prepaint(..)` | 自定义 `Element` wrapper（见 `overlays.rs` 的 `PrepaintBounds`） |
 | ARIA 属性 | `.aria_live` `.aria_disabled` `.aria_modal` `.aria_hidden` | 无替代，生产代码中已删 |
+| ARIA 展开态 | 弹层/折叠触发按钮加 `.aria_expanded(...)` | **禁止添加**：`gpui-pre 0.3.14` 丢弃 AccessKit `Action::Expand`，会导致 Windows UIA 点击失效；保持普通按钮即可 |
 | 颜色 trait | `gpui::ColorExt`（`blend` / `fade_out`） | `Hsla::from` + 手动 alpha |
 | 颜色函数 | `gpui::rgb_to_hsla(x)` | `gpui::Hsla::from(x)` |
 | Enter action | `gpui::Enter` | `gpui_kit::base::input::Enter { secondary, shift }` |

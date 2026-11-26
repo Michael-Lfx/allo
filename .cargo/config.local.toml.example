@@ -1,10 +1,27 @@
-# Optional local Cargo overrides — copy to config.local.toml (gitignored).
+# Optional local Cargo overrides — copy to `.cargo/config.local.toml` (gitignored)
+# or place in your user-global `~/.cargo/config.toml` (recommended when using
+# multiple `git worktree` checkouts, since gitignored `config.local.toml` is not
+# copied into new worktrees).
 #
-# sccache: rustc-wrapper + incremental=false must be used together — rustc's
-# incremental mode marks every compile as non-cacheable. Install: cargo install sccache
+# sccache (cross-worktree third-party dependency cache):
+#   1. Install prebuilt binary (fast, cross-platform):
+#        mise use -g sccache   # or: cargo install sccache --locked
+#   2. Keep `[build] incremental = true` from `.cargo/config.toml` and set
+#      `SCCACHE_ALLOW_INCREMENTAL = "1"` below. Cargo compiles third-party
+#      crates non-incrementally by default, so sccache caches ~91% of external
+#      deps across worktrees (saving ~9+ min on a fresh flowy18_wip build;
+#      bin / proc-macro / incremental workspace crates remain uncached) while
+#      preserving fast local incremental rebuilds for workspace crates.
+#   3. Configure `[build] rustc-wrapper` (NOT `[env] RUSTC_WRAPPER` with
+#      `force = true`) so `flowy18_wip/scripts/dev-hotpatch.ps1` can cleanly
+#      override `RUSTC_WRAPPER` for `dx serve`.
+#   4. To persist a larger disk cache across daemon idle restarts (default is
+#      10 GiB), also set user env `SCCACHE_CACHE_SIZE=25G` or write
+#      `[cache.disk] size = 26843545600` in sccache's own config file.
+#   5. If sccache ever reports a transient daemon error (exit code 2), run
+#      `sccache --stop-server` and retry.
 [build]
 rustc-wrapper = "sccache"
-incremental = false
 
 [env]
-CARGO_INCREMENTAL = "0"
+SCCACHE_ALLOW_INCREMENTAL = "1"
