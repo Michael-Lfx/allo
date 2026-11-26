@@ -2153,17 +2153,14 @@ impl AgentHandle {
                             turn_inserts: &mut [Vec<ChatLine>],
                             tail_inserts: &mut Vec<ChatLine>|
          -> CardSlot {
-            match target_turn {
-                Some(turn) => {
-                    let pos = turn_inserts[turn].len();
-                    turn_inserts[turn].push(card);
-                    CardSlot::Turn(turn, pos)
-                }
-                None => {
-                    let pos = tail_inserts.len();
-                    tail_inserts.push(card);
-                    CardSlot::Tail(pos)
-                }
+            if let Some(turn) = target_turn {
+                let pos = turn_inserts[turn].len();
+                turn_inserts[turn].push(card);
+                CardSlot::Turn(turn, pos)
+            } else {
+                let pos = tail_inserts.len();
+                tail_inserts.push(card);
+                CardSlot::Tail(pos)
             }
         };
         for child_id in &child_ids {

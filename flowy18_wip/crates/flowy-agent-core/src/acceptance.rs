@@ -104,15 +104,10 @@ pub struct AcceptedMessage {
     /// Optional Router dispatch request identifier for audit and reconciliation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_request_id: Option<String>,
-    /// Captured cold-start origin when accepted from an empty Home/Project draft.
+    /// Captured cold-start origin, workspace, and role intent when accepted from
+    /// an empty Home/Project draft (boxed to keep `AcceptedMessage` compact).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_origin: Option<SessionOrigin>,
-    /// Captured cold-start workspace when accepted from an empty Project draft.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_workspace: Option<SessionWorkspace>,
-    /// Captured target session role (e.g., `Router` for fresh drafts).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_role: Option<SessionRole>,
+    pub draft_target: Option<Box<DraftTarget>>,
 }
 
 /// Externally observable lifecycle state for one receipt at a point in time.
@@ -190,11 +185,7 @@ enum JournalEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dispatch_request_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_origin: Option<SessionOrigin>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_workspace: Option<SessionWorkspace>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_role: Option<SessionRole>,
+        draft_target: Option<Box<DraftTarget>>,
     },
     Taken {
         id: String,
@@ -330,9 +321,7 @@ impl AcceptanceQueue {
                     at_ms,
                     strict_target,
                     dispatch_request_id,
-                    target_origin,
-                    target_workspace,
-                    target_role,
+                    draft_target,
                 } => {
                     let pos = receipts.len();
                     index_by_id.entry(id.clone()).or_insert(pos);
@@ -356,9 +345,7 @@ impl AcceptanceQueue {
                         submission_id: None,
                         strict_target,
                         dispatch_request_id,
-                        target_origin,
-                        target_workspace,
-                        target_role,
+                        draft_target,
                     });
                 }
                 JournalEntry::Taken {
@@ -579,12 +566,7 @@ impl AcceptanceQueue {
         let id = new_receipt_id(now_ms);
         let hint = session_hint.map(str::to_owned);
         let request_id = dispatch_request_id.map(str::to_owned);
-        let (target_origin, target_workspace, target_role) = match target {
-            Some(draft) => {
-                (Some(draft.origin), draft.workspace, Some(draft.role))
-            }
-            None => (None, None, None),
-        };
+        let draft_target = target.map(Box::new);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
             session_hint: hint.clone(),
@@ -592,9 +574,7 @@ impl AcceptanceQueue {
             at_ms: now_ms,
             strict_target,
             dispatch_request_id: request_id.clone(),
-            target_origin: target_origin.clone(),
-            target_workspace: target_workspace.clone(),
-            target_role,
+            draft_target: draft_target.clone(),
         };
         self.append_locked(&entry)?;
         Ok(AcceptedMessage {
@@ -615,9 +595,7 @@ impl AcceptanceQueue {
             submission_id: None,
             strict_target,
             dispatch_request_id: request_id,
-            target_origin,
-            target_workspace,
-            target_role,
+            draft_target,
         })
     }
 
@@ -698,9 +676,7 @@ impl AcceptanceQueue {
                 at_ms: now_ms,
                 strict_target: dead.strict_target,
                 dispatch_request_id: dead.dispatch_request_id.clone(),
-                target_origin: dead.target_origin.clone(),
-                target_workspace: dead.target_workspace.clone(),
-                target_role: dead.target_role,
+                draft_target: dead.draft_target.clone(),
             },
             JournalEntry::Superseded {
                 id: id.to_owned(),
@@ -730,9 +706,7 @@ impl AcceptanceQueue {
             submission_id: None,
             strict_target: dead.strict_target,
             dispatch_request_id: dead.dispatch_request_id.clone(),
-            target_origin: dead.target_origin.clone(),
-            target_workspace: dead.target_workspace.clone(),
-            target_role: dead.target_role,
+            draft_target: dead.draft_target.clone(),
         }))
     }
 
@@ -1973,15 +1947,11 @@ mod tests {
                 1_000,
             )
             .expect("accept draft");
-        assert_eq!(accepted.target_origin, Some(target.origin.clone()));
-        assert_eq!(accepted.target_workspace, target.workspace);
-        assert_eq!(accepted.target_role, Some(SessionRole::Router));
+        assert_eq!(accepted.draft_target.as_deref(), Some(&target));
 
         let reopened = AcceptanceQueue::new(&root);
         let replayed = reopened.get(&accepted.id).unwrap().unwrap();
-        assert_eq!(replayed.target_origin, Some(target.origin.clone()));
-        assert_eq!(replayed.target_workspace, target.workspace);
-        assert_eq!(replayed.target_role, Some(SessionRole::Router));
+        assert_eq!(replayed.draft_target.as_deref(), Some(&target));
 
         reopened
             .take(&accepted.id, "att-1", 1_100, 30_000)
@@ -1992,16 +1962,12 @@ mod tests {
             .retry_dead(&accepted.id, 1_300)
             .unwrap()
             .expect("retry_dead preserves draft target");
-        assert_eq!(retried.target_origin, Some(target.origin.clone()));
-        assert_eq!(retried.target_workspace, target.workspace);
-        assert_eq!(retried.target_role, Some(SessionRole::Router));
+        assert_eq!(retried.draft_target.as_deref(), Some(&target));
 
         let reopened_again = AcceptanceQueue::new(&root);
         let retried_replayed =
             reopened_again.get(&retried.id).unwrap().unwrap();
-        assert_eq!(retried_replayed.target_origin, Some(target.origin));
-        assert_eq!(retried_replayed.target_workspace, target.workspace);
-        assert_eq!(retried_replayed.target_role, Some(SessionRole::Router));
+        assert_eq!(retried_replayed.draft_target.as_deref(), Some(&target));
 
         fs::remove_dir_all(&root).expect("cleanup");
     }

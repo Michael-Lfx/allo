@@ -453,24 +453,26 @@ impl Harness {
                     }
                     return Ok(None);
                 }
-                let target_origin = claimed
-                    .target_origin
-                    .clone()
-                    .unwrap_or(SessionOrigin::Home);
-                let target_workspace =
-                    claimed.target_workspace.as_ref().map(|ws| {
-                        AgentWorkspace {
-                            project_id: match &target_origin {
-                                SessionOrigin::Project {
-                                    project_id: Some(pid),
-                                } => pid.clone(),
-                                _ => String::new(),
-                            },
-                            root: ws.root.clone(),
+                let (target_origin, target_workspace, target_role) =
+                    match claimed.draft_target.as_deref() {
+                        Some(draft) => {
+                            let ws = draft.workspace.as_ref().map(|ws| {
+                                AgentWorkspace {
+                                    project_id: match &draft.origin {
+                                        SessionOrigin::Project {
+                                            project_id: Some(pid),
+                                        } => pid.clone(),
+                                        _ => String::new(),
+                                    },
+                                    root: ws.root.clone(),
+                                }
+                            });
+                            (draft.origin.clone(), ws, draft.role)
                         }
-                    });
-                let target_role =
-                    claimed.target_role.unwrap_or(SessionRole::Standard);
+                        None => {
+                            (SessionOrigin::Home, None, SessionRole::Standard)
+                        }
+                    };
                 match self.create_background_session_with_role(
                     target_origin,
                     target_workspace,

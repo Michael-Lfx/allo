@@ -3520,12 +3520,15 @@ fn router_cold_start_draft_restarts_into_project_router_and_cancels_deleted_rout
                 },
                 Some(AgentWorkspace {
                     project_id: "proj-a".into(),
-                    root: proj_a_dir.clone(),
+                    root: proj_a_dir,
                 }),
                 SessionRole::Router,
             )
             .unwrap();
-        assert_eq!(draft.target_role, Some(SessionRole::Router));
+        assert_eq!(
+            draft.draft_target.as_deref().map(|d| d.role),
+            Some(SessionRole::Router)
+        );
         assert_eq!(offline.pending_acceptances().len(), 2);
     }
 
@@ -3695,6 +3698,23 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
     let router_id = handle.create_router_session().unwrap();
     handle.select_session(&router_id).unwrap();
 
+    let wait_children_done = |label: &str| {
+        wait_until(
+            Duration::from_secs(6),
+            || {
+                let works = handle.child_works(&router_id);
+                !works.is_empty()
+                    && works.iter().all(|w| {
+                        !matches!(
+                            w.state.as_str(),
+                            "queued" | "running" | "verifying" | "stopping"
+                        )
+                    })
+            },
+            label,
+        );
+    };
+
     // Turn 1: deliver alpha -> Worker 1 emits Verification + override commits Artifact.
     handle
         .submit_router_message(&router_id, 7001, "deliver alpha")
@@ -3708,6 +3728,7 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
         },
         "alpha_v1 verification card projected",
     );
+    wait_children_done("w1 turn 1 settled");
     wait_idle(&handle, &router_id, "turn 1 settled");
 
     let (w1_id, rep_a1, path_a1) = handle
@@ -3788,6 +3809,7 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
         },
         "beta_v1 verification card projected",
     );
+    wait_children_done("w2 turn 3 settled");
     wait_idle(&handle, &router_id, "turn 3 settled");
 
     // Turn 4: revise alpha via control_work(revise) targeting `w1_id`.
@@ -3803,6 +3825,7 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
         },
         "alpha_v2 verification card projected after revise",
     );
+    wait_children_done("w1 turn 4 settled");
     wait_idle(&handle, &router_id, "turn 4 settled");
 
     let assert_after_revise = |h: &AgentHandle| {
@@ -3950,33 +3973,26 @@ fn chat_history_multi_router_and_active_workers_zero_clone_benchmark() {
         std::thread::sleep(Duration::from_millis(5));
     }
     reopened.select_session(&active_router).unwrap();
-    {
-        let mut live = lock(&reopened.inner.state.live);
-        let router_live = live
-            .get_mut(&active_router)
-            .expect("active router hydrated into live");
-        let mut router_lines = vec![
-            ChatLine::User {
-                text: "Run parallel tasks".into(),
-            },
-            ChatLine::Assistant {
-                text: "Dispatched two active workers.".into(),
-            },
-        ];
-        for step in 0..20_usize {
-            router_lines.push(ChatLine::ToolCall {
-                call_id: format!("step-{step}"),
-                name: "query_work_status".into(),
-                target: "w-active-1".into(),
-                running: false,
-            });
-        }
-        router_live.projection = ChatProjection::from_lines(router_lines);
-        for w in 1..=2_usize {
+    let mut router_lines = vec![
+        ChatLine::User {
+            text: "Run parallel tasks".into(),
+        },
+        ChatLine::Assistant {
+            text: "Dispatched two active workers.".into(),
+        },
+    ];
+    for step in 0..20_usize {
+        router_lines.push(ChatLine::ToolCall {
+            call_id: format!("step-{step}"),
+            name: "query_work_status".into(),
+            target: "w-active-1".into(),
+            running: false,
+        });
+    }
+    let router_proj = ChatProjection::from_lines(router_lines);
+    let worker_projs: Vec<(String, ChatProjection)> = (1..=2_usize)
+        .map(|w| {
             let wid = format!("w-active-{w}");
-            let worker_live = live
-                .get_mut(&wid)
-                .expect("active child worker hydrated into live");
             let mut w_lines = Vec::with_capacity(24);
             for s in 0..20_usize {
                 w_lines.push(ChatLine::Assistant {
@@ -3994,8 +4010,20 @@ fn chat_history_multi_router_and_active_workers_zero_clone_benchmark() {
                 provenance_warnings: Vec::new(),
                 source_session_id: Some(wid.clone()),
             });
-            worker_live.projection = ChatProjection::from_lines(w_lines);
+            (wid, ChatProjection::from_lines(w_lines))
+        })
+        .collect();
+    {
+        let mut live = lock(&reopened.inner.state.live);
+        live.get_mut(&active_router)
+            .expect("active router hydrated into live")
+            .projection = router_proj;
+        for (wid, proj) in worker_projs {
+            live.get_mut(&wid)
+                .expect("active child worker hydrated into live")
+                .projection = proj;
         }
+        drop(live);
     }
 
     // Warm up once, then sample 100 chat_history() projections across 50 routers.

@@ -4183,15 +4183,16 @@ mod tests {
             assert_eq!(panel.pending_receipts.len(), 1);
             let pending = panel.agent.pending_acceptances();
             assert_eq!(pending.len(), 1);
+            let draft = pending[0]
+                .draft_target
+                .as_deref()
+                .expect("cold-start receipt carries draft_target");
+            assert_eq!(draft.role, flowy_agent::SessionRole::Router);
             assert_eq!(
-                pending[0].target_role,
-                Some(flowy_agent::SessionRole::Router)
-            );
-            assert_eq!(
-                pending[0].target_origin,
-                Some(flowy_agent::SessionOrigin::Project {
+                draft.origin,
+                flowy_agent::SessionOrigin::Project {
                     project_id: Some(proj_a_id.borrow().clone()),
-                })
+                }
             );
 
             // Switch to Project B draft before catalog finishes loading.
