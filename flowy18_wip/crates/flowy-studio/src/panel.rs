@@ -100,9 +100,6 @@ pub enum StudioEvent {
         session_id: String,
         artifact_id: String,
     },
-    Rated {
-        stars: u32,
-    },
     /// Requests the host's unified session context menu at an explicit pointer
     /// position (right-click on Progress Board session rows).
     OpenSessionMenu {

@@ -1854,17 +1854,6 @@ impl FlowyApp {
                 self.sync_studio_skills(cx);
                 cx.notify();
             }
-            StudioEvent::Rated { stars } => {
-                if let Some(telemetry) = crate::telemetry() {
-                    let mut props = serde_json::Map::new();
-                    props.insert(
-                        "stars".into(),
-                        serde_json::Value::Number((*stars).into()),
-                    );
-                    telemetry.capture("chat_rating", props);
-                }
-                cx.notify();
-            }
             StudioEvent::OpenSessionMenu {
                 session_id,
                 position,
