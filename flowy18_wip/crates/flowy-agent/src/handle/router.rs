@@ -1,0 +1,1310 @@
+//! Session-level lightweight Router tools, child Work summaries, ownership
+//! validation, idempotent dispatch, and bounded read-only status header.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Weak};
+
+use flowy_agent_core::{
+    AcceptanceQueue, BranchHeartbeat, DisambiguationOption, DispatchRecord,
+    Engine, FactStatus, ObjectVerifyState, PendingCard, PreToolDecision,
+    PreToolHook, ReceiptState, SessionOrigin, SessionRecord, SessionRole,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
+    TrackedObjectKind, TurnState, WorkAccessMode,
+    tools::{ToolDefinition, ToolRegistry},
+    types::{CancelToken, ToolCallArgs, ToolExecutionResult, ToolRunContext},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::{
+    AgentUpdate, ChatProjection, Harness, Live, Ordering, TurnStatus, lock,
+    log_storage_io_error, next_stamp, now_ms, persist_index,
+};
+use crate::artifact_store::PublicationState;
+
+/// Hard character budget for the Router read-only child-Work status header.
+const MAX_STATUS_HEADER_CHARS: usize = 900;
+/// Maximum recent child Works projected into the Router read-only header.
+const MAX_HEADER_WORKS: usize = 8;
+
+/// Structured result returned by `dispatch_work` and `revise_work`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchWorkResult {
+    pub work_id: String,
+    pub receipt_id: String,
+    pub status: String,
+    pub access_mode: WorkAccessMode,
+    pub deduplicated: bool,
+}
+
+/// Structured result returned by `stop_router_reply` and `cancel_work`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopWorkResult {
+    pub work_id: String,
+    pub outcome: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_receipt_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub committed_artifact_ids: Vec<String>,
+}
+
+/// Authoritative host summary of one Worker child session owned by a Router.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildWorkSummary {
+    pub work_id: String,
+    pub root_session_id: String,
+    pub title: String,
+    pub access_mode: WorkAccessMode,
+    pub origin: SessionOrigin,
+    pub workspace_root: Option<PathBuf>,
+    pub state: String,
+    pub turn_status: TurnStatus,
+    pub contract_revision: Option<u32>,
+    pub heartbeat: Option<BranchHeartbeat>,
+    pub pending_cards: Vec<PendingCard>,
+    pub delivered_artifact_ids: Vec<String>,
+    pub missing_items: Vec<String>,
+    pub objects: Vec<TrackedObject>,
+    pub last_stop_handoff: Option<StopHandoffManifest>,
+    pub updated_at: u64,
+}
+
+/// Pending interactive card routed to a root conversation (either owned by the
+/// Router itself or surfaced from one of its child Workers).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutedPendingCard {
+    pub root_session_id: String,
+    pub owner_session_id: String,
+    pub owner_role: SessionRole,
+    pub card: PendingCard,
+}
+
+/// Parsed request handed from the `dispatch_work` tool to [`Harness`].
+#[derive(Clone, Debug)]
+pub(super) struct DispatchWorkRequest {
+    pub(super) brief: String,
+    pub(super) requested_mode: Option<WorkAccessMode>,
+    pub(super) target_work_id: Option<String>,
+    pub(super) target_object_ids: Vec<String>,
+    pub(super) request_id: Option<String>,
+}
+
+/// Verify that `worker_id` exists, has [`SessionRole::Worker`], and belongs to
+/// `router_id` (enforcing strict cross-root isolation).
+pub(super) fn verify_child_ownership(
+    engine: &Engine,
+    router_id: &str,
+    worker_id: &str,
+) -> Result<SessionRecord, &'static str> {
+    let Some(worker) = engine.session(worker_id) else {
+        return Err("WORK_NOT_FOUND");
+    };
+    if worker.role != SessionRole::Worker
+        || worker.root_session_id.as_deref() != Some(router_id)
+    {
+        return Err("WORK_OWNERSHIP_DENIED");
+    }
+    Ok(worker)
+}
+
+/// Map every `object_id` in `object_ids` to its owning child Worker under
+/// `router_id`, rejecting unknown or cross-root object IDs fail-closed.
+pub(super) fn resolve_owned_objects(
+    engine: &Engine,
+    router_id: &str,
+    object_ids: &[String],
+) -> Result<BTreeMap<String, String>, &'static str> {
+    if object_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let children = engine.child_sessions(router_id);
+    let mut owners = BTreeMap::new();
+    for oid in object_ids {
+        let owner = children.iter().find_map(|child| {
+            child
+                .work_contract
+                .as_ref()
+                .and_then(|wc| wc.find_object(oid))
+                .map(|_| child.id.clone())
+        });
+        let Some(worker_id) = owner else {
+            return Err("OBJECT_OWNERSHIP_DENIED");
+        };
+        owners.insert(oid.clone(), worker_id);
+    }
+    Ok(owners)
+}
+
+/// Locate which `(session_id, effective_root_id)` owns `object_id` anywhere in
+/// the engine so `ask_user_choice` can reject foreign-root object references.
+fn find_object_owner_globally(
+    engine: &Engine,
+    object_id: &str,
+) -> Option<(String, String)> {
+    engine.with_sessions(|records| {
+        records.iter().find_map(|rec| {
+            rec.work_contract
+                .as_ref()
+                .and_then(|wc| wc.find_object(object_id))
+                .map(|_| {
+                    (rec.id.clone(), rec.effective_root_session_id().to_owned())
+                })
+        })
+    })
+}
+
+/// Compute a canonical SHA-256 fingerprint for idempotent dispatch / revise
+/// requests (AWS idempotency-key semantics).
+pub(super) fn dispatch_fingerprint(
+    action: &str,
+    target_work_id: Option<&str>,
+    mode: Option<WorkAccessMode>,
+    brief: &str,
+    target_object_ids: &[String],
+) -> String {
+    let mut sorted_oids: Vec<&str> =
+        target_object_ids.iter().map(String::as_str).collect();
+    sorted_oids.sort_unstable();
+    sorted_oids.dedup();
+    let mode_str = match mode {
+        Some(WorkAccessMode::ReadOnly) => "read_only",
+        Some(WorkAccessMode::ReadWrite) => "read_write",
+        None => "inherit_or_default",
+    };
+    let payload = json!({
+        "action": action,
+        "brief": brief.trim(),
+        "mode": mode_str,
+        "target_object_ids": sorted_oids,
+        "target_work_id": target_work_id.unwrap_or(""),
+    });
+    let encoded = serde_json::to_string(&payload).unwrap_or_default();
+    crate::delivery::hash_bytes(encoded.as_bytes())
+}
+
+fn parse_work_access_mode(
+    raw: Option<&str>,
+) -> Result<Option<WorkAccessMode>, &'static str> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some("read_only" | "readonly" | "read") => {
+            Ok(Some(WorkAccessMode::ReadOnly))
+        }
+        Some("read_write" | "readwrite" | "write") => {
+            Ok(Some(WorkAccessMode::ReadWrite))
+        }
+        Some(_) => Err("INVALID_ACCESS_MODE"),
+    }
+}
+
+fn next_choice_card_id(now: u64) -> String {
+    format!("choice-{now}-{}", next_stamp())
+}
+
+/// Build the Router's dedicated [`PreToolHook`] intercepting `ask_user_choice`
+/// and suspending the turn immediately (`PreToolDecision::SuspendWithCard`).
+pub(super) fn build_router_pre_tool_hook(
+    harness: Weak<Harness>,
+    router_id: String,
+) -> PreToolHook {
+    Arc::new(move |tool_name: &str, args: &Value| {
+        if tool_name != "ask_user_choice" {
+            return PreToolDecision::Allow;
+        }
+        let prompt = args
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
+        if prompt.is_empty() {
+            return PreToolDecision::Deny {
+                reason: "INVALID_ARGS: ask_user_choice requires a non-empty `prompt`".to_owned(),
+            };
+        }
+        let impact_boundary = args
+            .get("impact_boundary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("仅执行你确认的选项，未选对象保持原样")
+            .to_owned();
+        let allow_multi = args
+            .get("allow_multi")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let Some(raw_options) = args.get("options").and_then(Value::as_array)
+        else {
+            return PreToolDecision::Deny {
+                reason: "INVALID_ARGS: ask_user_choice requires a non-empty `options` array".to_owned(),
+            };
+        };
+        if raw_options.is_empty() {
+            return PreToolDecision::Deny {
+                reason:
+                    "INVALID_ARGS: ask_user_choice `options` must not be empty"
+                        .to_owned(),
+            };
+        }
+        let engine = harness.upgrade().and_then(|h| lock(&h.engine).clone());
+        let mut seen_ids = BTreeSet::new();
+        let mut options = Vec::with_capacity(raw_options.len());
+        for raw in raw_options {
+            let object_id = raw
+                .get("object_id")
+                .and_then(Value::as_str)
+                .map_or("", str::trim);
+            let label = raw
+                .get("label")
+                .and_then(Value::as_str)
+                .map_or("", str::trim);
+            if object_id.is_empty() || label.is_empty() {
+                return PreToolDecision::Deny {
+                    reason: "INVALID_ARGS: each option requires non-empty `object_id` and `label`".to_owned(),
+                };
+            }
+            if !seen_ids.insert(object_id.to_owned()) {
+                return PreToolDecision::Deny {
+                    reason: format!(
+                        "INVALID_ARGS: duplicate option object_id `{object_id}`"
+                    ),
+                };
+            }
+            if let Some(eng) = &engine
+                && let Some((_, owner_root)) =
+                    find_object_owner_globally(eng, object_id)
+                && owner_root != router_id
+            {
+                return PreToolDecision::Deny {
+                    reason: format!(
+                        "OBJECT_OWNERSHIP_DENIED: option `{object_id}` belongs to another conversation"
+                    ),
+                };
+            }
+            let anchor_summary = raw
+                .get("anchor_summary")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let extension = raw
+                .get("extension")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            options.push(DisambiguationOption {
+                object_id: object_id.to_owned(),
+                label: label.to_owned(),
+                anchor_summary,
+                extension,
+            });
+        }
+        let now = now_ms();
+        let card = PendingCard::Disambiguation {
+            card_id: next_choice_card_id(now),
+            created_at_ms: now,
+            prompt: prompt.to_owned(),
+            impact_boundary,
+            options,
+            allow_multi,
+        };
+        PreToolDecision::SuspendWithCard {
+            card,
+            reason: "USER_CHOICE_REQUIRED: awaiting explicit user selection"
+                .to_owned(),
+        }
+    })
+}
+
+/// Assemble the Router's lightweight tool set.
+///
+/// - Normal Router turns expose only the 4 control tools (`dispatch_work`,
+///   `query_work_status`, `control_work`, `ask_user_choice`).
+/// - Automatic `[WorkEventBatch]` announcement turns physically strip
+///   `dispatch_work`, `control_work`, and `ask_user_choice`, leaving only
+///   read-only `query_work_status` to prevent failure-announcement retry storms.
+pub(super) fn router_tool_registry(
+    harness: Weak<Harness>,
+    router_id: String,
+    is_announcement: bool,
+) -> ToolRegistry {
+    let registry = ToolRegistry::new();
+    registry.register(query_work_status_tool(
+        Weak::clone(&harness),
+        router_id.clone(),
+    ));
+    if !is_announcement {
+        registry.register(dispatch_work_tool(
+            Weak::clone(&harness),
+            router_id.clone(),
+        ));
+        registry.register(control_work_tool(Weak::clone(&harness), router_id));
+        registry.register(ask_user_choice_tool());
+    }
+    registry
+}
+
+fn dispatch_work_tool(
+    harness: Weak<Harness>,
+    router_id: String,
+) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition::new(
+        "dispatch_work",
+        "Delegate a file, shell, verification, or multi-step task to an asynchronous Worker session. Returns immediately with work_id and receipt_id.",
+        json!({
+            "type": "object",
+            "properties": {
+                "brief": { "type": "string", "description": "Clear, self-contained task brief for the Worker." },
+                "mode": { "type": "string", "enum": ["read_only", "read_write"], "description": "Workspace access mode. Defaults to read_write for new works; read_only workers can run concurrently on the same project." },
+                "target_work_id": { "type": "string", "description": "Existing child Worker ID to continue (keeps original origin, workspace, and access_mode)." },
+                "target_object_ids": { "type": "array", "items": { "type": "string" }, "description": "Optional object IDs owned by child Workers to locate and target the exact owning Worker." },
+                "request_id": { "type": "string", "description": "Caller-supplied idempotency key preventing duplicate work creation on retries." }
+            },
+            "required": ["brief"]
+        }),
+        move |args: ToolCallArgs, _ctx: ToolRunContext| {
+            let harness = Weak::clone(&harness);
+            let router_id = router_id.clone();
+            Box::pin(async move {
+                let Some(harness) = harness.upgrade() else {
+                    return ToolExecutionResult::error(
+                        "HOST_UNAVAILABLE",
+                        "agent host is shutting down",
+                    );
+                };
+                let brief = args
+                    .arguments
+                    .get("brief")
+                    .and_then(Value::as_str)
+                    .map_or("", str::trim)
+                    .to_owned();
+                if brief.is_empty() {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        "`brief` must be a non-empty string",
+                    );
+                }
+                let requested_mode = match parse_work_access_mode(
+                    args.arguments.get("mode").and_then(Value::as_str),
+                ) {
+                    Ok(mode) => mode,
+                    Err(code) => {
+                        return ToolExecutionResult::error(
+                            code,
+                            "`mode` must be `read_only` or `read_write`",
+                        );
+                    }
+                };
+                let target_work_id = args
+                    .arguments
+                    .get("target_work_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let target_object_ids: Vec<String> = args
+                    .arguments
+                    .get("target_object_ids")
+                    .and_then(Value::as_array)
+                    .map_or_default(|arr| {
+                        arr.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    });
+                let request_id = args
+                    .arguments
+                    .get("request_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let req = DispatchWorkRequest {
+                    brief,
+                    requested_mode,
+                    target_work_id,
+                    target_object_ids,
+                    request_id,
+                };
+                match harness.dispatch_work_from_router(&router_id, req) {
+                    Ok(result) => ToolExecutionResult::success_value(
+                        serde_json::to_value(result)
+                            .unwrap_or_else(|_| json!({})),
+                    ),
+                    Err(code) => ToolExecutionResult::error(
+                        code,
+                        format!("dispatch_work rejected: {code}"),
+                    ),
+                }
+            })
+        },
+    ))
+}
+
+fn query_work_status_tool(
+    harness: Weak<Harness>,
+    router_id: String,
+) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition::new(
+        "query_work_status",
+        "Read authoritative host status of child Works (state, verification, deliverables, records, pending approvals/cards, and stop handoffs).",
+        json!({
+            "type": "object",
+            "properties": {
+                "work_id": { "type": "string", "description": "Optional specific child Worker ID to inspect." }
+            }
+        }),
+        move |args: ToolCallArgs, _ctx: ToolRunContext| {
+            let harness = Weak::clone(&harness);
+            let router_id = router_id.clone();
+            Box::pin(async move {
+                let Some(harness) = harness.upgrade() else {
+                    return ToolExecutionResult::error(
+                        "HOST_UNAVAILABLE",
+                        "agent host is shutting down",
+                    );
+                };
+                let filter_work_id = args
+                    .arguments
+                    .get("work_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                if let Some(work_id) = filter_work_id.as_deref() {
+                    let engine = lock(&harness.engine).clone();
+                    let Some(engine) = engine else {
+                        return ToolExecutionResult::error(
+                            "HOST_UNAVAILABLE",
+                            "engine unavailable",
+                        );
+                    };
+                    if let Err(code) =
+                        verify_child_ownership(&engine, &router_id, work_id)
+                    {
+                        return ToolExecutionResult::error(
+                            code,
+                            format!("cannot query work `{work_id}`: {code}"),
+                        );
+                    }
+                }
+                let works = harness.child_works(&router_id);
+                let filtered: Vec<Value> = works
+                    .into_iter()
+                    .filter(|w| {
+                        filter_work_id
+                            .as_deref()
+                            .is_none_or(|id| w.work_id == id)
+                    })
+                    .map(child_work_to_json)
+                    .collect();
+                ToolExecutionResult::success_value(json!({
+                    "root_session_id": router_id,
+                    "works": filtered,
+                }))
+            })
+        },
+    ))
+}
+
+fn control_work_tool(
+    harness: Weak<Harness>,
+    router_id: String,
+) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition::new(
+        "control_work",
+        "Cancel or revise an owned child Worker. Use `cancel` to stop queued/running/waiting work, or `revise` to safely settle and re-dispatch with updated instructions.",
+        json!({
+            "type": "object",
+            "properties": {
+                "work_id": { "type": "string" },
+                "action": { "type": "string", "enum": ["cancel", "revise"] },
+                "revision_brief": { "type": "string", "description": "Required when action is `revise`." },
+                "request_id": { "type": "string", "description": "Idempotency key for `revise`." }
+            },
+            "required": ["work_id", "action"]
+        }),
+        move |args: ToolCallArgs, _ctx: ToolRunContext| {
+            let harness = Weak::clone(&harness);
+            let router_id = router_id.clone();
+            Box::pin(async move {
+                let Some(harness) = harness.upgrade() else {
+                    return ToolExecutionResult::error(
+                        "HOST_UNAVAILABLE",
+                        "agent host is shutting down",
+                    );
+                };
+                let work_id = args
+                    .arguments
+                    .get("work_id")
+                    .and_then(Value::as_str)
+                    .map_or("", str::trim)
+                    .to_owned();
+                let action = args
+                    .arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .map_or("", str::trim)
+                    .to_owned();
+                if work_id.is_empty() {
+                    return ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        "`work_id` is required",
+                    );
+                }
+                match action.as_str() {
+                    "cancel" => {
+                        let h = Arc::clone(&harness);
+                        let rid = router_id.clone();
+                        let wid = work_id.clone();
+                        let res = tokio::task::spawn_blocking(move || {
+                            h.cancel_work(&rid, &wid)
+                        })
+                        .await;
+                        match res {
+                            Ok(Ok(stop)) => ToolExecutionResult::success_value(
+                                serde_json::to_value(stop)
+                                    .unwrap_or_else(|_| json!({})),
+                            ),
+                            Ok(Err(code)) => ToolExecutionResult::error(
+                                code,
+                                format!("cancel_work failed: {code}"),
+                            ),
+                            Err(err) => ToolExecutionResult::error(
+                                "INTERNAL_ERROR",
+                                err.to_string(),
+                            ),
+                        }
+                    }
+                    "revise" => {
+                        let brief = args
+                            .arguments
+                            .get("revision_brief")
+                            .and_then(Value::as_str)
+                            .map_or("", str::trim)
+                            .to_owned();
+                        if brief.is_empty() {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                "`revision_brief` is required for `revise`",
+                            );
+                        }
+                        let request_id = args
+                            .arguments
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map_or_else(
+                                || format!("revise-{}", next_stamp()),
+                                str::to_owned,
+                            );
+                        let h = Arc::clone(&harness);
+                        let rid = router_id.clone();
+                        let wid = work_id.clone();
+                        let res = tokio::task::spawn_blocking(move || {
+                            h.revise_work(&rid, &wid, &brief, &request_id)
+                        })
+                        .await;
+                        match res {
+                            Ok(Ok(dispatched)) => {
+                                ToolExecutionResult::success_value(
+                                    serde_json::to_value(dispatched)
+                                        .unwrap_or_else(|_| json!({})),
+                                )
+                            }
+                            Ok(Err(code)) => ToolExecutionResult::error(
+                                code,
+                                format!("revise_work failed: {code}"),
+                            ),
+                            Err(err) => ToolExecutionResult::error(
+                                "INTERNAL_ERROR",
+                                err.to_string(),
+                            ),
+                        }
+                    }
+                    _ => ToolExecutionResult::error(
+                        "INVALID_ARGS",
+                        "`action` must be `cancel` or `revise`",
+                    ),
+                }
+            })
+        },
+    ))
+}
+
+fn ask_user_choice_tool() -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition::new(
+        "ask_user_choice",
+        "Pause and present a durable disambiguation/choice card to the user before executing an ambiguous modification.",
+        json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string" },
+                "impact_boundary": { "type": "string" },
+                "allow_multi": { "type": "boolean" },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "object_id": { "type": "string" },
+                            "label": { "type": "string" },
+                            "anchor_summary": { "type": "string" },
+                            "extension": { "type": "string" }
+                        },
+                        "required": ["object_id", "label"]
+                    }
+                }
+            },
+            "required": ["prompt", "options"]
+        }),
+        |_args: ToolCallArgs, _ctx: ToolRunContext| {
+            Box::pin(async {
+                ToolExecutionResult::error(
+                    "HOST_HOOK_BYPASSED",
+                    "ask_user_choice must be suspended by host pre_tool_hook",
+                )
+            })
+        },
+    ))
+}
+
+fn child_work_to_json(summary: ChildWorkSummary) -> Value {
+    let objects: Vec<Value> = summary
+        .objects
+        .iter()
+        .map(|obj| {
+            let confirmed: BTreeMap<&str, &str> = obj
+                .overrides
+                .iter()
+                .filter(|(_, e)| e.status == FactStatus::Confirmed)
+                .map(|(k, e)| (k.as_str(), e.value.as_str()))
+                .collect();
+            let pending_proposals: BTreeMap<&str, &str> = obj
+                .overrides
+                .iter()
+                .filter(|(_, e)| e.status == FactStatus::PendingProposal)
+                .map(|(k, e)| (k.as_str(), e.value.as_str()))
+                .collect();
+            let verify_state = match &obj.verify_state {
+                ObjectVerifyState::Unverified => "unverified".to_owned(),
+                ObjectVerifyState::Passed {
+                    report_id,
+                    revision,
+                } => format!("passed(rev={revision},report={report_id})"),
+                ObjectVerifyState::Failed { report_id } => {
+                    format!("failed(report={report_id})")
+                }
+                ObjectVerifyState::Overridden { report_id } => {
+                    format!("overridden(report={report_id})")
+                }
+            };
+            json!({
+                "object_id": obj.object_id,
+                "kind": match obj.kind {
+                    TrackedObjectKind::Deliverable => "deliverable",
+                    TrackedObjectKind::Record => "record",
+                },
+                "label": obj.display_label(),
+                "filename": obj.filename,
+                "extension": obj.extension,
+                "anchor_summary": obj.anchor_summary,
+                "verify_state": verify_state,
+                "confirmed_facts": confirmed,
+                "pending_proposals": pending_proposals,
+            })
+        })
+        .collect();
+    let pending_cards: Vec<Value> = summary
+        .pending_cards
+        .iter()
+        .map(|card| match card {
+            PendingCard::ToolApproval {
+                card_id,
+                tool_name,
+                target_summary,
+                risk_reason,
+                ..
+            } => json!({
+                "kind": "tool_approval",
+                "card_id": card_id,
+                "tool_name": tool_name,
+                "target_summary": target_summary,
+                "risk_reason": risk_reason,
+            }),
+            PendingCard::Disambiguation {
+                card_id,
+                prompt,
+                options,
+                ..
+            } => json!({
+                "kind": "disambiguation",
+                "card_id": card_id,
+                "prompt": prompt,
+                "option_count": options.len(),
+            }),
+        })
+        .collect();
+    json!({
+        "work_id": summary.work_id,
+        "title": summary.title,
+        "access_mode": summary.access_mode,
+        "state": summary.state,
+        "contract_revision": summary.contract_revision,
+        "heartbeat": summary.heartbeat,
+        "delivered_artifact_ids": summary.delivered_artifact_ids,
+        "missing_items": summary.missing_items,
+        "pending_cards": pending_cards,
+        "objects": objects,
+        "last_stop_handoff": summary.last_stop_handoff,
+    })
+}
+
+/// Build the Router's system prompt plus a bounded (~200 tokens / 900 chars)
+/// read-only status header summarizing up to 8 recent child Works.
+pub(super) fn build_router_system_prompt(
+    harness: &Harness,
+    router_id: &str,
+    is_announcement: bool,
+) -> String {
+    let mut out = String::from(
+        "You are Flowy's lightweight conversation Router. Reply concisely and honestly to the user while delegating file editing, document creation, shell commands, and verification to asynchronous Worker sessions via `dispatch_work`. Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing.",
+    );
+    if is_announcement {
+        out.push_str(
+            "\nThis is an automatic `[WorkEventBatch]` progress announcement turn. Summarize the authoritative Worker state honestly for the user without dispatching or retrying work.",
+        );
+    }
+    let works = harness.child_works(router_id);
+    if works.is_empty() {
+        return out;
+    }
+    let mut header = String::from("\n\n[ChildWorksReadOnlySnapshot]\n");
+    for work in works.iter().take(MAX_HEADER_WORKS) {
+        let mode = match work.access_mode {
+            WorkAccessMode::ReadOnly => "ro",
+            WorkAccessMode::ReadWrite => "rw",
+        };
+        let rev = work
+            .contract_revision
+            .map_or_else(|| "-".to_owned(), |r| format!("v{r}"));
+        let cards = work.pending_cards.len();
+        let delivered = work.delivered_artifact_ids.len();
+        let obj_tags: Vec<String> = work
+            .objects
+            .iter()
+            .take(3)
+            .map(|o| {
+                let k = match o.kind {
+                    TrackedObjectKind::Deliverable => "D",
+                    TrackedObjectKind::Record => "R",
+                };
+                format!("{}:{k}:{}", o.object_id, o.display_label())
+            })
+            .collect();
+        let line = format!(
+            "- {}|{}|{}|{}|deliv={}|cards={}|objs=[{}]\n",
+            work.work_id,
+            mode,
+            work.state,
+            rev,
+            delivered,
+            cards,
+            obj_tags.join(",")
+        );
+        if header.chars().count() + line.chars().count()
+            > MAX_STATUS_HEADER_CHARS
+        {
+            header.push_str("...[truncated]\n");
+            break;
+        }
+        header.push_str(&line);
+    }
+    out.push_str(&header);
+    out
+}
+
+impl Harness {
+    pub(super) fn dispatch_work_from_router(
+        self: &Arc<Self>,
+        router_id: &str,
+        req: DispatchWorkRequest,
+    ) -> Result<DispatchWorkResult, &'static str> {
+        if self.state.shutdown_requested.load(Ordering::Acquire) {
+            return Err("HOST_SHUTTING_DOWN");
+        }
+        let brief = req.brief.trim();
+        if brief.is_empty() {
+            return Err("INVALID_ARGS");
+        }
+        let fingerprint = dispatch_fingerprint(
+            "dispatch",
+            req.target_work_id.as_deref(),
+            req.requested_mode,
+            brief,
+            &req.target_object_ids,
+        );
+        let result = {
+            let _dispatch = lock(&self.state.dispatch);
+            if self.state.shutdown_requested.load(Ordering::Acquire) {
+                return Err("HOST_SHUTTING_DOWN");
+            }
+            let engine =
+                lock(&self.engine).clone().ok_or("HOST_UNAVAILABLE")?;
+            let parent = engine.session(router_id).ok_or("ROUTER_NOT_FOUND")?;
+            if parent.role != SessionRole::Router
+                || !lock(&self.state.live).contains_key(router_id)
+            {
+                return Err("ROUTER_NOT_FOUND");
+            }
+            if self
+                .state
+                .artifact_store
+                .get()
+                .is_some_and(|store| store.has_active_deletion_plan(router_id))
+            {
+                return Err("ROUTER_DELETING");
+            }
+            if let Some(req_id) = req.request_id.as_deref()
+                && let Some(existing) =
+                    engine.lookup_dispatch_request(router_id, req_id)
+            {
+                if existing.fingerprint != fingerprint {
+                    return Err("IDEMPOTENCY_CONFLICT");
+                }
+                let access_mode = engine
+                    .with_session(&existing.worker_id, |r| r.access_mode)
+                    .unwrap_or(WorkAccessMode::ReadWrite);
+                let status = self
+                    .child_works(router_id)
+                    .into_iter()
+                    .find(|w| w.work_id == existing.worker_id)
+                    .map_or_else(|| "queued".to_owned(), |w| w.state);
+                return Ok(DispatchWorkResult {
+                    work_id: existing.worker_id,
+                    receipt_id: existing.receipt_id,
+                    status,
+                    access_mode,
+                    deduplicated: true,
+                });
+            }
+
+            // Resolve optional `target_object_ids` strictly within owned child Workers.
+            let object_owners = resolve_owned_objects(
+                &engine,
+                router_id,
+                &req.target_object_ids,
+            )?;
+            let mut effective_target = req.target_work_id.clone();
+            if !object_owners.is_empty() {
+                let unique_workers: BTreeSet<&str> =
+                    object_owners.values().map(String::as_str).collect();
+                if unique_workers.len() > 1 {
+                    return Err("MULTIPLE_TARGET_WORKERS");
+                }
+                let owner = (*unique_workers.iter().next().unwrap()).to_owned();
+                if let Some(explicit) = effective_target.as_deref()
+                    && explicit != owner
+                {
+                    return Err("TARGET_WORK_OBJECT_MISMATCH");
+                }
+                effective_target = Some(owner);
+            }
+
+            let now = now_ms();
+            let (worker_id, access_mode, created_new) = if let Some(target_id) =
+                effective_target
+            {
+                let worker =
+                    verify_child_ownership(&engine, router_id, &target_id)?;
+                if !lock(&self.state.live).contains_key(&target_id) {
+                    return Err("WORK_NOT_FOUND");
+                }
+                if worker.access_mode == WorkAccessMode::ReadOnly
+                    && req.requested_mode == Some(WorkAccessMode::ReadWrite)
+                {
+                    return Err("ACCESS_MODE_ESCALATION_DENIED");
+                }
+                (target_id, worker.access_mode, false)
+            } else {
+                let mode =
+                    req.requested_mode.unwrap_or(WorkAccessMode::ReadWrite);
+                let worker_id = format!("w-{}", next_stamp());
+                let parent_workspace = lock(&self.state.live)
+                    .get(router_id)
+                    .and_then(|s| s.workspace.clone());
+                let origin = parent.origin.clone();
+                let session_workspace = match &origin {
+                    SessionOrigin::Home => {
+                        let root = self
+                            .state
+                            .root
+                            .join("sessions")
+                            .join("workspaces")
+                            .join(&worker_id);
+                        std::fs::create_dir_all(&root).map_err(|error| {
+                            log_storage_io_error(
+                                "create worker workspace",
+                                &root,
+                                &error,
+                            );
+                            "STORAGE_ERROR"
+                        })?;
+                        Some(SessionWorkspace { root })
+                    }
+                    SessionOrigin::Project { .. } => {
+                        parent.workspace.or_else(|| {
+                            parent_workspace.as_ref().map(|ws| {
+                                SessionWorkspace {
+                                    root: ws.root.clone(),
+                                }
+                            })
+                        })
+                    }
+                    SessionOrigin::Unknown => None,
+                };
+                engine
+                    .create_session_with_role(
+                        worker_id.clone(),
+                        now,
+                        origin.clone(),
+                        session_workspace.clone(),
+                        SessionRole::Worker,
+                        Some(router_id.to_owned()),
+                        mode,
+                    )
+                    .map_err(|_| "STORAGE_ERROR")?;
+                lock(&self.state.live).insert(
+                    worker_id.clone(),
+                    Live {
+                        projection: ChatProjection::new(),
+                        title: crate::title::clamp_title(
+                            &crate::title::fallback_title(
+                                brief,
+                                crate::title::TITLE_MAX_CHARS,
+                            ),
+                            crate::title::TITLE_MAX_CHARS,
+                        ),
+                        titled: true,
+                        pinned: false,
+                        archived: false,
+                        auto_title_pending: false,
+                        auto_title_in_flight: false,
+                        auto_title_attempts: 0,
+                        title_signal: CancelToken::new(),
+                        status: TurnStatus::Idle,
+                        updated_at: now,
+                        turn_started_at: None,
+                        workspace: parent_workspace,
+                        origin,
+                        session_workspace,
+                        heartbeat: None,
+                        role: SessionRole::Worker,
+                        root_session_id: Some(router_id.to_owned()),
+                        access_mode: mode,
+                    },
+                );
+                let _ = engine.set_session_title(
+                    &worker_id,
+                    crate::title::clamp_title(
+                        &crate::title::fallback_title(
+                            brief,
+                            crate::title::TITLE_MAX_CHARS,
+                        ),
+                        crate::title::TITLE_MAX_CHARS,
+                    ),
+                    true,
+                );
+                if persist_index(&self.state).is_err() {
+                    self.state.report_storage_error();
+                }
+                (worker_id, mode, true)
+            };
+
+            #[cfg(test)]
+            {
+                let hook =
+                    lock(&self.state.before_worker_strict_enqueue_hook).clone();
+                if let Some(hook) = hook
+                    && let Err(injected) = hook(router_id, &worker_id)
+                {
+                    if created_new {
+                        let _ = engine.remove_session(&worker_id);
+                        lock(&self.state.live).remove(&worker_id);
+                        let _ = persist_index(&self.state);
+                    }
+                    return Err(injected);
+                }
+            }
+
+            let effective_request_id = req
+                .request_id
+                .clone()
+                .unwrap_or_else(|| format!("dispatch-{}", next_stamp()));
+            let queue = AcceptanceQueue::new(self.state.root.clone());
+            let Ok(receipt) = queue.accept_strict(
+                &worker_id,
+                brief,
+                Some(&effective_request_id),
+                now,
+            ) else {
+                if created_new {
+                    let _ = engine.remove_session(&worker_id);
+                    lock(&self.state.live).remove(&worker_id);
+                    let _ = persist_index(&self.state);
+                }
+                self.state.report_storage_error();
+                return Err("STORAGE_ERROR");
+            };
+            if engine
+                .record_dispatch_request(
+                    router_id,
+                    DispatchRecord {
+                        request_id: effective_request_id,
+                        fingerprint,
+                        worker_id: worker_id.clone(),
+                        receipt_id: receipt.id.clone(),
+                        created_at_ms: now,
+                    },
+                )
+                .is_err()
+            {
+                let _ = queue.cancel(&receipt.id, now_ms());
+                if created_new {
+                    let _ = engine.remove_session(&worker_id);
+                    lock(&self.state.live).remove(&worker_id);
+                    let _ = persist_index(&self.state);
+                }
+                self.state.report_storage_error();
+                return Err("STORAGE_ERROR");
+            }
+            self.state.push_update(AgentUpdate::Receipt {
+                id: receipt.id.clone(),
+                state: ReceiptState::Queued,
+            });
+            self.state.push_update(AgentUpdate::Session {
+                id: router_id.to_owned(),
+            });
+            DispatchWorkResult {
+                work_id: worker_id,
+                receipt_id: receipt.id,
+                status: "queued".to_owned(),
+                access_mode,
+                deduplicated: false,
+            }
+        };
+        if self.state.autonomous_drain.load(Ordering::Acquire) {
+            self.kick_autonomous_drain();
+        }
+        Ok(result)
+    }
+
+    pub(super) fn child_works(
+        &self,
+        root_session_id: &str,
+    ) -> Vec<ChildWorkSummary> {
+        let Some(engine) = lock(&self.engine).clone() else {
+            return Vec::new();
+        };
+        let children = engine.child_sessions(root_session_id);
+        if children.is_empty() {
+            return Vec::new();
+        }
+        let all_receipts = AcceptanceQueue::new(self.state.root.clone())
+            .all()
+            .unwrap_or_default();
+        let store = self.state.artifact_store.get();
+        let committed_ids = store
+            .and_then(|s| s.committed_ids().ok())
+            .unwrap_or_default();
+        let now = now_ms();
+        let live_snapshot: BTreeMap<
+            String,
+            (TurnStatus, Option<BranchHeartbeat>, String, u64),
+        > = {
+            let live = lock(&self.state.live);
+            children
+                .iter()
+                .filter_map(|rec| {
+                    live.get(&rec.id).map(|l| {
+                        (
+                            rec.id.clone(),
+                            (
+                                l.status.clone(),
+                                l.heartbeat.clone(),
+                                l.title.clone(),
+                                l.updated_at,
+                            ),
+                        )
+                    })
+                })
+                .collect()
+        };
+        let mut out = Vec::with_capacity(children.len());
+        for rec in children {
+            let (live_status, heartbeat, live_title, live_updated) =
+                live_snapshot.get(&rec.id).cloned().unwrap_or_else(|| {
+                    (
+                        super::observer::live_status(rec.status.clone()),
+                        None,
+                        rec.title.clone(),
+                        rec.updated_at,
+                    )
+                });
+            let latest_sub = super::work::latest_session_submission_id(&rec);
+            let latest_outcome = latest_sub
+                .as_deref()
+                .and_then(|sub| rec.submission_outcomes.get(sub));
+            let has_queued_receipt = all_receipts.iter().any(|r| {
+                r.target_session_id.as_deref().or(r.session_hint.as_deref())
+                    == Some(rec.id.as_str())
+                    && matches!(
+                        r.state_at(now),
+                        ReceiptState::Queued | ReceiptState::Retrying
+                    )
+            });
+            let contract_revision = latest_sub
+                .as_deref()
+                .and_then(|sub| rec.submission_revisions.get(sub).copied())
+                .or_else(|| rec.work_contract.as_ref().map(|c| c.revision));
+            let mut delivered_artifact_ids = Vec::new();
+            for commit in &rec.delivery_commits {
+                if !commit.completed_successfully {
+                    continue;
+                }
+                for aid in &commit.artifact_ids {
+                    if committed_ids.contains(aid)
+                        && !delivered_artifact_ids.contains(aid)
+                        && store
+                            .and_then(|s| s.get(aid).ok())
+                            .flatten()
+                            .is_none_or(|item| {
+                                !matches!(
+                                    item.manifest.publication_state,
+                                    PublicationState::Deleted
+                                        | PublicationState::DeletePending
+                                )
+                            })
+                    {
+                        delivered_artifact_ids.push(aid.clone());
+                    }
+                }
+            }
+            let missing_items = match latest_outcome {
+                Some(SubmissionOutcome::Partial { missing }) => missing.clone(),
+                _ => Vec::new(),
+            };
+            let state = if !rec.pending_cards.is_empty()
+                || live_status == TurnStatus::WaitingForUser
+                || rec.status == TurnState::WaitingForUser
+            {
+                "awaiting_approval"
+            } else if matches!(live_status, TurnStatus::Stopping)
+                || rec.status == TurnState::Stopping
+            {
+                "stopping"
+            } else if matches!(live_status, TurnStatus::SavingFiles) {
+                "verifying"
+            } else if matches!(live_status, TurnStatus::Running)
+                || engine.is_active(&rec.id)
+            {
+                "running"
+            } else if has_queued_receipt {
+                "queued"
+            } else if matches!(
+                live_status,
+                TurnStatus::Error { .. } | TurnStatus::DeliveryFailed
+            ) || matches!(
+                latest_outcome,
+                Some(SubmissionOutcome::Failed { .. })
+            ) {
+                "failed"
+            } else if matches!(
+                latest_outcome,
+                Some(SubmissionOutcome::Partial { .. })
+            ) || !missing_items.is_empty()
+            {
+                "partial"
+            } else if matches!(live_status, TurnStatus::Stopped)
+                || matches!(latest_outcome, Some(SubmissionOutcome::Aborted))
+            {
+                "stopped"
+            } else if !delivered_artifact_ids.is_empty() {
+                "delivered"
+            } else if matches!(live_status, TurnStatus::Completed)
+                || matches!(latest_outcome, Some(SubmissionOutcome::Completed))
+            {
+                "completed"
+            } else {
+                "idle"
+            }
+            .to_owned();
+            let title = if live_title.is_empty() {
+                rec.title.clone()
+            } else {
+                live_title
+            };
+            let objects = rec
+                .work_contract
+                .as_ref()
+                .map_or_default(|wc| wc.objects.clone());
+            out.push(ChildWorkSummary {
+                work_id: rec.id,
+                root_session_id: root_session_id.to_owned(),
+                title,
+                access_mode: rec.access_mode,
+                origin: rec.origin,
+                workspace_root: rec.workspace.map(|ws| ws.root),
+                state,
+                turn_status: live_status,
+                contract_revision,
+                heartbeat,
+                pending_cards: rec.pending_cards,
+                delivered_artifact_ids,
+                missing_items,
+                objects,
+                last_stop_handoff: rec.last_stop_handoff,
+                updated_at: live_updated.max(rec.updated_at),
+            });
+        }
+        out.sort_by_key(|w| std::cmp::Reverse(w.updated_at));
+        out
+    }
+
+    pub(super) fn root_pending_cards(
+        &self,
+        root_session_id: &str,
+    ) -> Vec<RoutedPendingCard> {
+        let Some(engine) = lock(&self.engine).clone() else {
+            return Vec::new();
+        };
+        let mut cards = Vec::new();
+        if let Some(root) = engine.session(root_session_id) {
+            for card in root.pending_cards {
+                cards.push(RoutedPendingCard {
+                    root_session_id: root_session_id.to_owned(),
+                    owner_session_id: root.id.clone(),
+                    owner_role: root.role,
+                    card,
+                });
+            }
+        }
+        for child in engine.child_sessions(root_session_id) {
+            for card in child.pending_cards {
+                cards.push(RoutedPendingCard {
+                    root_session_id: root_session_id.to_owned(),
+                    owner_session_id: child.id.clone(),
+                    owner_role: child.role,
+                    card,
+                });
+            }
+        }
+        cards.sort_by_key(|item| match &item.card {
+            PendingCard::Disambiguation { created_at_ms, .. }
+            | PendingCard::ToolApproval { created_at_ms, .. } => *created_at_ms,
+        });
+        cards
+    }
+}

@@ -441,6 +441,65 @@ impl WorkContract {
     }
 }
 
+/// Role of a durable session inside the Router / Worker concurrency architecture.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRole {
+    #[default]
+    Standard,
+    Router,
+    Worker,
+}
+
+impl SessionRole {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+}
+
+/// Workspace access capability assigned to a Worker session upon creation.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkAccessMode {
+    ReadOnly,
+    #[default]
+    ReadWrite,
+}
+
+impl WorkAccessMode {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::ReadWrite)
+    }
+}
+
+/// One durable FIFO user follow-up accepted while a Router session is busy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRouterFollowup {
+    pub submission_id: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_object_id: Option<String>,
+    #[serde(default)]
+    pub created_at_ms: u64,
+}
+
+/// Durable idempotency record for one Router `dispatch_work` / `revise_work` request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchRecord {
+    pub request_id: String,
+    pub fingerprint: String,
+    pub worker_id: String,
+    pub receipt_id: String,
+    #[serde(default)]
+    pub created_at_ms: u64,
+}
+
 /// One durable session: metadata plus the full structured message history.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -487,6 +546,18 @@ pub struct SessionRecord {
     /// Archived sessions stay durable on disk while hidden from default lists.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
+    /// Session role (`standard` for legacy/direct sessions, `router`, or `worker`).
+    #[serde(default, skip_serializing_if = "SessionRole::is_default")]
+    pub role: SessionRole,
+    /// Workspace access mode (`read_only` or `read_write`); immutable across worker resumes.
+    #[serde(default, skip_serializing_if = "WorkAccessMode::is_default")]
+    pub access_mode: WorkAccessMode,
+    /// Durable FIFO user follow-ups accepted while this Router session was streaming.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_router_followups: Vec<PendingRouterFollowup>,
+    /// Idempotency ledger mapping `request_id` to its committed worker dispatch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dispatch_requests: BTreeMap<String, DispatchRecord>,
 }
 
 #[expect(

@@ -106,6 +106,7 @@ fn offline_agent_baseline() {
                         session_workspace: None,
                         pinned: false,
                         archived: false,
+                        ..SessionRecord::default()
                     }],
                 }
                 .save(&root.0)

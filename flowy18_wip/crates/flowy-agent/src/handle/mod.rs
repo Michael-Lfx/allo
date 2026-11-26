@@ -12,10 +12,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit, Engine,
-    EngineConfig, LoopOutcome, ModelRoute, PendingCard, PromptTurn,
-    ReceiptState, RequiredDeliverable, RunError, SessionOrigin, SessionRecord,
-    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TurnObserver,
-    TurnState, complete_text, echo_stream_fn, log_preview,
+    EngineConfig, EnqueueOutcome, LoopOutcome, ModelRoute, PendingCard,
+    PendingRouterFollowup, PromptTurn, ReceiptState, RequiredDeliverable,
+    RunError, SessionOrigin, SessionRecord, SessionRole, SessionWorkspace,
+    StopHandoffManifest, SubmissionOutcome, TurnObserver, TurnState,
+    WorkAccessMode, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -59,14 +60,18 @@ mod artifacts;
 mod guards;
 mod observer;
 mod queue;
+mod router;
+#[cfg(test)]
+mod router_tests;
 #[cfg(test)]
 mod tests;
 mod work;
+mod work_events;
 mod workspace_lock;
 
 use self::guards::{
-    build_pre_tool_hook, ensure_tool_cwd, session_working_directory,
-    tool_registry, tool_target,
+    build_pre_tool_hook, ensure_tool_cwd, read_only_tool_registry,
+    session_working_directory, tool_registry, tool_target,
 };
 pub use self::guards::{confined_to, has_reserved_device_component};
 use self::observer::{
@@ -79,6 +84,9 @@ use self::observer::{
 };
 use self::queue::{
     push_reconciled_receipt_updates, reconcile_committed_acceptances,
+};
+pub use self::router::{
+    ChildWorkSummary, DispatchWorkResult, RoutedPendingCard, StopWorkResult,
 };
 use self::work::{
     latest_session_submission_id, reconcile_partial_work_after_override,
@@ -230,6 +238,9 @@ struct Live {
     origin: SessionOrigin,
     session_workspace: Option<SessionWorkspace>,
     heartbeat: Option<BranchHeartbeat>,
+    role: SessionRole,
+    root_session_id: Option<String>,
+    access_mode: WorkAccessMode,
 }
 
 struct ResumedSubmission {
@@ -241,6 +252,9 @@ struct ResumedSubmission {
     pub(super) skip_push_user_line: bool,
     pub(super) preserve_turn_denial: bool,
     pub(super) preserve_tool_approval: bool,
+    pub(super) prompt_source: MessageSource,
+    pub(super) is_router_announcement: bool,
+    pub(super) bypass_busy_queue: bool,
 }
 
 #[derive(Clone)]
@@ -255,6 +269,10 @@ struct AcceptedClaim {
 
 #[cfg(test)]
 type AcceptedSubmitHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[cfg(test)]
+type WorkerFaultHook =
+    Arc<dyn Fn(&str, &str) -> Result<(), &'static str> + Send + Sync>;
 
 struct UiState {
     root: PathBuf,
@@ -273,9 +291,13 @@ struct UiState {
     active_claims: Mutex<HashMap<String, AcceptedClaim>>,
     /// Normalized directory-level read/write leases across all running turns.
     workspace_locks: WorkspaceLockTable,
+    /// Per-Router bounded memory inbox for coalescing Worker terminal events.
+    /// Strict leaf lock.
+    router_inboxes: Mutex<HashMap<String, work_events::RouterInbox>>,
     max_concurrent_works: AtomicUsize,
     accepted_lease_ms: AtomicU64,
     autonomous_drain: AtomicBool,
+    shutdown_requested: AtomicBool,
     drain_wakeup_scheduled: AtomicBool,
     /// Epoch ms deadline of the currently scheduled drain backoff sleep (`0` = none).
     drain_sleep_until_ms: AtomicU64,
@@ -284,6 +306,10 @@ struct UiState {
     before_accepted_bind_hook: Mutex<Option<AcceptedSubmitHook>>,
     #[cfg(test)]
     before_accepted_submit_hook: Mutex<Option<AcceptedSubmitHook>>,
+    #[cfg(test)]
+    before_worker_strict_enqueue_hook: Mutex<Option<WorkerFaultHook>>,
+    #[cfg(test)]
+    after_first_child_deleted_hook: Mutex<Option<WorkerFaultHook>>,
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
@@ -326,11 +352,13 @@ impl UiState {
             active: Mutex::new(None),
             active_claims: Mutex::new(HashMap::new()),
             workspace_locks: WorkspaceLockTable::new(),
+            router_inboxes: Mutex::new(HashMap::new()),
             max_concurrent_works: AtomicUsize::new(
                 DEFAULT_MAX_CONCURRENT_WORKS,
             ),
             accepted_lease_ms: AtomicU64::new(ACCEPTED_LEASE_MS),
             autonomous_drain: AtomicBool::new(false),
+            shutdown_requested: AtomicBool::new(false),
             drain_wakeup_scheduled: AtomicBool::new(false),
             drain_sleep_until_ms: AtomicU64::new(0),
             drain_cancel: CancelToken::new(),
@@ -338,6 +366,10 @@ impl UiState {
             before_accepted_bind_hook: Mutex::new(None),
             #[cfg(test)]
             before_accepted_submit_hook: Mutex::new(None),
+            #[cfg(test)]
+            before_worker_strict_enqueue_hook: Mutex::new(None),
+            #[cfg(test)]
+            after_first_child_deleted_hook: Mutex::new(None),
             workspace_for_new_sessions: Mutex::new(None),
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
@@ -391,6 +423,7 @@ struct RuntimeOwner {
 
 impl Drop for RuntimeOwner {
     fn drop(&mut self) {
+        self.state.shutdown_requested.store(true, Ordering::Release);
         self.state.autonomous_drain.store(false, Ordering::Release);
         self.state.drain_cancel.cancel();
         let engine = lock(&self.engine).clone();
@@ -403,7 +436,8 @@ impl Drop for RuntimeOwner {
 /// Lock ordering invariant (outer -> inner; never acquire in reverse):
 /// `accept_drain` -> `dispatch` -> `engine` (clone & release) ->
 /// `index_write` -> `live` -> leaf locks (`active`, `active_claims`,
-/// `workspace_locks`, `updates`, `tool_args`, `notified_quarantined`).
+/// `workspace_locks`, `router_inboxes`, `updates`, `tool_args`,
+/// `notified_quarantined`).
 struct Harness {
     runtime: tokio::runtime::Handle,
     state: Arc<UiState>,
@@ -559,6 +593,7 @@ impl AgentHandle {
         if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
             self.inner.kick_autonomous_drain();
         }
+        self.inner.schedule_pending_router_followups();
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
@@ -757,6 +792,9 @@ impl AgentHandle {
                         origin: record.origin,
                         session_workspace: record.session_workspace,
                         heartbeat: None,
+                        role: record.role,
+                        root_session_id: record.root_session_id,
+                        access_mode: record.access_mode,
                     },
                 );
             }
@@ -875,6 +913,62 @@ impl AgentHandle {
                 receipt_updates.push((id, ReceiptState::Retrying));
             }
         }
+        // Deterministically clean up any empty Worker left behind by a crash
+        // between worker creation and `accept_strict` receipt enqueue, and
+        // ensure durable `pending_router_followups` are projected cleanly.
+        {
+            let all_receipts = AcceptanceQueue::new(state.root.clone())
+                .all()
+                .unwrap_or_default();
+            let mut removed_any = false;
+            for rec in engine.sessions() {
+                if rec.role == SessionRole::Worker
+                    && rec.messages.is_empty()
+                    && rec.delivery_commits.is_empty()
+                    && rec.pending_cards.is_empty()
+                    && rec.work_contract.is_none()
+                {
+                    let has_live_receipt = all_receipts.iter().any(|r| {
+                        r.completed_at_ms.is_none()
+                            && !r.cancelled
+                            && !r.dead
+                            && r.target_session_id
+                                .as_deref()
+                                .or(r.session_hint.as_deref())
+                                == Some(rec.id.as_str())
+                    });
+                    if !has_live_receipt {
+                        let _ = engine.remove_session(&rec.id);
+                        if let Some(root_id) = rec.root_session_id.as_deref() {
+                            let _ = engine.remove_dispatch_requests_for_worker(
+                                root_id, &rec.id,
+                            );
+                        }
+                        lock(&state.live).remove(&rec.id);
+                        removed_any = true;
+                    }
+                } else if rec.role == SessionRole::Router
+                    && !rec.pending_router_followups.is_empty()
+                    && let Some(live) = lock(&state.live).get_mut(&rec.id)
+                {
+                    for item in &rec.pending_router_followups {
+                        let already_tail = live
+                            .projection
+                            .lines
+                            .iter()
+                            .rev()
+                            .take(rec.pending_router_followups.len() + 2)
+                            .any(|line| matches!(line, ChatLine::User { text } if text == &item.text));
+                        if !already_tail {
+                            live.projection.push_user(&item.text);
+                        }
+                    }
+                }
+            }
+            if removed_any {
+                let _ = persist_index(&state);
+            }
+        }
         if let Ok(unresolved) =
             crate::delivery::DeliveryStore::new(state.root.join("delivery"))
                 .in_doubt_deliveries()
@@ -921,6 +1015,9 @@ impl AgentHandle {
         {
             self.inner.kick_autonomous_drain();
         }
+        if runnable {
+            self.inner.schedule_pending_router_followups();
+        }
         Ok(())
     }
 
@@ -940,6 +1037,7 @@ impl AgentHandle {
         let live = lock(&self.inner.state.live);
         let mut rows: Vec<SessionSummary> = live
             .iter()
+            .filter(|(_, session)| session.role != SessionRole::Worker)
             .map(|(id, session)| SessionSummary {
                 id: id.clone(),
                 title: session.title.clone(),
@@ -963,7 +1061,8 @@ impl AgentHandle {
 
     /// Manually rename a session, persisting atomically to both `history.json`
     /// and `index.json` (rolling back on error) and locking out any subsequent
-    /// automatic title overwrite.
+    /// automatic title overwrite. Direct metadata mutation on hidden internal
+    /// `SessionRole::Worker` sessions is rejected.
     pub fn rename_session(
         &self,
         session_id: &str,
@@ -980,15 +1079,18 @@ impl AgentHandle {
         let previous = lock(&self.inner.state.live)
             .get(session_id)
             .map(|session| {
+                if session.role == SessionRole::Worker {
+                    return Err("notice.agent_failed");
+                }
                 session.title_signal.cancel();
-                (
+                Ok((
                     session.title.clone(),
                     session.titled,
                     session.auto_title_pending,
                     session.auto_title_in_flight,
-                )
+                ))
             })
-            .ok_or("notice.session_storage_failed")?;
+            .ok_or("notice.session_storage_failed")??;
         ensure_engine_session(&engine, session_id)
             .and_then(|()| {
                 engine.set_session_title(session_id, cleaned.clone(), true)
@@ -1035,7 +1137,8 @@ impl AgentHandle {
 
     /// Pin or unpin a session durably across both `history.json` and
     /// `index.json` (rolling back on error) without changing its activity
-    /// timestamp.
+    /// timestamp. Direct metadata mutation on hidden internal
+    /// `SessionRole::Worker` sessions is rejected.
     pub fn set_session_pinned(
         &self,
         session_id: &str,
@@ -1047,8 +1150,13 @@ impl AgentHandle {
             .ok_or("notice.agent_failed")?;
         let old_pinned = lock(&self.inner.state.live)
             .get(session_id)
-            .map(|session| session.pinned)
-            .ok_or("notice.session_storage_failed")?;
+            .map(|session| {
+                if session.role == SessionRole::Worker {
+                    return Err("notice.agent_failed");
+                }
+                Ok(session.pinned)
+            })
+            .ok_or("notice.session_storage_failed")??;
         ensure_engine_session(&engine, session_id)
             .and_then(|()| engine.set_session_pinned(session_id, pinned))
             .map_err(|error| {
@@ -1085,8 +1193,11 @@ impl AgentHandle {
 
     /// Archive or unarchive a session durably across both `history.json` and
     /// `index.json` (rolling back on error) without deleting history or
-    /// artifacts. Active/running sessions cannot be archived until settled so
-    /// S4 background workers and directory leases are never hidden from view.
+    /// artifacts. Active/running sessions — including any Router whose child
+    /// Workers are active, hold `active_claims`, or have non-terminal queued
+    /// receipts — cannot be archived until settled so background workers and
+    /// directory leases are never hidden from view. Direct metadata mutation on
+    /// hidden internal `SessionRole::Worker` sessions is rejected.
     pub fn set_session_archived(
         &self,
         session_id: &str,
@@ -1096,19 +1207,75 @@ impl AgentHandle {
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
+        let mut family_ids: BTreeSet<String> =
+            std::iter::once(session_id.to_owned())
+                .chain(
+                    engine
+                        .child_sessions(session_id)
+                        .into_iter()
+                        .map(|child| child.id),
+                )
+                .collect();
+        let has_pending_followups = archived
+            && engine
+                .with_session(session_id, |rec| {
+                    !rec.pending_router_followups.is_empty()
+                })
+                .unwrap_or(false);
         let old_archived = {
             let live = lock(&self.inner.state.live);
             let Some(session) = live.get(session_id) else {
                 return Err("notice.session_storage_failed");
             };
+            if session.role == SessionRole::Worker {
+                return Err("notice.agent_failed");
+            }
             let prev = session.archived;
-            let busy = session.status.is_busy();
-            let claimed = archived
+            if archived {
+                for (cid, child) in live.iter() {
+                    if child.root_session_id.as_deref() == Some(session_id) {
+                        family_ids.insert(cid.clone());
+                    }
+                }
+            }
+            let any_live_busy = archived
+                && family_ids.iter().any(|member| {
+                    live.get(member).is_some_and(|s| s.status.is_busy())
+                });
+            let any_claimed = archived
                 && lock(&self.inner.state.active_claims)
                     .values()
-                    .any(|claim| claim.session_id == session_id);
+                    .any(|claim| family_ids.contains(&claim.session_id));
             drop(live);
-            if archived && (busy || engine.is_active(session_id) || claimed) {
+            if archived {
+                for member in &family_ids {
+                    self.inner.settle_finishing_fence(&engine, member);
+                }
+            }
+            let any_engine_active = archived
+                && family_ids.iter().any(|member| engine.is_active(member));
+            let any_queued_receipt = archived
+                && AcceptanceQueue::new(self.inner.state.root.clone())
+                    .all()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|receipt| {
+                        receipt.completed_at_ms.is_none()
+                            && !receipt.cancelled
+                            && !receipt.dead
+                            && receipt
+                                .target_session_id
+                                .as_deref()
+                                .or(receipt.session_hint.as_deref())
+                                .is_some_and(|sid| family_ids.contains(sid))
+                    });
+            if archived
+                && (has_pending_followups
+                    || any_live_busy
+                    || any_engine_active
+                    || any_claimed
+                    || any_queued_receipt)
+            {
                 return Err("notice.agent_busy");
             }
             prev
@@ -1162,7 +1329,11 @@ impl AgentHandle {
 
     /// Zero-dependency in-memory search across redacted session titles and
     /// projected message lines. Empty queries return the most recent active
-    /// sessions.
+    /// top-level sessions (`Standard` and `Router`). Hidden internal
+    /// `SessionRole::Worker` sessions are never returned directly: non-empty
+    /// matches inside a Worker fold their redacted snippet and score into the
+    /// owning top-level Router (deduplicated by `root_session_id`), while
+    /// internal `SystemEvent` / `CardResume` control rows are skipped.
     #[must_use]
     pub fn search_sessions(
         &self,
@@ -1179,31 +1350,56 @@ impl AgentHandle {
             .collect();
         let full_query = tokens.join(" ");
         let live = lock(&self.inner.state.live);
-        let mut hits = Vec::new();
+        if tokens.is_empty() {
+            let mut hits: Vec<SessionSearchHit> = live
+                .iter()
+                .filter(|(_, session)| {
+                    session.role != SessionRole::Worker && !session.archived
+                })
+                .map(|(id, session)| {
+                    let project_id = session
+                        .workspace
+                        .as_ref()
+                        .map(|ws| ws.project_id.clone());
+                    let safe_title = title::redact_search_text(&session.title);
+                    let score = if session.pinned { 20 } else { 10 };
+                    let safe_preview =
+                        extract_session_preview(&session.projection.lines)
+                            .map(|text| title::redact_search_text(&text));
+                    SessionSearchHit {
+                        session_id: id.clone(),
+                        title: safe_title,
+                        project_id,
+                        updated_at: session.updated_at,
+                        pinned: session.pinned,
+                        archived: session.archived,
+                        snippet: safe_preview,
+                        score,
+                    }
+                })
+                .collect();
+            drop(live);
+            hits.sort_by(|a, b| {
+                b.score
+                    .cmp(&a.score)
+                    .then_with(|| b.updated_at.cmp(&a.updated_at))
+            });
+            hits.truncate(limit);
+            return hits;
+        }
+
+        // `(hit, has_matched_snippet)` keyed by top-level session ID.
+        let mut by_root: HashMap<String, (SessionSearchHit, bool)> =
+            HashMap::new();
+
+        // Pass 1: score visible top-level sessions (`Standard` | `Router`).
         for (id, session) in live.iter() {
+            if session.role == SessionRole::Worker {
+                continue;
+            }
             let project_id =
                 session.workspace.as_ref().map(|ws| ws.project_id.clone());
             let safe_title = title::redact_search_text(&session.title);
-            if tokens.is_empty() {
-                if session.archived {
-                    continue;
-                }
-                let score = if session.pinned { 20 } else { 10 };
-                let safe_preview =
-                    extract_session_preview(&session.projection.lines)
-                        .map(|text| title::redact_search_text(&text));
-                hits.push(SessionSearchHit {
-                    session_id: id.clone(),
-                    title: safe_title,
-                    project_id,
-                    updated_at: session.updated_at,
-                    pinned: session.pinned,
-                    archived: session.archived,
-                    snippet: safe_preview,
-                    score,
-                });
-                continue;
-            }
             let title_lower = safe_title.to_lowercase();
             let mut best_score = score_text_match(
                 &title_lower,
@@ -1214,43 +1410,13 @@ impl AgentHandle {
                 75,
                 45,
             );
-            let mut best_snippet = None;
-            for line in session.projection.lines.iter().rev() {
-                let raw_text = match line {
-                    ChatLine::User { text } | ChatLine::Assistant { text } => {
-                        text.as_str()
-                    }
-                    _ => continue,
-                };
-                let cleaned = title::redact_search_text(
-                    &title::strip_markdown_inline(raw_text),
-                );
-                if cleaned.is_empty() {
-                    continue;
-                }
-                let lower = cleaned.to_lowercase();
-                if tokens.iter().all(|tok| lower.contains(tok.as_str())) {
-                    let snippet = extract_match_snippet(&cleaned, &tokens[0]);
-                    best_score = best_score.max(55);
-                    best_snippet = Some(snippet);
-                    break;
-                }
-                if best_score == 0
-                    && best_snippet.is_none()
-                    && tokens.iter().all(|tok| {
-                        title_lower.contains(tok.as_str())
-                            || lower.contains(tok.as_str())
-                    })
-                {
-                    let first_body_tok = tokens
-                        .iter()
-                        .find(|tok| lower.contains(tok.as_str()))
-                        .map_or(tokens[0].as_str(), String::as_str);
-                    best_snippet =
-                        Some(extract_match_snippet(&cleaned, first_body_tok));
-                    best_score = 40;
-                }
-            }
+            let (body_score, body_snippet) = score_projected_lines(
+                &session.projection.lines,
+                &title_lower,
+                &tokens,
+                best_score,
+            );
+            best_score = best_score.max(body_score);
             if best_score == 0 {
                 continue;
             }
@@ -1260,23 +1426,104 @@ impl AgentHandle {
             if session.pinned {
                 best_score += 5;
             }
-            if best_snippet.is_none() {
-                best_snippet =
-                    extract_session_preview(&session.projection.lines)
-                        .map(|text| title::redact_search_text(&text));
-            }
-            hits.push(SessionSearchHit {
-                session_id: id.clone(),
-                title: safe_title,
-                project_id,
-                updated_at: session.updated_at,
-                pinned: session.pinned,
-                archived: session.archived,
-                snippet: best_snippet,
-                score: best_score,
+            let has_match_snippet = body_snippet.is_some();
+            let snippet = body_snippet.or_else(|| {
+                extract_session_preview(&session.projection.lines)
+                    .map(|text| title::redact_search_text(&text))
             });
+            by_root.insert(
+                id.clone(),
+                (
+                    SessionSearchHit {
+                        session_id: id.clone(),
+                        title: safe_title,
+                        project_id,
+                        updated_at: session.updated_at,
+                        pinned: session.pinned,
+                        archived: session.archived,
+                        snippet,
+                        score: best_score,
+                    },
+                    has_match_snippet,
+                ),
+            );
+        }
+
+        // Pass 2: fold hidden `Worker` body matches into their owning `Router`.
+        for session in live.values() {
+            if session.role != SessionRole::Worker {
+                continue;
+            }
+            let Some(root_id) = session.root_session_id.as_deref() else {
+                continue;
+            };
+            let Some(parent) = live.get(root_id) else {
+                continue;
+            };
+            if parent.role == SessionRole::Worker {
+                continue;
+            }
+            let parent_safe_title = title::redact_search_text(&parent.title);
+            let parent_title_lower = parent_safe_title.to_lowercase();
+            let (body_score, body_snippet) = score_projected_lines(
+                &session.projection.lines,
+                &parent_title_lower,
+                &tokens,
+                0,
+            );
+            if body_score == 0 {
+                continue;
+            }
+            let mut folded_score = body_score;
+            if !parent.archived {
+                folded_score += 10;
+            }
+            if parent.pinned {
+                folded_score += 5;
+            }
+            if let Some((existing, has_match)) = by_root.get_mut(root_id) {
+                if folded_score > existing.score {
+                    existing.score = folded_score;
+                    if body_snippet.is_some() {
+                        existing.snippet = body_snippet;
+                        *has_match = true;
+                    }
+                } else if !*has_match && body_snippet.is_some() {
+                    existing.snippet = body_snippet;
+                    *has_match = true;
+                }
+                existing.updated_at =
+                    existing.updated_at.max(session.updated_at);
+            } else {
+                let project_id =
+                    parent.workspace.as_ref().map(|ws| ws.project_id.clone());
+                let snippet = body_snippet.or_else(|| {
+                    extract_session_preview(&parent.projection.lines)
+                        .map(|text| title::redact_search_text(&text))
+                });
+                by_root.insert(
+                    root_id.to_owned(),
+                    (
+                        SessionSearchHit {
+                            session_id: root_id.to_owned(),
+                            title: parent_safe_title,
+                            project_id,
+                            updated_at: parent
+                                .updated_at
+                                .max(session.updated_at),
+                            pinned: parent.pinned,
+                            archived: parent.archived,
+                            snippet,
+                            score: folded_score,
+                        },
+                        true,
+                    ),
+                );
+            }
         }
         drop(live);
+        let mut hits: Vec<SessionSearchHit> =
+            by_root.into_values().map(|(hit, _)| hit).collect();
         hits.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
@@ -1284,6 +1531,22 @@ impl AgentHandle {
         });
         hits.truncate(limit);
         hits
+    }
+
+    /// Durable session role (`Standard`, `Router`, or `Worker`).
+    #[must_use]
+    pub fn session_role(&self, session_id: &str) -> SessionRole {
+        self.inner.session_role(session_id)
+    }
+
+    /// Durable FIFO user follow-ups currently queued on a Router session.
+    #[must_use]
+    pub fn pending_router_followups(
+        &self,
+        router_id: &str,
+    ) -> Vec<PendingRouterFollowup> {
+        let engine = lock(&self.inner.engine).clone();
+        engine.map_or_default(|eng| eng.pending_router_followups(router_id))
     }
 
     pub fn active_session_id(&self) -> Option<String> {
@@ -1472,6 +1735,100 @@ impl AgentHandle {
         *lock(&self.inner.state.workspace_for_new_sessions) = None;
         self.set_origin_for_new_sessions(SessionOrigin::Home);
         self.create_session()
+    }
+
+    /// Create an explicit Home-origin [`SessionRole::Router`] root conversation.
+    pub fn create_router_session(&self) -> Result<String, &'static str> {
+        *lock(&self.inner.state.workspace_for_new_sessions) = None;
+        self.set_origin_for_new_sessions(SessionOrigin::Home);
+        self.inner.create_session_with_role_inner(
+            SessionOrigin::Home,
+            None,
+            true,
+            SessionRole::Router,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
+    }
+
+    /// Create an explicit Project-origin [`SessionRole::Router`] root
+    /// conversation bound to `workspace` (Router itself never locks `workspace`;
+    /// spawned Workers inherit `workspace`).
+    pub fn create_router_project_session(
+        &self,
+        workspace: AgentWorkspace,
+    ) -> Result<String, &'static str> {
+        let origin = SessionOrigin::Project {
+            project_id: Some(workspace.project_id.clone()),
+        };
+        *lock(&self.inner.state.workspace_for_new_sessions) =
+            Some(workspace.clone());
+        self.set_origin_for_new_sessions(origin.clone());
+        self.inner.create_session_with_role_inner(
+            origin,
+            Some(workspace),
+            true,
+            SessionRole::Router,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
+    }
+
+    /// Submit one durable user message directly to an explicit `router_id`
+    /// (decoupled from UI `active` focus; queues FIFO durably while Router is busy).
+    pub fn submit_router_message(
+        &self,
+        router_id: &str,
+        submission: u128,
+        text: &str,
+    ) -> Result<String, &'static str> {
+        self.inner.submit_message_targeted(
+            Some(router_id),
+            text,
+            Some(submission),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_before_worker_strict_enqueue_hook(
+        &self,
+        hook: Option<WorkerFaultHook>,
+    ) {
+        *lock(&self.inner.state.before_worker_strict_enqueue_hook) = hook;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_after_first_child_deleted_hook(
+        &self,
+        hook: Option<WorkerFaultHook>,
+    ) {
+        *lock(&self.inner.state.after_first_child_deleted_hook) = hook;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_work_event_for_test(
+        &self,
+        router_id: &str,
+        worker_id: &str,
+        submission_id: Option<String>,
+        contract_revision: Option<u32>,
+    ) {
+        work_events::push_work_event(
+            &self.inner.state,
+            router_id,
+            work_events::WorkEvent {
+                worker_id: worker_id.to_owned(),
+                submission_id,
+                contract_revision,
+                kind: work_events::WorkEventKind::Completed,
+                observed_at_ms: now_ms(),
+            },
+        );
+        work_events::schedule_router_inbox_flush(&self.inner, router_id);
     }
 
     /// Return the active session's workspace, or the context for the next
@@ -1726,12 +2083,79 @@ impl AgentHandle {
         selection: Option<SubmissionSelection<'_>>,
     ) -> Result<String, &'static str> {
         self.inner.submit_message_targeted(
-            None, text, submission, selection, None, None,
+            None, text, submission, selection, None, None, None,
         )
     }
 }
 
 impl Harness {
+    pub(super) fn session_role(&self, id: &str) -> SessionRole {
+        let live_role =
+            lock(&self.state.live).get(id).map(|session| session.role);
+        if let Some(role) = live_role {
+            return role;
+        }
+        let engine = lock(&self.engine).clone();
+        engine
+            .and_then(|eng| eng.with_session(id, |rec| rec.role))
+            .unwrap_or(SessionRole::Standard)
+    }
+
+    /// Unified workspace lock access mode for `id`:
+    /// - `Router` -> `None` (never acquires a directory lock)
+    /// - `Worker(ReadOnly)` -> `Some(WorkspaceAccessMode::Read)`
+    /// - `Worker(ReadWrite)` / `Standard` -> `Some(WorkspaceAccessMode::Write)`
+    pub(super) fn session_access_mode(
+        &self,
+        id: &str,
+    ) -> Option<WorkspaceAccessMode> {
+        let role_and_mode = lock(&self.state.live)
+            .get(id)
+            .map(|session| (session.role, session.access_mode));
+        let (role, mode) = if let Some(pair) = role_and_mode {
+            pair
+        } else {
+            let engine = lock(&self.engine).clone();
+            engine
+                .and_then(|eng| {
+                    eng.with_session(id, |rec| (rec.role, rec.access_mode))
+                })
+                .unwrap_or((SessionRole::Standard, WorkAccessMode::ReadWrite))
+        };
+        match role {
+            SessionRole::Router => None,
+            SessionRole::Worker => Some(match mode {
+                WorkAccessMode::ReadOnly => WorkspaceAccessMode::Read,
+                WorkAccessMode::ReadWrite => WorkspaceAccessMode::Write,
+            }),
+            SessionRole::Standard => Some(WorkspaceAccessMode::Write),
+        }
+    }
+
+    pub(super) fn schedule_pending_router_followups(self: &Arc<Self>) {
+        if self.state.shutdown_requested.load(Ordering::Acquire)
+            || !self.can_run_turns()
+        {
+            return;
+        }
+        let engine = lock(&self.engine).clone();
+        let Some(engine) = engine else {
+            return;
+        };
+        let routers: Vec<String> = engine
+            .sessions()
+            .into_iter()
+            .filter(|rec| {
+                rec.role == SessionRole::Router
+                    && !rec.pending_router_followups.is_empty()
+            })
+            .map(|rec| rec.id)
+            .collect();
+        for router_id in routers {
+            work_events::schedule_router_inbox_flush(self, &router_id);
+        }
+    }
+
     pub(super) fn is_initializing(&self) -> bool {
         *lock(&self.state.initializing)
     }
@@ -1759,7 +2183,7 @@ impl Harness {
     /// is microseconds away from calling `ticket.finish()`. Wait briefly for the
     /// `RunFence` drop so callers polling `session_status` never observe a
     /// spurious `notice.agent_busy` or stale `has_busy_session() == true`.
-    fn settle_finishing_fence(&self, engine: &Engine, id: &str) {
+    pub(super) fn settle_finishing_fence(&self, engine: &Engine, id: &str) {
         if engine.is_active(id)
             && !engine.is_cancelling(id)
             && lock(&self.state.live)
@@ -1822,19 +2246,28 @@ impl Harness {
         })
     }
 
-    /// Count of distinct sessions currently executing or holding an unsettled
-    /// acceptance claim (combining foreground direct turns, card resumes,
-    /// active queue claims, and still-reaping engine turns).
+    /// Count of distinct non-Router work sessions currently executing or holding
+    /// an unsettled acceptance claim (combining foreground direct Standard
+    /// turns, active queue claims, and still-reaping engine turns, while
+    /// excluding lightweight `SessionRole::Router` turns across all 3 sources).
     pub(super) fn in_flight_work_count(&self) -> usize {
         let sessions: BTreeSet<String> = {
             let live = lock(&self.state.live);
             let mut ids: BTreeSet<String> = live
                 .iter()
-                .filter(|(_, session)| session.status.is_busy())
+                .filter(|(_, session)| {
+                    session.status.is_busy()
+                        && session.role != SessionRole::Router
+                })
                 .map(|(id, _)| id.clone())
                 .collect();
             for claim in lock(&self.state.active_claims).values() {
-                ids.insert(claim.session_id.clone());
+                if live
+                    .get(&claim.session_id)
+                    .is_none_or(|s| s.role != SessionRole::Router)
+                {
+                    ids.insert(claim.session_id.clone());
+                }
             }
             drop(live);
             ids
@@ -1843,7 +2276,9 @@ impl Harness {
         let engine = lock(&self.engine).clone();
         if let Some(engine) = engine {
             for sid in engine.active_session_ids() {
-                if !sessions.contains(&sid) {
+                if !sessions.contains(&sid)
+                    && self.session_role(&sid) != SessionRole::Router
+                {
                     self.settle_finishing_fence(&engine, &sid);
                     if engine.is_active(&sid) {
                         total += 1;
@@ -1859,14 +2294,17 @@ impl Harness {
     /// ended and the monitor task is microseconds away from releasing its
     /// `WorkspaceLease`), wait briefly so immediate back-to-back submits or
     /// `ResolveCard` calls never observe a spurious `notice.agent_busy`.
-    fn settle_finishing_workspace_lease(&self, engine: &Engine, cwd: &Path) {
+    fn settle_finishing_workspace_lease(
+        &self,
+        engine: &Engine,
+        cwd: &Path,
+        mode: WorkspaceAccessMode,
+    ) {
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(150);
         loop {
-            let holders = self
-                .state
-                .workspace_locks
-                .conflicting_holders(cwd, WorkspaceAccessMode::Write);
+            let holders =
+                self.state.workspace_locks.conflicting_holders(cwd, mode);
             if holders.is_empty() {
                 return;
             }
@@ -1895,7 +2333,7 @@ impl Harness {
             }
             if self.state.workspace_locks.wait_for_release_step(
                 cwd,
-                WorkspaceAccessMode::Write,
+                mode,
                 remaining.min(std::time::Duration::from_millis(25)),
             ) {
                 return;
@@ -1944,6 +2382,25 @@ impl Harness {
         workspace: Option<AgentWorkspace>,
         make_active: bool,
     ) -> Result<String, &'static str> {
+        self.create_session_with_role_inner(
+            origin,
+            workspace,
+            make_active,
+            SessionRole::Standard,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
+    }
+
+    fn create_session_with_role_inner(
+        &self,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        make_active: bool,
+        role: SessionRole,
+        root_session_id: Option<String>,
+        access_mode: WorkAccessMode,
+    ) -> Result<String, &'static str> {
         if self.is_initializing() {
             return Err("library.loading");
         }
@@ -1979,11 +2436,14 @@ impl Harness {
         };
         let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
         engine
-            .create_session_with_metadata(
+            .create_session_with_role(
                 id.clone(),
                 now,
                 origin.clone(),
                 session_workspace.clone(),
+                role,
+                root_session_id.clone(),
+                access_mode,
             )
             .map_err(|_| "notice.session_storage_failed")?;
         lock(&self.state.live).insert(
@@ -2005,6 +2465,9 @@ impl Harness {
                 origin,
                 session_workspace,
                 heartbeat: None,
+                role,
+                root_session_id,
+                access_mode,
             },
         );
         if make_active {
@@ -2018,6 +2481,7 @@ impl Harness {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn submit_message_targeted(
         self: &Arc<Self>,
         explicit_session_id: Option<&str>,
@@ -2026,6 +2490,7 @@ impl Harness {
         selection: Option<SubmissionSelection<'_>>,
         pending_claim: Option<AcceptedClaim>,
         reply_to_object_id: Option<&str>,
+        resumed: Option<ResumedSubmission>,
     ) -> Result<String, &'static str> {
         let _dispatch = lock(&self.state.dispatch);
         self.submit_message_targeted_locked(
@@ -2035,7 +2500,7 @@ impl Harness {
             selection,
             pending_claim,
             reply_to_object_id,
-            None,
+            resumed,
         )
     }
 
@@ -2093,10 +2558,28 @@ impl Harness {
             }
         }
         let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
-        if let Some(session) =
-            submission.and_then(|id| engine.submitted_session(id))
-        {
-            return Ok(session);
+        let bypass_busy_queue =
+            resumed.as_ref().is_some_and(|item| item.bypass_busy_queue);
+        let is_router_announcement = resumed
+            .as_ref()
+            .is_some_and(|item| item.is_router_announcement);
+        if let Some(sub) = submission {
+            if bypass_busy_queue {
+                let message_id = format!("submission-{sub:032x}");
+                let committed = engine.with_sessions(|records| {
+                    records.iter().find_map(|rec| {
+                        rec.messages
+                            .iter()
+                            .any(|m| m.role == Role::User && m.id == message_id)
+                            .then(|| rec.id.clone())
+                    })
+                });
+                if let Some(session) = committed {
+                    return Ok(session);
+                }
+            } else if let Some(session) = engine.submitted_session(sub) {
+                return Ok(session);
+            }
         }
         if let Some(sub) = submission {
             let expected_card_id = format!("disambig-submission-{sub:032x}");
@@ -2127,16 +2610,6 @@ impl Harness {
             }
             None => self.ensure_active_session_locked()?,
         };
-        self.settle_finishing_fence(&engine, &id);
-        if lock(&state.live)
-            .get(&id)
-            .is_some_and(|session| session.status.is_busy())
-            || engine.is_active(&id)
-            || (pending_claim.is_some()
-                && self.in_flight_work_count() >= self.max_concurrent_works())
-        {
-            return Err("notice.agent_busy");
-        }
         if let Err(error) = ensure_engine_session(&engine, &id) {
             log_storage_io_error(
                 "ensure structured session",
@@ -2145,10 +2618,98 @@ impl Harness {
             );
             state.report_storage_error();
         }
+        let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
+        let is_resumed = resumed.is_some();
+        let is_card_resume = resumed.as_ref().is_some_and(|item| {
+            matches!(item.prompt_source, MessageSource::CardResume)
+                || item.contract.is_some()
+        });
+        if !is_card_resume
+            && (!core_session.pending_cards.is_empty()
+                || core_session.status == TurnState::WaitingForUser
+                || lock(&state.live).get(&id).is_some_and(|session| {
+                    session.status == TurnStatus::WaitingForUser
+                }))
+        {
+            return Err("notice.card_pending");
+        }
+        self.settle_finishing_fence(&engine, &id);
+        let target_busy = lock(&state.live)
+            .get(&id)
+            .is_some_and(|session| session.status.is_busy())
+            || engine.is_active(&id);
+        if core_session.role == SessionRole::Router
+            && target_busy
+            && !bypass_busy_queue
+            && pending_claim.is_none()
+        {
+            let sub_u128 = if let Some(sub) = submission {
+                sub
+            } else {
+                let mut bytes = [0_u8; 16];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "notice.agent_failed")?;
+                u128::from_le_bytes(bytes)
+            };
+            let sub_id = format!("submission-{sub_u128:032x}");
+            let outcome = engine
+                .enqueue_router_followup(
+                    &id,
+                    PendingRouterFollowup {
+                        submission_id: sub_id,
+                        text: text.to_owned(),
+                        reply_to_object_id: reply_to_object_id
+                            .map(str::to_owned),
+                        created_at_ms: now_ms(),
+                    },
+                    work_events::MAX_ROUTER_FOLLOWUPS,
+                )
+                .map_err(|error| match error {
+                    RunError::Storage(io_err) => {
+                        log_storage_io_error(
+                            "persist router follow-up",
+                            &flowy_agent_core::SessionIndex::path(&state.root),
+                            &io_err,
+                        );
+                        state.report_storage_error();
+                        "notice.session_storage_failed"
+                    }
+                    _ => "notice.agent_failed",
+                })?;
+            match outcome {
+                EnqueueOutcome::Duplicate => return Ok(id),
+                EnqueueOutcome::QueueFull => {
+                    return Err("notice.router_queue_full");
+                }
+                EnqueueOutcome::Enqueued => {
+                    {
+                        let mut live = lock(&state.live);
+                        if let Some(session) = live.get_mut(&id) {
+                            session.projection.push_user(text);
+                            session.updated_at = now_ms();
+                        }
+                    }
+                    if persist_index(state).is_err() {
+                        state.report_storage_error();
+                    }
+                    state.push_update(AgentUpdate::Session { id: id.clone() });
+                    return Ok(id);
+                }
+            }
+        }
+        if target_busy
+            || (pending_claim.is_some()
+                && core_session.role != SessionRole::Router
+                && self.in_flight_work_count() >= self.max_concurrent_works())
+        {
+            return Err("notice.agent_busy");
+        }
         let config = lock(&self.config).clone();
         let skills = self.skill_catalog();
         let (mut prompt, active_skills) = prepare_skill_prompt(text, &skills)?;
-        let is_resumed = resumed.is_some();
+        let prompt_source = resumed
+            .as_ref()
+            .map_or(MessageSource::User, |item| item.prompt_source.clone());
         let skip_push_user_line = resumed
             .as_ref()
             .is_some_and(|item| item.skip_push_user_line);
@@ -2167,40 +2728,61 @@ impl Harness {
         {
             let display = resumed
                 .as_ref()
-                .and_then(|item| item.display_text_override.as_deref())
-                .unwrap_or(text);
-            prompt = PromptTurn::with_display(override_model, display);
-        } else if let Some(suffix) = resumed
-            .as_ref()
-            .and_then(|item| item.model_prompt_suffix.as_deref())
-        {
-            prompt.model.push_str(suffix);
+                .and_then(|item| item.display_text_override.clone())
+                .or_else(|| Some(text.to_owned()));
+            prompt = match &prompt_source {
+                MessageSource::SystemEvent { event_kind } => {
+                    PromptTurn::system_event(event_kind.clone(), override_model)
+                }
+                MessageSource::CardResume => {
+                    PromptTurn::card_resume(override_model, display)
+                }
+                _ => PromptTurn {
+                    model: override_model,
+                    display,
+                    source: prompt_source.clone(),
+                },
+            };
+        } else {
+            if let Some(suffix) = resumed
+                .as_ref()
+                .and_then(|item| item.model_prompt_suffix.as_deref())
+            {
+                prompt.model.push_str(suffix);
+            }
+            prompt.source = prompt_source;
         }
+        let is_internal_event_turn = is_router_announcement
+            || matches!(
+                prompt.source,
+                MessageSource::SystemEvent { .. } | MessageSource::CardResume
+            );
+        let skip_auto_title =
+            core_session.role == SessionRole::Worker || is_internal_event_turn;
         let pre_resolved_contract = resumed.and_then(|item| item.contract);
-        let title_prompt = if is_resumed
-            || text.starts_with("[UserApproved]")
-            || text.starts_with("[UserDenied]")
-        {
-            lock(&state.live)
-                .get(&id)
-                .and_then(|session| {
-                    session.projection.lines.iter().find_map(
-                        |line| match line {
+        let title_prompt =
+            if is_resumed || observer::is_internal_control_line_text(text) {
+                lock(&state.live)
+                    .get(&id)
+                    .and_then(|session| {
+                        session.projection.lines.iter().find_map(|line| {
+                            match line {
                             ChatLine::User { text }
                                 if !text.trim().is_empty()
-                                    && !text.starts_with("[UserApproved]")
-                                    && !text.starts_with("[UserDenied]") =>
+                                    && !observer::is_internal_control_line_text(
+                                        text,
+                                    ) =>
                             {
                                 Some(text.clone())
                             }
                             _ => None,
-                        },
-                    )
-                })
-                .unwrap_or_else(|| text.to_owned())
-        } else {
-            text.to_owned()
-        };
+                        }
+                        })
+                    })
+                    .unwrap_or_else(|| text.to_owned())
+            } else {
+                text.to_owned()
+            };
         let stream = config
             .api_key
             .is_none()
@@ -2208,16 +2790,7 @@ impl Harness {
         let workspace = lock(&state.live)
             .get(&id)
             .and_then(|session| session.workspace.clone());
-        let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
-        if !is_resumed
-            && (!core_session.pending_cards.is_empty()
-                || core_session.status == TurnState::WaitingForUser
-                || lock(&state.live).get(&id).is_some_and(|session| {
-                    session.status == TurnStatus::WaitingForUser
-                }))
-        {
-            return Err("notice.card_pending");
-        }
+        let _ = is_resumed;
         let cwd = core_session.workspace.as_ref().map_or_else(
             || session_working_directory(&state.root, workspace.as_ref()),
             |workspace| workspace.root.clone(),
@@ -2229,138 +2802,177 @@ impl Harness {
             lock(&state.approved_tool_calls).remove(&id);
         }
         let mut run_config = engine_config(&config, &cwd);
-        run_config.registry = tool_registry(&cwd, &skills, active_skills);
-        run_config.pre_tool_hook = Some(build_pre_tool_hook(
-            id.clone(),
-            cwd.clone(),
-            Arc::clone(state),
-        ));
         let mut staged_intents_for_turn: Option<
             crate::publish_tool::StagedIntentLog,
         > = None;
-        if core_session.origin == SessionOrigin::Home
-            && let Some(submission) = submission
-            && let Some(session_workspace) = core_session.workspace.as_ref()
-            && let Some(store) = state.artifact_store.get().cloned()
-        {
-            let contract = if let Some(resolved) = pre_resolved_contract {
-                resolved
-            } else if skip_contract_evolve {
-                core_session.work_contract.as_ref().map_or_default(
-                    crate::verify::BriefContract::from_work_contract,
+        if core_session.role == SessionRole::Router {
+            run_config.registry = router::router_tool_registry(
+                Arc::downgrade(self),
+                id.clone(),
+                is_router_announcement,
+            );
+            run_config.pre_tool_hook = (!is_router_announcement).then(|| {
+                router::build_router_pre_tool_hook(
+                    Arc::downgrade(self),
+                    id.clone(),
                 )
-            } else {
-                match crate::verify::resolve_contract_sync(
-                    core_session.work_contract.as_ref(),
-                    text,
-                    reply_to_object_id,
-                    now_ms(),
-                ) {
-                    crate::verify::ResolveOutcome::Ambiguous {
-                        mut card,
-                        ..
-                    } => {
-                        if let PendingCard::Disambiguation { card_id, .. } =
-                            &mut card
-                        {
-                            *card_id = format!(
-                                "disambig-submission-{submission:032x}"
+            });
+            run_config.system = router::build_router_system_prompt(
+                self,
+                &id,
+                is_router_announcement,
+            );
+        } else if core_session.access_mode == WorkAccessMode::ReadOnly {
+            run_config.registry =
+                read_only_tool_registry(&cwd, &skills, active_skills);
+            run_config.pre_tool_hook = None;
+            run_config.system = append_skill_listing(
+                "You are running in read-only inspection mode. Inspect files using only read_file, glob, and grep; do not attempt to modify files or execute shell commands.",
+                &skills,
+            );
+        } else {
+            run_config.registry = tool_registry(&cwd, &skills, active_skills);
+            run_config.pre_tool_hook = Some(build_pre_tool_hook(
+                id.clone(),
+                cwd.clone(),
+                Arc::clone(state),
+            ));
+            if core_session.origin == SessionOrigin::Home
+                && let Some(submission) = submission
+                && let Some(session_workspace) = core_session.workspace.as_ref()
+                && let Some(store) = state.artifact_store.get().cloned()
+            {
+                let contract = if let Some(resolved) = pre_resolved_contract {
+                    resolved
+                } else if skip_contract_evolve {
+                    core_session.work_contract.as_ref().map_or_default(
+                        crate::verify::BriefContract::from_work_contract,
+                    )
+                } else {
+                    match crate::verify::resolve_contract_sync(
+                        core_session.work_contract.as_ref(),
+                        text,
+                        reply_to_object_id,
+                        now_ms(),
+                    ) {
+                        crate::verify::ResolveOutcome::Ambiguous {
+                            mut card,
+                            ..
+                        } => {
+                            if let PendingCard::Disambiguation {
+                                card_id, ..
+                            } = &mut card
+                            {
+                                *card_id = format!(
+                                    "disambig-submission-{submission:032x}"
+                                );
+                            }
+                            return self.park_disambiguation_locked(
+                                &engine,
+                                &id,
+                                card,
+                                text,
+                                skip_push_user_line,
+                                pending_claim,
                             );
                         }
-                        return self.park_disambiguation_locked(
-                            &engine,
-                            &id,
-                            card,
-                            text,
-                            skip_push_user_line,
-                            pending_claim,
-                        );
+                        crate::verify::ResolveOutcome::Resolved {
+                            contract,
+                            ..
+                        } => contract,
                     }
-                    crate::verify::ResolveOutcome::Resolved {
-                        contract,
-                        ..
-                    } => contract,
-                }
-            };
-            let submission_id = format!("submission-{submission:032x}");
-            let output_root =
-                session_workspace.root.join("outputs").join(&submission_id);
-            std::fs::create_dir_all(&output_root).map_err(|error| {
-                log_storage_io_error(
-                    "create turn output directory",
-                    &output_root,
-                    &error,
+                };
+                let submission_id = format!("submission-{submission:032x}");
+                let output_root =
+                    session_workspace.root.join("outputs").join(&submission_id);
+                std::fs::create_dir_all(&output_root).map_err(|error| {
+                    log_storage_io_error(
+                        "create turn output directory",
+                        &output_root,
+                        &error,
+                    );
+                    "notice.session_storage_failed"
+                })?;
+                let delivery = crate::delivery::DeliveryStore::new(
+                    state.root.join("delivery"),
                 );
-                "notice.session_storage_failed"
-            })?;
-            let delivery = crate::delivery::DeliveryStore::new(
-                state.root.join("delivery"),
-            );
-            if core_session.work_contract.is_some() || !contract.is_empty() {
-                run_config.work_contract = Some(contract.to_work_contract());
-            }
-            let expected_revision = run_config
-                .work_contract
-                .as_ref()
-                .map(|wc| wc.revision.max(1));
-            let semantic_brief = compose_semantic_brief(
-                &core_session.messages,
-                if skip_contract_evolve { "" } else { text },
-            );
-            let semantic = state
-                .semantic_verify_enabled
-                .load(Ordering::Acquire)
-                .then(|| {
-                    config.api_key.as_ref().map(|api_key| {
-                        crate::semantic_verify::SemanticContext {
-                            brief: semantic_brief.clone(),
-                            route: model_route(&config),
-                            api_key: api_key.clone(),
-                        }
+                if core_session.work_contract.is_some() || !contract.is_empty()
+                {
+                    run_config.work_contract =
+                        Some(contract.to_work_contract());
+                }
+                let expected_revision = run_config
+                    .work_contract
+                    .as_ref()
+                    .map(|wc| wc.revision.max(1));
+                let semantic_brief = compose_semantic_brief(
+                    &core_session.messages,
+                    if skip_contract_evolve { "" } else { text },
+                );
+                let semantic = state
+                    .semantic_verify_enabled
+                    .load(Ordering::Acquire)
+                    .then(|| {
+                        config.api_key.as_ref().map(|api_key| {
+                            crate::semantic_verify::SemanticContext {
+                                brief: semantic_brief.clone(),
+                                route: model_route(&config),
+                                api_key: api_key.clone(),
+                            }
+                        })
                     })
-                })
-                .flatten();
-            let failures: crate::verify::VerifyFailureTracker =
-                Arc::new(Mutex::new(HashMap::new()));
-            run_config.registry.register(
-                crate::verify::definition_with_options(
-                    Some(delivery.clone()),
-                    semantic.clone(),
-                    Some(contract.clone()),
-                    Some(Arc::clone(&failures)),
-                ),
-            );
-            run_config.registry.register(
-                crate::verify::artifact_definition_with_options(
-                    Some(delivery.clone()),
-                    semantic,
-                    Some(contract),
-                    Some(failures),
-                ),
-            );
-            let staged_log: crate::publish_tool::StagedIntentLog =
-                Arc::new(Mutex::new(Vec::new()));
-            staged_intents_for_turn = Some(Arc::clone(&staged_log));
-            run_config.registry.register(
-                crate::publish_tool::definition_with_revision(
-                    store.clone(),
-                    Some(delivery),
-                    expected_revision,
-                    Some(staged_log),
-                ),
-            );
-            run_config.delivery_committer = Some(Arc::new(store));
-            run_config.system = format!(
-                "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
-                output_root.display()
-            );
+                    .flatten();
+                let failures: crate::verify::VerifyFailureTracker =
+                    Arc::new(Mutex::new(HashMap::new()));
+                run_config.registry.register(
+                    crate::verify::definition_with_options(
+                        Some(delivery.clone()),
+                        semantic.clone(),
+                        Some(contract.clone()),
+                        Some(Arc::clone(&failures)),
+                    ),
+                );
+                run_config.registry.register(
+                    crate::verify::artifact_definition_with_options(
+                        Some(delivery.clone()),
+                        semantic,
+                        Some(contract),
+                        Some(failures),
+                    ),
+                );
+                let staged_log: crate::publish_tool::StagedIntentLog =
+                    Arc::new(Mutex::new(Vec::new()));
+                staged_intents_for_turn = Some(Arc::clone(&staged_log));
+                run_config.registry.register(
+                    crate::publish_tool::definition_with_revision(
+                        store.clone(),
+                        Some(delivery),
+                        expected_revision,
+                        Some(staged_log),
+                    ),
+                );
+                run_config.delivery_committer = Some(Arc::new(store));
+                run_config.system = format!(
+                    "Files to deliver to this user must be created in the current turn output directory: {}. Use write_file (or create_deck for .pptx presentations) with a path inside that directory. Before calling publish_file, verify every .pptx file with verify_deck and every .docx/.xlsx file with verify_artifact. If verification returns next_action=\"rerender_once\", fix and re-verify at most once; if verification still fails or returns next_action=\"clarify_or_rebuild\", stop and explain the issues instead of calling publish_file. publish_file only stages files; delivery occurs after the whole turn completes successfully. Do not treat ordinary text links or intermediate files as delivered artifacts. Maximum 8 files, 128 MiB each, 256 MiB per turn.",
+                    output_root.display()
+                );
+            }
+            run_config.system =
+                append_skill_listing(&run_config.system, &skills);
         }
-        run_config.system = append_skill_listing(&run_config.system, &skills);
-        self.settle_finishing_workspace_lease(&engine, &cwd);
-        let mut workspace_lease = state
-            .workspace_locks
-            .try_acquire(&cwd, WorkspaceAccessMode::Write, &id)
-            .ok_or("notice.agent_busy")?;
+        let mut workspace_lease = if let Some(access_mode) =
+            self.session_access_mode(&id)
+        {
+            self.settle_finishing_workspace_lease(&engine, &cwd, access_mode);
+            Some(
+                state
+                    .workspace_locks
+                    .try_acquire(&cwd, access_mode, &id)
+                    .ok_or("notice.agent_busy")?,
+            )
+        } else {
+            None
+        };
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -2411,7 +3023,9 @@ impl Harness {
             if !skip_push_user_line {
                 session.projection.push_user(text);
             }
-            let title = if session.titled {
+            let title = if skip_auto_title {
+                (None, None)
+            } else if session.titled {
                 let signal = if session.auto_title_pending
                     && !session.auto_title_in_flight
                     && session.auto_title_attempts < MAX_AUTO_TITLE_ATTEMPTS
@@ -2468,6 +3082,8 @@ impl Harness {
         let weak_harness = Arc::downgrade(self);
         let receipt = id.clone();
         let completed_submission = submission;
+        let session_role = core_session.role;
+        let session_root_id = core_session.root_session_id;
         self.runtime.spawn(async move {
             let outcome = turn.await;
             if let Some(signal) = turn_done_signal {
@@ -2565,9 +3181,11 @@ impl Harness {
             // artifact capture / staged-intent cleanup, and strictly BEFORE
             // acquiring `accept_drain -> dispatch` (`finish_accepted_if_owned`),
             // `queue.complete`, `kick_autonomous_drain`, or `generate_title`.
-            // This eliminates `_dispatch` lock-order inversion and unblocks
-            // back-to-back submits / same-workspace peers immediately.
-            workspace_lease.release();
+            if let Some(lease) = workspace_lease.as_mut() {
+                lease.release();
+            }
+            let expected_sub =
+                completed_submission.map(|s| format!("submission-{s:032x}"));
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
                 // PendingCard::ToolApproval is durably persisted in
                 // `history.json`. Complete the AcceptanceQueue receipt (matching
@@ -2600,8 +3218,6 @@ impl Harness {
             } else if state.autonomous_drain.load(Ordering::Acquire)
                 && let Some(harness) = weak_harness.upgrade()
             {
-                let expected_sub = completed_submission
-                    .map(|s| format!("submission-{s:032x}"));
                 let live_delivery_failed =
                     lock(&state.live).get(&id).is_some_and(|session| {
                         matches!(session.status, TurnStatus::DeliveryFailed)
@@ -2614,13 +3230,6 @@ impl Harness {
                                 .any(|commit| commit.submission_id == sub)
                         })
                     });
-                // Partial deliverables and post-history DeliveryFailed turns
-                // already completed their LLM execution and left durable cards
-                // for user OverrideDeliver / RetryDelivery — settle the queue
-                // receipt instead of re-running the entire prompt 10x. Never
-                // mark `LoopOutcome::Aborted` as Completed: host cancellations
-                // already cleared `active_claims` as Cancelled, while provider
-                // stream aborts must release for retry instead of completing.
                 let completed = matches!(outcome, Ok(LoopOutcome::Completed))
                     || live_delivery_failed
                     || (matches!(outcome, Err(RunError::Storage(_)))
@@ -2632,6 +3241,60 @@ impl Harness {
                 );
                 harness.kick_autonomous_drain();
                 drop(harness);
+            }
+            if session_role == SessionRole::Worker
+                && let Some(root_id) = session_root_id
+                && root_id != id
+            {
+                let kind = match &outcome {
+                    Ok(LoopOutcome::Completed) => {
+                        work_events::WorkEventKind::Completed
+                    }
+                    Ok(LoopOutcome::WaitingForUser) => {
+                        work_events::WorkEventKind::WaitingForUser
+                    }
+                    Ok(LoopOutcome::Aborted) => {
+                        work_events::WorkEventKind::Cancelled
+                    }
+                    Ok(LoopOutcome::Failed) | Err(_) => {
+                        work_events::WorkEventKind::Failed
+                    }
+                };
+                let contract_revision = engine
+                    .with_session(&id, |rec| {
+                        expected_sub
+                            .as_deref()
+                            .and_then(|sub| {
+                                rec.submission_revisions.get(sub).copied()
+                            })
+                            .or_else(|| {
+                                rec.work_contract.as_ref().map(|c| c.revision)
+                            })
+                    })
+                    .flatten();
+                work_events::push_work_event(
+                    &state,
+                    &root_id,
+                    work_events::WorkEvent {
+                        worker_id: id.clone(),
+                        submission_id: expected_sub,
+                        contract_revision,
+                        kind,
+                        observed_at_ms: now_ms(),
+                    },
+                );
+                if let Some(harness) = weak_harness.upgrade() {
+                    work_events::schedule_router_inbox_flush(
+                        &harness, &root_id,
+                    );
+                }
+            } else if session_role == SessionRole::Router {
+                if is_router_announcement {
+                    work_events::clear_announcement_in_flight(&state, &id);
+                }
+                if let Some(harness) = weak_harness.upgrade() {
+                    work_events::schedule_router_inbox_flush(&harness, &id);
+                }
             }
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
@@ -2703,7 +3366,10 @@ impl Harness {
             session.projection.lines.push(ChatLine::Status {
                 text: TurnStatus::WaitingForUser.key().into(),
             });
-            let title = if session.titled {
+            let title = if session.titled
+                || session.role == SessionRole::Worker
+                || observer::is_internal_control_line_text(text)
+            {
                 None
             } else {
                 session.title = title::clamp_title(
@@ -2981,6 +3647,56 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Scans projected conversation rows (skipping internal host control/event
+/// prompts) against tokenized lowercased search terms and returns the best
+/// body match score plus its redacted snippet.
+fn score_projected_lines(
+    lines: &[ChatLine],
+    title_lower: &str,
+    tokens: &[String],
+    existing_title_score: u32,
+) -> (u32, Option<String>) {
+    let mut best_score = existing_title_score;
+    let mut best_snippet = None;
+    for line in lines.iter().rev() {
+        let raw_text = match line {
+            ChatLine::User { text }
+                if !observer::is_internal_control_line_text(text) =>
+            {
+                text.as_str()
+            }
+            ChatLine::Assistant { text } => text.as_str(),
+            _ => continue,
+        };
+        let cleaned =
+            title::redact_search_text(&title::strip_markdown_inline(raw_text));
+        if cleaned.is_empty() {
+            continue;
+        }
+        let lower = cleaned.to_lowercase();
+        if tokens.iter().all(|tok| lower.contains(tok.as_str())) {
+            let snippet = extract_match_snippet(&cleaned, &tokens[0]);
+            return (best_score.max(55), Some(snippet));
+        }
+        if best_score == 0
+            && best_snippet.is_none()
+            && tokens.iter().all(|tok| {
+                title_lower.contains(tok.as_str())
+                    || lower.contains(tok.as_str())
+            })
+        {
+            let first_body_tok = tokens
+                .iter()
+                .find(|tok| lower.contains(tok.as_str()))
+                .map_or(tokens[0].as_str(), String::as_str);
+            best_snippet =
+                Some(extract_match_snippet(&cleaned, first_body_tok));
+            best_score = 40;
+        }
+    }
+    (best_score, best_snippet)
 }
 
 /// Scores a lowercased candidate string against tokenized lowercased search terms.

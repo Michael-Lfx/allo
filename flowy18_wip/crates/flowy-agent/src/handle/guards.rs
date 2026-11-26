@@ -152,6 +152,29 @@ pub(super) fn tool_registry(
     registry
 }
 
+/// Strictly read-only tool registry for `WorkAccessMode::ReadOnly` Workers:
+/// exposes ONLY the 3 built-in inspection tools (`read_file`, `glob`, `grep`)
+/// confined by `path_guard`, with zero shell, write, deck, or publish tools.
+pub(super) fn read_only_tool_registry(
+    cwd: &Path,
+    skills: &[InstalledSkill],
+    active_skills: Vec<SkillId>,
+) -> ToolRegistry {
+    let registry = ToolRegistry::new();
+    register_builtin_tools(&registry);
+    registry.unregister("write_file");
+    registry.unregister("edit_file");
+    registry.unregister("todo_write");
+    let root = cwd.to_path_buf();
+    let active = Arc::new(Mutex::new(skill_scope(skills, active_skills)));
+    let skills_for_paths = skills.to_vec();
+    let file_guard: ToolGuard = Arc::new(move |args: &ToolCallArgs| {
+        path_guard(&root, &skills_for_paths, &active, args)
+    });
+    registry.add_guard(file_guard);
+    registry
+}
+
 /// Static cross-platform safety guard for shell commands (`powershell` / `bash`).
 ///
 /// Complements `path_guard` by blocking host-wide destructive operations,

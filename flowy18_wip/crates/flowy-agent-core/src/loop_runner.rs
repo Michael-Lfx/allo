@@ -77,6 +77,13 @@ pub enum PreToolDecision {
         risk_reason: String,
         command_preview: String,
     },
+    /// Immediately halt the tool batch and persist a host-constructed card
+    /// (e.g. Router `ask_user_choice` -> [`PendingCard::Disambiguation`]) into
+    /// [`crate::session::TurnState::WaitingForUser`].
+    SuspendWithCard {
+        card: PendingCard,
+        reason: String,
+    },
 }
 
 /// Host pre-execution hook invoked before each tool call inside `rpi_agent`.
@@ -329,6 +336,19 @@ pub async fn run_turn(
                                     "TOOL_APPROVAL_REQUIRED: awaiting explicit user confirmation"
                                         .to_owned(),
                                 ),
+                                terminate: true,
+                                args: None,
+                            })
+                        }
+                        PreToolDecision::SuspendWithCard { card, reason } => {
+                            *slot
+                                .lock()
+                                .unwrap_or_else(
+                                    std::sync::PoisonError::into_inner,
+                                ) = Some(card);
+                            Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(reason),
                                 terminate: true,
                                 args: None,
                             })

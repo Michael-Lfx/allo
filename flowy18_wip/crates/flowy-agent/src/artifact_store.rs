@@ -767,13 +767,44 @@ impl ArtifactStore {
         Ok(plans)
     }
 
+    pub(crate) fn has_active_deletion_plan(&self, session_id: &str) -> bool {
+        validate_identifier(session_id).is_ok()
+            && self.session_deletion_path(session_id).exists()
+    }
+
     pub(crate) fn prepare_session_deletion(
         &self,
         session_id: &str,
         artifact_ids: &[String],
         submission_ids: &[String],
     ) -> io::Result<()> {
+        self.prepare_cascade_session_deletion(
+            session_id,
+            &[],
+            artifact_ids,
+            submission_ids,
+        )
+    }
+
+    pub(crate) fn prepare_cascade_session_deletion(
+        &self,
+        session_id: &str,
+        child_session_ids: &[String],
+        artifact_ids: &[String],
+        submission_ids: &[String],
+    ) -> io::Result<()> {
         validate_identifier(session_id)?;
+        let mut children = child_session_ids
+            .iter()
+            .filter(|cid| cid.as_str() != session_id)
+            .cloned()
+            .collect::<BTreeSet<String>>();
+        for child_id in &children {
+            validate_identifier(child_id)?;
+        }
+        let mut all_sessions = BTreeSet::new();
+        all_sessions.insert(session_id.to_owned());
+        all_sessions.extend(children.iter().cloned());
         let mut artifacts =
             artifact_ids.iter().cloned().collect::<BTreeSet<String>>();
         let mut submissions =
@@ -788,7 +819,7 @@ impl ArtifactStore {
         let _guard = self.lock();
         let scan = self.scan_with_diagnostics_locked(false)?;
         for manifest in scan.manifests {
-            if manifest.receipt.session_id == session_id {
+            if all_sessions.contains(&manifest.receipt.session_id) {
                 artifacts.insert(manifest.receipt.artifact_id);
             }
         }
@@ -804,7 +835,7 @@ impl ArtifactStore {
             let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
                 continue;
             };
-            if marker.commit.session_id == session_id {
+            if all_sessions.contains(&marker.commit.session_id) {
                 submissions.insert(marker.commit.submission_id);
                 artifacts.extend(marker.commit.artifact_ids);
             }
@@ -816,16 +847,26 @@ impl ArtifactStore {
             if plan.state == SessionDeletionState::Committed {
                 return Ok(());
             }
-            let before =
-                (plan.artifact_ids.clone(), plan.submission_ids.clone());
+            let before = (
+                plan.artifact_ids.clone(),
+                plan.submission_ids.clone(),
+                plan.child_session_ids.clone(),
+            );
             plan.artifact_ids.extend(artifacts);
             plan.submission_ids.extend(submissions);
+            plan.child_session_ids.extend(std::mem::take(&mut children));
             plan.artifact_ids.sort();
             plan.artifact_ids.dedup();
             plan.submission_ids.sort();
             plan.submission_ids.dedup();
+            plan.child_session_ids.sort();
+            plan.child_session_ids.dedup();
             if before
-                != (plan.artifact_ids.clone(), plan.submission_ids.clone())
+                != (
+                    plan.artifact_ids.clone(),
+                    plan.submission_ids.clone(),
+                    plan.child_session_ids.clone(),
+                )
             {
                 self.write_metadata_locked(&path, &plan)?;
             }
@@ -838,6 +879,7 @@ impl ArtifactStore {
             state: SessionDeletionState::Prepared,
             artifact_ids: artifacts.into_iter().collect(),
             submission_ids: submissions.into_iter().collect(),
+            child_session_ids: children.into_iter().collect(),
             created_at_ms: now_ms(),
         };
         self.write_metadata_locked(&path, &plan)
@@ -892,6 +934,12 @@ impl ArtifactStore {
         if plan.state != SessionDeletionState::Committed {
             return Err(invalid("session deletion is not committed"));
         }
+        let mut all_sessions = BTreeSet::new();
+        all_sessions.insert(session_id.to_owned());
+        for child_id in &plan.child_session_ids {
+            validate_identifier(child_id)?;
+            all_sessions.insert(child_id.clone());
+        }
         let mut artifacts =
             plan.artifact_ids.into_iter().collect::<BTreeSet<String>>();
         let mut submissions = plan
@@ -900,7 +948,7 @@ impl ArtifactStore {
             .collect::<BTreeSet<String>>();
         let scan = self.scan_with_diagnostics_locked(false)?;
         for manifest in scan.manifests {
-            if manifest.receipt.session_id == session_id {
+            if all_sessions.contains(&manifest.receipt.session_id) {
                 artifacts.insert(manifest.receipt.artifact_id);
             }
         }
@@ -916,7 +964,7 @@ impl ArtifactStore {
             let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
                 continue;
             };
-            if marker.commit.session_id == session_id {
+            if all_sessions.contains(&marker.commit.session_id) {
                 submissions.insert(marker.commit.submission_id);
                 artifacts.extend(marker.commit.artifact_ids);
             }
@@ -926,14 +974,14 @@ impl ArtifactStore {
             validate_identifier(artifact_id)?;
             Self::remove_managed_dir(&self.item_dir(artifact_id))?;
         }
-        Self::remove_managed_dir(
-            &self.inner.root.join("staging").join(session_id),
-        )?;
-        for submission_id in &submissions {
-            validate_identifier(submission_id)?;
-            remove_file_if_exists(
-                &self.delivery_path(session_id, submission_id),
+        for sid in &all_sessions {
+            Self::remove_managed_dir(
+                &self.inner.root.join("staging").join(sid),
             )?;
+            for submission_id in &submissions {
+                validate_identifier(submission_id)?;
+                remove_file_if_exists(&self.delivery_path(sid, submission_id))?;
+            }
         }
 
         let mut preferences = self.preferences_locked()?;
@@ -2265,6 +2313,8 @@ pub struct SessionDeletionPlan {
     pub state: SessionDeletionState,
     artifact_ids: Vec<String>,
     submission_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_session_ids: Vec<String>,
     created_at_ms: u64,
 }
 

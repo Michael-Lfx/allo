@@ -1,15 +1,22 @@
 //! Work-level status reconciliation, UI-decoupled cancellation, card actions, and graceful shutdown.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use flowy_agent_core::WorkContract;
+use flowy_agent_core::{
+    DispatchRecord, SessionRole, TrackedObjectKind, WorkContract,
+};
 
+use super::router::{
+    ChildWorkSummary, DispatchWorkResult, RoutedPendingCard, StopWorkResult,
+    dispatch_fingerprint, verify_child_ownership,
+};
 use super::{
     AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate, ArtifactStore,
     BTreeSet, CancelOutcome, CardAction, CardActionOutcome, CardSelection,
-    ChatLine, Engine, MessageSource, Ordering, PendingCard, ReceiptState,
-    ResumedSubmission, Role, SessionRecord, SubmissionOutcome, TaskTarget,
-    TurnState, TurnStatus, WorkStatus, clear_live_heartbeat, lock,
+    ChatLine, Engine, Harness, MessageSource, Ordering, PendingCard,
+    ReceiptState, ResumedSubmission, Role, SessionRecord, SubmissionOutcome,
+    TaskTarget, TurnState, TurnStatus, WorkStatus, clear_live_heartbeat, lock,
     log_storage_io_error, now_ms, persist_index,
 };
 use crate::artifact_store::PublicationState;
@@ -310,25 +317,92 @@ impl AgentHandle {
         )
     }
 
+    /// Authoritative host summaries of all child Workers owned by `root_session_id`.
+    #[must_use]
+    pub fn child_works(&self, root_session_id: &str) -> Vec<ChildWorkSummary> {
+        self.inner.child_works(root_session_id)
+    }
+
+    /// All pending interactive cards routed to `root_session_id` (both Router
+    /// choice cards and child Worker approval/disambiguation cards).
+    #[must_use]
+    pub fn root_pending_cards(
+        &self,
+        root_session_id: &str,
+    ) -> Vec<RoutedPendingCard> {
+        self.inner.root_pending_cards(root_session_id)
+    }
+
+    /// Stop ONLY the Router's active reply without cancelling any child Workers.
+    pub fn stop_router_reply(
+        &self,
+        router_id: &str,
+    ) -> Result<StopWorkResult, &'static str> {
+        if self.inner.session_role(router_id) != SessionRole::Router {
+            return Err("notice.agent_failed");
+        }
+        let outcome = self
+            .inner
+            .cancel_task(TaskTarget::Session(router_id.to_owned()))?;
+        let status = self.session_status(router_id).key().to_owned();
+        let outcome_str = match outcome {
+            CancelOutcome::Cancelled => {
+                if self.session_status(router_id) == TurnStatus::Stopping {
+                    "stopping"
+                } else {
+                    "cancelled"
+                }
+            }
+            CancelOutcome::AlreadySettled => "already_settled",
+            CancelOutcome::FinalizingNotCancellable => {
+                "finalizing_not_cancellable"
+            }
+        }
+        .to_owned();
+        Ok(StopWorkResult {
+            work_id: router_id.to_owned(),
+            outcome: outcome_str,
+            status,
+            cancelled_receipt_ids: Vec::new(),
+            committed_artifact_ids: Vec::new(),
+        })
+    }
+
+    /// Cancel one owned child Worker across all states (Queued, Running,
+    /// `WaitingForUser`, Finalizing, or terminal).
+    pub fn cancel_work(
+        &self,
+        root_session_id: &str,
+        worker_id: &str,
+    ) -> Result<StopWorkResult, &'static str> {
+        self.inner.cancel_work(root_session_id, worker_id)
+    }
+
+    /// Idempotently revise an owned child Worker: cancels queued/running work,
+    /// waits for old turn settlement, preserves immutable environment/access
+    /// mode, and enqueues strictly one new strict receipt.
+    pub fn revise_work(
+        &self,
+        root_session_id: &str,
+        worker_id: &str,
+        revision_brief: &str,
+        request_id: &str,
+    ) -> Result<DispatchWorkResult, &'static str> {
+        self.inner.revise_work(
+            root_session_id,
+            worker_id,
+            revision_brief,
+            request_id,
+        )
+    }
+
     /// Strongly-typed task cancellation decoupled from whichever session the
     /// UI is currently viewing. Never reads `active`.
     pub fn cancel_task(
         &self,
         target: TaskTarget,
     ) -> Result<CancelOutcome, &'static str> {
-        let (outcome, reap_wait) = {
-            let _dispatch = lock(&self.inner.state.dispatch);
-            match target {
-                TaskTarget::Session(session_id) => {
-                    self.cancel_session_locked(&session_id)?
-                }
-                TaskTarget::Receipt(receipt_id) => {
-                    self.cancel_receipt_locked(&receipt_id)?
-                }
-            }
-        };
-        self.await_fast_cancel_settle(reap_wait);
-        Ok(outcome)
+        self.inner.cancel_task(target)
     }
 
     /// Apply a structured card-level action inside the host kernel without
@@ -451,6 +525,86 @@ impl AgentHandle {
                 if !valid {
                     return Err("notice.card_selection_invalid");
                 }
+                if record.role == SessionRole::Router {
+                    let removed_card = engine
+                        .take_pending_card(
+                            session_id,
+                            card_id,
+                            TurnState::Idle,
+                            None,
+                        )
+                        .map_err(|_| {
+                            self.inner.state.report_storage_error();
+                            "notice.session_storage_failed"
+                        })?
+                        .ok_or("notice.card_not_found")?;
+                    let children = engine.child_sessions(session_id);
+                    let mut details = Vec::with_capacity(object_ids.len());
+                    for oid in &object_ids {
+                        let label = options
+                            .iter()
+                            .find(|opt| opt.object_id == *oid)
+                            .map_or_else(
+                                || oid.clone(),
+                                |opt| opt.label.clone(),
+                            );
+                        if let Some((owner_id, obj, confirmed)) =
+                            children.iter().find_map(|child| {
+                                let wc = child.work_contract.as_ref()?;
+                                let obj = wc.find_object(oid)?;
+                                let facts = wc.confirmed_facts_for(oid);
+                                Some((child.id.clone(), obj.clone(), facts))
+                            })
+                        {
+                            let facts_str = if confirmed.is_empty() {
+                                "none".to_owned()
+                            } else {
+                                confirmed
+                                    .iter()
+                                    .map(|(k, v)| format!("{k}={v}"))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            };
+                            let kind = match obj.kind {
+                                TrackedObjectKind::Deliverable => "deliverable",
+                                TrackedObjectKind::Record => "record",
+                            };
+                            details.push(format!(
+                                "object_id={oid} kind={kind} label={label} owner_work_id={owner_id} confirmed_facts=[{facts_str}]"
+                            ));
+                        } else {
+                            details
+                                .push(format!("object_id={oid} label={label}"));
+                        }
+                    }
+                    let resume_prompt = format!(
+                        "[CardChoiceConfirmed] 原问题：{prompt}\n用户已确认选择：{}\n影响边界：{impact_boundary}\n请严格按已确认目标继续执行，不得修改未选对象。",
+                        details.join("；")
+                    );
+                    return self.resume_after_card_resolution(CardResumeSpec {
+                        engine: &engine,
+                        session_id,
+                        card_id,
+                        removed_card,
+                        previous_contract: None,
+                        visible_prompt: &resume_prompt,
+                        resumed: ResumedSubmission {
+                            contract: None,
+                            skip_contract_evolve: true,
+                            model_prompt_override: Some(resume_prompt.clone()),
+                            model_prompt_suffix: None,
+                            display_text_override: Some(String::new()),
+                            skip_push_user_line: true,
+                            preserve_turn_denial: false,
+                            preserve_tool_approval: false,
+                            prompt_source: MessageSource::CardResume,
+                            is_router_announcement: false,
+                            bypass_busy_queue: true,
+                        },
+                        approval_grant: None,
+                        denial_rollback: DenialRollback::Unchanged,
+                    });
+                }
                 let prev_contract = record
                     .work_contract
                     .as_ref()
@@ -500,6 +654,9 @@ impl AgentHandle {
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
                         preserve_tool_approval: false,
+                        prompt_source: MessageSource::User,
+                        is_router_announcement: false,
+                        bypass_busy_queue: true,
                     },
                     approval_grant: None,
                     denial_rollback: DenialRollback::Unchanged,
@@ -552,6 +709,9 @@ impl AgentHandle {
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
                         preserve_tool_approval: true,
+                        prompt_source: MessageSource::CardResume,
+                        is_router_announcement: false,
+                        bypass_busy_queue: true,
                     },
                     approval_grant: Some((tool_name, args_hash)),
                     denial_rollback: DenialRollback::Unchanged,
@@ -604,6 +764,9 @@ impl AgentHandle {
                         skip_push_user_line: true,
                         preserve_turn_denial: true,
                         preserve_tool_approval: false,
+                        prompt_source: MessageSource::CardResume,
+                        is_router_announcement: false,
+                        bypass_busy_queue: true,
                     },
                     approval_grant: None,
                     denial_rollback: DenialRollback::Restore(previous_denial),
@@ -728,6 +891,12 @@ impl AgentHandle {
             self.inner.state.push_update(AgentUpdate::Sessions);
             return Err(err);
         }
+        let root_id = self.inner.root_session_id_for(session_id);
+        if root_id != session_id {
+            self.inner
+                .state
+                .push_update(AgentUpdate::Session { id: root_id });
+        }
         Ok(CardActionOutcome::CardResolved {
             card_id: card_id.to_owned(),
             resumed: true,
@@ -747,6 +916,10 @@ impl AgentHandle {
     /// strict quit deadlines can align the grace wait without losing the
     /// initial `persist_index` flush.
     pub fn prepare_shutdown_with_timeout(&self, timeout: std::time::Duration) {
+        self.inner
+            .state
+            .shutdown_requested
+            .store(true, Ordering::Release);
         self.inner
             .state
             .autonomous_drain
@@ -811,7 +984,7 @@ impl AgentHandle {
             let _dispatch = lock(&self.inner.state.dispatch);
             self.stop_locked()
         };
-        self.await_fast_cancel_settle(reap_wait);
+        self.inner.await_fast_cancel_settle(reap_wait);
     }
 
     pub fn stop_if_active(&self, expected: Option<&str>) {
@@ -823,26 +996,306 @@ impl AgentHandle {
                 None
             }
         };
-        self.await_fast_cancel_settle(reap_wait);
+        self.inner.await_fast_cancel_settle(reap_wait);
     }
 
     fn stop_locked(&self) -> Option<ReapTarget> {
         let id = lock(&self.inner.state.active).clone()?;
-        self.cancel_session_locked(&id)
+        self.inner
+            .cancel_session_locked(&id)
             .ok()
             .and_then(|(_, wait)| wait)
+    }
+}
+
+impl Harness {
+    pub(super) fn cancel_task(
+        &self,
+        target: TaskTarget,
+    ) -> Result<CancelOutcome, &'static str> {
+        let (outcome, reap_wait) = {
+            let _dispatch = lock(&self.state.dispatch);
+            match target {
+                TaskTarget::Session(session_id) => {
+                    self.cancel_session_locked(&session_id)?
+                }
+                TaskTarget::Receipt(receipt_id) => {
+                    self.cancel_receipt_locked(&receipt_id)?
+                }
+            }
+        };
+        self.await_fast_cancel_settle(reap_wait);
+        Ok(outcome)
+    }
+
+    pub(super) fn cancel_work(
+        &self,
+        root_session_id: &str,
+        worker_id: &str,
+    ) -> Result<StopWorkResult, &'static str> {
+        let (result, reap_wait) = {
+            let _dispatch = lock(&self.state.dispatch);
+            let engine =
+                lock(&self.engine).clone().ok_or("notice.agent_failed")?;
+            let worker =
+                verify_child_ownership(&engine, root_session_id, worker_id)?;
+            let mut cancelled_receipt_ids =
+                super::observer::cancel_receipts_for_sessions(
+                    &self.state,
+                    std::iter::once(worker_id),
+                );
+            let (session_outcome, reap_wait) =
+                self.cancel_session_locked(worker_id)?;
+            if session_outcome == CancelOutcome::FinalizingNotCancellable {
+                let committed_artifact_ids: Vec<String> = engine
+                    .session(worker_id)
+                    .unwrap_or(worker)
+                    .delivery_commits
+                    .into_iter()
+                    .filter(|c| c.completed_successfully)
+                    .flat_map(|c| c.artifact_ids)
+                    .collect();
+                return Ok(StopWorkResult {
+                    work_id: worker_id.to_owned(),
+                    outcome: "finalizing_not_cancellable".to_owned(),
+                    status: TurnStatus::SavingFiles.key().to_owned(),
+                    cancelled_receipt_ids,
+                    committed_artifact_ids,
+                });
+            }
+            let cleared_waiting = if session_outcome
+                == CancelOutcome::AlreadySettled
+                && (!worker.pending_cards.is_empty()
+                    || worker.status == TurnState::WaitingForUser
+                    || lock(&self.state.live).get(worker_id).is_some_and(|s| {
+                        s.status == TurnStatus::WaitingForUser
+                    })) {
+                let _ =
+                    engine.clear_pending_cards(worker_id, TurnState::Stopped);
+                if let Some(live) = lock(&self.state.live).get_mut(worker_id) {
+                    live.status = TurnStatus::Stopped;
+                    live.turn_started_at = None;
+                    clear_live_heartbeat(live);
+                    live.updated_at = now_ms();
+                }
+                let _ = persist_index(&self.state);
+                true
+            } else {
+                false
+            };
+            cancelled_receipt_ids.sort();
+            cancelled_receipt_ids.dedup();
+            let live_status = lock(&self.state.live)
+                .get(worker_id)
+                .map_or(TurnStatus::Stopped, |s| s.status.clone());
+            let outcome = if session_outcome == CancelOutcome::Cancelled {
+                if matches!(live_status, TurnStatus::Stopping) {
+                    "stopping"
+                } else {
+                    "cancelled"
+                }
+            } else if !cancelled_receipt_ids.is_empty() || cleared_waiting {
+                "cancelled"
+            } else {
+                "already_settled"
+            };
+            self.state.push_update(AgentUpdate::Session {
+                id: worker_id.to_owned(),
+            });
+            self.state.push_update(AgentUpdate::Session {
+                id: root_session_id.to_owned(),
+            });
+            (
+                StopWorkResult {
+                    work_id: worker_id.to_owned(),
+                    outcome: outcome.to_owned(),
+                    status: live_status.key().to_owned(),
+                    cancelled_receipt_ids,
+                    committed_artifact_ids: Vec::new(),
+                },
+                reap_wait,
+            )
+        };
+        self.await_fast_cancel_settle(reap_wait);
+        let mut final_result = result;
+        let latest_status = lock(&self.state.live)
+            .get(worker_id)
+            .map(|s| s.status.clone());
+        if let Some(status) = latest_status {
+            status.key().clone_into(&mut final_result.status);
+            if final_result.outcome == "stopping"
+                && !matches!(status, TurnStatus::Stopping)
+            {
+                "cancelled".clone_into(&mut final_result.outcome);
+            }
+        }
+        Ok(final_result)
+    }
+
+    pub(super) fn revise_work(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        worker_id: &str,
+        revision_brief: &str,
+        request_id: &str,
+    ) -> Result<DispatchWorkResult, &'static str> {
+        if self.state.shutdown_requested.load(Ordering::Acquire) {
+            return Err("HOST_SHUTTING_DOWN");
+        }
+        let brief = revision_brief.trim();
+        let req_id = request_id.trim();
+        if brief.is_empty() || req_id.is_empty() {
+            return Err("INVALID_ARGS");
+        }
+        let fingerprint =
+            dispatch_fingerprint("revise", Some(worker_id), None, brief, &[]);
+        let (engine, worker_mode, reap_wait) = {
+            let _dispatch = lock(&self.state.dispatch);
+            let engine =
+                lock(&self.engine).clone().ok_or("notice.agent_failed")?;
+            let worker =
+                verify_child_ownership(&engine, root_session_id, worker_id)?;
+            if let Some(existing) =
+                engine.lookup_dispatch_request(root_session_id, req_id)
+            {
+                if existing.fingerprint != fingerprint {
+                    return Err("IDEMPOTENCY_CONFLICT");
+                }
+                let status = self
+                    .child_works(root_session_id)
+                    .into_iter()
+                    .find(|w| w.work_id == existing.worker_id)
+                    .map_or_else(|| "queued".to_owned(), |w| w.state);
+                return Ok(DispatchWorkResult {
+                    work_id: existing.worker_id,
+                    receipt_id: existing.receipt_id,
+                    status,
+                    access_mode: worker.access_mode,
+                    deduplicated: true,
+                });
+            }
+            let _ = super::observer::cancel_receipts_for_sessions(
+                &self.state,
+                std::iter::once(worker_id),
+            );
+            // If the old turn is already inside atomic `Finalizing`, let it
+            // finish committing cleanly and wait for idle below before
+            // enqueuing the revision (only `cancel_work` fails closed with
+            // `finalizing_not_cancellable`).
+            let (_cancel_outcome, reap_wait) =
+                self.cancel_session_locked(worker_id)?;
+            (engine, worker.access_mode, reap_wait)
+        };
+
+        // Wait outside `_dispatch` for the old Worker turn and its workspace
+        // lease to settle before enqueuing strictly one revised receipt.
+        self.await_fast_cancel_settle(reap_wait);
+        if engine.is_active(worker_id)
+            && !engine.wait_until_idle(worker_id, Duration::from_secs(3))
+        {
+            return Err("notice.agent_busy");
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.is_session_busy_or_active(worker_id)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if self.is_session_busy_or_active(worker_id) {
+            return Err("notice.agent_busy");
+        }
+
+        let dispatched = {
+            let _dispatch = lock(&self.state.dispatch);
+            if self.state.shutdown_requested.load(Ordering::Acquire) {
+                return Err("HOST_SHUTTING_DOWN");
+            }
+            let worker =
+                verify_child_ownership(&engine, root_session_id, worker_id)?;
+            if let Some(existing) =
+                engine.lookup_dispatch_request(root_session_id, req_id)
+            {
+                if existing.fingerprint != fingerprint {
+                    return Err("IDEMPOTENCY_CONFLICT");
+                }
+                return Ok(DispatchWorkResult {
+                    work_id: existing.worker_id,
+                    receipt_id: existing.receipt_id,
+                    status: "queued".to_owned(),
+                    access_mode: worker.access_mode,
+                    deduplicated: true,
+                });
+            }
+            let _ = super::observer::cancel_receipts_for_sessions(
+                &self.state,
+                std::iter::once(worker_id),
+            );
+            if !worker.pending_cards.is_empty()
+                || worker.status == TurnState::WaitingForUser
+            {
+                let _ = engine.clear_pending_cards(worker_id, TurnState::Idle);
+                if let Some(live) = lock(&self.state.live).get_mut(worker_id) {
+                    live.status = TurnStatus::Idle;
+                    live.updated_at = now_ms();
+                }
+                let _ = persist_index(&self.state);
+            }
+            let now = now_ms();
+            let queue = AcceptanceQueue::new(self.state.root.clone());
+            let receipt = queue
+                .accept_strict(worker_id, brief, Some(req_id), now)
+                .map_err(|_| {
+                    self.state.report_storage_error();
+                    "notice.session_storage_failed"
+                })?;
+            if engine
+                .record_dispatch_request(
+                    root_session_id,
+                    DispatchRecord {
+                        request_id: req_id.to_owned(),
+                        fingerprint,
+                        worker_id: worker_id.to_owned(),
+                        receipt_id: receipt.id.clone(),
+                        created_at_ms: now,
+                    },
+                )
+                .is_err()
+            {
+                let _ = queue.cancel(&receipt.id, now_ms());
+                self.state.report_storage_error();
+                return Err("notice.session_storage_failed");
+            }
+            self.state.push_update(AgentUpdate::Receipt {
+                id: receipt.id.clone(),
+                state: ReceiptState::Queued,
+            });
+            self.state.push_update(AgentUpdate::Session {
+                id: root_session_id.to_owned(),
+            });
+            DispatchWorkResult {
+                work_id: worker_id.to_owned(),
+                receipt_id: receipt.id,
+                status: "queued".to_owned(),
+                access_mode: worker_mode,
+                deduplicated: false,
+            }
+        };
+        if self.state.autonomous_drain.load(Ordering::Acquire) {
+            self.kick_autonomous_drain();
+        }
+        Ok(dispatched)
     }
 
     /// Fast stream aborts unwind within a few milliseconds; wait briefly
     /// OUTSIDE `_dispatch` so other sessions are never blocked while genuinely
     /// slow-reaping child tools remain honestly observable in `Stopping`.
-    fn await_fast_cancel_settle(&self, target: Option<ReapTarget>) {
+    pub(super) fn await_fast_cancel_settle(&self, target: Option<ReapTarget>) {
         let Some((eng, id)) = target else {
             return;
         };
         if eng.wait_until_idle(&id, std::time::Duration::from_millis(50)) {
             let transitioned = {
-                let mut live = lock(&self.inner.state.live);
+                let mut live = lock(&self.state.live);
                 if let Some(session) = live.get_mut(&id)
                     && matches!(session.status, TurnStatus::Stopping)
                 {
@@ -866,28 +1319,29 @@ impl AgentHandle {
                 }
             };
             if transitioned {
-                if persist_index(&self.inner.state).is_err() {
-                    self.inner.state.report_storage_error();
+                if persist_index(&self.state).is_err() {
+                    self.state.report_storage_error();
                 }
-                self.inner.state.push_update(AgentUpdate::Session { id });
-                self.inner.state.push_update(AgentUpdate::Sessions);
+                self.state.push_update(AgentUpdate::Session { id });
+                self.state.push_update(AgentUpdate::Sessions);
             }
         }
     }
 
-    fn cancel_session_locked(
+    pub(super) fn cancel_session_locked(
         &self,
         id: &str,
     ) -> Result<(CancelOutcome, Option<ReapTarget>), &'static str> {
-        let engine = lock(&self.inner.engine).clone();
-        let (live_busy, live_stopping) = lock(&self.inner.state.live)
-            .get(id)
-            .map_or((false, false), |session| {
-                (
-                    session.status.is_busy(),
-                    matches!(session.status, TurnStatus::Stopping),
-                )
-            });
+        let engine = lock(&self.engine).clone();
+        let (live_busy, live_stopping) =
+            lock(&self.state.live)
+                .get(id)
+                .map_or((false, false), |session| {
+                    (
+                        session.status.is_busy(),
+                        matches!(session.status, TurnStatus::Stopping),
+                    )
+                });
         let engine_cancelling =
             engine.as_ref().is_some_and(|eng| eng.is_cancelling(id));
         if live_stopping || engine_cancelling {
@@ -910,17 +1364,10 @@ impl AgentHandle {
                 Err(error) => {
                     log_storage_io_error(
                         "cancel agent turn",
-                        &flowy_agent_core::SessionIndex::path(
-                            &self.inner.state.root,
-                        ),
+                        &flowy_agent_core::SessionIndex::path(&self.state.root),
                         &error,
                     );
-                    self.inner.state.report_storage_error();
-                    // `request_cancel` already fired `fence.cancel_active()`
-                    // before persisting `history.json`, so still update live UI
-                    // state and cancel any owned receipt claim before returning
-                    // the storage error (prevents stuck Running UI + orphaned
-                    // receipt state).
+                    self.state.report_storage_error();
                     storage_err = Some("notice.session_storage_failed");
                 }
             }
@@ -928,15 +1375,12 @@ impl AgentHandle {
         let still_reaping =
             engine.as_ref().is_some_and(|eng| eng.is_active(id));
         {
-            let mut live = lock(&self.inner.state.live);
+            let mut live = lock(&self.state.live);
             if let Some(session) = live.get_mut(id) {
                 session.title_signal.cancel();
                 session.projection.flush();
                 if session.status.is_busy() {
                     if still_reaping {
-                        // Honest stopping state: remain `Stopping` (`is_busy()`)
-                        // until `RunFence` drops its `RunTicket` and
-                        // `UiObserver::stop_settled` transitions to `Stopped`.
                         session.status = TurnStatus::Stopping;
                         let hb = session
                             .heartbeat
@@ -959,24 +1403,23 @@ impl AgentHandle {
             }
         }
         let matching_claims =
-            super::take_session_claims(&self.inner.state.active_claims, id);
+            super::take_session_claims(&self.state.active_claims, id);
         for claim in matching_claims {
             claim.heartbeat_cancel.cancel();
-            let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+            let queue = AcceptanceQueue::new(self.state.root.clone());
             if queue.cancel(&claim.receipt_id, now_ms()).unwrap_or(false) {
-                self.inner.state.push_update(AgentUpdate::Receipt {
+                self.state.push_update(AgentUpdate::Receipt {
                     id: claim.receipt_id,
                     state: ReceiptState::Cancelled,
                 });
             }
         }
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
+        if persist_index(&self.state).is_err() {
+            self.state.report_storage_error();
         }
-        self.inner
-            .state
+        self.state
             .push_update(AgentUpdate::Session { id: id.to_owned() });
-        self.inner.state.push_update(AgentUpdate::Sessions);
+        self.state.push_update(AgentUpdate::Sessions);
         if let Some(err) = storage_err {
             return Err(err);
         }
@@ -992,16 +1435,16 @@ impl AgentHandle {
         &self,
         receipt_id: &str,
     ) -> Result<(CancelOutcome, Option<ReapTarget>), &'static str> {
-        let active_session = lock(&self.inner.state.active_claims)
+        let active_session = lock(&self.state.active_claims)
             .get(receipt_id)
             .map(|claim| claim.session_id.clone());
         if let Some(session_id) = active_session {
             return self.cancel_session_locked(&session_id);
         }
-        let queue = AcceptanceQueue::new(self.inner.state.root.clone());
+        let queue = AcceptanceQueue::new(self.state.root.clone());
         match queue.cancel(receipt_id, now_ms()) {
             Ok(true) => {
-                self.inner.state.push_update(AgentUpdate::Receipt {
+                self.state.push_update(AgentUpdate::Receipt {
                     id: receipt_id.to_owned(),
                     state: ReceiptState::Cancelled,
                 });
@@ -1009,7 +1452,7 @@ impl AgentHandle {
             }
             Ok(false) => Ok((CancelOutcome::AlreadySettled, None)),
             Err(_) => {
-                self.inner.state.report_storage_error();
+                self.state.report_storage_error();
                 Err("notice.session_storage_failed")
             }
         }
@@ -1025,6 +1468,7 @@ pub(super) fn latest_session_submission_id(
         .rev()
         .find(|msg| {
             msg.role == Role::User
+                && !matches!(msg.source, MessageSource::SystemEvent { .. })
                 && (msg.id.starts_with("submission-")
                     || record.submission_outcomes.contains_key(&msg.id)
                     || record.submission_revisions.contains_key(&msg.id))
@@ -1089,7 +1533,12 @@ pub(super) fn submission_committed_in_session(
     };
     record.messages[user_idx + 1..]
         .iter()
-        .take_while(|msg| !matches!(msg.source, MessageSource::User))
+        .take_while(|msg| {
+            !matches!(
+                msg.source,
+                MessageSource::User | MessageSource::CardResume
+            )
+        })
         .any(|msg| {
             msg.role == Role::Assistant
                 || matches!(msg.source, MessageSource::Tool { .. })
