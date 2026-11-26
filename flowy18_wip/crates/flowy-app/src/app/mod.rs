@@ -93,6 +93,144 @@ mod cloud_config_tests {
     }
 }
 
+fn sanitize_notify_title(raw: &str) -> Option<String> {
+    let collapsed = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_owned();
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars = collapsed.chars();
+    let head: String = chars.by_ref().take(60).collect();
+    Some(if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    })
+}
+
+fn turn_finished_notification_payload(
+    i18n: &I18n,
+    needs_attention: bool,
+    has_error: bool,
+    still_busy_in_background: bool,
+    session_title: Option<&str>,
+) -> Option<(&'static str, String, String)> {
+    if needs_attention {
+        return Some((
+            "task-attention",
+            i18n.t("shell.notify_task_attention_title"),
+            i18n.t("shell.notify_task_attention_body"),
+        ));
+    }
+    if has_error {
+        return Some((
+            "task-error",
+            i18n.t("shell.notify_task_error_title"),
+            i18n.t("shell.notify_task_error_body"),
+        ));
+    }
+    if still_busy_in_background {
+        return None;
+    }
+    let body = match session_title.and_then(sanitize_notify_title) {
+        Some(title) => {
+            i18n.tf("shell.notify_task_done_named_body", &[("title", &title)])
+        }
+        None => i18n.t("shell.notify_task_done_body"),
+    };
+    Some(("task-done", i18n.t("shell.notify_task_done_title"), body))
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::{
+        I18n, sanitize_notify_title, turn_finished_notification_payload,
+    };
+    use crate::i18n::Locale;
+
+    #[test]
+    fn sanitize_notify_title_collapses_whitespace_and_truncates() {
+        assert_eq!(sanitize_notify_title("  \n\t "), None);
+        assert_eq!(
+            sanitize_notify_title("hello\n  world "),
+            Some("hello world".to_owned())
+        );
+        let long = "a".repeat(80);
+        let clipped = sanitize_notify_title(&long).unwrap();
+        assert_eq!(clipped.chars().count(), 61);
+        assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn turn_notification_payload_prioritizes_attention_error_busy_and_done() {
+        let mut i18n = I18n::embedded("Flowy");
+        i18n.set_locale(Locale::ZhCn);
+        let (tag, title, _) = turn_finished_notification_payload(
+            &i18n,
+            true,
+            true,
+            true,
+            Some("天气"),
+        )
+        .unwrap();
+        assert_eq!(tag, "task-attention");
+        assert_eq!(title, "任务需要你确认");
+
+        let (tag, title, _) = turn_finished_notification_payload(
+            &i18n,
+            false,
+            true,
+            true,
+            Some("天气"),
+        )
+        .unwrap();
+        assert_eq!(tag, "task-error");
+        assert_eq!(title, "任务遇到中断");
+
+        assert!(
+            turn_finished_notification_payload(
+                &i18n,
+                false,
+                false,
+                true,
+                Some("天气"),
+            )
+            .is_none()
+        );
+
+        let (tag, title, body) = turn_finished_notification_payload(
+            &i18n,
+            false,
+            false,
+            false,
+            Some("深圳天气"),
+        )
+        .unwrap();
+        assert_eq!(tag, "task-done");
+        assert_eq!(title, "任务已完成");
+        assert!(body.contains("深圳天气"));
+        assert!(body.contains("Flowy"));
+
+        i18n.set_locale(Locale::En);
+        let (tag, title, body) = turn_finished_notification_payload(
+            &i18n,
+            false,
+            false,
+            false,
+            Some("Weather"),
+        )
+        .unwrap();
+        assert_eq!(tag, "task-done");
+        assert_eq!(title, "Task complete");
+        assert!(body.contains("Weather"));
+        assert!(body.contains("Flowy"));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Login,
@@ -1679,6 +1817,7 @@ impl FlowyApp {
             StudioEvent::TurnFinished => {
                 self.refresh_credits(cx);
                 self.load_library(cx);
+                self.maybe_notify_turn_finished(cx);
             }
             StudioEvent::PreviewArtifact(id) => {
                 self.open_artifact_preview(id, cx);
@@ -1827,29 +1966,75 @@ impl FlowyApp {
         }));
     }
 
+    fn maybe_notify_turn_finished(&self, cx: &Context<'_, Self>) {
+        if !self.prefs.notify_browser || cx.active_window().is_some() {
+            return;
+        }
+        let studio = self.studio.read(cx);
+        let needs_attention =
+            studio.agent.list_sessions().iter().any(|session| {
+                studio.agent.session_needs_attention(&session.id)
+            });
+        let has_error = matches!(
+            studio.agent.turn_status(),
+            flowy_agent::TurnStatus::Error { .. }
+        );
+        let still_busy = studio.total_active_work_count() > 0;
+        let session_title = studio.agent.session_title();
+        let Some((tag, title, body)) = turn_finished_notification_payload(
+            &self.i18n,
+            needs_attention,
+            has_error,
+            still_busy,
+            Some(&session_title),
+        ) else {
+            return;
+        };
+        let open = self.t("shell.notify_open");
+        flowy_shell::show_task_notification(cx, tag, &title, &body, &open);
+    }
+
     fn start_shell_watch(&mut self, cx: &Context<'_, Self>) {
+        let store_root = self.store.root().to_path_buf();
         self.shell_watch = Some(cx.spawn(async move |weak, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
+                if weak.upgrade().is_none() {
+                    break;
+                }
+                if let Some(signal) = flowy_shell::take_wake(&store_root) {
+                    if !signal.urls.is_empty() {
+                        flowy_shell::enqueue_urls(signal.urls);
+                    }
+                    cx.update(ensure_shell_main_window);
+                }
                 let pending = flowy_shell::take_pending();
                 if pending.is_empty() {
                     continue;
                 }
+                let mut open_requested = false;
                 let updated = weak.update(cx, |app, cx| {
                     for url in pending {
                         match flowy_shell::parse_deep_link(&url) {
                             Some(flowy_shell::DeepLink::Invite { code }) => {
                                 app.receive_invite_code(code, cx);
+                                open_requested = true;
                             }
-                            Some(flowy_shell::DeepLink::Open) | None => {}
+                            Some(flowy_shell::DeepLink::Open) => {
+                                open_requested = true;
+                            }
+                            None => {}
                         }
                     }
                     cx.notify();
                 });
                 if updated.is_err() {
                     break;
+                }
+                if open_requested {
+                    cx.update(ensure_shell_main_window);
                 }
             }
         }));
@@ -1882,7 +2067,6 @@ impl Render for FlowyApp {
             });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
-            settings::Picker::Send => Some("send-menu"),
             settings::Picker::Accent => Some("accent-menu"),
             settings::Picker::Density => Some("density-menu"),
             settings::Picker::None if self.flex.provider_menu => {
@@ -2084,11 +2268,6 @@ impl Render for FlowyApp {
                 "language-menu",
                 "language-button",
                 self.language_menu(cx).into_any_element(),
-            )),
-            settings::Picker::Send => Some((
-                "send-menu",
-                "send-button",
-                self.send_menu(cx).into_any_element(),
             )),
             settings::Picker::Accent => Some((
                 "accent-menu",

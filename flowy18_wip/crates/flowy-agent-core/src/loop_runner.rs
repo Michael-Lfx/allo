@@ -651,16 +651,11 @@ pub async fn complete_structured_with_stream(
                         error,
                         ..
                     } => {
-                        let detail = error
-                            .error_message
-                            .clone()
-                            .filter(|msg| !msg.trim().is_empty())
-                            .unwrap_or_else(|| assistant_plain_text(&error));
-                        return Err(if detail.is_empty() {
-                            "structured completion stream failed".to_owned()
-                        } else {
-                            detail
-                        });
+                        let detail = assistant_error_detail(&error)
+                            .unwrap_or_else(|| {
+                                "structured completion stream failed".to_owned()
+                            });
+                        return Err(detail);
                     }
                     _ => {}
                 }
@@ -1060,8 +1055,20 @@ fn failure_detail(new_messages: &[AgentMessage]) -> Option<String> {
     if last.stop_reason != StopReason::Error {
         return None;
     }
-    let text = assistant_plain_text(last);
-    if text.is_empty() { None } else { Some(text) }
+    assistant_error_detail(last)
+}
+
+fn assistant_error_detail(assistant: &AssistantMessage) -> Option<String> {
+    assistant
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|msg| !msg.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let text = assistant_plain_text(assistant);
+            (!text.trim().is_empty()).then_some(text)
+        })
 }
 
 fn assistant_plain_text(assistant: &AssistantMessage) -> String {
@@ -2750,6 +2757,30 @@ mod tests {
         assert!(
             result.pending_approval.is_none(),
             "cancelled turn must discard pending_approval instead of parking WaitingForUser"
+        );
+    }
+
+    #[test]
+    fn failure_detail_prefers_error_message_and_falls_back_to_plain_text() {
+        let mut msg =
+            AssistantMessage::empty(Api::Other("test".into()), "flowy", "m", 0);
+        msg.stop_reason = StopReason::Error;
+        msg.error_message = Some("HTTP 429 rate limit".into());
+        let with_err_msg = [AgentMessage::Assistant(Box::new(msg))];
+        assert_eq!(
+            super::failure_detail(&with_err_msg).as_deref(),
+            Some("HTTP 429 rate limit")
+        );
+
+        let mut blank_err_msg =
+            AssistantMessage::empty(Api::Other("test".into()), "flowy", "m", 0);
+        blank_err_msg.stop_reason = StopReason::Error;
+        blank_err_msg.error_message = Some("   ".into());
+        blank_err_msg.content = vec![Content::text("upstream closed stream")];
+        let fallback_text = [AgentMessage::Assistant(Box::new(blank_err_msg))];
+        assert_eq!(
+            super::failure_detail(&fallback_text).as_deref(),
+            Some("upstream closed stream")
         );
     }
 }

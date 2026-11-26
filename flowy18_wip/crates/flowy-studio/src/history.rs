@@ -97,12 +97,36 @@ impl Projection {
             let complete = (!is_latest_turn || latest_completed)
                 && matches!(last_turn_row, Some(ChatLine::Assistant { .. }));
             let should_fold = live_collapse || complete;
-            let marker = should_fold
-                .then(|| {
+            let first_tool = if live_collapse {
+                (start + 1..end).find(|&row| is_tool_row(&lines[row]))
+            } else {
+                None
+            };
+            let opening_ack = first_tool.and_then(|tool_row| {
+                (start + 1..tool_row).find(|&row| {
+                    matches!(
+                        &lines[row],
+                        ChatLine::Assistant { text } if !text.trim().is_empty()
+                    )
+                })
+            });
+            let last_process = (start + 1..end)
+                .rfind(|&row| is_process_row(&lines[row], live_collapse));
+            let final_reply = last_process.and_then(|lp| {
+                (lp + 1..end).rfind(|&row| {
+                    matches!(lines[row], ChatLine::Assistant { .. })
+                })
+            });
+            let marker = if should_fold {
+                if opening_ack.is_some() {
+                    first_tool
+                } else {
                     (start + 1..end)
                         .find(|&row| is_process_row(&lines[row], live_collapse))
-                })
-                .flatten();
+                }
+            } else {
+                None
+            };
             let Some(marker) = marker else {
                 for source in start..end {
                     result.push(source, streaming);
@@ -112,24 +136,53 @@ impl Projection {
             let expanded =
                 expanded.is_some_and(|state| state.contains(&marker));
             let meta = summarize_turn_process(
-                &lines[start + 1..end],
+                lines,
+                start + 1..end,
                 is_latest_turn && !latest_completed,
                 live_collapse,
+                opening_ack,
+                final_reply,
             );
-            let mut button_row = 0;
-            for (source, line) in lines.iter().enumerate().take(end).skip(start)
-            {
-                if source == marker {
-                    button_row = result.source_rows.len();
-                    result.folds.insert(
-                        button_row,
-                        Fold {
-                            key: marker,
-                            expanded,
-                        },
-                    );
-                    result.fold_meta.insert(button_row, meta.clone());
-                } else if !expanded && is_process_row(line, live_collapse) {
+            let is_folded = |source: usize| -> bool {
+                let line = &lines[source];
+                is_process_row(line, live_collapse)
+                    || (live_collapse
+                        && matches!(line, ChatLine::Assistant { .. })
+                        && Some(source) != opening_ack
+                        && Some(source) != final_reply)
+            };
+
+            result.push(start, streaming);
+            let mut deferred_folded = Vec::new();
+            for source in start + 1..marker {
+                if is_folded(source) {
+                    deferred_folded.push(source);
+                } else {
+                    result.push(source, streaming);
+                }
+            }
+
+            let button_row = result.source_rows.len();
+            result.folds.insert(
+                button_row,
+                Fold {
+                    key: marker,
+                    expanded,
+                },
+            );
+            result.fold_meta.insert(button_row, meta);
+            result.push(marker, streaming);
+
+            for source in deferred_folded {
+                if expanded {
+                    result.push(source, streaming);
+                } else {
+                    result.hidden.insert(source, button_row);
+                }
+            }
+
+            for source in marker + 1..end {
+                if !expanded && is_folded(source) {
                     result.hidden.insert(source, button_row);
                     continue;
                 }
@@ -147,6 +200,18 @@ impl Projection {
     }
 }
 
+const fn is_tool_row(line: &ChatLine) -> bool {
+    matches!(
+        line,
+        ChatLine::ToolCall { .. }
+            | ChatLine::Tool { .. }
+            | ChatLine::ToolResult {
+                is_error: false,
+                ..
+            }
+    )
+}
+
 const fn is_process_row(line: &ChatLine, include_live: bool) -> bool {
     match line {
         ChatLine::Reasoning { live, .. } => include_live || !*live,
@@ -160,9 +225,12 @@ const fn is_process_row(line: &ChatLine, include_live: bool) -> bool {
 }
 
 fn summarize_turn_process(
-    slice: &[ChatLine],
+    lines: &[ChatLine],
+    range: std::ops::Range<usize>,
     turn_still_running: bool,
     include_live: bool,
+    opening_ack: Option<usize>,
+    final_reply: Option<usize>,
 ) -> FoldMeta {
     let mut primary_steps = 0usize;
     let mut fallback_results = 0usize;
@@ -172,7 +240,16 @@ fn summarize_turn_process(
     let live = turn_still_running;
     let mut active_step: Option<String> = None;
 
-    for line in slice {
+    for source in range {
+        let line = &lines[source];
+        if include_live
+            && matches!(line, ChatLine::Assistant { .. })
+            && Some(source) != opening_ack
+            && Some(source) != final_reply
+        {
+            primary_steps += 1;
+            continue;
+        }
         if !is_process_row(line, include_live) {
             continue;
         }
@@ -407,5 +484,102 @@ mod tests {
         // Once the turn settles (`latest_completed == true`), fold settles too.
         let settled = Projection::build_live(&lines, None, true, None);
         assert!(!settled.fold_meta[&1].live);
+    }
+
+    #[test]
+    fn dot_style_keeps_opening_ack_above_fold_and_hides_mid_loop_prose() {
+        let lines = [
+            ChatLine::User {
+                text: "查一下深圳天气".into(),
+            },
+            ChatLine::Reasoning {
+                text: "需要先派发后台命令任务".into(),
+                duration_secs: 2,
+                live: false,
+            },
+            ChatLine::Assistant {
+                text: "我派个后台任务帮你查一下深圳天气。".into(),
+            },
+            ChatLine::ToolCall {
+                name: "dispatch_work".into(),
+                target: "weather".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "{\"work_id\":\"w1\"}".into(),
+                is_error: false,
+            },
+            ChatLine::Assistant {
+                text: "已派发任务，我看一下执行结果：".into(),
+            },
+            ChatLine::ToolCall {
+                name: "query_work_status".into(),
+                target: "w1".into(),
+                call_id: "c2".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "running".into(),
+                is_error: false,
+            },
+            ChatLine::Assistant {
+                text: "先拿到一条过程状态，继续整理中…".into(),
+            },
+            ChatLine::Assistant {
+                text: "深圳今天多云转晴，22°C–27°C。".into(),
+            },
+        ];
+
+        // Collapsed view: User(0) -> OpeningAck(2) -> FoldPill(3) -> FinalReply(9).
+        let collapsed = Projection::build_live(&lines, Some(9), true, None);
+        assert_eq!(collapsed.source_rows, [0, 2, 3, 9]);
+        assert_eq!(collapsed.streaming, Some(3));
+        assert_eq!(collapsed.folds[&2].key, 3);
+        assert!(!collapsed.folds[&2].expanded);
+        assert_eq!(collapsed.hidden[&1], 2);
+        assert_eq!(collapsed.hidden[&4], 2);
+        assert_eq!(collapsed.hidden[&5], 2);
+        assert_eq!(collapsed.hidden[&6], 2);
+        assert_eq!(collapsed.hidden[&7], 2);
+        assert_eq!(collapsed.hidden[&8], 2);
+        assert_eq!(collapsed.fold_meta[&2].step_count, 5);
+
+        // Expanding keeps OpeningAck above and groups deferred Reasoning inside the drawer.
+        let expanded = Projection::build_live(
+            &lines,
+            Some(9),
+            true,
+            Some(&HashSet::from([3])),
+        );
+        assert!(expanded.folds[&2].expanded);
+        assert_eq!(expanded.source_rows, [0, 2, 3, 1, 4, 5, 6, 7, 8, 9]);
+        assert!(expanded.hidden.is_empty());
+    }
+
+    #[test]
+    fn settled_worker_dispatch_without_final_reply_keeps_only_ack_and_fold() {
+        let lines = [
+            ChatLine::User {
+                text: "查一下今天新闻".into(),
+            },
+            ChatLine::Assistant {
+                text: "好，我立即查今天的新闻要点。".into(),
+            },
+            ChatLine::ToolCall {
+                name: "dispatch_work".into(),
+                target: "news".into(),
+                call_id: "c1".into(),
+                running: false,
+            },
+            ChatLine::ToolResult {
+                text: "{\"work_id\":\"w2\"}".into(),
+                is_error: false,
+            },
+        ];
+        let folded = Projection::build_live(&lines, None, true, None);
+        assert_eq!(folded.source_rows, [0, 1, 2]);
+        assert_eq!(folded.hidden[&3], 2);
+        assert_eq!(folded.fold_meta[&2].step_count, 1);
     }
 }

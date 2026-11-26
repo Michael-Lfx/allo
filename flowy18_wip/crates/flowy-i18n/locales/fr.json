@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} nécessite votre attention",
   "chat.bg_work_queued": "En file d'attente",
   "chat.bg_work_stop": "Arrêter",
-  "card.from_work": "De la tâche : {title}"
+  "card.from_work": "De la tâche : {title}",
+  "shell.notify_task_done_title": "Tâche terminée",
+  "shell.notify_task_done_body": "Votre tâche est prête. Ouvrez {product} pour voir le résultat.",
+  "shell.notify_task_done_named_body": "« {title} » est terminée. Ouvrez {product} pour voir le résultat.",
+  "shell.notify_task_attention_title": "Action requise",
+  "shell.notify_task_attention_body": "Ouvrez {product} pour confirmer l’étape suivante.",
+  "shell.notify_task_error_title": "Erreur sur la tâche",
+  "shell.notify_task_error_body": "La tâche a été interrompue. Ouvrez {product} pour inspecter.",
+  "settings.local_data": "Données locales et sauvegardes",
+  "settings.local_data_help": "L’historique et les instantanés pré-démarrage sont enregistrés localement sous sessions et backups.",
+  "settings.open_folder": "Ouvrir le dossier"
 }

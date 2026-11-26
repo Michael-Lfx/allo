@@ -1318,19 +1318,6 @@ impl FlowyApp {
                                 .whitespace_nowrap()
                                 .child(name.to_string()),
                         ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            theme::icons::monitor()
-                                .text_color(self.theme.muted()),
-                        )
-                        .child(
-                            theme::icons::bell().text_color(self.theme.muted()),
-                        ),
                 ),
             )
     }
@@ -1427,11 +1414,11 @@ impl FlowyApp {
         .child(self.user_menu_row(
             "user-help",
             theme::icons::circle_help(),
-            self.t("settings.help"),
-            true,
+            self.t("settings.about"),
+            false,
             cx,
             |app, cx| {
-                app.open_settings_page(super::settings::Page::Help, cx);
+                app.open_settings_page(super::settings::Page::About, cx);
             },
         ))
         .child(self.user_menu_row(

@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} งานต้องตรวจสอบ",
   "chat.bg_work_queued": "อยู่ในคิว",
   "chat.bg_work_stop": "หยุด",
-  "card.from_work": "จากงาน: {title}"
+  "card.from_work": "จากงาน: {title}",
+  "shell.notify_task_done_title": "งานเสร็จสิ้นแล้ว",
+  "shell.notify_task_done_body": "งานของคุณเสร็จแล้ว เปิด {product} เพื่อดูผลลัพธ์",
+  "shell.notify_task_done_named_body": "“{title}” เสร็จสิ้นแล้ว เปิด {product} เพื่อดูผลลัพธ์",
+  "shell.notify_task_attention_title": "ต้องรอการยืนยันของคุณ",
+  "shell.notify_task_attention_body": "เปิด {product} เพื่อยืนยันขั้นตอนถัดไป",
+  "shell.notify_task_error_title": "งานเกิดข้อผิดพลาด",
+  "shell.notify_task_error_body": "มีข้อผิดพลาดระหว่างทำงาน เปิด {product} เพื่อตรวจสอบ",
+  "settings.local_data": "ข้อมูลในเครื่องและไฟล์สำรอง",
+  "settings.local_data_help": "ประวัติการสนทนาและสแนปช็อตก่อนเริ่มจะถูกบันทึกไว้ในเครื่องที่ sessions และ backups",
+  "settings.open_folder": "เปิดโฟลเดอร์"
 }

@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} perlu perhatian",
   "chat.bg_work_queued": "Dalam antrean",
   "chat.bg_work_stop": "Hentikan",
-  "card.from_work": "Dari tugas: {title}"
+  "card.from_work": "Dari tugas: {title}",
+  "shell.notify_task_done_title": "Tugas selesai",
+  "shell.notify_task_done_body": "Tugas selesai. Buka {product} untuk melihat hasilnya.",
+  "shell.notify_task_done_named_body": "\"{title}\" selesai. Buka {product} untuk melihat hasilnya.",
+  "shell.notify_task_attention_title": "Perlu konfirmasi Anda",
+  "shell.notify_task_attention_body": "Buka {product} untuk mengonfirmasi langkah berikutnya.",
+  "shell.notify_task_error_title": "Tugas mengalami kesalahan",
+  "shell.notify_task_error_body": "Ada gangguan pada tugas. Buka {product} untuk memeriksa.",
+  "settings.local_data": "Data lokal dan cadangan",
+  "settings.local_data_help": "Riwayat percakapan dan cuplikan pra-peluncuran disimpan secara lokal di sessions dan backups.",
+  "settings.open_folder": "Buka folder"
 }

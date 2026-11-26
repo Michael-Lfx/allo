@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} 个任务需要处理",
   "chat.bg_work_queued": "排队中",
   "chat.bg_work_stop": "停止",
-  "card.from_work": "来自任务：{title}"
+  "card.from_work": "来自任务：{title}",
+  "shell.notify_task_done_title": "任务已完成",
+  "shell.notify_task_done_body": "已有最新结果，点击回到 {product} 查看。",
+  "shell.notify_task_done_named_body": "「{title}」已处理完成，点击回到 {product} 查看。",
+  "shell.notify_task_attention_title": "任务需要你确认",
+  "shell.notify_task_attention_body": "请打开 {product} 确认下一步操作。",
+  "shell.notify_task_error_title": "任务遇到中断",
+  "shell.notify_task_error_body": "任务处理出现异常，请打开 {product} 查看详情。",
+  "settings.local_data": "本机数据与备份",
+  "settings.local_data_help": "对话历史与启动前自动备份保存在本机（sessions 与 backups 目录）。",
+  "settings.open_folder": "打开目录"
 }

@@ -8,23 +8,15 @@ use std::path::Path;
 const VERSION: u32 = 2;
 const MIN_SUPPORTED_VERSION: u32 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SendMode {
+    #[default]
     Quiet,
     Queue,
     Interrupt,
-}
-
-impl SendMode {
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Quiet => "settings.send_quiet",
-            Self::Queue => "settings.send_queue",
-            Self::Interrupt => "settings.send_interrupt",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,9 +47,13 @@ pub struct Preferences {
 struct File {
     version: u32,
     locale: String,
+    #[serde(default)]
     send_mode: SendMode,
+    #[serde(default = "default_true")]
     notify_browser: bool,
+    #[serde(default = "default_true")]
     sound: bool,
+    #[serde(default = "default_true")]
     early_access: bool,
     #[serde(default)]
     plan: Plan,
@@ -89,6 +85,10 @@ struct File {
     flex_api_key: String,
     #[serde(default)]
     skills: Vec<String>,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 const fn default_font_size() -> u8 {
@@ -412,6 +412,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Preferences::load(&dir).font_size, 16);
+
+        // Minimal configs omitting legacy/removed UI fields must still load.
+        fs::write(&path, r#"{"version":2,"locale":"en"}"#).unwrap();
+        let minimal = Preferences::load(&dir);
+        assert_eq!(minimal.locale, Locale::En);
+        assert!(minimal.notify_browser);
+        assert_eq!(minimal.send_mode, super::SendMode::Quiet);
         let _ = fs::remove_dir_all(dir);
     }
 }

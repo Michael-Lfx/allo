@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} richiede attenzione",
   "chat.bg_work_queued": "In coda",
   "chat.bg_work_stop": "Ferma",
-  "card.from_work": "Dal lavoro: {title}"
+  "card.from_work": "Dal lavoro: {title}",
+  "shell.notify_task_done_title": "Attività completata",
+  "shell.notify_task_done_body": "L’attività è terminata. Apri {product} per vedere il risultato.",
+  "shell.notify_task_done_named_body": "\"{title}\" è completata. Apri {product} per vedere il risultato.",
+  "shell.notify_task_attention_title": "Richiesta conferma",
+  "shell.notify_task_attention_body": "Apri {product} per confermare il passaggio successivo.",
+  "shell.notify_task_error_title": "Errore nell’attività",
+  "shell.notify_task_error_body": "Qualcosa ha interrotto l’attività. Apri {product} per controllare.",
+  "settings.local_data": "Dati locali e backup",
+  "settings.local_data_help": "Cronologia e snapshot pre-avvio vengono salvati localmente in sessions e backups.",
+  "settings.open_folder": "Apri cartella"
 }

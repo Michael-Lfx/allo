@@ -1,6 +1,5 @@
 use super::FlowyApp;
 use crate::i18n::Locale;
-use crate::prefs::SendMode;
 use flowy_ui as theme;
 use gpui::{
     ClipboardItem, Context, Pixels, SharedString, Size, Window, div,
@@ -10,50 +9,20 @@ use gpui::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
     Account,
-    Billing,
     General,
     Appearance,
-    Shortcuts,
-    Personalization,
-    Connectors,
-    Skills,
-    Mail,
-    Computer,
-    Mailbox,
-    Phone,
-    Wallet,
     Data,
-    Integrations,
-    Developer,
-    Browser,
-    Team,
     About,
-    Help,
 }
 
 impl Page {
     const fn key(self) -> &'static str {
         match self {
             Self::Account => "settings.account",
-            Self::Billing => "settings.billing",
             Self::General => "settings.general",
             Self::Appearance => "settings.appearance",
-            Self::Shortcuts => "settings.shortcuts",
-            Self::Personalization => "settings.personalization",
-            Self::Connectors => "settings.connectors",
-            Self::Skills => "settings.skills",
-            Self::Mail => "settings.mail",
-            Self::Computer => "settings.computer",
-            Self::Mailbox => "settings.mailbox",
-            Self::Phone => "settings.phone",
-            Self::Wallet => "settings.wallet",
             Self::Data => "settings.data",
-            Self::Integrations => "settings.integrations",
-            Self::Developer => "settings.developer",
-            Self::Browser => "settings.browser",
-            Self::Team => "settings.create_team",
             Self::About => "settings.about",
-            Self::Help => "settings.help",
         }
     }
 }
@@ -62,44 +31,21 @@ impl Page {
 pub(super) enum Picker {
     None,
     Language,
-    Send,
     Accent,
     Density,
 }
 
-const TOP: &[Page] = &[Page::Account, Page::Billing];
+const TOP: &[Page] = &[Page::Account];
 
 const GROUPS: &[(&str, &[Page])] = &[
     (
         "settings.group_settings",
-        &[Page::General, Page::Appearance, Page::Shortcuts],
+        &[Page::General, Page::Appearance],
     ),
-    (
-        "settings.group_features",
-        &[
-            Page::Personalization,
-            Page::Connectors,
-            Page::Skills,
-            Page::Mail,
-            Page::Computer,
-        ],
-    ),
-    (
-        "settings.group_assets",
-        &[Page::Mailbox, Page::Phone, Page::Wallet],
-    ),
-    (
-        "settings.group_data",
-        &[
-            Page::Data,
-            Page::Integrations,
-            Page::Developer,
-            Page::Browser,
-        ],
-    ),
+    ("settings.group_data", &[Page::Data]),
 ];
 
-const BOTTOM: &[Page] = &[Page::Team, Page::About, Page::Help];
+const BOTTOM: &[Page] = &[Page::About];
 
 impl FlowyApp {
     pub(super) fn open_settings_page(
@@ -136,21 +82,10 @@ impl FlowyApp {
         cx.notify();
     }
 
-    fn choose_send(&mut self, mode: SendMode, cx: &mut Context<'_, Self>) {
-        self.prefs.send_mode = mode;
-        self.settings.picker = Picker::None;
-        self.prefs.save(self.store.root());
-        cx.notify();
-    }
-
     fn toggle_pref(&mut self, which: PrefToggle, cx: &mut Context<'_, Self>) {
         match which {
             PrefToggle::Notify => {
                 self.prefs.notify_browser = !self.prefs.notify_browser;
-            }
-            PrefToggle::Sound => self.prefs.sound = !self.prefs.sound,
-            PrefToggle::Early => {
-                self.prefs.early_access = !self.prefs.early_access;
             }
             PrefToggle::Telemetry => {
                 self.prefs.telemetry_opt_out = !self.prefs.telemetry_opt_out;
@@ -418,26 +353,14 @@ impl FlowyApp {
     }
 
     fn settings_body(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        if self.settings.page == Page::Account {
-            return self.account_body(cx);
-        }
-        if self.settings.page == Page::Appearance {
-            return self.appearance_body(cx);
-        }
-        if self.settings.page == Page::About {
-            return self.about_body(cx);
-        }
-        if self.settings.page == Page::Data {
-            return self.data_body(cx);
-        }
-        if self.settings.page != Page::General {
-            let title = self.t(self.settings.page.key());
-            return div()
-                .px_8()
-                .pt_4()
-                .text_size(self.theme.body_size())
-                .text_color(self.theme.muted())
-                .child(self.tf("settings.later", &[("title", &title)]));
+        match self.settings.page {
+            Page::Account => return self.account_body(cx).into_any_element(),
+            Page::Appearance => {
+                return self.appearance_body(cx).into_any_element();
+            }
+            Page::About => return self.about_body(cx).into_any_element(),
+            Page::Data => return self.data_body(cx).into_any_element(),
+            Page::General => {}
         }
         div()
             .relative()
@@ -450,26 +373,11 @@ impl FlowyApp {
             .flex_col()
             .gap_5()
             .child(self.language_block(cx))
-            .child(self.send_block(cx))
             .child(self.toggle_row(
                 "pref-notify",
                 "settings.notify",
                 self.prefs.notify_browser,
                 PrefToggle::Notify,
-                cx,
-            ))
-            .child(self.toggle_row(
-                "pref-sound",
-                "settings.sound",
-                self.prefs.sound,
-                PrefToggle::Sound,
-                cx,
-            ))
-            .child(self.toggle_row(
-                "pref-early",
-                "settings.early_access",
-                self.prefs.early_access,
-                PrefToggle::Early,
                 cx,
             ))
             .child(self.toggle_row(
@@ -479,6 +387,7 @@ impl FlowyApp {
                 PrefToggle::LaunchAtLogin,
                 cx,
             ))
+            .into_any_element()
     }
 
     fn language_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -495,29 +404,6 @@ impl FlowyApp {
                 "language-button",
                 Locale::endonym(self.i18n.locale()).to_string(),
                 Picker::Language,
-                cx,
-            ))
-    }
-
-    fn send_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_6()
-            .border_t_1()
-            .border_color(self.theme.line())
-            .pt_4()
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(self.theme.body_size())
-                    .child(self.t("settings.send_label")),
-            )
-            .child(self.menu_button(
-                "send-button",
-                self.t(self.prefs.send_mode.key()),
-                Picker::Send,
                 cx,
             ))
     }
@@ -619,48 +505,6 @@ impl FlowyApp {
         menu
     }
 
-    pub(super) fn send_menu(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let mut menu = theme::menu(
-            "send-menu",
-            self.t("settings.send_label"),
-            &self.theme,
-            &self.ui,
-            cx,
-        )
-        .w(px(240.))
-        .max_h(px(320.))
-        .overflow_y_scroll();
-        for mode in [SendMode::Quiet, SendMode::Queue, SendMode::Interrupt] {
-            let selected = self.prefs.send_mode == mode;
-            let label = self.t(mode.key());
-            let id = SharedString::from(format!("send-{}", mode.key()));
-            menu = menu.child(
-                // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
-                // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
-                theme::interactive(id, label.clone(), &self.theme)
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_size(self.theme.body_size())
-                    .cursor_pointer()
-                    .bg(if selected {
-                        self.theme.soft()
-                    } else {
-                        self.theme.card()
-                    })
-                    .hover(|row| row.bg(self.theme.soft()))
-                    .child(label)
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
-                        app.choose_send(mode, cx);
-                    })),
-            );
-        }
-        menu
-    }
-
     fn toggle_row(
         &self,
         id: &'static str,
@@ -695,8 +539,6 @@ impl FlowyApp {
 #[derive(Clone, Copy)]
 enum PrefToggle {
     Notify,
-    Sound,
-    Early,
     Telemetry,
     LaunchAtLogin,
 }
@@ -1101,6 +943,26 @@ impl FlowyApp {
                 PrefToggle::Telemetry,
                 cx,
             ))
+            .child(
+                self.account_action_row(
+                    "settings.local_data",
+                    "settings.local_data_help",
+                    false,
+                    theme::Button::new(
+                        "data-open-folder",
+                        self.t("settings.open_folder"),
+                    )
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _, _, cx| {
+                            let root = app.store.root();
+                            let _ = std::fs::create_dir_all(root);
+                            cx.open_with_system(root);
+                        }),
+                    ),
+                ),
+            )
     }
 }
 
@@ -1169,13 +1031,13 @@ mod nav_click_tests {
             });
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let billing = cx
-            .debug_bounds("settings-nav-settings.billing")
-            .expect("billing nav link must render with bounds");
-        cx.simulate_click(billing.center(), Modifiers::none());
+        let appearance = cx
+            .debug_bounds("settings-nav-settings.appearance")
+            .expect("appearance nav link must render with bounds");
+        cx.simulate_click(appearance.center(), Modifiers::none());
         cx.run_until_parked();
         cx.read_entity(&app, |app, _| {
-            assert_eq!(app.settings.page, Page::Billing);
+            assert_eq!(app.settings.page, Page::Appearance);
         });
         drop(app);
         let _ = std::fs::remove_dir_all(root);

@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} vyžaduje pozornost",
   "chat.bg_work_queued": "Ve frontě",
   "chat.bg_work_stop": "Zastavit",
-  "card.from_work": "Z úkolu: {title}"
+  "card.from_work": "Z úkolu: {title}",
+  "shell.notify_task_done_title": "Úkol dokončen",
+  "shell.notify_task_done_body": "Váš úkol je hotový. Otevřete {product} a zobrazte výsledek.",
+  "shell.notify_task_done_named_body": "„{title}“ je hotovo. Otevřete {product} pro zobrazení výsledku.",
+  "shell.notify_task_attention_title": "Úkol vyžaduje potvrzení",
+  "shell.notify_task_attention_body": "Otevřete {product} a potvrďte další krok.",
+  "shell.notify_task_error_title": "Chyba úkolu",
+  "shell.notify_task_error_body": "Úkol byl přerušen. Otevřete {product} pro kontrolu.",
+  "settings.local_data": "Místní data a zálohy",
+  "settings.local_data_help": "Historie konverzací a snímky před spuštěním se ukládají místně do sessions a backups.",
+  "settings.open_folder": "Otevřít složku"
 }

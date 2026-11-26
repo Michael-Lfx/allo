@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} cần xử lý",
   "chat.bg_work_queued": "Đang chờ",
   "chat.bg_work_stop": "Dừng",
-  "card.from_work": "Từ tác vụ: {title}"
+  "card.from_work": "Từ tác vụ: {title}",
+  "shell.notify_task_done_title": "Tác vụ đã hoàn tất",
+  "shell.notify_task_done_body": "Tác vụ đã xong. Mở {product} để xem kết quả.",
+  "shell.notify_task_done_named_body": "“{title}” đã hoàn tất. Mở {product} để xem kết quả.",
+  "shell.notify_task_attention_title": "Cần bạn xác nhận",
+  "shell.notify_task_attention_body": "Mở {product} để xác nhận bước tiếp theo.",
+  "shell.notify_task_error_title": "Tác vụ gặp lỗi",
+  "shell.notify_task_error_body": "Tác vụ bị gián đoạn. Mở {product} để kiểm tra.",
+  "settings.local_data": "Dữ liệu cục bộ và bản sao lưu",
+  "settings.local_data_help": "Lịch sử hội thoại và bản sao lưu trước khi khởi chạy được lưu cục bộ tại sessions và backups.",
+  "settings.open_folder": "Mở thư mục"
 }

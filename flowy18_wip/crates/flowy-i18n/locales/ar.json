@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} يتطلب الانتباه",
   "chat.bg_work_queued": "في الانتظار",
   "chat.bg_work_stop": "إيقاف",
-  "card.from_work": "من المهمة: {title}"
+  "card.from_work": "من المهمة: {title}",
+  "shell.notify_task_done_title": "اكتملت المهمة",
+  "shell.notify_task_done_body": "انتهت المهمة. افتح {product} لعرض النتيجة.",
+  "shell.notify_task_done_named_body": "اكتملت «{title}». افتح {product} لعرض النتيجة.",
+  "shell.notify_task_attention_title": "المهمة بانتظار تأكيدك",
+  "shell.notify_task_attention_body": "افتح {product} لتأكيد الخطوة التالية.",
+  "shell.notify_task_error_title": "توقفت المهمة بسبب خطأ",
+  "shell.notify_task_error_body": "حدث خطأ أثناء التنفيذ. افتح {product} للمراجعة.",
+  "settings.local_data": "البيانات المحلية والنسخ الاحتياطية",
+  "settings.local_data_help": "يتم حفظ سجل المحادثات واللقطات قبل التشغيل محليًا ضمن sessions وbackups.",
+  "settings.open_folder": "فتح المجلد"
 }

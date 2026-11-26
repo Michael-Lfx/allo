@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} wymaga uwagi",
   "chat.bg_work_queued": "W kolejce",
   "chat.bg_work_stop": "Zatrzymaj",
-  "card.from_work": "Z zadania: {title}"
+  "card.from_work": "Z zadania: {title}",
+  "shell.notify_task_done_title": "Zadanie ukończone",
+  "shell.notify_task_done_body": "Zadanie zostało ukończone. Otwórz {product}, aby zobaczyć wynik.",
+  "shell.notify_task_done_named_body": "Zadanie „{title}” jest gotowe. Otwórz {product}, aby zobaczyć wynik.",
+  "shell.notify_task_attention_title": "Wymagane potwierdzenie",
+  "shell.notify_task_attention_body": "Otwórz {product}, aby potwierdzić kolejny krok.",
+  "shell.notify_task_error_title": "Błąd zadania",
+  "shell.notify_task_error_body": "Zadanie zostało przerwane. Otwórz {product}, aby sprawdzić szczegóły.",
+  "settings.local_data": "Dane lokalne i kopie zapasowe",
+  "settings.local_data_help": "Historia rozmów i migawki sprzed uruchomienia są zapisywane lokalnie w sessions i backups.",
+  "settings.open_folder": "Otwórz folder"
 }

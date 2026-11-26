@@ -63,13 +63,36 @@ fn main() {
     let _instance = match InstanceLock::acquire(&data_root) {
         Ok(lock) => lock,
         Err(error) => {
-            eprintln!(
-                "{} is already running ({error}).",
-                flowy_app::brand_api::product()
-            );
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                if let Err(wake_error) =
+                    flowy_shell::signal_wake(&data_root, &args)
+                {
+                    eprintln!(
+                        "{} is already running, and wake signal failed ({wake_error}).",
+                        flowy_app::brand_api::product()
+                    );
+                }
+            } else {
+                eprintln!(
+                    "{} is already running ({error}).",
+                    flowy_app::brand_api::product()
+                );
+            }
             return;
         }
     };
+    match flowy_app::session::snapshot_sessions_before_boot(&data_root) {
+        Ok(true) => flowy_obs::record_boot_note(
+            BootNoteLevel::Info,
+            "stage=main::snapshot_sessions_before_boot created=true",
+        ),
+        Ok(false) => {}
+        Err(error) => flowy_obs::record_boot_note(
+            BootNoteLevel::Warn,
+            format!("stage=main::snapshot_sessions_before_boot error={error}"),
+        ),
+    }
     let runtime_temp = flowy_app::session::ensure_runtime_temp(&data_root);
     if let Ok(dir) = &runtime_temp {
         set_temp_env(dir);

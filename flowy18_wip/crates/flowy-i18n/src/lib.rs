@@ -432,6 +432,39 @@ mod tests {
     }
 
     #[test]
+    fn task_notifications_and_local_data_copy_are_localized() {
+        let mut i18n = I18n::embedded("Flowy");
+        for (locale, done_title, open_folder) in [
+            (Locale::ZhCn, "任务已完成", "打开目录"),
+            (Locale::En, "Task complete", "Open folder"),
+        ] {
+            i18n.set_locale(locale);
+            assert_eq!(i18n.t("shell.notify_task_done_title"), done_title);
+            assert_eq!(i18n.t("settings.open_folder"), open_folder);
+            for key in [
+                "shell.notify_task_done_body",
+                "shell.notify_task_attention_title",
+                "shell.notify_task_attention_body",
+                "shell.notify_task_error_title",
+                "shell.notify_task_error_body",
+                "settings.local_data",
+                "settings.local_data_help",
+            ] {
+                let text = i18n.t(key);
+                assert_ne!(text, "");
+                assert_ne!(text, key);
+                assert!(!text.contains("{product}"));
+            }
+            let named = i18n.tf(
+                "shell.notify_task_done_named_body",
+                &[("title", "Weather")],
+            );
+            assert!(named.contains("Weather"));
+            assert!(!named.contains("{title}"));
+        }
+    }
+
+    #[test]
     fn placeholders_are_replaced() {
         let i18n = I18n::embedded("Flowy");
         let text = i18n.tf("chat.duration_secs", &[("n", "3")]);
