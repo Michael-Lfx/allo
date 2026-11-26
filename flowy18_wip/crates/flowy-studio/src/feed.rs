@@ -321,6 +321,15 @@ impl ChatFeed {
         .detach();
     }
 
+    fn contextual_action_label(base: String, raw_text: &str) -> String {
+        let snippet = crate::composer::truncate_quote_excerpt(raw_text, 28);
+        if snippet.is_empty() {
+            base
+        } else {
+            format!("{base} \u{00b7} {snippet}")
+        }
+    }
+
     fn bubble_action_bar(
         &self,
         row_id: u64,
@@ -335,17 +344,23 @@ impl ChatFeed {
         let ink = self.theme.ink();
         let verified = self.theme.status_verified();
         let muted = self.theme.muted();
-        let copy_label = if is_copied {
-            self.t("chat.copied")
-        } else {
-            self.t("chat.copy_reply")
-        };
+        let copy_label = Self::contextual_action_label(
+            if is_copied {
+                self.t("chat.copied")
+            } else {
+                self.t("chat.copy_reply")
+            },
+            &action_text,
+        );
         let copy_icon = if is_copied {
             theme::icons::check().size(px(13.))
         } else {
             theme::icons::copy().size(px(13.))
         };
-        let quote_label = self.t("chat.quote_reply");
+        let quote_label = Self::contextual_action_label(
+            self.t("chat.quote_reply"),
+            &action_text,
+        );
         let hover_fg = if is_copied { verified } else { ink };
         let (bar_sel, copy_sel, quote_sel): (
             &'static str,
@@ -4039,5 +4054,24 @@ mod tests {
             final_b.size.width
         );
         let _ = feed;
+    }
+
+    #[test]
+    fn contextual_action_label_distinguishes_bubbles_with_utf8_snippets() {
+        let first = ChatFeed::contextual_action_label(
+            "引用回复".into(),
+            "## 深圳今日天气摘要：多云间晴，气温 20°C – 26°C，微风舒适",
+        );
+        let second = ChatFeed::contextual_action_label(
+            "引用回复".into(),
+            "明天深圳仍以多云为主，早晚微凉建议备外套",
+        );
+        assert_ne!(first, second);
+        assert!(first.starts_with("引用回复 \u{00b7} ## 深圳今日天气摘要"));
+        assert!(first.ends_with('\u{2026}'));
+        assert_eq!(
+            ChatFeed::contextual_action_label("引用回复".into(), "   "),
+            "引用回复"
+        );
     }
 }

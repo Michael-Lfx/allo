@@ -50,13 +50,18 @@ pub struct ActiveQuote {
 }
 
 pub fn make_quote_excerpt(raw: &str) -> String {
+    truncate_quote_excerpt(raw, MAX_QUOTE_CHARS)
+}
+
+pub fn truncate_quote_excerpt(raw: &str, max_chars: usize) -> String {
+    let limit = max_chars.max(2);
     let (_, source) = split_quoted_prompt(raw);
     let compact: String =
         source.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = compact.chars();
-    let head: String = chars.by_ref().take(MAX_QUOTE_CHARS).collect();
+    let head: String = chars.by_ref().take(limit).collect();
     if chars.next().is_some() {
-        let clamped: String = head.chars().take(MAX_QUOTE_CHARS - 1).collect();
+        let clamped: String = head.chars().take(limit - 1).collect();
         format!("{clamped}\u{2026}")
     } else {
         head
