@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-26 修订 9.14 更新）**：**直接先读 §23（`fix/flowy-router-review-fixes` 审查复核七项修复与 679/679 基线）**，再按需查 §22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§22 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §23 不一致处，**一律以 §23 为准**。
+> **现役唯一入口（2026-11-27 修订 9.15 更新）**：**直接先读 §24（`fix/flowy-desktop-shell-polish` 桌面壳可靠化、类 GPT Dot 对话净化与 695/695 基线）**，再按需查 §23（PR #503 审查复核七项修复与 679 基线）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§23 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §24 不一致处，**一律以 §24 为准**。
 
 ---
 
@@ -777,3 +777,21 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
 
 - **本地已绿门禁（提交 `86b0f755c` 对齐后）**：8-Crate 串行测试 **679 / 679 PASS**（+10 净增回归用例，0 失败，6 ignored）、9-Crate `--all-targets` Clippy **0 告警**、`cargo check -p flowy-desktop --locked` 通过、`cargo fmt --all -- --check` 通过、`check-ui-contracts.mjs` 通过；`--ignored` 真云端测试与桌面真机截图 E2E 未在本分支重跑。
 - **下一 PR 优先级**：`[FYI]` #8 桌面通知偏好联动（`flowy-shell::notify` ↔ `prefs.notify_browser` / `persona.rs`）→ **S5** → **V6**（阻塞中）。
+
+---
+
+## 24. 桌面壳可靠化、类 GPT Dot 对话净化与竞态收口（2026-11-27 · `fix/flowy-desktop-shell-polish`）
+
+> 承接 `origin/main@0c1d517c5`（PR #503 合入后）在本分支（`.agents/worktrees/feat-flowy-local-receipt`）闭合 **Track A**（桌面系统通知、单实例唤醒、启动前会话防丢快照、设置空壳收敛、`loop_runner` 错误保真与 `router`/`history` 首轮折叠）+ **Track B**（展开态思考链竖线与去按钮、`UiObserver` 内部播报错误隔离、会话预览过滤、并行兄弟 `[SiblingWorks]` 节流提示、`reconcile_committed_acceptances` 活认领竞态修复）；原 `[FYI]` #8 的 `flowy-shell::notify` ↔ `prefs.notify_browser` 联动现已闭合。
+
+### 24.1 关键改动清单
+
+1. **桌面通知与单实例唤醒（`flowy-shell/src/{notify,wake,lib}.rs`、`flowy-desktop/src/main.rs`、`flowy-app/src/app/mod.rs`、`flowy-i18n` 943 键）**：二次启动遇 `InstanceLock` 占用即写入 `wake.request` 后干净退出，前台实例在 250ms 轮询中还原置顶主窗；`StudioEvent::TurnFinished` 结合 `prefs.notify_browser` 在后台静默或异常/需确认时触发系统通知，点通知呼出主窗。
+2. **启动前非空会话滚动快照 + 数据目录直达 + 诚实设置收敛（`session.rs`、`main.rs`、`prefs.rs`、`settings.rs`、`dock.rs`）**：持锁后、`Engine::open` 前以 FNV-1a 指纹去重并滚动保留最近 5 份 `backups/sessions-*`（空库绝不覆写历史有效备份）；设置「数据管理」开放 `打开目录` 按钮；移除空壳开关、`settings.later` 占位与底部静态图标（保留 `#[serde(default)]` 字段兼容旧配置）。
+3. **类 GPT Dot 对话纯净度 + 错误日志与内部播报隔离（`loop_runner.rs`、`history.rs`、`feed.rs`、`handle/mod.rs`、`observer.rs`、`work_events.rs`、`router.rs`）**：`failure_detail` 优先提取 `error_message`；`Projection` 导出 `ack_rows`/`process_rows` 联动 `feed.rs` 收起冗余复制按钮与重复 `Flowy` 头并为展开态中间 `Assistant` 套 `.border_l_1()` 思考链竖线（0 改 `ChatLine`）；`Live.active_turn_is_internal` / `active_turn_prev_status` 隔离后台 `[WorkEventBatch]` `Failed`，防止健康对话底部追加 `chat.status_error`；`extract_session_preview` 跳过紧邻 `Reasoning`/`ToolCall`/`Tool`/`ToolResult` 的中间旁白；`sibling_work_counts` 在 `[WorkEventBatch]` 标明活跃兄弟数量并约束 `is_announcement` 仅出 1 句简报。
+4. **并发与测试稳定性收尾（`queue.rs`、`router_tests.rs`）**：`run_accepted_once` 透传当前进程存活 `(receipt_id, attempt_id)` 给 `reconcile_committed_acceptances` 消除先写 `Completed` 再清 `active_claims` 的并发窗口竞态；`router_tests` 补齐 `escalation-checked` 同步门与终态等待。
+
+### 24.2 当前基线与下一优先级
+
+- **本地已绿门禁**：10-Crate `--all-targets` Clippy **0 告警**、8-Crate 串行测试 **695 / 695 PASS**（+16 净增回归用例，0 失败，6 ignored）、`cargo check -p flowy-desktop --locked` & `cargo build --bin flowy-app --locked` 通过、`cargo fmt --all -- --check` 零差异、`check-ui-contracts.mjs` 通过，双主题真机视觉 E2E `6 / 6 PNG`（Dark `zh-CN` + Light `en`）`ok=True, failures=0, log_errors=0`。
+- **后续优先级**：`persona.rs` 注入 / 跨轮 `dispatch_receipt_id` 细粒度重锚 → **S5**（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）→ **V6**（仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板不动工）。
