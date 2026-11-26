@@ -2108,6 +2108,13 @@ impl AgentHandle {
             return;
         }
 
+        #[derive(Clone, Copy)]
+        enum CardSlot {
+            Row(usize),
+            Turn(usize, usize),
+            Tail(usize),
+        }
+
         let mut seen_artifacts: BTreeSet<String> = rows
             .iter()
             .filter_map(|line| match line {
@@ -2115,7 +2122,7 @@ impl AgentHandle {
                 _ => None,
             })
             .collect();
-        let mut seen_reports: HashMap<String, usize> = HashMap::new();
+        let mut seen_reports: HashMap<String, CardSlot> = HashMap::new();
         for (idx, line) in rows.iter().enumerate() {
             if let ChatLine::Verification {
                 report_id,
@@ -2124,7 +2131,7 @@ impl AgentHandle {
             } = line
             {
                 let key = verification_dedup_key(report_id, artifact_path);
-                seen_reports.insert(key, idx);
+                seen_reports.insert(key, CardSlot::Row(idx));
             }
         }
 
@@ -2141,6 +2148,24 @@ impl AgentHandle {
         let mut turn_inserts: Vec<Vec<ChatLine>> =
             vec![Vec::new(); user_positions.len()];
         let mut tail_inserts: Vec<ChatLine> = Vec::new();
+        let push_to_slot = |target_turn: Option<usize>,
+                            card: ChatLine,
+                            turn_inserts: &mut [Vec<ChatLine>],
+                            tail_inserts: &mut Vec<ChatLine>|
+         -> CardSlot {
+            match target_turn {
+                Some(turn) => {
+                    let pos = turn_inserts[turn].len();
+                    turn_inserts[turn].push(card);
+                    CardSlot::Turn(turn, pos)
+                }
+                None => {
+                    let pos = tail_inserts.len();
+                    tail_inserts.push(card);
+                    CardSlot::Tail(pos)
+                }
+            }
+        };
         for child_id in &child_ids {
             let Some(child_live) = live.get(child_id) else {
                 continue;
@@ -2172,26 +2197,36 @@ impl AgentHandle {
                             provenance_warnings: provenance_warnings.clone(),
                             source_session_id: Some(child_id.clone()),
                         };
-                        if let Some(&existing_idx) = seen_reports.get(&key) {
-                            rows[existing_idx] = card;
-                        } else {
-                            seen_reports.insert(key, usize::MAX);
-                            match target_turn {
-                                Some(turn) => turn_inserts[turn].push(card),
-                                None => tail_inserts.push(card),
+                        match seen_reports.get(&key).copied() {
+                            Some(CardSlot::Row(idx)) => rows[idx] = card,
+                            Some(CardSlot::Turn(t, p)) => {
+                                turn_inserts[t][p] = card;
+                            }
+                            Some(CardSlot::Tail(p)) => {
+                                tail_inserts[p] = card;
+                            }
+                            None => {
+                                let slot = push_to_slot(
+                                    target_turn,
+                                    card,
+                                    &mut turn_inserts,
+                                    &mut tail_inserts,
+                                );
+                                seen_reports.insert(key, slot);
                             }
                         }
                     }
                     ChatLine::Artifact { artifact_id }
                         if seen_artifacts.insert(artifact_id.clone()) =>
                     {
-                        let card = ChatLine::Artifact {
-                            artifact_id: artifact_id.clone(),
-                        };
-                        match target_turn {
-                            Some(turn) => turn_inserts[turn].push(card),
-                            None => tail_inserts.push(card),
-                        }
+                        push_to_slot(
+                            target_turn,
+                            ChatLine::Artifact {
+                                artifact_id: artifact_id.clone(),
+                            },
+                            &mut turn_inserts,
+                            &mut tail_inserts,
+                        );
                     }
                     _ => {}
                 }
