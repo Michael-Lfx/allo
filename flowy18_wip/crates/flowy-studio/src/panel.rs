@@ -103,6 +103,12 @@ pub enum StudioEvent {
     Rated {
         stars: u32,
     },
+    /// Requests the host's unified session context menu at an explicit pointer
+    /// position (e.g. right-click or row action button on the Progress Board).
+    OpenSessionMenu {
+        session_id: String,
+        position: gpui::Point<gpui::Pixels>,
+    },
 }
 
 /// Domain inputs used when constructing a workspace. Window UI services are supplied separately.

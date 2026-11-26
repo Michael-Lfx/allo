@@ -26,12 +26,21 @@ impl FlowyApp {
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
             .bg(self.theme.canvas())
             .border_b_1()
             .border_color(self.theme.line())
-            .window_control_area(WindowControlArea::Drag)
             .child(self.titlebar_left(main, can_back, can_forward, cx))
+            .child(
+                // Restrict the OS caption drag region strictly to the empty
+                // middle spacer so Windows WM_NCHITTEST never swallows clicks
+                // meant for the left toolbar buttons.
+                div()
+                    .id("titlebar-drag-spacer")
+                    .flex_1()
+                    .min_w(px(16.))
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
             .child(self.titlebar_right(maximized, cx))
     }
 
@@ -43,6 +52,7 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
+            .occlude()
             .pl(px(LEFT_INSET))
             .pr_2()
             .h_full()
@@ -56,8 +66,8 @@ impl FlowyApp {
                 "titlebar.search",
                 theme::icons::search().size(px(16.)),
                 main,
-                cx.listener(|app, _, _, cx| {
-                    app.open_search(cx);
+                cx.listener(|app, _, window, cx| {
+                    app.open_search(window, cx);
                 }),
             ))
             .child(self.titlebar_tool(
@@ -184,11 +194,15 @@ impl FlowyApp {
         cx.notify();
     }
 
-    pub(super) fn open_search(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn open_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.screen != Screen::Main {
             return;
         }
-        self.push_section(Section::Search, cx);
+        self.open_quick_search(window, cx);
     }
 
     pub(super) fn navigate_back(&mut self, cx: &mut Context<'_, Self>) {

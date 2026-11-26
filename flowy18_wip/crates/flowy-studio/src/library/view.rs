@@ -282,6 +282,12 @@ impl LibraryPanel {
         cx.notify();
     }
 
+    /// Read-only slice of all host-loaded library deliverables for global search.
+    #[must_use]
+    pub fn items(&self) -> &[LibraryItem] {
+        &self.model.items
+    }
+
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<'_, Self>) {
         self.loading = loading;
         cx.notify();

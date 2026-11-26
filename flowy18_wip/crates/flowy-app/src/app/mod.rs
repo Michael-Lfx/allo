@@ -15,6 +15,7 @@ mod login;
 mod more;
 mod ota;
 mod projects;
+mod quick_search;
 mod settings;
 mod skills;
 mod skills_jobs;
@@ -149,8 +150,10 @@ pub struct FlowyApp {
     artifact_navigation_generation: u64,
     artifact_preview: artifact_preview::ArtifactPreviewState,
     artifact_cleanup: artifact_cleanup::ArtifactCleanupState,
-    task_menu: Option<String>,
+    task_menu: Option<conversation_actions::TaskMenuState>,
     conversation_delete: conversation_actions::ConversationDeleteState,
+    conversation_rename: conversation_actions::ConversationRenameState,
+    quick_search: quick_search::QuickSearchState,
     gallery: GalleryState,
     skills: SkillsState,
     pub ota: ota::OtaController,
@@ -324,6 +327,8 @@ impl FlowyApp {
         let font_size_field = input_field(window, cx);
         let flex_api_key = input_field(window, cx);
         let skills_query = input_field(window, cx);
+        let quick_search_query = input_field(window, cx);
+        let conversation_rename_input = input_field(window, cx);
         place(window, &nickname, &saved.nickname, cx);
         place(window, &occupation, &saved.occupation, cx);
         place(window, &about, &saved.about, cx);
@@ -456,6 +461,49 @@ impl FlowyApp {
             cx.subscribe(&skills_query, |app, _, _: &InputEvent, cx| {
                 app.touch_skills_query(cx);
             }),
+            cx.subscribe(&quick_search_query, |app, _, _: &InputEvent, cx| {
+                app.quick_search.selected = 0;
+                cx.notify();
+            }),
+            cx.subscribe(
+                &conversation_rename_input,
+                |app, _, _: &InputEvent, cx| {
+                    app.conversation_rename.error = None;
+                    cx.notify();
+                },
+            ),
+            {
+                let weak = cx.entity().downgrade();
+                cx.intercept_keystrokes(move |event, _window, cx| {
+                    let ks = &event.keystroke;
+                    if ks.modifiers.control
+                        || ks.modifiers.alt
+                        || ks.modifiers.platform
+                        || ks.modifiers.shift
+                    {
+                        return;
+                    }
+                    let delta = match ks.key.as_str() {
+                        "up" => -1_isize,
+                        "down" => 1_isize,
+                        _ => return,
+                    };
+                    let handled = weak
+                        .update(cx, |app, cx| {
+                            if app.active_dialog
+                                != state::ActiveDialog::QuickSearch
+                            {
+                                return false;
+                            }
+                            app.move_quick_search_selection(delta, cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                    if handled {
+                        cx.stop_propagation();
+                    }
+                })
+            },
             cx.subscribe(&studio, |app, _, event: &StudioEvent, cx| {
                 app.on_studio_event(event, cx);
             }),
@@ -498,6 +546,13 @@ impl FlowyApp {
             task_menu: None,
             conversation_delete:
                 conversation_actions::ConversationDeleteState::default(),
+            conversation_rename:
+                conversation_actions::ConversationRenameState::new(
+                    conversation_rename_input,
+                ),
+            quick_search: quick_search::QuickSearchState::new(
+                quick_search_query,
+            ),
             gallery: GalleryState {
                 page: 0,
                 idea_filter: gallery::Filter::All,
@@ -1645,6 +1700,12 @@ impl FlowyApp {
                 }
                 cx.notify();
             }
+            StudioEvent::OpenSessionMenu {
+                session_id,
+                position,
+            } => {
+                self.open_task_menu_at(session_id, *position, cx);
+            }
         }
     }
 
@@ -1881,11 +1942,13 @@ impl Render for FlowyApp {
                 }
                 app.navigate_forward(cx);
             }))
-            .on_action(cx.listener(|app, _: &OpenSearch, _, cx| {
-                if app.ui.overlays.read(cx).modal_active() {
+            .on_action(cx.listener(|app, _: &OpenSearch, window, cx| {
+                if app.active_dialog != state::ActiveDialog::None
+                    && app.active_dialog != state::ActiveDialog::QuickSearch
+                {
                     return;
                 }
-                app.open_search(cx);
+                app.open_search(window, cx);
             }));
         root = root.relative().child(self.titlebar(window, cx));
         let background = if self.screen == Screen::Login {
@@ -1959,6 +2022,12 @@ impl Render for FlowyApp {
             }
             state::ActiveDialog::ConversationDelete => {
                 root.child(self.conversation_delete_layer(window, cx))
+            }
+            state::ActiveDialog::ConversationRename => {
+                root.child(self.conversation_rename_layer(window, cx))
+            }
+            state::ActiveDialog::QuickSearch => {
+                root.child(self.quick_search_layer(window, cx))
             }
             state::ActiveDialog::ArtifactCleanup => {
                 root.child(self.artifact_cleanup_layer(window, cx))
@@ -2043,11 +2112,11 @@ impl Render for FlowyApp {
                 self.i18n.locale().is_rtl(),
             ));
         }
-        if let Some(session_id) = &self.task_menu {
+        if let Some(menu) = &self.task_menu {
             root = root.child(flowy_ui::popover(
                 "task-menu",
-                format!("task-menu-trigger-{session_id}"),
-                self.task_menu_content(session_id, window, cx),
+                menu.anchor_id.clone(),
+                self.task_menu_content(&menu.session_id, window, cx),
                 &self.ui,
                 window,
                 cx,
@@ -2223,8 +2292,11 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("ctrl-shift--", NavigateForward, None),
         KeyBinding::new("alt-right", NavigateForward, None),
         KeyBinding::new("ctrl-]", NavigateForward, None),
-        // Cursor / VS Code: search view
+        // Global quick search (`Ctrl+K` and `Ctrl+Shift+F`), also reachable from inputs.
+        KeyBinding::new("ctrl-k", OpenSearch, None),
+        KeyBinding::new("ctrl-k", OpenSearch, Some("Input")),
         KeyBinding::new("ctrl-shift-f", OpenSearch, None),
+        KeyBinding::new("ctrl-shift-f", OpenSearch, Some("Input")),
         // Keep the platform's quit shortcut available without a tray icon.
         KeyBinding::new("ctrl-q", flowy_shell::QuitApp, None),
     ]);
@@ -3730,6 +3802,181 @@ mod tests {
             ids.contains(&"hist-1"),
             "history session should survive the rebuild: {ids:?}"
         );
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn quick_search_opens_modal_without_polluting_nav_history_and_matches_sessions(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("history.json"),
+            br#"{
+                "active": "s-1",
+                "sessions": [
+                    {
+                        "id": "s-1",
+                        "title": "Q3 Revenue Deck",
+                        "titled": true,
+                        "updated_at": 1700000001000,
+                        "status": { "kind": "idle" },
+                        "messages": [
+                            {
+                                "id": "m-1",
+                                "role": "user",
+                                "content": [
+                                    { "type": "text", "text": "Prepare **margin** waterfall for Board" }
+                                ],
+                                "source": { "kind": "user" }
+                            }
+                        ],
+                        "todos": []
+                    },
+                    {
+                        "id": "s-2",
+                        "title": "Weekend Trip",
+                        "titled": true,
+                        "updated_at": 1700000002000,
+                        "status": { "kind": "idle" },
+                        "messages": [],
+                        "todos": []
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
+        });
+        cx.run_until_parked();
+
+        // Opening Quick Search must NOT push Section::Search onto nav_back.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.screen = Screen::Main;
+                let prev_section = app.section;
+                app.open_search(window, cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::QuickSearch);
+                assert_eq!(app.section, prev_section);
+                assert_eq!(app.nav_back, Vec::new());
+                let query = app.quick_search.query.clone();
+                app.set_input_text(&query, "waterfall", cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|_window, cx| {
+            app.update(cx, |app, cx| {
+                let rows = app.quick_search_results(cx);
+                assert!(
+                    rows.iter().any(|row| row.title == "Q3 Revenue Deck"),
+                    "message body search should match Q3 Revenue Deck: {rows:?}"
+                );
+                assert!(
+                    rows.iter().all(|row| row.title != "Weekend Trip"),
+                    "unrelated session should be filtered out"
+                );
+                app.confirm_quick_search(cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::None);
+            });
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn session_context_menu_supports_point_anchor_pin_rename_and_archive(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("history.json"),
+            br#"{
+                "active": "s-ctx",
+                "sessions": [
+                    {
+                        "id": "s-ctx",
+                        "title": "Draft Plan",
+                        "titled": true,
+                        "updated_at": 1700000001000,
+                        "status": { "kind": "idle" },
+                        "messages": [],
+                        "todos": []
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            FlowyApp::new(SessionStore::new(root.clone()), false, window, cx)
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.screen = Screen::Main;
+                // Titlebar dock toggle flips visibility cleanly.
+                assert!(app.dock_visible);
+                app.toggle_dock(cx);
+                assert!(!app.dock_visible);
+                app.toggle_dock(cx);
+                assert!(app.dock_visible);
+
+                // Point-anchored right-click menu sets sticky anchor + state.
+                app.open_task_menu_at(
+                    "s-ctx",
+                    gpui::point(px(180.), px(240.)),
+                    cx,
+                );
+                let menu = app.task_menu.as_ref().expect("task menu open");
+                assert_eq!(menu.session_id, "s-ctx");
+                assert!(
+                    app.ui
+                        .overlays
+                        .read(cx)
+                        .anchor_bounds(&menu.anchor_id)
+                        .is_some()
+                );
+
+                // Pin, rename, and archive persist through AgentHandle.
+                app.toggle_session_pinned("s-ctx", true, cx);
+                let list = app.studio.read(cx).agent.list_sessions();
+                assert!(list.iter().find(|s| s.id == "s-ctx").unwrap().pinned);
+
+                app.open_conversation_rename("s-ctx", cx);
+                assert_eq!(
+                    app.active_dialog,
+                    state::ActiveDialog::ConversationRename
+                );
+                let input = app.conversation_rename.input.clone();
+                app.set_input_text(&input, "Final Launch Plan", cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|_window, cx| {
+            app.update(cx, |app, cx| {
+                app.confirm_conversation_rename(cx);
+                assert_eq!(app.active_dialog, state::ActiveDialog::None);
+                let list = app.studio.read(cx).agent.list_sessions();
+                assert_eq!(
+                    list.iter().find(|s| s.id == "s-ctx").unwrap().title,
+                    "Final Launch Plan"
+                );
+
+                app.toggle_session_archived("s-ctx", true, cx);
+                let list = app.studio.read(cx).agent.list_sessions();
+                assert!(
+                    list.iter().find(|s| s.id == "s-ctx").unwrap().archived
+                );
+            });
+        });
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

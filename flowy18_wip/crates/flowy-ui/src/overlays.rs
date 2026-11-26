@@ -8,9 +8,9 @@ use crate::{InteractiveDiv, ResolvedTheme, UiContext};
 use gpui::{
     Anchor, AnyElement, App, Bounds, Context, Div, ElementId, Entity,
     EventEmitter, FocusHandle, InputPreference, IntoElement, KeyDownEvent,
-    KeystrokeEvent, ParentElement, Pixels, Role, SharedString, Stateful,
+    KeystrokeEvent, ParentElement, Pixels, Point, Role, SharedString, Stateful,
     Subscription, WeakEntity, WeakFocusHandle, Window, WindowId, accesskit,
-    anchored, deferred, div, point, prelude::*, px,
+    anchored, deferred, div, point, prelude::*, px, size,
 };
 use gpui_kit::base::TestSupportExt as _;
 use std::collections::HashMap;
@@ -44,6 +44,10 @@ struct FocusScope {
 struct MeasuredAnchor {
     bounds: Bounds<Pixels>,
     frame: u64,
+    /// Point-based anchors (e.g. right-click context menus) stay valid across
+    /// frames until the active popup closes, rather than requiring a trigger
+    /// element to prepaint on every frame.
+    sticky: bool,
 }
 
 /// One instance belongs to one window through [`UiContext`].
@@ -100,8 +104,9 @@ impl OverlayHost {
         self.window = Some(window.window_handle().window_id());
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
-        self.anchors
-            .retain(|_, anchor| frame.wrapping_sub(anchor.frame) <= 2);
+        self.anchors.retain(|_, anchor| {
+            anchor.sticky || frame.wrapping_sub(anchor.frame) <= 2
+        });
         self.tooltip_dismiss = None;
     }
 
@@ -176,6 +181,7 @@ impl OverlayHost {
             });
             focus_after_paint(root, cx.weak_entity(), window, cx);
         } else if let Some(old) = old {
+            self.anchors.retain(|_, anchor| !anchor.sticky);
             restore_after_paint(
                 old.restore
                     .or_else(|| self.modal.as_ref().map(|s| s.root.downgrade()))
@@ -227,7 +233,7 @@ impl OverlayHost {
         if self
             .anchors
             .get(anchor)
-            .is_none_or(|anchor| anchor.frame != self.frame)
+            .is_none_or(|anchor| !anchor.sticky && anchor.frame != self.frame)
         {
             cx.emit(OverlayEvent::CloseRequested {
                 scope,
@@ -238,6 +244,31 @@ impl OverlayHost {
 
     pub fn anchor_bounds(&self, id: &str) -> Option<Bounds<Pixels>> {
         self.anchors.get(id).map(|anchor| anchor.bounds)
+    }
+
+    /// Registers a sticky 1x1px anchor at an explicit window coordinate (for
+    /// pointer-triggered context menus). Cleared automatically when the active
+    /// popup closes.
+    pub fn set_point_anchor(
+        &mut self,
+        id: impl Into<SharedString>,
+        position: Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let id = id.into();
+        let bounds = Bounds {
+            origin: position,
+            size: size(px(1.), px(1.)),
+        };
+        self.anchors.insert(
+            id,
+            MeasuredAnchor {
+                bounds,
+                frame: self.frame,
+                sticky: true,
+            },
+        );
+        cx.notify();
     }
 
     fn measure_anchor(
@@ -255,6 +286,7 @@ impl OverlayHost {
             MeasuredAnchor {
                 bounds,
                 frame: self.frame,
+                sticky: false,
             },
         );
         if changed {
@@ -1283,5 +1315,55 @@ mod tests {
         });
         draw(cx);
         assert!(cx.update(|window, _| background.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn point_anchor_survives_frames_until_popup_closes(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, cx| Harness::new(cx));
+        let host = cx.new(OverlayHost::new);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = events.clone();
+        let subscription = cx.update(|_, cx| {
+            cx.subscribe(&host, move |_, event: &OverlayEvent, _| {
+                capture.borrow_mut().push(event.clone());
+            })
+        });
+        let anchor_id: SharedString = "context-point".into();
+        let scope: SharedString = "context-menu".into();
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.set_point_anchor(
+                    anchor_id.clone(),
+                    point(px(140.), px(220.)),
+                    cx,
+                );
+                host.set_popup(Some(scope.clone()), window, cx);
+                // Advance two frames without re-measuring the anchor; sticky
+                // point anchors must stay valid and not emit AnchorRemoved.
+                host.begin_frame(window);
+                host.begin_frame(window);
+                host.validate_anchor(scope.clone(), &anchor_id, cx);
+            });
+        });
+        assert!(events.borrow().is_empty());
+        assert_eq!(
+            host.read_with(cx, |host, _| host.anchor_bounds(&anchor_id)),
+            Some(Bounds {
+                origin: point(px(140.), px(220.)),
+                size: size(px(1.), px(1.)),
+            })
+        );
+        // Closing the popup must purge sticky point anchors so stale entries
+        // cannot accumulate across opens.
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| host.set_popup(None, window, cx));
+        });
+        assert!(
+            host.read_with(cx, |host, _| host.anchor_bounds(&anchor_id))
+                .is_none()
+        );
+        drop(subscription);
     }
 }

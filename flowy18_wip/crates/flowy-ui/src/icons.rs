@@ -150,6 +150,7 @@ macro_rules! lucide_icons {
 }
 
 lucide_icons! {
+    archive => "archive.svg",
     arrow_left => "arrow-left.svg",
     arrow_right => "arrow-right.svg",
     arrow_up => "arrow-up.svg",
