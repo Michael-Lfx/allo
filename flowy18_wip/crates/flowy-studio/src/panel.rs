@@ -310,6 +310,8 @@ pub struct StudioPanel {
     drafts: std::collections::HashMap<String, String>,
     /// Single active WeChat-style reply quote shown above the composer.
     pub(crate) active_quote: Option<crate::composer::ActiveQuote>,
+    /// Session id that `active_quote` currently belongs to (`None` for Home draft).
+    quote_session: Option<String>,
     /// Per-session quoted reply drafts so switching tasks keeps quotes isolated.
     draft_quotes:
         std::collections::HashMap<String, crate::composer::ActiveQuote>,
@@ -664,6 +666,7 @@ impl StudioPanel {
             preview_body: None,
             drafts: std::collections::HashMap::new(),
             active_quote: None,
+            quote_session: None,
             draft_quotes: std::collections::HashMap::new(),
             _quote_sub: quote_sub,
             prompt_pending: None,
@@ -898,7 +901,20 @@ impl StudioPanel {
         }
     }
 
+    fn sync_quote_session(&mut self) {
+        let current = self.agent.active_session_id();
+        if current != self.quote_session {
+            let previous = self.quote_session.take();
+            self.stash_active_quote(previous);
+            self.active_quote = current
+                .as_deref()
+                .and_then(|id| self.draft_quotes.remove(id));
+            self.quote_session = current;
+        }
+    }
+
     pub(crate) fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
+        self.sync_quote_session();
         let session = self.agent.active_session_id();
         let history = self.agent.chat_history();
         let status = history.status.clone();
@@ -1160,6 +1176,7 @@ impl StudioPanel {
         }
         self.active_quote =
             Some(crate::composer::ActiveQuote { role, excerpt });
+        self.quote_session = self.agent.active_session_id();
         cx.notify();
     }
 
@@ -1180,6 +1197,7 @@ impl StudioPanel {
             self.draft_quotes.remove(&current);
         }
         self.active_quote = None;
+        self.quote_session = None;
         self.invalidate_submission(cx);
         self.close_all_popovers();
         self.flow_modal.close();
@@ -1201,10 +1219,8 @@ impl StudioPanel {
             .as_deref()
             .and_then(|id| self.projects.iter().find(|p| p.id == id))
             .cloned();
-        let previous = self.agent.active_session_id();
         match self.agent.clear_active() {
             Ok(()) => {
-                self.stash_active_quote(previous);
                 self.invalidate_submission(cx);
                 self.close_all_popovers();
                 self.flow_modal.close();
@@ -1225,7 +1241,6 @@ impl StudioPanel {
     /// Present a global-home state after the host has cleared the active
     /// session and prepared its origin on a background worker.
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
-        self.active_quote = None;
         self.invalidate_submission(cx);
         self.close_all_popovers();
         self.flow_modal.close();
@@ -1450,10 +1465,10 @@ impl StudioPanel {
         self.session_opened_by_user = true;
         // Reopening the current session must not round-trip its own draft.
         let same = self.agent.active_session_id().as_deref() == Some(id);
-        let previous_session = if !same {
-            self.agent.active_session_id()
-        } else {
+        let previous_session = if same {
             None
+        } else {
+            self.agent.active_session_id()
         };
         if let Some(current) = &previous_session {
             let draft = self.prompt_text(cx);
@@ -1462,8 +1477,7 @@ impl StudioPanel {
         match self.agent.select_session(id) {
             Ok(()) => {
                 if !same {
-                    self.stash_active_quote(previous_session);
-                    self.active_quote = self.draft_quotes.get(id).cloned();
+                    self.sync_quote_session();
                     // Restore whatever this session had typed before.
                     let draft =
                         self.drafts.get(id).cloned().unwrap_or_default();
@@ -1596,6 +1610,7 @@ impl StudioPanel {
             .retain(|sid, _| sessions.iter().any(|s| s.id == *sid));
         if self.agent.active_session_id().is_none() {
             self.active_quote = None;
+            self.quote_session = None;
             self.invalidate_submission(cx);
             self.clear_right_sheet();
             self.surface = StudioSurface::Home;
@@ -1643,7 +1658,6 @@ impl StudioPanel {
             return Err("library.source.unavailable");
         }
         let previous = self.agent.active_session_id();
-        let same = previous.as_deref() == Some(target_root.as_str());
         self.agent.select_session(&target_root)?;
         self.invalidate_submission(cx);
         self.refresh_chat(cx);
@@ -1655,10 +1669,6 @@ impl StudioPanel {
             }
             self.refresh_chat(cx);
             return Err("library.source.unavailable");
-        }
-        if !same {
-            self.stash_active_quote(previous);
-            self.active_quote = self.draft_quotes.get(&target_root).cloned();
         }
         self.active_project_id = self
             .agent
@@ -2224,6 +2234,7 @@ impl StudioPanel {
                 self.draft_quotes.remove(&sid);
             }
             self.active_quote = None;
+            self.quote_session = None;
             self.active_project_id = None;
             let _ = self.agent.clear_active();
             self.agent.set_workspace_for_new_sessions(None);
@@ -2291,7 +2302,6 @@ impl StudioPanel {
             self.emit_notice(Some("project.folder_unavailable"), cx);
             return Err("project.folder_unavailable");
         }
-        self.stash_active_quote(self.agent.active_session_id());
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.flow_modal.close();
@@ -2322,6 +2332,7 @@ impl StudioPanel {
             self.draft_quotes.remove(&sid);
         }
         self.active_quote = None;
+        self.quote_session = None;
         self.new_task(cx);
     }
 
@@ -4475,7 +4486,7 @@ mod tests {
                 .create_router_session()
                 .expect("create router session B");
             *sid_a.borrow_mut() = a.clone();
-            *sid_b.borrow_mut() = b.clone();
+            *sid_b.borrow_mut() = b;
             panel.open_session(&a, cx);
 
             // Second quote replaces first quote cleanly (single-quote WeChat semantics).
@@ -4576,6 +4587,125 @@ mod tests {
             cx.debug_bounds("chat-user-quote-preview").is_some(),
             "quoted User bubble renders top excerpt strip"
         );
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn quote_session_sync_covers_home_project_and_artifact_transitions(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy_studio_quote_sync_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let proj_dir = root.join("proj");
+        std::fs::create_dir_all(&proj_dir).expect("create project folder");
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        let sid_a = Rc::new(RefCell::new(String::new()));
+        let sid_b = Rc::new(RefCell::new(String::new()));
+        panel.update(cx, |panel, cx| {
+            let a = panel
+                .agent
+                .create_router_session()
+                .expect("create session A");
+            let b = panel
+                .agent
+                .create_router_session()
+                .expect("create session B");
+            *sid_a.borrow_mut() = a.clone();
+            *sid_b.borrow_mut() = b.clone();
+            panel.open_session(&a, cx);
+            panel.set_active_quote(
+                crate::composer::QuoteRole::Assistant,
+                "会话 A 的待保留引用",
+                cx,
+            );
+
+            // External session clear followed by show_new_home stashes A's quote cleanly.
+            let _ = panel.agent.clear_active();
+            panel.show_new_home(cx);
+            assert!(
+                panel.active_quote.is_none(),
+                "home view clears active quote banner"
+            );
+            panel.open_session(&a, cx);
+            assert_eq!(
+                panel.active_quote.as_ref().map(|q| q.excerpt.as_str()),
+                Some("会话 A 的待保留引用"),
+                "reopening A restores stashed quote after show_new_home"
+            );
+
+            // Host selecting B then calling show_selected_artifact syncs active_quote via refresh_chat.
+            panel.agent.select_session(&b).expect("host select B");
+            let _ = panel.show_selected_artifact("missing-artifact", cx);
+            assert!(
+                panel.active_quote.is_none(),
+                "show_selected_artifact drops A's quote when agent active session is B"
+            );
+            panel.open_session(&a, cx);
+            assert_eq!(
+                panel.active_quote.as_ref().map(|q| q.excerpt.as_str()),
+                Some("会话 A 的待保留引用"),
+                "returning to A after show_selected_artifact still preserves A's quote"
+            );
+
+            // Rolled-back open_artifact_source keeps A's quote intact.
+            assert!(panel
+                .open_artifact_source(&b, "missing-artifact", cx)
+                .is_err());
+            assert_eq!(
+                panel.active_quote.as_ref().map(|q| q.excerpt.as_str()),
+                Some("会话 A 的待保留引用"),
+                "failed open_artifact_source rollback restores A's quote"
+            );
+
+            // Opening a project stashes A's quote cleanly without double-stashing.
+            panel
+                .create_project("Quote Proj", &proj_dir, cx)
+                .expect("create and open project");
+            assert!(panel.active_quote.is_none());
+            panel.open_session(&a, cx);
+            assert_eq!(
+                panel.active_quote.as_ref().map(|q| q.excerpt.as_str()),
+                Some("会话 A 的待保留引用"),
+                "open_project must preserve session A draft quote"
+            );
+
+            // clear_thread discards the active session's quote permanently.
+            panel.clear_thread(cx);
+            assert!(panel.active_quote.is_none());
+            panel.open_session(&a, cx);
+            assert!(
+                panel.active_quote.is_none(),
+                "clear_thread permanently removes session A quote"
+            );
+        });
 
         drop(panel);
         let _ = std::fs::remove_dir_all(root);

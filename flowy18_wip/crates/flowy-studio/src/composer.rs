@@ -21,13 +21,13 @@ const QUOTE_PREFIX: &str = "> \u{275d} ";
 const MAX_QUOTE_CHARS: usize = 160;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum QuoteRole {
+pub enum QuoteRole {
     User,
     Assistant,
 }
 
 impl QuoteRole {
-    pub(crate) const fn protocol_tag(self) -> &'static str {
+    pub const fn protocol_tag(self) -> &'static str {
         match self {
             Self::User => "User",
             Self::Assistant => "Flowy",
@@ -44,12 +44,12 @@ impl QuoteRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ActiveQuote {
+pub struct ActiveQuote {
     pub role: QuoteRole,
     pub excerpt: String,
 }
 
-pub(crate) fn make_quote_excerpt(raw: &str) -> String {
+pub fn make_quote_excerpt(raw: &str) -> String {
     let (_, source) = split_quoted_prompt(raw);
     let compact: String =
         source.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -63,7 +63,7 @@ pub(crate) fn make_quote_excerpt(raw: &str) -> String {
     }
 }
 
-pub(crate) fn compose_quoted_prompt(
+pub fn compose_quoted_prompt(
     quote: Option<&ActiveQuote>,
     prompt: &str,
 ) -> String {
@@ -92,7 +92,7 @@ pub(crate) fn compose_quoted_prompt(
     }
 }
 
-pub(crate) fn split_quoted_prompt(text: &str) -> (Option<ActiveQuote>, String) {
+pub fn split_quoted_prompt(text: &str) -> (Option<ActiveQuote>, String) {
     let (skill_prefix, rest) = if let Some(after_slash) =
         text.strip_prefix("/skill:")
         && let Some((cmd, tail)) = after_slash.split_once(' ')
@@ -918,8 +918,8 @@ mod tests {
         assert!(excerpt.chars().count() <= 160);
         assert!(excerpt.ends_with('\u{2026}'));
         assert!(!excerpt.contains('\n'));
-        let wrapped = format!("> \u{275d} Flowy: 旧摘要\n\n用户后续提问内容");
-        assert_eq!(super::make_quote_excerpt(&wrapped), "用户后续提问内容");
+        let wrapped = "> \u{275d} Flowy: 旧摘要\n\n用户后续提问内容";
+        assert_eq!(super::make_quote_excerpt(wrapped), "用户后续提问内容");
     }
 
     #[test]

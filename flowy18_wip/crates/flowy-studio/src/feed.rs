@@ -73,9 +73,9 @@ impl gpui::EventEmitter<OpenDeliverables> for ChatFeed {}
 
 /// Ask the panel to attach a single truncated quote from a chat bubble.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QuoteMessage {
-    pub(crate) role: crate::composer::QuoteRole,
-    pub(crate) text: String,
+pub struct QuoteMessage {
+    pub role: crate::composer::QuoteRole,
+    pub text: String,
 }
 
 impl gpui::EventEmitter<QuoteMessage> for ChatFeed {}
@@ -994,18 +994,23 @@ impl ChatFeed {
         content: impl IntoElement,
         max_width: f32,
         pad_y: f32,
+        selector: &'static str,
     ) -> gpui::Div {
-        div()
-            .max_w(px(max_width))
-            .min_w_0()
-            .px(self.theme.space(16.))
-            .py(self.theme.space(pad_y))
-            .rounded(px(18.))
-            .border_1()
-            .border_color(self.theme.line())
-            .bg(self.theme.card())
-            .shadow_xs()
-            .child(content)
+        div().max_w_full().min_w_0().flex().child(
+            div()
+                .debug_selector(move || selector.to_owned())
+                .flex_shrink(1.)
+                .min_w_0()
+                .max_w(px(max_width))
+                .px(self.theme.space(16.))
+                .py(self.theme.space(pad_y))
+                .rounded(px(18.))
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.card())
+                .shadow_xs()
+                .child(content),
+        )
     }
 
     fn chat_line(
@@ -1036,60 +1041,88 @@ impl ChatFeed {
                     .gap(self.theme.space(4.))
                     .child(
                         div()
-                            .debug_selector(|| "chat-user-bubble".to_owned())
-                            .max_w(px(560.))
-                            .px(self.theme.space(16.))
-                            .py(self.theme.space(10.))
-                            .rounded(px(18.))
-                            .border_1()
-                            .border_color(self.theme.accent().opacity(
-                                if self.theme.dark { 0.36 } else { 0.24 },
-                            ))
-                            .bg(self.theme.accent().opacity(
-                                if self.theme.dark { 0.22 } else { 0.11 },
-                            ))
-                            .shadow_xs()
+                            .max_w_full()
+                            .min_w_0()
                             .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .when_some(quoted, |bubble, quote| {
-                                bubble.child(
-                                    div()
-                                        .debug_selector(|| {
-                                            "chat-user-quote-preview".to_owned()
-                                        })
-                                        .pl(px(8.))
-                                        .border_l_2()
-                                        .border_color(
-                                            self.theme.accent().opacity(0.65),
-                                        )
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(4.))
-                                        .text_xs()
-                                        .text_color(self.theme.muted())
-                                        .child(div().flex_none().child(
-                                            format!(
-                                                "{}:",
-                                                self.t("chat.quoted_label")
-                                            ),
-                                        ))
-                                        .child(
-                                            div()
-                                                .max_w(px(440.))
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .truncate()
-                                                .child(quote.excerpt),
-                                        ),
-                                )
-                            })
+                            .justify_end()
                             .child(
                                 div()
-                                    .text_sm()
-                                    .text_color(self.theme.ink())
-                                    .whitespace_normal()
-                                    .child(body),
+                                    .debug_selector(|| {
+                                        "chat-user-bubble".to_owned()
+                                    })
+                                    .flex_shrink(1.)
+                                    .min_w_0()
+                                    .max_w(px(560.))
+                                    .px(self.theme.space(16.))
+                                    .py(self.theme.space(10.))
+                                    .rounded(px(18.))
+                                    .border_1()
+                                    .border_color(self.theme.accent().opacity(
+                                        if self.theme.dark {
+                                            0.36
+                                        } else {
+                                            0.24
+                                        },
+                                    ))
+                                    .bg(self.theme.accent().opacity(
+                                        if self.theme.dark {
+                                            0.22
+                                        } else {
+                                            0.11
+                                        },
+                                    ))
+                                    .shadow_xs()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .when_some(quoted, |bubble, quote| {
+                                        bubble.child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "chat-user-quote-preview"
+                                                        .to_owned()
+                                                })
+                                                .max_w_full()
+                                                .min_w_0()
+                                                .pl(px(8.))
+                                                .border_l_2()
+                                                .border_color(
+                                                    self.theme
+                                                        .accent()
+                                                        .opacity(0.65),
+                                                )
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .text_xs()
+                                                .text_color(self.theme.muted())
+                                                .child(div().flex_none().child(
+                                                    format!(
+                                                        "{}:",
+                                                        self.t(
+                                                            "chat.quoted_label"
+                                                        )
+                                                    ),
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .flex_shrink(1.)
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .truncate()
+                                                        .child(quote.excerpt),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .text_color(self.theme.ink())
+                                            .whitespace_normal()
+                                            .child(body),
+                                    ),
                             ),
                     )
                     .child(self.bubble_action_bar(
@@ -1134,14 +1167,12 @@ impl ChatFeed {
                         .flex()
                         .flex_col()
                         .items_start()
-                        .child(
-                            self.assistant_card_bubble(
-                                markdown_body,
-                                580.,
-                                10.,
-                            )
-                            .debug_selector(|| "chat-ack-bubble".to_owned()),
-                        )
+                        .child(self.assistant_card_bubble(
+                            markdown_body,
+                            580.,
+                            10.,
+                            "chat-ack-bubble",
+                        ))
                         .into_any_element();
                 }
                 if is_streaming && text.trim().is_empty() {
@@ -1162,10 +1193,12 @@ impl ChatFeed {
                     .flex_col()
                     .items_start()
                     .gap(self.theme.space(4.))
-                    .child(
-                        self.assistant_card_bubble(markdown_body, 640., 12.)
-                            .debug_selector(|| "chat-final-bubble".to_owned()),
-                    )
+                    .child(self.assistant_card_bubble(
+                        markdown_body,
+                        640.,
+                        12.,
+                        "chat-final-bubble",
+                    ))
                     .when(show_actions, |col| {
                         col.child(self.bubble_action_bar(
                             row_id,
@@ -3715,11 +3748,13 @@ mod tests {
         });
 
         for dark in [false, true] {
-            let mut options = theme::ThemeOptions::default();
-            options.mode = if dark {
-                theme::ThemeMode::Dark
-            } else {
-                theme::ThemeMode::Light
+            let options = theme::ThemeOptions {
+                mode: if dark {
+                    theme::ThemeMode::Dark
+                } else {
+                    theme::ThemeMode::Light
+                },
+                ..Default::default()
             };
             let (feed, cx) = cx.add_window_view(|_, cx| {
                 let ui = UiContext::new(options, dark, cx);
@@ -3928,5 +3963,81 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[gpui::test]
+    fn dot_bubbles_bound_wide_content_inside_narrow_viewport(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed =
+                ChatFeed::new(ui, i18n.clone(), Some("narrow".into()), cx);
+            feed.sync_history(
+                Some("narrow".into()),
+                ChatHistory {
+                    rows: vec![
+                        ChatLine::User {
+                            text: format!(
+                                "> \u{275d} Flowy: {}\n\n请总结一下这个长表格与多列宽数据的输出效果",
+                                "超级长的中文单行引用摘要预览文本不应该撑破窄窗口圆角用户气泡宽度"
+                                    .repeat(2)
+                            ),
+                        },
+                        ChatLine::Assistant {
+                            text: "好的".into(),
+                        },
+                        ChatLine::ToolCall {
+                            name: "read".into(),
+                            target: "report.md".into(),
+                            call_id: "n1".into(),
+                            running: false,
+                        },
+                        ChatLine::ToolResult {
+                            text: "ok".into(),
+                            is_error: false,
+                        },
+                        ChatLine::Assistant {
+                            text: "| ColumnOneVeryWideHeader | ColumnTwoVeryWideHeader | ColumnThreeVeryWideHeader | ColumnFourVeryWideHeader |\n| --- | --- | --- | --- |\n| value_one_unbroken_token_1234567890 | value_two_unbroken_token_1234567890 | value_three_unbroken_token_1234567890 | value_four_unbroken_token_1234567890 |"
+                                .into(),
+                        },
+                    ],
+                    streaming: None,
+                    status: TurnStatus::Completed,
+                },
+                cx,
+            );
+            feed
+        });
+        cx.simulate_resize(gpui::size(px(360.), px(640.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let user_b = cx
+            .debug_bounds("chat-user-bubble")
+            .expect("user bubble rendered in narrow viewport");
+        let ack_b = cx
+            .debug_bounds("chat-ack-bubble")
+            .expect("short ack bubble rendered in narrow viewport");
+        let final_b = cx
+            .debug_bounds("chat-final-bubble")
+            .expect("wide final bubble rendered in narrow viewport");
+
+        assert!(
+            user_b.size.width <= px(360.),
+            "user bubble with long quote must stay within 360px viewport: {:?}",
+            user_b.size.width
+        );
+        assert!(
+            ack_b.size.width < px(200.),
+            "short ack bubble must stay compact instead of stretching full width: {:?}",
+            ack_b.size.width
+        );
+        assert!(
+            final_b.size.width <= px(360.),
+            "wide markdown final bubble must stay bounded within 360px viewport: {:?}",
+            final_b.size.width
+        );
+        let _ = feed;
     }
 }
