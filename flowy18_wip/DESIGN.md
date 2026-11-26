@@ -96,8 +96,10 @@ screen so the next person (or agent) does not repeat them.
 
 Rebuilding and relaunching costs roughly a minute per change. `scripts/dev-hotpatch.ps1`
 keeps one `dx serve` session alive and patches the running window instead; it
-requires `dx 0.7.10` and the MSVC `link.exe` on PATH. Use it for layout work. It
-cannot patch struct-field or initialisation changes, so those still need a
+requires `dx 0.7.10` and Visual Studio Build Tools / Windows SDK (auto-discovered
+via `vswhere.exe`, preferring rustup's `lld-link.exe` with MSVC `link.exe` fallback).
+Use it for layout work across `flowy-app`, `flowy-studio`, `flowy-ui`, and `flowy-i18n`.
+It cannot patch struct-field or initialisation changes, so those still need `r` or a
 restart.
 
 

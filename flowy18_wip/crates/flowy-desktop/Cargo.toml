@@ -16,6 +16,12 @@ path = "src/main.rs"
 flowy-app = { workspace = true }
 flowy-obs = { workspace = true }
 flowy-shell = { workspace = true }
+# Direct dependencies so `dx 0.7.10`'s 1-hop `local_dependencies` watcher
+# monitors UI workspace crates for live hot-patching (all are already
+# transitive dependencies of `flowy-app`).
+flowy-i18n = { workspace = true }
+flowy-studio = { workspace = true }
+flowy-ui = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
 serde_json = { workspace = true }
