@@ -1031,3 +1031,64 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
 - **`aa6aac162`（Studio UI 边界、23 语种补齐与去重）**：`pending_card.rs` 补滚动限高/安全截断/稳定哈希 ID/空选项兜底/按 `(session_id, card_id)` 锁与 `catch_unwind` + 全路径脱敏与 `verified_effects`/本地化回退提示；补齐 23 语种 8 条缺失 `notice.*`/`card.*` 键并删死键 `drawer.work_title`；补全 8 条会话/项目切换路径 `clear_right_sheet()`、`ComposerViewState::stopping` 停机防重、`OpenAddMenu` 防芯片反跳；原地抽取 `icon_tooltip_button`/`active_context_chip`/`add_menu_choice_row`/`pending_card_shell`；修正 `skills.rs` 冗余同步与重名歧义、`conversation_actions.rs` 错误键。
 - **`fb3437597`（终审收口）**：修复二轮对抗审查揪出的 `queue.rs:257` 回执目标会话一致性、`shell_policy` `-ec` / `-Pa:` / `-Li:` / `-Path:HKLM:` / `rm -Irf` 绕过、`WaitingForUser` 暂存意图清理、混合子句 `target_object_ids` 与 `pending_card` `debug_bounds` 绘制断言。
 - **终验基线**：8 crate 单测 **600 passed / 0 failed**（净增 **+49**），`check-ui-contracts.mjs` 24/24 + 生产通过，`rustfmt` 0 diff，`clippy --all-targets -- -D warnings` 0 warning；预览版 `C:\Users\38788\AppData\Local\FlowyPreview\flowy-app.exe`（`78,122,496` 字节，SHA-256 `A7B99C1B210C37D1B0C65AFC180ACCE025BF18A09A7390F3A2A94CE45AE9BFA7`，Medium IL）已同步并完成实机冒烟复验。
+
+---
+
+## 任务 22 · PR-2A 会话级轻量 Router、多 Work 并发调度与可靠异步回投内核（`feat/flowy-router-kernel`，2026-11-26）
+
+### 任务 0 · 基线冻结与首条红灯
+- **隔离工位**：`.agents/worktrees/feat-router-kernel`（分支 `feat/flowy-router-kernel`，基于 `origin/main@664b648ad`，含 PR #493 Rev 9.8 架构文档与 PR #494 S4 并发池 + `WorkspaceRwLock`）。
+- **边界约束**：仅改动 `flowy-agent-core`、`flowy-agent` 与 `PROGRESS.md`；零触碰 `flowy-studio` / `flowy-app` / `flowy-ui` / `flowy-i18n` / 根 workspace 与隔壁 worktree（`feat/flowy-nav-board-polish`）。
+- **基线串行验证**（`CARGO_BUILD_BUILD_DIR=%LOCALAPPDATA%\Temp\flowy18-router-build`）：
+  - `cargo test --locked -p flowy-agent-core`：**112 passed, 0 failed, 2 ignored**（0.40s）
+  - `cargo test --locked -p flowy-agent -- --test-threads=1`：**222 passed, 1 failed, 3 ignored**（50.74s）—— 顺带抓出主干 `handle/queue.rs::finish_accepted_locked` 一处真实时序竞态：`queue.complete()` 先写 `journal.jsonl` 后才移除 `active_claims`，导致 `concurrent_different_workspaces_run_simultaneously_without_blocking` 观测到 `ReceiptState::Completed` 时 `active_claim_count()` 短暂为 `1`；本 PR 一并修正为先摘除内存 claim、写盘失败再回滚。
+  - `cargo test --locked -p flowy-studio`：**110 passed, 0 failed, 0 ignored**（1.81s）
+- **首条纵向红灯证据**（`handle::router_tests::router_dispatches_write_worker_takes_second_message_durably_and_reconciles_across_restart`）：
+  - 在基线 `origin/main@664b648ad` 运行 `cargo test --locked -p flowy-agent --lib router_dispatches_write_worker_takes_second_message_durably_and_reconciles_across_restart` → **FAILED**：写任务持项目目录锁期间提交第 2 句用户指令返回 `Err("notice.agent_busy")`（断言期望 `Ok(sid)`）。
+
+### PR-2A 闭环交付账本（已 rebase 至 `origin/main@feb010a56`，含 PR #495 全量耦合护栏）
+- **基线同步（PR #495 · `feb010a56`）**：已无缝 rebase 至 `origin/main@feb010a56`（同步基线：`flowy-agent-core` 112 / `flowy-agent` 229 / `flowy-studio` 112），零触碰任何 UI / App / i18n / 根 workspace 文件。
+- **Layer 1 · `flowy-agent-core` 内核契约（+4 单测 → 116 passed）**：
+  - `types.rs`：`MessageSource` 扩展 `CardResume` 与 `SystemEvent { event_kind: String }`；`PromptTurn` 新增 `source` 字段及 `card_resume` / `system_event` 构造器。
+  - `session.rs`：新增 `SessionRole { Standard, Router, Worker }`、`WorkAccessMode { ReadOnly, ReadWrite }`、`PendingRouterFollowup`、`DispatchRecord`，并与 PR #495 `pinned` / `archived` 一起通过 `#[serde(default, skip_serializing_if = ...)]` 兼容旧版 `history.json`。
+  - `acceptance.rs`：新增 `strict_target: bool`、`dispatch_request_id: Option<String>` 与 `AcceptanceQueue::accept_strict(...)`，跨 `replay` / `retry_dead` 保持目标强绑定；同时将 `lease` 装箱为 `Option<Box<Lease>>`（100% serde 线格式兼容），保持 `sizeof(AcceptedMessage) == 240` 字节，使未触碰的 `flowy-studio` 零 `clippy::large_enum_variant` 回归。
+  - `loop_runner.rs`：新增 `PreToolDecision::SuspendWithCard { card, reason }`，在 `before_tool_call` 中零副作用截断整批工具调用并持久化 `PendingCard` 进入 `WaitingForUser`。
+  - `engine.rs`：新增 `EnqueueOutcome`、`create_session_with_role`、`child_sessions`、`enqueue_router_followup`（按 `submission_id` 幂等 + 上限 16 + 写盘失败回滚）、`peek_router_followup`、`pending_router_followups`、`record_dispatch_request` / `lookup_dispatch_request` / `remove_dispatch_requests_for_worker`、`clear_pending_cards`；`Engine::prepare` 原子弹出已入队 follow-up；`submitted_session` 同时检查 `messages` 与 `pending_router_followups`；`request_cancel` 兼容 `MessageSource::User | MessageSource::CardResume`。
+- **Layer 2 · `flowy-agent` 轻量 Router、多 Work 并发调度与可靠异步回投（+16 单测 → 245 passed）**：
+  - `handle/router.rs`（新增）：4 轻量控制工具（`dispatch_work` / `query_work_status` / `control_work` / `ask_user_choice`，自动播报轮物理剥离写工具仅留 `query_work_status`）、`build_router_pre_tool_hook`（拦截 `ask_user_choice` + 跨根 `object_id` 越权校验 → `SuspendWithCard`）、900 字符有界 `[ChildWorksReadOnlySnapshot]`、跨根所有权强校验（`WORK_OWNERSHIP_DENIED` / `OBJECT_OWNERSHIP_DENIED`）、不可变环境/权限模式防提权（`ACCESS_MODE_ESCALATION_DENIED`）、AWS 级 `request_id` + 负载指纹幂等账本（`IDEMPOTENCY_CONFLICT`）、对外只读投影 `child_works` 与 `root_pending_cards`。
+  - `handle/work_events.rs`（新增）：叶锁 `RouterInbox`（按 `(worker_id, submission_id)` 合并，上限 32）、`format_work_event_batch`（落盘前重读宿主权威状态并标注 `stale_event_superseded(event_rev=vX,current_rev=vY)`）、`schedule_router_inbox_flush`（严格优先级：`pending_router_followups` FIFO > `WorkEventBatch`，删除计划激活期 / `WaitingForUser` / 停机期间静默跳过）。
+  - `handle/guards.rs` & `conversation_artifacts.rs`：新增 `read_only_tool_registry`（严格白名单 `["glob", "grep", "read_file"]` + `path_guard`，Home/Project 双路径一致）；`Router` 与 `ReadOnly` Worker 从产物导入链路排除。
+  - `handle/queue.rs`：全 3 处目录锁校验统一改用 `session_access_mode(sid)`（`Router -> None`、`ReadOnly -> Read`、`ReadWrite/Standard -> Write`）；新增 `strict_target_missing` + `take` 后二道 `strict_target` 护栏（目标 Worker 缺失直接 `Cancelled`，永不降级新建孤儿 Home 会话）；修复 `finish_accepted_locked` 既有 `active_claims` 摘除时序竞态。
+  - `artifact_store.rs` / `handle/artifacts.rs` / `handle/observer.rs`：可恢复级联删除（`SessionDeletionPlan.child_session_ids` + `prepare_cascade_session_deletion` + `boot()` 前滚半完成级联删除并取消残留回执 + 删前校验父/子忙态与 `pending_router_followups` 非空 + 同步清理 `router_inboxes`）；`boot()` 确定性清理崩溃残留空 Worker 并恢复持久化 `pending_router_followups`。
+  - `handle/work.rs` & `handle/mod.rs`：补齐 `create_router_session`、`create_router_project_session`、`submit_router_message`、`session_role`、`pending_router_followups`、`child_works`、`root_pending_cards`、`stop_router_reply`、`cancel_work`、`revise_work`（支持 `Finalizing` 自动等待落盘后再幂等重派），以及无契约 Router `PendingCard::Disambiguation` 一次恢复（`MessageSource::CardResume`）；`in_flight_work_count` 三源全部排除 `Router`，同时 `busy_session_ids()` 继续反映活跃 Worker。
+  - **PR #495 语义耦合护栏（4 P1 + 2 P2 全补齐）**：
+    - `search_sessions`：空查询隐藏 `Worker`；非空查询将 `Worker` 脱敏命中按 `root_session_id` 去重折叠至顶层 `Router`，并跳过 `SystemEvent` / `CardResume` 控制行；
+    - `set_session_archived`：归档父 Router 前联动检查全部子 Worker（运行中 / `active_claims` / 未终结回执）与 `pending_router_followups`，任一活跃返回 `Err("notice.agent_busy")`；
+    - `rename_session` / `set_session_pinned` / `set_session_archived`：显式拒绝直接操作 `SessionRole::Worker`（返回 `Err("notice.agent_failed")`）；
+    - 自动标题豁免：`SessionRole::Worker` 及 `SystemEvent` / `CardResume` 轮次永不触发 `fallback_title` 或 sidecar `generate_title`。
+- **Mutation Check 实证（红转绿）**：
+  - 临时关闭 `handle/queue.rs` 两层 `strict_target` 护栏（`strict_target_missing` 与 `take` 后 `claimed.strict_target`）→ 运行 `fault_injection_delete_parent_between_worker_create_and_enqueue_terminates_strict_receipt` → **RED**（`router_tests.rs:951: strict receipt for missing worker must not be claimed or fallback-forked`）；
+  - 恢复护栏后重跑 → **GREEN**（同时印证双层 TOCTOU 纵深防御均独立有效）。
+- **深度 `/code-review` + `/laoyeye`（`carl-idea-king` / `kaz-neat-freak`）+ `/ponytail` 审查加固与清理减脂（2026-11-26）**：
+  - **5 项 `[Required]` + 1 项失败原子性修复**：
+    1. `engine.rs::record_dispatch_request` 新增容量硬上限 `MAX_DISPATCH_REQUESTS = 128`（按 `(created_at_ms, request_id)` 确定性淘汰最旧条目，且写盘失败时完整回滚新增与被淘汰条目）；`router.rs` 与 `work.rs` 停止为省略 `request_id` 的模型调用合成 `"dispatch-*"` / `"revise-*"` 写入 `history.json`，彻底消除长生命周期 Router 历史账本污染。
+    2. `dispatch_work_tool` 与 `query_work_status_tool` 对齐 `control_work_tool`，统一经 `tokio::task::spawn_blocking` 卸载同步互斥锁与磁盘 I/O，杜绝阻塞 Tokio async worker 线程。
+    3. `AgentHandle::submit_router_message` 补齐 `is_initializing()` 与 `SessionRole::Router` 强校验（显式拒绝隐藏 `Worker` 与 `Standard` 会话，返回 `Err("notice.agent_failed")`）。
+    4. `engine.rs::create_session_with_role` 与 `handle/mod.rs::submit_message_targeted` 两处裸 `#[allow(clippy::too_many_arguments)]` 全部收敛为带 `reason` 的 `#[expect(...)]`（PR #496 新增 0 处裸 `#[allow]`）。
+    5. `dispatch_work_from_router` 收拢 3 处重复回滚为单一闭包，并在新建 Home Worker 回滚时同步 `remove_dir_all` 清除空 `sessions/workspaces/<worker_id>` 目录；同步修复 `create_router_session` / `create_router_project_session` 在失败时不提前篡改全局 `workspace_for_new_sessions` / `origin_for_new_sessions` 且消除双重 `context_generation` 递增。
+  - **7 项死代码与冗余代码清理**：移除 `flowy-agent/src/lib.rs` 零引用公开重导出 `DispatchRecord`；合并 `AcceptanceQueue::accept`/`accept_strict` 为 `accept_inner`；抽取 `Harness::lookup_idempotent_dispatch` 消除 3 处幂等查找重复；抽取 `arg_str` / `arg_opt_str` 简化 12 处 JSON 取参；为 `ResumedSubmission` 实现 `Default` 精简 6 处 11 字段构造；`router_tests.rs` 全面切换 RAII `ScratchDir`（消除断言失败 `%TEMP%` 泄漏）与 `wait_idle`（样板净减 `-127` 行），并新增 2 条回归单测（`record_dispatch_request_bounds_capacity_and_evicts_oldest`、`review_hardening_guards_reject_non_router_submit_and_skip_auto_id_pollution`）及回滚空目录断言。
+- **最终串行全量验证矩阵（`origin/main@feb010a56`，`CARGO_BUILD_BUILD_DIR=%LOCALAPPDATA%\Temp\flowy18-router-build`）**：
+  ```text
+  cargo fmt --all -- --check                                         : 0 diff
+  cargo clippy --locked -p flowy-agent-core -p flowy-agent
+               -p flowy-studio --all-targets -- -D warnings          : 0 error, 0 warning (19.75s)
+  cargo test --locked -p flowy-agent-core                            : 117 passed, 0 failed, 2 ignored (2.81s)
+  cargo test --locked -p flowy-agent -- --test-threads=1             : 246 passed, 0 failed, 3 ignored (97.40s)
+    (含 handle::router_tests 17/17 全绿：纵向主干、槽位隔离、双只读并发、幂等重派、3 项故障注入与回滚目录清理、
+     双 Router 跨根隔离、FIFO/SystemEvent 优先级、播报防重试风暴、无契约选卡、取消/修订矩阵、
+     不可变权限/环境、Home vs Project 交付门、青禾 5 步真 create_deck→verify_deck→publish_file E2E、
+     PR #495 耦合护栏与深度审查加固回归全覆盖)
+  cargo test --locked -p flowy-studio                                : 112 passed, 0 failed, 0 ignored (2.71s)
+  cargo check --locked -p flowy-desktop                              : 0 error, 0 warning (27.19s)
+  ```
+- **范围与发布状态**：PR #496（`feat/flowy-router-kernel`，open / 待合流）仅触及 `flowy-agent-core`（6 文件）、`flowy-agent`（15 文件）与 `flowy18_wip/docs/architecture/flowy-v0/`（7 份同步文档）；零触碰 `flowy-studio` / `flowy-app` / `flowy-ui` / `flowy-i18n` / 根 workspace；主工作区 `D:\workSpace\git_clone_test\allo` 保持 100% 干净。

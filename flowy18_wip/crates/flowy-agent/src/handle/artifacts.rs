@@ -67,27 +67,59 @@ impl AgentHandle {
             .clone()
             .ok_or("notice.agent_failed")?;
         let record = engine.session(session_id).ok_or("notice.agent_failed")?;
-        if record.status.is_busy() || engine.is_active(session_id) {
+        if record.role == flowy_agent_core::SessionRole::Worker {
+            return Err("notice.agent_failed");
+        }
+        let children = engine.child_sessions(session_id);
+        let child_ids: Vec<String> =
+            children.iter().map(|c| c.id.clone()).collect();
+        self.inner.settle_finishing_fence(&engine, session_id);
+        for cid in &child_ids {
+            self.inner.settle_finishing_fence(&engine, cid);
+        }
+        let any_claimed = {
+            let claims = lock(&self.inner.state.active_claims);
+            claims.values().any(|claim| {
+                claim.session_id == session_id
+                    || child_ids.iter().any(|cid| cid == &claim.session_id)
+            })
+        };
+        let any_busy = record.status.is_busy()
+            || !record.pending_router_followups.is_empty()
+            || any_claimed
+            || engine.is_active(session_id)
+            || lock(&self.inner.state.live)
+                .get(session_id)
+                .is_some_and(|s| s.status.is_busy())
+            || children.iter().any(|child| {
+                child.status.is_busy()
+                    || engine.is_active(&child.id)
+                    || lock(&self.inner.state.live)
+                        .get(&child.id)
+                        .is_some_and(|s| s.status.is_busy())
+            });
+        if any_busy {
             return Err("notice.agent_busy");
         }
         let store = self.artifact_store()?;
-        let artifact_ids = record
-            .delivery_commits
-            .iter()
+        let artifact_ids = std::iter::once(&record)
+            .chain(children.iter())
+            .flat_map(|rec| rec.delivery_commits.iter())
             .flat_map(|commit| commit.artifact_ids.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let submission_ids = record
-            .delivery_commits
-            .iter()
+        let submission_ids = std::iter::once(&record)
+            .chain(children.iter())
+            .flat_map(|rec| rec.delivery_commits.iter())
             .map(|commit| commit.submission_id.clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
         store
-            .prepare_session_deletion(
+            .prepare_cascade_session_deletion(
                 session_id,
+                &child_ids,
                 &artifact_ids,
                 &submission_ids,
             )
@@ -101,65 +133,148 @@ impl AgentHandle {
                 "notice.session_storage_failed"
             })?;
 
-        // Stop a title request before removing the session. `generate_title`
-        // takes the same dispatch lock, so it cannot write a title after the
-        // deletion becomes observable.
-        if let Some(live) = lock(&self.inner.state.live).get(session_id) {
-            live.title_signal.cancel();
-        }
-        if let Err(error) = engine.remove_session(session_id) {
-            log_storage_io_error(
-                "remove structured session",
-                &flowy_agent_core::SessionIndex::path(&self.inner.state.root),
-                &error,
-            );
-            if let Err(cancel_error) = store.cancel_session_deletion(session_id)
-            {
-                log_storage_io_error(
-                    "cancel prepared session deletion",
-                    &self.inner.state.root.join("artifacts"),
-                    &cancel_error,
-                );
-                self.inner.state.report_storage_error();
+        // Stop title requests and clear any buffered Router inbox events
+        // before removing parent and child sessions so no announcement flush
+        // can race with deletion.
+        lock(&self.inner.state.router_inboxes).remove(session_id);
+        {
+            let live = lock(&self.inner.state.live);
+            if let Some(session) = live.get(session_id) {
+                session.title_signal.cancel();
             }
-            return Err("notice.session_storage_failed");
+            for cid in &child_ids {
+                if let Some(session) = live.get(cid) {
+                    session.title_signal.cancel();
+                }
+            }
+            drop(live);
         }
-        let mut live = lock(&self.inner.state.live);
-        let removed = live.remove(session_id);
-        drop(live);
-        let previous_active = lock(&self.inner.state.active).clone();
-        if previous_active.as_deref() == Some(session_id) {
-            *lock(&self.inner.state.active) = None;
-        }
-        if let Err(error) = persist_index(&self.inner.state) {
-            // The UI cache is derived. Restore the complete structured record
-            // when its cache mutation failed, so a failed deletion cannot be
-            // rehydrated from text-only display rows later.
-            if engine.insert_session(record).is_err() {
-                self.inner.state.report_storage_error();
-                self.inner.state.push_update(AgentUpdate::Sessions);
-                self.inner.state.push_update(AgentUpdate::Artifacts);
+
+        if child_ids.is_empty() {
+            if let Err(error) = engine.remove_session(session_id) {
+                log_storage_io_error(
+                    "remove structured session",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
+                );
+                if let Err(cancel_error) =
+                    store.cancel_session_deletion(session_id)
+                {
+                    log_storage_io_error(
+                        "cancel prepared session deletion",
+                        &self.inner.state.root.join("artifacts"),
+                        &cancel_error,
+                    );
+                    self.inner.state.report_storage_error();
+                }
                 return Err("notice.session_storage_failed");
             }
-            if engine.set_active(previous_active.clone()).is_err() {
+            let mut live = lock(&self.inner.state.live);
+            let removed = live.remove(session_id);
+            drop(live);
+            let previous_active = lock(&self.inner.state.active).clone();
+            if previous_active.as_deref() == Some(session_id) {
+                *lock(&self.inner.state.active) = None;
+            }
+            if let Err(error) = persist_index(&self.inner.state) {
+                if engine.insert_session(record).is_err() {
+                    self.inner.state.report_storage_error();
+                    self.inner.state.push_update(AgentUpdate::Sessions);
+                    self.inner.state.push_update(AgentUpdate::Artifacts);
+                    return Err("notice.session_storage_failed");
+                }
+                if engine.set_active(previous_active.clone()).is_err() {
+                    self.inner.state.report_storage_error();
+                }
+                if let Some(removed) = removed {
+                    lock(&self.inner.state.live)
+                        .insert(session_id.to_owned(), removed);
+                }
+                *lock(&self.inner.state.active) = previous_active;
+                if let Err(cancel_error) =
+                    store.cancel_session_deletion(session_id)
+                {
+                    log_storage_io_error(
+                        "cancel prepared session deletion",
+                        &self.inner.state.root.join("artifacts"),
+                        &cancel_error,
+                    );
+                    self.inner.state.report_storage_error();
+                }
                 self.inner.state.report_storage_error();
+                return Err(error);
             }
-            if let Some(removed) = removed {
-                lock(&self.inner.state.live)
-                    .insert(session_id.to_owned(), removed);
+            super::observer::cancel_receipts_for_sessions(
+                &self.inner.state,
+                std::iter::once(session_id),
+            );
+            lock(&self.inner.state.router_inboxes).remove(session_id);
+        } else {
+            super::observer::cancel_receipts_for_sessions(
+                &self.inner.state,
+                std::iter::once(session_id)
+                    .chain(child_ids.iter().map(String::as_str)),
+            );
+            for (idx, cid) in child_ids.iter().enumerate() {
+                if let Err(error) = engine.remove_session(cid) {
+                    log_storage_io_error(
+                        "remove child worker session",
+                        &flowy_agent_core::SessionIndex::path(
+                            &self.inner.state.root,
+                        ),
+                        &error,
+                    );
+                    self.inner.state.report_storage_error();
+                    return Err("notice.session_storage_failed");
+                }
+                if idx == 0 {
+                    #[cfg(test)]
+                    {
+                        let hook = lock(
+                            &self.inner.state.after_first_child_deleted_hook,
+                        )
+                        .clone();
+                        if let Some(hook) = hook
+                            && let Err(injected) = hook(session_id, cid)
+                        {
+                            return Err(injected);
+                        }
+                    }
+                }
             }
-            *lock(&self.inner.state.active) = previous_active;
-            if let Err(cancel_error) = store.cancel_session_deletion(session_id)
-            {
+            if let Err(error) = engine.remove_session(session_id) {
                 log_storage_io_error(
-                    "cancel prepared session deletion",
-                    &self.inner.state.root.join("artifacts"),
-                    &cancel_error,
+                    "remove parent router session",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
                 );
                 self.inner.state.report_storage_error();
+                return Err("notice.session_storage_failed");
             }
-            self.inner.state.report_storage_error();
-            return Err(error);
+            {
+                let mut live = lock(&self.inner.state.live);
+                for cid in &child_ids {
+                    live.remove(cid);
+                }
+                live.remove(session_id);
+                drop(live);
+            }
+            lock(&self.inner.state.router_inboxes).remove(session_id);
+            let previous_active = lock(&self.inner.state.active).clone();
+            if previous_active.as_deref() == Some(session_id)
+                || previous_active
+                    .as_deref()
+                    .is_some_and(|a| child_ids.iter().any(|c| c == a))
+            {
+                *lock(&self.inner.state.active) = None;
+            }
+            if persist_index(&self.inner.state).is_err() {
+                self.inner.state.report_storage_error();
+            }
         }
 
         // The conversation removal is the logical deletion commit point. The

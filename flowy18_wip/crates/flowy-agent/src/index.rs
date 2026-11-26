@@ -6,7 +6,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::projection::{ChatLine, TurnStatus};
-use flowy_agent_core::{SessionOrigin, SessionWorkspace};
+use flowy_agent_core::{
+    SessionOrigin, SessionRole, SessionWorkspace, WorkAccessMode,
+};
 
 /// A project workspace attached to a chat session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +17,7 @@ pub struct AgentWorkspace {
     pub root: PathBuf,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: String,
     pub title: String,
@@ -36,6 +38,12 @@ pub struct SessionRecord {
     pub pinned: bool,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "SessionRole::is_default")]
+    pub role: SessionRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "WorkAccessMode::is_default")]
+    pub access_mode: WorkAccessMode,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -227,6 +235,7 @@ mod tests {
                 session_workspace: None,
                 pinned: true,
                 archived: false,
+                ..SessionRecord::default()
             }],
         }
         .save(&root)

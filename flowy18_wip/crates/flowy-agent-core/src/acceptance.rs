@@ -51,7 +51,7 @@ pub struct AcceptedMessage {
     /// The current claim. `None` means claimable; an expired lease is
     /// claimable again (at-least-once), an unexpired one is not.
     #[serde(default)]
-    pub lease: Option<Lease>,
+    pub lease: Option<Box<Lease>>,
     /// Set once the claimed attempt finished; a completed receipt never
     /// returns to `pending`.
     #[serde(default)]
@@ -84,6 +84,14 @@ pub struct AcceptedMessage {
     /// Submission id bound before invoking the engine on the latest attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission_id: Option<String>,
+    /// When `true`, `target_session_id` / `session_hint` is a strict Worker
+    /// binding: if the target session was deleted or invalidated, the host
+    /// MUST cancel this receipt instead of spawning a new Home session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_target: bool,
+    /// Optional Router dispatch request identifier for audit and reconciliation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_request_id: Option<String>,
 }
 
 /// Externally observable lifecycle state for one receipt at a point in time.
@@ -156,6 +164,10 @@ enum JournalEntry {
         session_hint: Option<String>,
         text: String,
         at_ms: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict_target: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dispatch_request_id: Option<String>,
     },
     Taken {
         id: String,
@@ -289,9 +301,13 @@ impl AcceptanceQueue {
                     session_hint,
                     text,
                     at_ms,
+                    strict_target,
+                    dispatch_request_id,
                 } => {
                     let pos = receipts.len();
                     index_by_id.entry(id.clone()).or_insert(pos);
+                    let target_session_id =
+                        strict_target.then(|| session_hint.clone()).flatten();
                     receipts.push(AcceptedMessage {
                         id,
                         session_hint,
@@ -306,8 +322,10 @@ impl AcceptanceQueue {
                         cancelled: false,
                         quarantined: false,
                         last_attempt_id: None,
-                        target_session_id: None,
+                        target_session_id,
                         submission_id: None,
+                        strict_target,
+                        dispatch_request_id,
                     });
                 }
                 JournalEntry::Taken {
@@ -323,10 +341,10 @@ impl AcceptanceQueue {
                         receipt.available_at_ms = None;
                         receipt.attempts = receipt.attempts.saturating_add(1);
                         receipt.last_attempt_id = Some(attempt_id.clone());
-                        receipt.lease = Some(Lease {
+                        receipt.lease = Some(Box::new(Lease {
                             attempt_id,
                             expires_at_ms: lease_until_ms,
-                        });
+                        }));
                     }
                 }
                 JournalEntry::Bound {
@@ -468,19 +486,55 @@ impl AcceptanceQueue {
         text: &str,
         now_ms: u64,
     ) -> io::Result<AcceptedMessage> {
+        self.accept_inner(session_hint, text, false, None, now_ms)
+    }
+
+    /// Accept `text` strictly bound to an existing Worker `worker_id`.
+    ///
+    /// Unlike [`Self::accept`], `strict_target = true` forbids the scheduler
+    /// from falling back to a freshly spawned background Home session if
+    /// `worker_id` is deleted before execution.
+    pub fn accept_strict(
+        &self,
+        worker_id: &str,
+        text: &str,
+        dispatch_request_id: Option<&str>,
+        now_ms: u64,
+    ) -> io::Result<AcceptedMessage> {
+        self.accept_inner(
+            Some(worker_id),
+            text,
+            true,
+            dispatch_request_id,
+            now_ms,
+        )
+    }
+
+    fn accept_inner(
+        &self,
+        session_hint: Option<&str>,
+        text: &str,
+        strict_target: bool,
+        dispatch_request_id: Option<&str>,
+        now_ms: u64,
+    ) -> io::Result<AcceptedMessage> {
         let lock = self.queue_lock();
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let id = new_receipt_id(now_ms);
+        let hint = session_hint.map(str::to_owned);
+        let request_id = dispatch_request_id.map(str::to_owned);
         let entry = JournalEntry::Accepted {
             id: id.clone(),
-            session_hint: session_hint.map(str::to_owned),
+            session_hint: hint.clone(),
             text: text.to_owned(),
             at_ms: now_ms,
+            strict_target,
+            dispatch_request_id: request_id.clone(),
         };
         self.append_locked(&entry)?;
         Ok(AcceptedMessage {
             id,
-            session_hint: session_hint.map(str::to_owned),
+            session_hint: hint.clone(),
             text: text.to_owned(),
             created_at_ms: now_ms,
             taken_at_ms: None,
@@ -492,8 +546,10 @@ impl AcceptanceQueue {
             cancelled: false,
             quarantined: false,
             last_attempt_id: None,
-            target_session_id: None,
+            target_session_id: if strict_target { hint } else { None },
             submission_id: None,
+            strict_target,
+            dispatch_request_id: request_id,
         })
     }
 
@@ -572,6 +628,8 @@ impl AcceptanceQueue {
                 session_hint: dead.session_hint.clone(),
                 text: dead.text.clone(),
                 at_ms: now_ms,
+                strict_target: dead.strict_target,
+                dispatch_request_id: dead.dispatch_request_id.clone(),
             },
             JournalEntry::Superseded {
                 id: id.to_owned(),
@@ -594,8 +652,13 @@ impl AcceptanceQueue {
             cancelled: false,
             quarantined: false,
             last_attempt_id: None,
-            target_session_id: None,
+            target_session_id: dead
+                .strict_target
+                .then(|| dead.session_hint.clone())
+                .flatten(),
             submission_id: None,
+            strict_target: dead.strict_target,
+            dispatch_request_id: dead.dispatch_request_id.clone(),
         }))
     }
 
@@ -621,20 +684,20 @@ impl AcceptanceQueue {
         else {
             return Ok(None);
         };
-        let lease = Lease {
-            attempt_id: attempt_id.to_owned(),
-            expires_at_ms: now_ms.saturating_add(lease_ms),
-        };
+        let lease_until_ms = now_ms.saturating_add(lease_ms);
         receipt.taken_at_ms.get_or_insert(now_ms);
         receipt.available_at_ms = None;
         receipt.attempts = receipt.attempts.saturating_add(1);
         receipt.last_attempt_id = Some(attempt_id.to_owned());
-        receipt.lease = Some(lease.clone());
+        receipt.lease = Some(Box::new(Lease {
+            attempt_id: attempt_id.to_owned(),
+            expires_at_ms: lease_until_ms,
+        }));
         let claimed = receipt.clone();
         self.append_locked(&JournalEntry::Taken {
             id: id.to_owned(),
             attempt_id: attempt_id.to_owned(),
-            lease_until_ms: lease.expires_at_ms,
+            lease_until_ms,
             at_ms: now_ms,
         })?;
         Ok(Some(claimed))

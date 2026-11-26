@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use flowy_agent_core::{
     ContentBlock, DeliveryCommit, Message, MessageSource, Role, SessionOrigin,
-    SessionRecord,
+    SessionRecord, SessionRole, WorkAccessMode,
 };
 use serde::Deserialize;
 
@@ -46,10 +46,13 @@ struct TurnBudget {
 
 #[must_use]
 pub const fn session_supports_import(session: &SessionRecord) -> bool {
-    matches!(
-        session.origin,
-        SessionOrigin::Home | SessionOrigin::Project { .. }
-    ) && session.workspace.is_some()
+    !matches!(session.role, SessionRole::Router)
+        && matches!(session.access_mode, WorkAccessMode::ReadWrite)
+        && matches!(
+            session.origin,
+            SessionOrigin::Home | SessionOrigin::Project { .. }
+        )
+        && session.workspace.is_some()
 }
 
 #[must_use]
@@ -81,7 +84,10 @@ fn parse_successful_writes_filtered(
     let mut turn_index = 0_usize;
     for message in messages {
         if message.role == Role::User
-            && matches!(&message.source, MessageSource::User)
+            && matches!(
+                &message.source,
+                MessageSource::User | MessageSource::CardResume
+            )
         {
             current_turn = if message.id.is_empty() {
                 format!("turn-{turn_index}")

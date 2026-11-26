@@ -162,6 +162,8 @@ pub enum Role {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MessageSource {
     User,
+    CardResume,
+    SystemEvent { event_kind: String },
     Model { provider: String, model: String },
     Tool { tool: String },
 }
@@ -190,11 +192,12 @@ impl Message {
     }
 }
 
-/// One user turn with separate model-facing and display text.
+/// One user-position turn with separate model-facing text, display text, and origin source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptTurn {
     pub model: String,
     pub display: Option<String>,
+    pub source: MessageSource,
 }
 
 impl PromptTurn {
@@ -203,6 +206,7 @@ impl PromptTurn {
         Self {
             model: text.into(),
             display: None,
+            source: MessageSource::User,
         }
     }
 
@@ -214,6 +218,33 @@ impl PromptTurn {
         Self {
             model: model.into(),
             display: Some(display.into()),
+            source: MessageSource::User,
+        }
+    }
+
+    #[must_use]
+    pub fn card_resume(
+        model: impl Into<String>,
+        display: Option<String>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            display,
+            source: MessageSource::CardResume,
+        }
+    }
+
+    #[must_use]
+    pub fn system_event(
+        event_kind: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            display: Some(String::new()),
+            source: MessageSource::SystemEvent {
+                event_kind: event_kind.into(),
+            },
         }
     }
 }

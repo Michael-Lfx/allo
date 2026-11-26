@@ -18,9 +18,10 @@ use crate::loop_runner::{
 };
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
-    DeliveryCommit, DeliveryCommitter, ObjectVerifyState, PendingCard,
-    SessionIndex, SessionOrigin, SessionRecord, SessionWorkspace,
-    StopHandoffManifest, SubmissionOutcome, TurnState, WorkContract,
+    DeliveryCommit, DeliveryCommitter, DispatchRecord, ObjectVerifyState,
+    PendingCard, PendingRouterFollowup, SessionIndex, SessionOrigin,
+    SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
+    SubmissionOutcome, TurnState, WorkAccessMode, WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -103,6 +104,14 @@ impl std::fmt::Debug for EngineConfig {
     }
 }
 
+/// Outcome of durably enqueuing a user follow-up onto a busy Router session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    Enqueued,
+    Duplicate,
+    QueueFull,
+}
+
 #[derive(Debug)]
 pub enum RunError {
     Busy,
@@ -160,6 +169,10 @@ impl std::fmt::Debug for Engine {
             .finish_non_exhaustive()
     }
 }
+
+/// Maximum durable dispatch idempotency records retained per Router session
+/// (oldest entries by `created_at_ms` are evicted to keep `history.json` bounded).
+pub const MAX_DISPATCH_REQUESTS: usize = 128;
 
 impl Engine {
     pub fn open(
@@ -248,13 +261,14 @@ impl Engine {
             .sessions
             .iter()
             .find_map(|record| {
-                record
-                    .messages
+                let in_history = record.messages.iter().any(|message| {
+                    message.role == Role::User && message.id == message_id
+                });
+                let in_followups = record
+                    .pending_router_followups
                     .iter()
-                    .any(|message| {
-                        message.role == Role::User && message.id == message_id
-                    })
-                    .then(|| record.id.clone())
+                    .any(|item| item.submission_id == message_id);
+                (in_history || in_followups).then(|| record.id.clone())
             })
     }
 
@@ -288,6 +302,255 @@ impl Engine {
             workspace,
             ..SessionRecord::default()
         })
+    }
+
+    /// Create a session with explicit Router/Worker role, root binding, and
+    /// immutable workspace access mode.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit Router/Worker session constructor persists all immutable creation-time fields in one atomic write"
+    )]
+    pub fn create_session_with_role(
+        &self,
+        id: String,
+        now: u64,
+        origin: SessionOrigin,
+        workspace: Option<SessionWorkspace>,
+        role: SessionRole,
+        root_session_id: Option<String>,
+        access_mode: WorkAccessMode,
+    ) -> std::io::Result<()> {
+        self.insert_session(SessionRecord {
+            id,
+            updated_at: now,
+            origin,
+            workspace,
+            role,
+            root_session_id,
+            access_mode,
+            ..SessionRecord::default()
+        })
+    }
+
+    /// All durable Worker sessions owned by `root_id`, ordered by `updated_at`
+    /// descending (matching the underlying session index order).
+    #[must_use]
+    pub fn child_sessions(&self, root_id: &str) -> Vec<SessionRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .index
+            .sessions
+            .iter()
+            .filter(|rec| {
+                rec.role == SessionRole::Worker
+                    && rec.root_session_id.as_deref() == Some(root_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Atomically enqueue a durable FIFO user follow-up onto a busy Router
+    /// session, idempotent by `submission_id` and bounded by `max_len`.
+    pub fn enqueue_router_followup(
+        &self,
+        router_id: &str,
+        item: PendingRouterFollowup,
+        max_len: usize,
+    ) -> Result<EnqueueOutcome, RunError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(record) = inner.index.get_mut(router_id) else {
+            return Err(RunError::NotFound(router_id.to_owned()));
+        };
+        let already_in_history = record
+            .messages
+            .iter()
+            .any(|msg| msg.role == Role::User && msg.id == item.submission_id);
+        let already_queued = record
+            .pending_router_followups
+            .iter()
+            .any(|existing| existing.submission_id == item.submission_id);
+        if already_in_history || already_queued {
+            return Ok(EnqueueOutcome::Duplicate);
+        }
+        if record.pending_router_followups.len() >= max_len {
+            return Ok(EnqueueOutcome::QueueFull);
+        }
+        let prev_updated = record.updated_at;
+        record.pending_router_followups.push(item);
+        record.updated_at = now_ms();
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(router_id) {
+                record.pending_router_followups.pop();
+                record.updated_at = prev_updated;
+            }
+            drop(inner);
+            return Err(RunError::Storage(error));
+        }
+        drop(inner);
+        Ok(EnqueueOutcome::Enqueued)
+    }
+
+    /// Peek the oldest durable follow-up queued on `router_id` without removing it.
+    #[must_use]
+    pub fn peek_router_followup(
+        &self,
+        router_id: &str,
+    ) -> Option<PendingRouterFollowup> {
+        self.with_session(router_id, |rec| {
+            rec.pending_router_followups.first().cloned()
+        })
+        .flatten()
+    }
+
+    /// Return all durable FIFO follow-ups currently queued on `router_id`.
+    #[must_use]
+    pub fn pending_router_followups(
+        &self,
+        router_id: &str,
+    ) -> Vec<PendingRouterFollowup> {
+        self.with_session(router_id, |rec| rec.pending_router_followups.clone())
+            .unwrap_or_default()
+    }
+
+    /// Atomically persist an idempotency record for a Router dispatch request,
+    /// evicting oldest entries once [`MAX_DISPATCH_REQUESTS`] is exceeded.
+    pub fn record_dispatch_request(
+        &self,
+        router_id: &str,
+        record: DispatchRecord,
+    ) -> std::io::Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = inner.index.get_mut(router_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {router_id} not found"),
+            )
+        })?;
+        let key = record.request_id.clone();
+        let previous = session.dispatch_requests.insert(key.clone(), record);
+        let mut evicted: Vec<(String, DispatchRecord)> = Vec::new();
+        while session.dispatch_requests.len() > MAX_DISPATCH_REQUESTS {
+            let Some(oldest_key) = session
+                .dispatch_requests
+                .iter()
+                .filter(|(k, _)| *k != &key)
+                .min_by_key(|(k, rec)| (rec.created_at_ms, k.as_str()))
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = session.dispatch_requests.remove(&oldest_key)
+            {
+                evicted.push((oldest_key, removed));
+            }
+        }
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(session) = inner.index.get_mut(router_id) {
+                if let Some(old) = previous {
+                    session.dispatch_requests.insert(key, old);
+                } else {
+                    session.dispatch_requests.remove(&key);
+                }
+                for (old_k, old_v) in evicted {
+                    session.dispatch_requests.insert(old_k, old_v);
+                }
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
+    }
+
+    /// Look up an existing dispatch idempotency record on `router_id`.
+    #[must_use]
+    pub fn lookup_dispatch_request(
+        &self,
+        router_id: &str,
+        request_id: &str,
+    ) -> Option<DispatchRecord> {
+        self.with_session(router_id, |rec| {
+            rec.dispatch_requests.get(request_id).cloned()
+        })
+        .flatten()
+    }
+
+    /// Remove any dispatch idempotency records pointing at `worker_id` (used
+    /// during boot reconciliation of rolled-back empty unqueued workers).
+    pub fn remove_dispatch_requests_for_worker(
+        &self,
+        router_id: &str,
+        worker_id: &str,
+    ) -> std::io::Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = inner.index.get_mut(router_id) else {
+            return Ok(());
+        };
+        let before = session.dispatch_requests.clone();
+        session
+            .dispatch_requests
+            .retain(|_, rec| rec.worker_id != worker_id);
+        if session.dispatch_requests.len() == before.len() {
+            return Ok(());
+        }
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(session) = inner.index.get_mut(router_id) {
+                session.dispatch_requests = before;
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
+    }
+
+    /// Atomically clear all persisted pending cards on `id` and set its
+    /// durable status (e.g. when explicitly cancelling or revising a parked work).
+    pub fn clear_pending_cards(
+        &self,
+        id: &str,
+        next_status: TurnState,
+    ) -> std::io::Result<bool> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        if record.pending_cards.is_empty() && record.status == next_status {
+            return Ok(false);
+        }
+        let prev_cards = record.pending_cards.clone();
+        let prev_status = record.status.clone();
+        let prev_updated = record.updated_at;
+        record.pending_cards.clear();
+        record.status = next_status;
+        record.updated_at = now_ms();
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pending_cards = prev_cards;
+                record.status = prev_status;
+                record.updated_at = prev_updated;
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(true)
     }
 
     /// Persist origin/workspace metadata on an existing session.
@@ -750,7 +1013,10 @@ impl Engine {
                     .rev()
                     .find(|msg| {
                         msg.role == Role::User
-                            && matches!(msg.source, MessageSource::User)
+                            && matches!(
+                                msg.source,
+                                MessageSource::User | MessageSource::CardResume
+                            )
                     })
                     .map_or_default(Message::text);
                 let manifest =
@@ -764,7 +1030,10 @@ impl Engine {
                 .rev()
                 .find(|msg| {
                     msg.role == Role::User
-                        && matches!(msg.source, MessageSource::User)
+                        && matches!(
+                            msg.source,
+                            MessageSource::User | MessageSource::CardResume
+                        )
                         && msg.id.starts_with("submission-")
                 })
                 .map(|msg| msg.id.clone())
@@ -991,6 +1260,7 @@ impl Engine {
                 record.updated_at,
                 record.work_contract.clone(),
                 record.submission_revisions.clone(),
+                record.pending_router_followups.clone(),
             );
             if let Some(contract) = &config.work_contract {
                 if let Some(sub_id) = submission_id.as_deref() {
@@ -1000,6 +1270,11 @@ impl Engine {
                 }
                 record.work_contract = Some(contract.clone());
             }
+            if let Some(sub_id) = submission_id.as_deref() {
+                record
+                    .pending_router_followups
+                    .retain(|item| item.submission_id != sub_id);
+            }
             record.messages.push(Message {
                 id: submission.map_or_else(
                     || format!("u-{now}"),
@@ -1007,7 +1282,7 @@ impl Engine {
                 ),
                 role: Role::User,
                 content: vec![crate::types::ContentBlock::text(&prompt.model)],
-                source: MessageSource::User,
+                source: prompt.source.clone(),
                 display_text: prompt.display.clone(),
             });
             record.status = TurnState::Running;
@@ -1024,6 +1299,7 @@ impl Engine {
                     record.updated_at,
                     record.work_contract,
                     record.submission_revisions,
+                    record.pending_router_followups,
                 ) = previous;
                 ticket.finish();
                 drop(inner);

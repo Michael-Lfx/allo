@@ -7,8 +7,7 @@ use super::{
     AcceptanceQueue, AcceptedClaim, AcceptedMessage, AcceptedRun, AgentHandle,
     AgentUpdate, Arc, ArtifactStore, CancelToken, Engine, Harness, HashMap,
     Live, Ordering, Path, RECEIPT_SUPERSEDED_ERR, ReceiptState, TurnStatus,
-    UiState, WorkspaceAccessMode, lock, now_ms,
-    submission_committed_in_session,
+    UiState, lock, now_ms, submission_committed_in_session,
 };
 
 impl AgentHandle {
@@ -257,19 +256,39 @@ impl Harness {
             // Unbound receipts create a brand-new isolated Home workspace.
             return false;
         };
+        let Some(mode) = self.session_access_mode(sid) else {
+            return false;
+        };
         let Some(cwd) = self.session_workspace_path(sid) else {
             return false;
         };
-        self.state
-            .workspace_locks
-            .is_locked_for(&cwd, WorkspaceAccessMode::Write)
+        self.state.workspace_locks.is_locked_for(&cwd, mode)
+    }
+
+    fn strict_target_missing(&self, receipt: &AcceptedMessage) -> bool {
+        if !receipt.strict_target {
+            return false;
+        }
+        let Some(sid) = receipt
+            .target_session_id
+            .as_deref()
+            .or(receipt.session_hint.as_deref())
+        else {
+            return true;
+        };
+        if !lock(&self.state.live).contains_key(sid) {
+            return true;
+        }
+        let engine = lock(&self.engine).clone();
+        engine.is_some_and(|eng| eng.session(sid).is_none())
     }
 
     pub(super) fn run_accepted_once(
         self: &Arc<Self>,
     ) -> Result<Option<AcceptedRun>, &'static str> {
         let _drain = lock(&self.state.accept_drain);
-        if !self.can_run_turns()
+        if self.state.shutdown_requested.load(Ordering::Acquire)
+            || !self.can_run_turns()
             || self.in_flight_work_count() >= self.max_concurrent_works()
         {
             return Ok(None);
@@ -287,30 +306,45 @@ impl Harness {
         }
         let state = &self.state;
         let queue = AcceptanceQueue::new(state.root.clone());
-        let Some(next) = queue
+        let pending = queue
             .pending()
-            .map_err(|_| "notice.session_storage_failed")?
-            .into_iter()
-            .find(|receipt| {
-                let target = receipt
-                    .target_session_id
-                    .as_deref()
-                    .or(receipt.session_hint.as_deref());
-                match target {
-                    // A receipt belongs to the session it was bound/submitted
-                    // from. While that session is running, reaping after cancel,
-                    // parked in WaitingForUser, or its workspace directory is
-                    // exclusively locked by another turn, skip it cleanly
-                    // without inflating its attempt count or blocking free peers.
-                    Some(sid) => {
-                        !self.is_session_busy_or_active(sid)
-                            && !self.is_session_waiting_for_user(sid)
-                            && !self.is_receipt_workspace_locked(receipt)
-                    }
-                    None => true,
+            .map_err(|_| "notice.session_storage_failed")?;
+        let mut selected: Option<AcceptedMessage> = None;
+        for receipt in pending {
+            if self.strict_target_missing(&receipt) {
+                if queue.cancel(&receipt.id, now_ms()).unwrap_or(false) {
+                    state.push_update(AgentUpdate::Receipt {
+                        id: receipt.id,
+                        state: ReceiptState::Cancelled,
+                    });
                 }
-            })
-        else {
+                continue;
+            }
+            if selected.is_some() {
+                continue;
+            }
+            let target = receipt
+                .target_session_id
+                .as_deref()
+                .or(receipt.session_hint.as_deref());
+            let ready = match target {
+                // A receipt belongs to the session it was bound/submitted
+                // from. While that session is running, reaping after cancel,
+                // parked in WaitingForUser, or its workspace directory lock
+                // conflicts with its access mode, skip it cleanly without
+                // inflating its attempt count or blocking free peers.
+                Some(sid) => {
+                    !self.is_session_busy_or_active(sid)
+                        && !self.is_session_waiting_for_user(sid)
+                        && !self.is_receipt_workspace_locked(&receipt)
+                }
+                None => true,
+            };
+            if ready {
+                selected = Some(receipt);
+            }
+        }
+        let Some(next) = selected else {
             return Ok(None);
         };
         let mut bytes = [0_u8; 16];
@@ -326,6 +360,15 @@ impl Harness {
         else {
             return Ok(None);
         };
+        if self.strict_target_missing(&claimed) {
+            if queue.cancel(&claimed.id, now_ms()).unwrap_or(false) {
+                state.push_update(AgentUpdate::Receipt {
+                    id: claimed.id,
+                    state: ReceiptState::Cancelled,
+                });
+            }
+            return Ok(None);
+        }
         let session = match claimed
             .target_session_id
             .as_deref()
@@ -351,19 +394,30 @@ impl Harness {
                 }
                 target.to_owned()
             }
-            _ => match self.create_background_home_session() {
-                Ok(session) => session,
-                Err(error) => {
-                    settle_and_notify_failed_attempt(
-                        state,
-                        &queue,
-                        &claimed.id,
-                        &attempt_id,
-                        claimed.attempts,
-                    );
-                    return Err(error);
+            _ => {
+                if claimed.strict_target {
+                    if queue.cancel(&claimed.id, now_ms()).unwrap_or(false) {
+                        state.push_update(AgentUpdate::Receipt {
+                            id: claimed.id,
+                            state: ReceiptState::Cancelled,
+                        });
+                    }
+                    return Ok(None);
                 }
-            },
+                match self.create_background_home_session() {
+                    Ok(session) => session,
+                    Err(error) => {
+                        settle_and_notify_failed_attempt(
+                            state,
+                            &queue,
+                            &claimed.id,
+                            &attempt_id,
+                            claimed.attempts,
+                        );
+                        return Err(error);
+                    }
+                }
+            }
         };
         #[cfg(test)]
         {
@@ -421,6 +475,7 @@ impl Harness {
             Some(submission),
             None,
             Some(pending_claim),
+            None,
             None,
         ) {
             heartbeat_cancel.cancel();
@@ -556,6 +611,17 @@ impl Harness {
         } else {
             "released"
         };
+        let removed_claim = {
+            let mut claims = lock(&self.state.active_claims);
+            if claims
+                .get(&claim.receipt_id)
+                .is_some_and(|current| current.attempt_id == claim.attempt_id)
+            {
+                claims.remove(&claim.receipt_id)
+            } else {
+                None
+            }
+        };
         let result = if completed {
             queue.complete(&claim.receipt_id, &claim.attempt_id, now)
         } else if gave_up {
@@ -568,45 +634,40 @@ impl Harness {
                 release_backoff(claim.attempts),
             )
         };
-        match result {
-            Ok(applied) => {
-                claim.heartbeat_cancel.cancel();
-                {
-                    let mut claims = lock(&self.state.active_claims);
-                    if claims.get(&claim.receipt_id).is_some_and(|current| {
-                        current.attempt_id == claim.attempt_id
-                    }) {
-                        claims.remove(&claim.receipt_id);
-                    }
-                }
-                if applied {
-                    let root_session_id =
-                        self.root_session_id_for(&claim.session_id);
-                    tracing::info!(
-                        target: "flowy.acceptance",
-                        event = outcome,
-                        receipt_id = %claim.receipt_id,
-                        attempt_id = %claim.attempt_id,
-                        attempts = claim.attempts,
-                        session_id = %claim.session_id,
-                        root_session_id = %root_session_id,
-                        "settled accepted receipt"
-                    );
-                    let next_state = if completed {
-                        ReceiptState::Completed
-                    } else if gave_up {
-                        ReceiptState::Dead
-                    } else {
-                        ReceiptState::Retrying
-                    };
-                    self.state.push_update(AgentUpdate::Receipt {
-                        id: claim.receipt_id,
-                        state: next_state,
-                    });
-                }
-                Ok(applied && gave_up)
+        if let Ok(applied) = result {
+            claim.heartbeat_cancel.cancel();
+            if applied {
+                let root_session_id =
+                    self.root_session_id_for(&claim.session_id);
+                tracing::info!(
+                    target: "flowy.acceptance",
+                    event = outcome,
+                    receipt_id = %claim.receipt_id,
+                    attempt_id = %claim.attempt_id,
+                    attempts = claim.attempts,
+                    session_id = %claim.session_id,
+                    root_session_id = %root_session_id,
+                    "settled accepted receipt"
+                );
+                let next_state = if completed {
+                    ReceiptState::Completed
+                } else if gave_up {
+                    ReceiptState::Dead
+                } else {
+                    ReceiptState::Retrying
+                };
+                self.state.push_update(AgentUpdate::Receipt {
+                    id: claim.receipt_id,
+                    state: next_state,
+                });
             }
-            Err(_) => Err("notice.session_storage_failed"),
+            Ok(applied && gave_up)
+        } else {
+            if let Some(restored) = removed_claim {
+                lock(&self.state.active_claims)
+                    .insert(restored.receipt_id.clone(), restored);
+            }
+            Err("notice.session_storage_failed")
         }
     }
 

@@ -314,6 +314,9 @@ mod background_init_tests {
                 origin: SessionOrigin::Home,
                 session_workspace: None,
                 heartbeat: None,
+                role: SessionRole::Standard,
+                root_session_id: None,
+                access_mode: WorkAccessMode::ReadWrite,
             },
         );
 
@@ -433,6 +436,7 @@ mod background_init_tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..IndexRecord::default()
             }],
         }
         .save(&root)

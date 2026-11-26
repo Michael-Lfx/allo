@@ -35,9 +35,10 @@ pub use flex::FlexProvider;
 pub use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit,
     DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
-    PendingCard, ReceiptState, RequiredDeliverable, SessionOrigin,
-    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
-    TrackedObjectKind, WorkContract,
+    PendingCard, PendingRouterFollowup, ReceiptState, RequiredDeliverable,
+    SessionOrigin, SessionRole, SessionWorkspace, StopHandoffManifest,
+    SubmissionOutcome, TrackedObject, TrackedObjectKind, WorkAccessMode,
+    WorkContract,
     tools::{
         SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
         SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,
@@ -48,8 +49,9 @@ pub use flowy_agent_core::{
 pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
-    CardAction, CardActionOutcome, CardSelection, SessionSearchHit,
-    SessionSummary, TaskTarget, WorkStatus,
+    CardAction, CardActionOutcome, CardSelection, ChildWorkSummary,
+    DispatchWorkResult, RoutedPendingCard, SessionSearchHit, SessionSummary,
+    StopWorkResult, TaskTarget, WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -365,6 +367,7 @@ mod tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..crate::index::SessionRecord::default()
             }],
         }
         .save(&root.0)
@@ -416,6 +419,7 @@ mod tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..crate::index::SessionRecord::default()
             }],
         }
         .save(&root.0)
@@ -471,6 +475,7 @@ mod tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..crate::index::SessionRecord::default()
             }],
         };
         index.save(&root.0).unwrap();
@@ -579,6 +584,7 @@ mod tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..crate::index::SessionRecord::default()
             }],
         };
         std::fs::create_dir_all(root.0.join("sessions")).unwrap();
@@ -747,6 +753,7 @@ mod tests {
                 session_workspace: None,
                 pinned: false,
                 archived: false,
+                ..crate::index::SessionRecord::default()
             }],
         }
         .save(&root.0)

@@ -1,24 +1,42 @@
 //! `TurnObserver` projection, history hydration, artifact capture, and verification card folding.
 
 use super::{
-    AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeSet, BranchHeartbeat,
-    CancelToken, ChatLine, ChatProjection, ContentBlock, DeliveryCommit,
-    Engine, FileChangeKind, HashMap, IndexRecord, Live, LlmConfig, LoopOutcome,
-    Message, MessageSource, Mutex, Path, PendingCard, Role,
-    SessionDeletionState, SessionIndex, SessionOrigin, SessionRecord,
-    StopHandoffManifest, SubmissionOutcome, TITLE_MAX_CHARS, TurnObserver,
-    TurnState, TurnStatus, UiState, VerificationIssue, complete_text, lock,
-    log_storage_io_error, model_route, now_ms, title, tool_target,
+    AcceptanceQueue, AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeSet,
+    BranchHeartbeat, CancelToken, ChatLine, ChatProjection, ContentBlock,
+    DeliveryCommit, Engine, FileChangeKind, HashMap, IndexRecord, Live,
+    LlmConfig, LoopOutcome, Message, MessageSource, Mutex, Path, PendingCard,
+    ReceiptState, Role, SessionDeletionState, SessionIndex, SessionOrigin,
+    SessionRecord, SessionRole, StopHandoffManifest, SubmissionOutcome,
+    TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus, UiState,
+    VerificationIssue, complete_text, lock, log_storage_io_error, model_route,
+    now_ms, title, tool_target,
 };
 
 /// Maximum Unicode scalar characters kept in a sidebar session preview.
 pub(super) const PREVIEW_MAX_CHARS: usize = 56;
 
+/// Returns `true` for internal host-generated control/event prompts that must
+/// never leak into search results, sidebar previews, or auto-title prompts.
+pub(super) fn is_internal_control_line_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("[WorkEventBatch]")
+        || trimmed.starts_with("[CardChoiceConfirmed]")
+        || trimmed.starts_with("[ToolApproved]")
+        || trimmed.starts_with("[ToolDenied]")
+        || trimmed.starts_with("[UserApproved]")
+        || trimmed.starts_with("[UserDenied]")
+}
+
 pub(super) fn extract_session_preview(lines: &[ChatLine]) -> Option<String> {
     let raw = lines.iter().rev().find_map(|line| match line {
-        ChatLine::Assistant { text } | ChatLine::User { text } => {
+        ChatLine::Assistant { text } => {
             let trimmed = text.trim();
             (!trimmed.is_empty()).then_some(trimmed)
+        }
+        ChatLine::User { text } => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty() && !is_internal_control_line_text(trimmed))
+                .then_some(trimmed)
         }
         _ => None,
     })?;
@@ -107,6 +125,7 @@ impl TurnObserver for UiObserver {
             self.state.report_storage_error();
         }
         self.state.stream_changed(&commit.session_id);
+        self.notify_root_if_worker(&commit.session_id);
         self.state.push_update(AgentUpdate::Artifacts);
     }
 
@@ -126,6 +145,7 @@ impl TurnObserver for UiObserver {
             session.turn_started_at = None;
         }
         self.state.stream_changed(&commit.session_id);
+        self.notify_root_if_worker(&commit.session_id);
     }
 
     fn text(&self, session: &str, delta: &str) {
@@ -410,6 +430,19 @@ pub(super) fn clear_live_heartbeat(live: &mut Live) {
 }
 
 impl UiObserver {
+    fn notify_root_if_worker(&self, session: &str) {
+        let root_id = lock(&self.state.live).get(session).and_then(|live| {
+            (live.role == SessionRole::Worker)
+                .then(|| live.root_session_id.clone())
+                .flatten()
+        });
+        if let Some(root_id) = root_id
+            && root_id != session
+        {
+            self.state.push_update(AgentUpdate::Session { id: root_id });
+        }
+    }
+
     fn finish_session_settle(
         &self,
         session: &str,
@@ -441,6 +474,7 @@ impl UiObserver {
         self.state.push_update(AgentUpdate::Session {
             id: session.to_owned(),
         });
+        self.notify_root_if_worker(session);
         self.state.push_update(AgentUpdate::Sessions);
     }
 }
@@ -456,7 +490,8 @@ pub(super) async fn generate_title(
     let acquired = {
         let mut live = lock(&state.live);
         live.get_mut(&id).is_some_and(|session| {
-            if !session.auto_title_pending
+            if session.role == SessionRole::Worker
+                || !session.auto_title_pending
                 || session.auto_title_in_flight
                 || session.auto_title_attempts >= super::MAX_AUTO_TITLE_ATTEMPTS
                 || signal.is_cancelled()
@@ -553,33 +588,61 @@ pub(super) fn recover_session_deletions(
     };
     for plan in plans {
         let session_exists = engine.session(&plan.session_id).is_some();
-        let result = match plan.state {
-            SessionDeletionState::Prepared if session_exists => {
-                store.cancel_session_deletion(&plan.session_id)
+        let any_child_missing = plan
+            .child_session_ids
+            .iter()
+            .any(|cid| engine.session(cid).is_none());
+        let roll_forward = |deleted: &mut BTreeSet<String>| {
+            deleted.insert(plan.session_id.clone());
+            for cid in &plan.child_session_ids {
+                deleted.insert(cid.clone());
             }
-            SessionDeletionState::Prepared => {
-                deleted.insert(plan.session_id.clone());
-                store
-                    .commit_session_deletion(&plan.session_id)
-                    .and_then(|()| {
-                        store.cleanup_session_deletion(&plan.session_id)
-                    })
-            }
-            SessionDeletionState::Committed => {
-                deleted.insert(plan.session_id.clone());
-                if session_exists
-                    && let Err(error) = engine.remove_session(&plan.session_id)
+            cancel_receipts_for_sessions(
+                state,
+                std::iter::once(plan.session_id.as_str())
+                    .chain(plan.child_session_ids.iter().map(String::as_str)),
+            );
+            for cid in &plan.child_session_ids {
+                if engine.session(cid).is_some()
+                    && let Err(error) = engine.remove_session(cid)
                 {
                     log_storage_io_error(
-                        "remove session for committed deletion",
+                        "remove child session for cascade deletion",
                         &flowy_agent_core::SessionIndex::path(&state.root),
                         &error,
                     );
                     state.report_storage_error();
                 }
-                store.cleanup_session_deletion(&plan.session_id)
+            }
+            if engine.session(&plan.session_id).is_some()
+                && let Err(error) = engine.remove_session(&plan.session_id)
+            {
+                log_storage_io_error(
+                    "remove session for committed deletion",
+                    &flowy_agent_core::SessionIndex::path(&state.root),
+                    &error,
+                );
+                state.report_storage_error();
             }
         };
+        let result =
+            match plan.state {
+                SessionDeletionState::Prepared
+                    if session_exists && !any_child_missing =>
+                {
+                    store.cancel_session_deletion(&plan.session_id)
+                }
+                SessionDeletionState::Prepared => {
+                    roll_forward(&mut deleted);
+                    store.commit_session_deletion(&plan.session_id).and_then(
+                        |()| store.cleanup_session_deletion(&plan.session_id),
+                    )
+                }
+                SessionDeletionState::Committed => {
+                    roll_forward(&mut deleted);
+                    store.cleanup_session_deletion(&plan.session_id)
+                }
+            };
         if let Err(error) = result {
             log_storage_io_error(
                 "recover session deletion",
@@ -590,6 +653,46 @@ pub(super) fn recover_session_deletions(
         }
     }
     deleted
+}
+
+pub(super) fn cancel_receipts_for_sessions<'a>(
+    state: &UiState,
+    session_ids: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let targets: BTreeSet<&str> = session_ids.into_iter().collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let queue = AcceptanceQueue::new(state.root.clone());
+    let Ok(receipts) = queue.all() else {
+        return Vec::new();
+    };
+    let now = now_ms();
+    let mut cancelled = Vec::new();
+    for receipt in receipts {
+        if receipt.completed_at_ms.is_some()
+            || receipt.dead
+            || receipt.cancelled
+        {
+            continue;
+        }
+        let matches = receipt
+            .target_session_id
+            .as_deref()
+            .is_some_and(|sid| targets.contains(sid))
+            || receipt
+                .session_hint
+                .as_deref()
+                .is_some_and(|sid| targets.contains(sid));
+        if matches && queue.cancel(&receipt.id, now).unwrap_or(false) {
+            state.push_update(AgentUpdate::Receipt {
+                id: receipt.id.clone(),
+                state: ReceiptState::Cancelled,
+            });
+            cancelled.push(receipt.id);
+        }
+    }
+    cancelled
 }
 
 pub(super) fn migrate_legacy_source_deletions(
@@ -880,6 +983,9 @@ fn persist_index_with_status(
             session_workspace: session.session_workspace.clone(),
             pinned: session.pinned,
             archived: session.archived,
+            role: session.role,
+            root_session_id: session.root_session_id.clone(),
+            access_mode: session.access_mode,
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -962,6 +1068,9 @@ pub(super) fn import_engine_sessions(
             existing.session_workspace.clone_from(&record.workspace);
             existing.pinned = record.pinned;
             existing.archived = record.archived;
+            existing.role = record.role;
+            existing.root_session_id.clone_from(&record.root_session_id);
+            existing.access_mode = record.access_mode;
             let existing_ids = existing
                 .projection
                 .lines
@@ -1030,7 +1139,9 @@ pub(super) fn import_engine_sessions(
             lines
                 .iter()
                 .find_map(|line| match line {
-                    ChatLine::User { text } => {
+                    ChatLine::User { text }
+                        if !is_internal_control_line_text(text) =>
+                    {
                         Some(title::fallback_title(text, TITLE_MAX_CHARS))
                     }
                     _ => None,
@@ -1074,6 +1185,9 @@ pub(super) fn import_engine_sessions(
                 origin: record.origin,
                 session_workspace: record.workspace,
                 heartbeat: None,
+                role: record.role,
+                root_session_id: record.root_session_id,
+                access_mode: record.access_mode,
             },
         );
     }
@@ -1081,8 +1195,11 @@ pub(super) fn import_engine_sessions(
 
 fn is_internal_resume_message(message: &Message) -> bool {
     message.role == Role::User
-        && matches!(message.source, MessageSource::User)
-        && message.display_text.as_deref() == Some("")
+        && (matches!(
+            message.source,
+            MessageSource::CardResume | MessageSource::SystemEvent { .. }
+        ) || (matches!(message.source, MessageSource::User)
+            && message.display_text.as_deref() == Some("")))
 }
 
 pub(super) fn restore_existing_history(
@@ -1380,12 +1497,15 @@ pub(super) fn lines_from_messages_with_index(
                         lines.push(ChatLine::Artifact { artifact_id });
                     }
                 }
-                let text = message
-                    .display_text
-                    .clone()
-                    .unwrap_or_else(|| message.text());
-                if !text.is_empty() {
-                    lines.push(ChatLine::User { text });
+                if !matches!(message.source, MessageSource::SystemEvent { .. })
+                {
+                    let text = message
+                        .display_text
+                        .clone()
+                        .unwrap_or_else(|| message.text());
+                    if !text.is_empty() {
+                        lines.push(ChatLine::User { text });
+                    }
                 }
                 let tool_name = match &message.source {
                     MessageSource::Tool { tool } => Some(tool.as_str()),
@@ -1598,6 +1718,9 @@ pub(super) fn hydrate_engine(
                 delivery_commits: Vec::new(),
                 pinned: session.pinned,
                 archived: session.archived,
+                role: session.role,
+                root_session_id: session.root_session_id.clone(),
+                access_mode: session.access_mode,
                 ..SessionRecord::default()
             })
             .is_err()
