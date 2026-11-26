@@ -22,7 +22,11 @@ Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
 Remove-Item Env:RUSTC_WORKSPACE_WRAPPER -ErrorAction SilentlyContinue
 Remove-Item Env:__CARGO_TEST_FORCE_ARGFILE -ErrorAction SilentlyContinue
 
-$dxCommand = Get-Command dx -CommandType Application -ErrorAction SilentlyContinue
+$dxCommands = @(Get-Command dx.exe, dx -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*.exe' })
+$dxCommand = ($dxCommands | Where-Object { $_.Source -notmatch '\\mise\\shims\\' } | Select-Object -First 1)
+if ($null -eq $dxCommand) {
+    $dxCommand = $dxCommands | Select-Object -First 1
+}
 if ($null -eq $dxCommand) {
     Write-Error "dx not found. Install: cargo install dioxus-cli --version 0.7.10 --locked"
     exit 1
@@ -36,20 +40,43 @@ if ($versionExitCode -ne 0 -or $versionOutput -notmatch "\b0\.7\.10\b") {
     exit 1
 }
 
-$windowsLinker = Get-Command link.exe -CommandType Application -ErrorAction SilentlyContinue
-if ($null -eq $windowsLinker) {
-    Write-Error "MSVC link.exe not found. Run this from a Visual Studio Developer PowerShell or install the MSVC Build Tools."
+function Resolve-MsvcLinker {
+    $candidates = Get-Command link.exe -CommandType Application -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -match '\\VC\\Tools\\MSVC\\' }
+    if ($candidates) {
+        return ($candidates | Select-Object -First 1).Source
+    }
+
+    $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+        $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path -LiteralPath $vswhere) {
+            $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null | Out-String).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($vsPath)) {
+                $found = Get-ChildItem -Path (Join-Path $vsPath "VC\Tools\MSVC\*\bin\Hostx64\x64\link.exe") -ErrorAction SilentlyContinue |
+                    Sort-Object FullName -Descending |
+                    Select-Object -First 1
+                if ($null -ne $found) {
+                    return $found.FullName
+                }
+            }
+        }
+    }
+    return $null
+}
+
+$linkerPath = Resolve-MsvcLinker
+if ([string]::IsNullOrWhiteSpace($linkerPath)) {
+    Write-Error "MSVC link.exe not found. Install the Visual Studio MSVC Build Tools or run from a Visual Studio Developer PowerShell."
     exit 1
 }
 
-# An absolute path, not a bare `link.exe`: on machines where MSYS's
-# /usr/bin precedes MSVC on PATH, a bare name resolves to the coreutils hard
-# link helper and every rustc link fails with LNK1104 / exit 1104.
-$linkerPath = $windowsLinker.Source
-$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linkerPath
-$env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linkerPath
+# Prepend the MSVC Hostx64\x64 directory so link.exe/lib.exe/cl.exe are ahead of
+# any MSYS /usr/bin coreutils helpers (whose `link.exe` causes LNK1104 / exit 1104).
+$msvcBinDir = Split-Path -Parent $linkerPath
+$env:PATH = "$msvcBinDir;$env:PATH"
 
-$msvcRoot = Split-Path (Split-Path (Split-Path (Split-Path $windowsLinker.Source -Parent) -Parent) -Parent) -Parent
+$msvcRoot = Split-Path (Split-Path (Split-Path (Split-Path $linkerPath -Parent) -Parent) -Parent) -Parent
 $msvcLib = Join-Path $msvcRoot "lib\x64"
 $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
 $windowsKitsRoot = Join-Path $programFilesX86 "Windows Kits\10\Lib"
@@ -103,22 +130,78 @@ if ($null -eq $hotPatchFlag) {
     exit 1
 }
 
+$hostLine = & rustc -vV | Select-String -Pattern '^host:\s+'
+if ($null -eq $hostLine) {
+    Write-Error "failed to read the rustc host triple"
+    exit 1
+}
+$triple = ($hostLine.ToString() -replace '^host:\s+', '').Trim()
+$sysroot = (& rustc --print sysroot | Out-String).Trim()
+$lldLinkPath = Join-Path $sysroot "lib\rustlib\$triple\bin\gcc-ld\lld-link.exe"
+# Prefer rustup's bundled lld-link.exe (dx 0.7.10's native Windows hot-patch
+# linker): it handles GNU ar fat archives (libdeps-*.a) without LNK4003, never
+# emits MSVC /INCREMENTAL @ILT thunks that break subsecond's ASLR offset, and
+# links fat/patch binaries significantly faster. Fall back to MSVC link.exe
+# (with /INCREMENTAL:NO forced by dx-link-wrapper) if lld-link.exe is absent.
+$realLinkerPath = if (Test-Path -LiteralPath $lldLinkPath) {
+    $lldLinkPath
+} else {
+    $linkerPath
+}
+
 $wrapperManifest = Join-Path $root "scripts\dx-capture-wrapper\Cargo.toml"
 $wrapperTarget = Join-Path $root "scripts\dx-capture-wrapper\target"
 $wrapperExe = Join-Path $wrapperTarget "release\dx-capture-wrapper.exe"
-$wrapperSource = Join-Path $root "scripts\dx-capture-wrapper\src\main.rs"
-$wrapperStale = -not (Test-Path -LiteralPath $wrapperExe)
-if (-not $wrapperStale) {
-    $wrapperStale = (Get-Item -LiteralPath $wrapperSource).LastWriteTimeUtc -gt (Get-Item -LiteralPath $wrapperExe).LastWriteTimeUtc
-}
+$linkWrapperExe = Join-Path $wrapperTarget "release\dx-link-wrapper.exe"
+$captureSources = @(
+    $wrapperManifest
+    (Join-Path $root "scripts\dx-capture-wrapper\src\main.rs")
+)
+$linkSources = @(
+    $wrapperManifest
+    (Join-Path $root "scripts\dx-capture-wrapper\src\link_wrapper.rs")
+)
+$newestCaptureSource = ($captureSources | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
+$newestLinkSource = ($linkSources | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
+$wrapperStale =
+    (-not (Test-Path -LiteralPath $wrapperExe)) -or
+    (-not (Test-Path -LiteralPath $linkWrapperExe)) -or
+    ($newestCaptureSource -gt (Get-Item -LiteralPath $wrapperExe).LastWriteTimeUtc) -or
+    ($newestLinkSource -gt (Get-Item -LiteralPath $linkWrapperExe).LastWriteTimeUtc)
 if ($wrapperStale) {
-    & cargo build --release --manifest-path $wrapperManifest --target-dir $wrapperTarget --offline
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wrapperExe)) {
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linkerPath
+    $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linkerPath
+    # Override the parent repo's [build] build-dir without --config quoting
+    # issues under Windows PowerShell 5.1, then restore it before dx serve.
+    $prevBuildDir = $env:CARGO_BUILD_BUILD_DIR
+    try {
+        $env:CARGO_BUILD_BUILD_DIR = $wrapperTarget
+        & cargo build --release --manifest-path $wrapperManifest --target-dir $wrapperTarget --offline
+        $buildExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $prevBuildDir) {
+            Remove-Item Env:CARGO_BUILD_BUILD_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:CARGO_BUILD_BUILD_DIR = $prevBuildDir
+        }
+    }
+    if ($buildExitCode -ne 0 -or -not (Test-Path -LiteralPath $wrapperExe) -or -not (Test-Path -LiteralPath $linkWrapperExe)) {
         Write-Error "failed to build scripts/dx-capture-wrapper"
         exit 1
     }
 }
 $wrapperBuildTime = (Get-Item -LiteralPath $wrapperExe).LastWriteTimeUtc
+
+# Route linker calls through dx-link-wrapper so:
+# 1. unquoted paths with spaces in dx 0.7.10's @link_args.json (such as
+#    gpui-pre's MSVC atlmfc lib path) are quoted before reaching the real linker,
+# 2. dx.exe's DX_LINK=1 interception during fat/thin rustc compiles emits a
+#    minimal COFF stub instead of running a redundant full link that collides
+#    with thin hot-patch replay.
+$env:DX_REAL_LINKER = $realLinkerPath
+$env:DX_WRAPPER_NO_LINK = "1"
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linkWrapperExe
+$env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linkWrapperExe
 
 # dx 0.7.10 busts target/<triple>/<profile>/.fingerprint. This workspace uses
 # Cargo's build-dir layout (target/<triple>/desktop-dev/build/<pkg>/<hash>/fingerprint),
@@ -157,12 +240,6 @@ if ($memberPattern.Success) {
     }
 }
 
-$hostLine = & rustc -vV | Select-String -Pattern '^host:\s+'
-if ($null -eq $hostLine) {
-    Write-Error "failed to read the rustc host triple"
-    exit 1
-}
-$triple = ($hostLine.ToString() -replace '^host:\s+', '').Trim()
 $fingerprintRoots = @(
     (Join-Path $root "target\$triple\desktop-dev"),
     (Join-Path $root "build.noindex\$triple\desktop-dev")

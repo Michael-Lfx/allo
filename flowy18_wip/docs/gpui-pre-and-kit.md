@@ -229,15 +229,40 @@ window.find_all_by_role(Role::Button)
 ## 热补丁
 
 `gpui-pre` 有 `hot-reload` feature（基于 Dioxus subsecond），每个 view 的
-`render` 都在 `subsecond::HotFn` 边界里。启动方式：
+`render` 都在 `subsecond::HotFn` 边界里。Windows 启动方式（在 `flowy18_wip/` 下）：
 
-```
-dx serve --hot-patch
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-hotpatch.ps1
 ```
 
-**本机不可用**：`dx serve` 强制 `-Clinker=dx.exe`，在链接阶段失败
-（`exit 1` / `LNK1104`）。改用 cargo 走同一 wrapper 能构建成功，所以问题在
-dx 的调用参数，不在 MSVC 或 wrapper。热补丁入口仍是 `dx serve`，卡点未变。
+**Windows 已跑通（2026-11-26 实测）**：此前 `dx serve --hot-patch` 强制
+`-Clinker=dx.exe` 失败（`exit 1` / `LNK1104`），根因是 `dioxus-cli 0.7.10` 在
+Windows 下的五处联动缺陷，现已通过脚本与本地 wrapper 全部规避：
+
+1. **响应文件空格路径未加引号**：`dx` 写 `@link_args.json` 时不加引号，`gpui-pre`
+   传递的 `C:\Program Files\...\atlmfc\lib\x64` 被链接器按空格拆成 `Files\Microsoft.obj`
+   报 `LNK1104` → `dx-link-wrapper` 将含空白行重写到临时 UTF-16LE BOM `.rsp`。
+2. **`NoLink` 旁路失效与捕获环境污染**：`dx` 将 `custom_linker` 透传进 fat/thin
+   阶段，且 thin 重放把捕获的 `envs` 覆盖在最后 → `dx-capture-wrapper` 过滤临时
+   `RUSTC_WRAPPER` / `DX_RUSTC` / `DX_LINK*` / `CARGO_MAKEFLAGS`；`dx-link-wrapper`
+   在 `DX_WRAPPER_NO_LINK=1` + `DX_LINK=1` + `@<DX_LINK_ARGS_FILE>` 时写出 20 字节
+   COFF 占位桩，恢复 `dx` 原本的 `NoLink` 行为。
+3. **MSVC `link.exe` 隐式 `/INCREMENTAL` 与 `LNK4003`**：MSVC `/DEBUG` 默认开增量链接，
+   导出 `@ILT` 跳转桩令 subsecond ASLR 偏移错位崩溃，且不认 GNU-ar `libdeps-*.a` →
+   `dev-hotpatch.ps1` 优先使用 rustup 自带 `lld-link.exe` 作为 `DX_REAL_LINKER`，
+   仅在缺失时回退 MSVC `link.exe` 并由 `dx-link-wrapper` 追加 `/INCREMENTAL:NO`。
+4. **x64 `stub.o` 的 `__chkstk` ABI 破坏**：`dx 0.7.10` 给所有未定义函数（含
+   `__chkstk`）生成 `movabs rax, addr; jmp rax`，踩毁 Windows x64 栈探测入参
+   `RAX` 导致热补丁生效即栈溢出 → `dx-link-wrapper` 在 `/DLL` 补丁链接时复制
+   `stub.o` 并将 `__chkstk` 等符号由 `EXTERNAL` 降为 `STATIC`，改由 `msvcrt.lib`
+   原生 `chkstk.obj` 解析。
+5. **1-hop 文件监听范围**：`dx 0.7.10` 忽略 `[web.watcher] watch_path`，只递归监听
+   `flowy-desktop` 的直接依赖 → `crates/flowy-desktop/Cargo.toml` 直接声明
+   `flowy-studio` / `flowy-ui` / `flowy-i18n`（均已是 `flowy-app` 传递依赖），使
+   修改这些 UI crate 也能自动触发拓扑级联热补丁。
+
+**边界不变**：渲染、布局、文案与绘制改动可原位热补丁（进程 PID 与窗口/登录状态保持）；
+修改 struct 字段、静态初始化器或依赖增删仍需按 `r` 重建或重启。
 
 ## 动效原语与无障碍总闸（2026-11-26 实测增补）
 

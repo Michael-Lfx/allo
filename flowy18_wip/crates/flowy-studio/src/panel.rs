@@ -2824,9 +2824,11 @@ mod tests {
             )
         });
         let agent = cx.read_entity(&panel, |panel, _| panel.agent.clone());
-        // The loader is a real worker thread, so yielding the test thread lets
-        // it finish without advancing the GPUI timer pump or fabricating events.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // The loader is a real worker thread (SQLite + official skill seeding),
+        // so yielding the test thread lets it finish without advancing the GPUI
+        // timer pump or fabricating events. Allow generous wall-clock headroom
+        // for parallel NTFS/SQLite contention on Windows CI runners.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut updates = Vec::new();
         loop {
             updates.extend(agent.drain_updates());
@@ -2839,7 +2841,8 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "background session initialization finished"
+                "background session initialization did not finish in time (initializing={}, updates={updates:?})",
+                agent.is_initializing(),
             );
             std::thread::sleep(Duration::from_millis(1));
         }

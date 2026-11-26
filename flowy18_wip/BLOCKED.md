@@ -23,11 +23,16 @@
 **结论**：不移植。直接用 `gpui_kit::base::input` 的 `Input` / `Textarea`，
 `flowy-ui` 只保留样式壳。
 
-### 2. 热补丁（hot-patching）
+### 2. 热补丁（hot-patching，已解决）
 
-`dx serve` 强制 `-Clinker=dx.exe`，两种模式都在链接阶段失败
-（exit 1 / LNK1104）。用 cargo 走同一 wrapper 构建成功，说明问题在 dx 的
-调用参数，不在 wrapper / MSVC / CE。**本机不可用**。
+早期 `dx serve` 强制 `-Clinker=dx.exe` 导致两种模式均在链接阶段失败（`exit 1` / `LNK1104`）。
+2026-11-26 排查并确认根因在 `dioxus-cli 0.7.10` 的 Windows 实现（未给含空格的响应文件
+`/LIBPATH` 加引号、`DX_LINK_CUSTOM_LINKER` 绕过 `NoLink` 且捕获环境回灌、MSVC
+`/INCREMENTAL` `@ILT` 偏移与 `libdeps-*.a` 冲突、x64 `stub.o` 破坏 `__chkstk` `RAX`
+入参以及 1-hop 监听未覆盖传递 UI crate）。现已通过 `scripts/dev-hotpatch.ps1` +
+`scripts/dx-capture-wrapper`（含 `dx-link-wrapper`）+ rustup `lld-link.exe` +
+`flowy-desktop` 直接声明 UI crate 依赖全部修复，Windows 下 `flowy-app` 与 `flowy-studio`
+原位热补丁均已实测跑通（详见 `docs/gpui-pre-and-kit.md`）。
 
 ### 3. `gpui-tray`（已解决）
 

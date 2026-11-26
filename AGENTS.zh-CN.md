@@ -26,6 +26,7 @@ Flowy 是一套基于 Rust + Tauri + React 的本地优先（local-first）自�
 | `ui/src/renderer/` | 页面视图、业务组件、React Hooks、服务与样式。 |
 | `docs/` | 用户手册、架构文档、贡献指南与技术规范。 |
 | `scripts/` | 构建辅助脚本、质量门禁检查器与发版工具链。 |
+| `flowy18_wip/` | 嵌套 GPUI（`gpui-pre` + `gpui-kit`）桌面端 Cargo 工作区。改动前先读 [`flowy18_wip/AGENTS.md`](flowy18_wip/AGENTS.md)（含 Windows `dx serve --hot-patch` 热补丁启动脚本 `scripts/dev-hotpatch.ps1`、快速验证路径与 Windows 构建排坑）。 |
 
 **核心架构边界：** 后端业务特性代码归属 `crates/backend/`；Agent 引擎代码归属 `crates/agent/`。后端调用 Agent 引擎必须统一经过 `nomifun-ai-agent`（唯一桥接入口）。严禁在没有 feature gate 与明确架构文档依据的情况下，让后端 crate 直接依赖 `nomi-*`。
 

@@ -9,3 +9,7 @@ publish = false
 [[bin]]
 name = "dx-capture-wrapper"
 path = "src/main.rs"
+
+[[bin]]
+name = "dx-link-wrapper"
+path = "src/link_wrapper.rs"

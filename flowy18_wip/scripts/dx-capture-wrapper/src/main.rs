@@ -176,8 +176,12 @@ fn write_capture(args_dir: &Path, rustc_args: &[String]) -> Result<(), String> {
             .map_err(|err| err.to_string())?;
     }
     write!(file, "],\"envs\":[").map_err(|err| err.to_string())?;
-    for (index, (key, value)) in env::vars().enumerate() {
-        if index > 0 {
+    let mut env_index = 0usize;
+    for (key, value) in env::vars() {
+        if !should_capture_env(&key) {
+            continue;
+        }
+        if env_index > 0 {
             write!(file, ",").map_err(|err| err.to_string())?;
         }
         write!(
@@ -187,9 +191,24 @@ fn write_capture(args_dir: &Path, rustc_args: &[String]) -> Result<(), String> {
             json_escape(&value)
         )
         .map_err(|err| err.to_string())?;
+        env_index += 1;
     }
     writeln!(file, "]}}").map_err(|err| err.to_string())?;
     Ok(())
+}
+
+/// Drop ephemeral wrapper, linker-interception, and Cargo jobserver variables
+/// from captured rustc environments. `dx 0.7.10` re-applies `rustc_args.envs`
+/// last during thin hot-patch builds, so keeping these re-injects `DX_RUSTC`,
+/// stale `DX_LINK_*` paths, and dead `CARGO_MAKEFLAGS` semaphores.
+fn should_capture_env(key: &str) -> bool {
+    let is_filtered = key.eq_ignore_ascii_case("RUSTC_WRAPPER")
+        || key.eq_ignore_ascii_case("RUSTC_WORKSPACE_WRAPPER")
+        || key.eq_ignore_ascii_case("DX_RUSTC")
+        || key.eq_ignore_ascii_case("CARGO_MAKEFLAGS")
+        || key.eq_ignore_ascii_case("MAKEFLAGS")
+        || (key.len() >= 7 && key[..7].eq_ignore_ascii_case("DX_LINK"));
+    !is_filtered
 }
 
 fn pack_search_paths(
@@ -359,5 +378,21 @@ mod tests {
             &args[9..13]
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn filters_ephemeral_wrapper_and_dx_link_envs() {
+        assert!(!should_capture_env("RUSTC_WRAPPER"));
+        assert!(!should_capture_env("RUSTC_WORKSPACE_WRAPPER"));
+        assert!(!should_capture_env("DX_RUSTC"));
+        assert!(!should_capture_env("CARGO_MAKEFLAGS"));
+        assert!(!should_capture_env("MAKEFLAGS"));
+        assert!(!should_capture_env("DX_LINK"));
+        assert!(!should_capture_env("DX_LINK_ARGS_FILE"));
+        assert!(!should_capture_env("DX_LINK_CUSTOM_LINKER"));
+        assert!(should_capture_env("DX_REAL_LINKER"));
+        assert!(should_capture_env("DX_WRAPPER_NO_LINK"));
+        assert!(should_capture_env("LIB"));
+        assert!(should_capture_env("PATH"));
     }
 }

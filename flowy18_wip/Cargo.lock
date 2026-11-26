@@ -2308,8 +2308,11 @@ name = "flowy-desktop"
 version = "1.8.0"
 dependencies = [
  "flowy-app",
+ "flowy-i18n",
  "flowy-obs",
  "flowy-shell",
+ "flowy-studio",
+ "flowy-ui",
  "gpui-pre",
  "gpui-pre-platform",
  "serde_json",

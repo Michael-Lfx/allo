@@ -2,7 +2,7 @@ UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面�
 
 **GPUI 本身用 `gpui-pre` + `gpui-kit`，不是社区 fork `gpui-ce`。** 写任何 GPUI 代码前先读 [`docs/gpui-pre-and-kit.md`](docs/gpui-pre-and-kit.md)——它记录了三个依赖为什么必须精确锁定、`gpui_kit::base::input` 的路径、必须传 `window` 的构造、程序化写值的两个语义陷阱、`gpui-pre` 缺失的 11 项能力及替代方案、键上下文按深度取最深匹配的规则（这条踩过坑）、六条布局陷阱和测试的三个坑。
 
-Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试的环境问题，先看 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)；文档总索引在 [`docs/README.md`](docs/README.md)。
+Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试 / `dx serve` 热补丁的环境问题，先看 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)；文档总索引在 [`docs/README.md`](docs/README.md)。
 
 已知能力缺口与取舍记录在 [`BLOCKED.md`](BLOCKED.md)，迁移进度在 [`PROGRESS.md`](PROGRESS.md)。动手改界面行为前扫一眼 `BLOCKED.md`，那里列的十条是**有意不做**，不是漏做。
 
@@ -23,20 +23,31 @@ Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试的环境问题，先看 [`
 | `flowy-app` | 域状态 + 壳装配；持有 `Entity<StudioPanel>`；登录 UI 只绑 auth ViewModel；Flex 模态 + `preferences.json` | `FlowyApp` / `app::run`；`pub use` agent/i18n |
 | `flowy-desktop` | 二进制入口（bin 名 `flowy-app`） | `dx serve --hot-patch` / `--hotpatch` 宿主 |
 
-热补丁入口：
+热补丁入口（`gpui-pre` 的 `hot-reload` feature + Dioxus `0.7.10` subsecond，Windows 已验证跑通）：
 
-> **在 `gpui-pre` 下本机不可用。** `gpui-pre` 的 `hot-reload` feature 是真的（基于 Dioxus subsecond，每个 view 的 `render` 都在 `HotFn` 边界里），但 `dx serve --hot-patch` 会强制 `-Clinker=dx.exe`，在链接阶段失败（`exit 1` / `LNK1104`）。用 cargo 走同一个 wrapper 能构建成功，所以问题在 dx 的调用参数，不在 MSVC 或 wrapper。下面这套流程沿用自 `gpui-ce` 时代，保留备查，但**现在跑不通**。
-
-- Windows PowerShell：`powershell -ExecutionPolicy Bypass -File scripts/dev-hotpatch.ps1`
+- Windows PowerShell：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-hotpatch.ps1`
 - macOS：`bash scripts/dev-hotpatch.sh`
 
 Windows 推荐启动步骤：
 
 1. 关闭已有的 Flowy 窗口，确保没有 `flowy-app.exe` 进程。
-2. 在仓库根目录执行：
+2. 在 `flowy18_wip` 根目录（普通 PowerShell 即可，无需手动进 VS 开发者终端）执行：
 
    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-hotpatch.ps1`
 
-3. 保持这个终端和 `dx serve` 进程运行，修改源码后观察窗口热补丁结果。
+3. 保持这个终端和 `dx serve` 进程运行，修改 UI 源码（`flowy-desktop` / `flowy-app` / `flowy-studio` / `flowy-ui` / `flowy-i18n` / `flowy-shell`）后观察窗口原位热补丁结果。
 
-首次启动会编译完整 debug 依赖，耗时较长；后续应在同一个 `dx serve` 会话中迭代。脚本会在编译前检查旧进程、`dx` 0.7.10、Visual Studio 的 `link.exe` 和 Windows SDK 的 `advapi32.lib`，并自动设置 MSVC/SDK 的 `LIB` 路径。两个入口都使用 GPUI 的 `hot-patching` feature。Windows 入口会把 `link.exe` 传给 Cargo，避免仓库默认的 `rust-lld.exe` 与 Dioxus hotpatch linker 冲突。热补丁只对 debug/native 构建生效，修改渲染、布局和绘制逻辑时会保留运行中的窗口状态；修改 struct 字段、初始化逻辑或依赖状态布局时需要重启。
+首次启动会编译完整 debug 依赖并打包 fat archive（`libdeps-*.a`），耗时较长；后续应在同一个 `dx serve` 会话中迭代。Windows 脚本会在编译前检查旧进程、`dx` 0.7.10、Visual Studio MSVC（自动经 `vswhere.exe` 查找并置于 `PATH` 前端以避开 MSYS `link.exe`）与 Windows SDK 的 `advapi32.lib`，自动设置 `LIB`，并通过 `scripts/dx-capture-wrapper`（`dx-capture-wrapper` + `dx-link-wrapper`）与 rustup 内置 `lld-link.exe`（缺失时回退 MSVC `link.exe /INCREMENTAL:NO`）规避 `dx 0.7.10` 在 Windows 下的响应文件引号、`NoLink` 与 `__chkstk` 桩缺陷（详见 [`docs/gpui-pre-and-kit.md`](docs/gpui-pre-and-kit.md) 与 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)）。热补丁只对 debug/native 构建生效，修改渲染、布局和绘制逻辑时会保留运行中的窗口状态与进程 PID；修改 struct 字段、静态初始化逻辑或状态布局时按 `r` 重建或重启。
+
+### Windows 同事与 Agent 速查（前置 · 快速验证 · 红线）
+
+- **前置安装（一次性）**：Rust `1.100`（`rust-toolchain.toml` 已锁，自带 `lld-link.exe`）、Visual Studio Build Tools（MSVC x64 + Windows 10/11 SDK），以及精确版本 `cargo install dioxus-cli --version 0.7.10 --locked`。
+- **分层验证（避免每次改几行都跑全量 8-crate 门禁）**：
+  - 界面/布局/文案迭代：启动一次 `.\scripts\dev-hotpatch.ps1`，保存源码约 15–18s 原位热补丁生效。
+  - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`。
+  - 仅 PR 提交前跑一次完整门禁：`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-agent` 需 `-- --test-threads=1`）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`。
+- **Windows Agent 避坑红线**：
+  - 必须经 `.\scripts\dev-hotpatch.ps1` 启动热补丁，**不要**手敲裸 `dx serve --hot-patch` 或手动注入 `RUSTC_WRAPPER=sccache` / `-Clinker=...`。
+  - 同一 worktree 内**严禁并发运行多个 `cargo`**（会争抢 `build.noindex` 锁）。
+  - 不要删除 `scripts/dx-capture-wrapper/target/`（重编 `dx-capture-wrapper.exe` 会改变 Cargo 的 `RUSTC_WRAPPER` 指纹并触发 `desktop-dev` 依赖重编）。
+  - 不要删掉 `crates/flowy-desktop/Cargo.toml` 中对 `flowy-i18n` / `flowy-studio` / `flowy-ui` 的直接依赖——它们用于让 `dx 0.7.10` 的 1-hop 监听器覆盖全部 UI crate。

@@ -29,6 +29,7 @@ web) and one React 19 SPA.
 | `ui/src/renderer/` | Pages, components, hooks, services, styles. |
 | `docs/` | User guides, architecture, contributor docs, specs. |
 | `scripts/` | Build helpers, quality gate checkers, release tooling. |
+| `flowy18_wip/` | Nested GPUI (`gpui-pre` + `gpui-kit`) desktop Cargo workspace. Read [`flowy18_wip/AGENTS.md`](flowy18_wip/AGENTS.md) first (includes Windows `dx serve --hot-patch` via `scripts/dev-hotpatch.ps1`, fast verification loop, and Windows build pitfalls). |
 
 **Key boundary:** backend feature code goes through `crates/backend/`. Agent
 engine code goes through `crates/agent/`. Backend-to-agent usage goes through

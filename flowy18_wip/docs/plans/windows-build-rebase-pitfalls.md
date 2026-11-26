@@ -200,7 +200,55 @@ cargo build --offline --ignore-rust-version \
 
 实测：窗口标题 `Flowy`；已登录账号下模型 chip 显示云端目录里的模型名
 （`Deepseek-v4.1-flash`），说明 `catalog → panel → composer` 的模型名同步链路
-在真实账号下工作。注意这只是启动 smoke，不是 UI 回归；`dx serve` 热补丁未验证。
+在真实账号下工作。注意这只是 2026-11-17 的启动 smoke，不是 UI 回归；当时的
+`dx serve` 热补丁尚未打通（**2026-11-26 已修复并实机验证通过，见下文「六（补充）」**）。
+
+## 六（补充）、Windows 热补丁（`dx serve --hot-patch`，2026-11-26 已实测跑通）
+
+其他 Windows 开发者或 Agent 迭代 `flowy18_wip` 界面时，不再需要每次改动都整包重编重拉（~1 分钟+）；可直接通过 `scripts/dev-hotpatch.ps1` 原位热补丁运行中窗口。
+
+### 1. 前置环境（每台 Windows 机器一次性准备）
+
+- **Rust 工具链**：仓库 `rust-toolchain.toml` 锁定的 `1.100`（自带 `lld-link.exe`，位于 `<sysroot>\lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe`）。
+- **`dx 0.7.10`（精确版本，与 `gpui-pre` 的 `subsecond 0.7.10` 匹配）**：
+
+  ```powershell
+  cargo install dioxus-cli --version 0.7.10 --locked
+  ```
+
+- **Visual Studio Build Tools（MSVC x64）+ Windows 10/11 SDK**（含 `vcruntime.lib`、`ucrt.lib`、`advapi32.lib`；脚本会通过 `vswhere.exe` 自动发现，**无需**提前打开 VS Developer PowerShell）。
+
+### 2. 启动命令与实测表现
+
+在 `flowy18_wip/` 目录（普通 Windows PowerShell 5.1 或 PowerShell 7 均可）执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-hotpatch.ps1
+```
+
+- **自动覆盖的热补丁 UI crate**：`flowy-desktop`、`flowy-app`、`flowy-studio`、`flowy-ui`、`flowy-i18n`、`flowy-shell`、`flowy-obs`。
+- **耗时预期**：
+  - 首次冷启动或增删 `flowy-desktop` 依赖时：需要编译 `desktop-dev` 依赖并生成一次约 857 MB 的 fat archive（`target\...\libdeps-*.a`），耗时较长。
+  - 会话建立后改代码热补丁：实测修改 `crates/flowy-app/src/app/titlebar.rs`（~18s）与传递 UI crate `crates/flowy-studio/src/home.rs`（~15s）均可原位热补丁生效（日志出现 `GPUI hot reload applied`），**保持同一 PID、窗口几何与云端登录会话不重启**。
+- **不适用热补丁的改动**：增删 struct 字段、修改静态初始化器或变更 `Cargo.toml` 依赖时，在 `dx serve` 终端按 `r` 重建或重启会话。
+
+### 3. 已修复的 5 处 `dx 0.7.10` Windows 缺陷（切勿误删相关代码）
+
+1. **响应文件空格路径未加引号（`LNK1104: Files\Microsoft.obj`）**：`scripts/dx-capture-wrapper/src/link_wrapper.rs` 将含空白行重写到临时 UTF-16LE BOM `.rsp`。
+2. **`DX_LINK_CUSTOM_LINKER` 绕过 `NoLink` + 捕获环境回灌**：`src/main.rs` 过滤 `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` / `DX_RUSTC` / `DX_LINK*` / `CARGO_MAKEFLAGS`；`src/link_wrapper.rs` 在 `DX_WRAPPER_NO_LINK=1` + `DX_LINK=1` + `@<DX_LINK_ARGS_FILE>` 时写出 20 字节 COFF 占位桩。
+3. **MSVC `link.exe` 隐式 `/INCREMENTAL` `@ILT` 偏移崩溃（`0xc0000409`）与 `LNK4003`**：`dev-hotpatch.ps1` 优先选用 rustup 自带 `lld-link.exe` 作为 `DX_REAL_LINKER`，缺失时才回退 MSVC `link.exe` 并由 `dx-link-wrapper` 追加 `/INCREMENTAL:NO`。
+4. **x64 `stub.o` 踩毁 `__chkstk` 的 `RAX` 入参导致栈溢出（`0xc000041d`）**：`dx-link-wrapper` 在 `/DLL` 补丁链接时复制 `stub.o` 并将 `__chkstk` / `_chkstk` / `___chkstk_ms` / `__alloca_probe` 降为 `STATIC`，改由 `msvcrt.lib` 原生 `chkstk.obj` 解析。
+5. **1-hop 文件监听漏掉传递 UI crate**：`crates/flowy-desktop/Cargo.toml` 直接声明 `flowy-i18n` / `flowy-studio` / `flowy-ui`（均已是 `flowy-app` 传递依赖，不引入新外部包），使 `dx` 原生监听规范路径并走完整拓扑级联重放。
+
+### 4. Windows 热补丁常见排查速查
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 脚本提示 `Flowy is already running` | 关闭已有 Flowy 窗口或停止旧 `dx serve` 会话（`dx` 启动的进程名为 `flowy-app-<hash>.exe`） |
+| 报 `need dx 0.7.10` 或选到 `mise\shims\dx` | 安装 `dioxus-cli 0.7.10`；脚本已自动跳过 `mise\shims` 并筛选真实 `dx.exe` |
+| 删掉/重编了 `dx-capture-wrapper.exe` 后变慢 | Cargo 把 `RUSTC_WRAPPER` 哈希计入指纹，重编 wrapper 会触发一次 `desktop-dev` 依赖重编，平时勿手动清理 `scripts/dx-capture-wrapper/target/` |
+| 直接手敲 `dx serve --hot-patch` 仍报 `LNK1104` | 必须通过 `.\scripts\dev-hotpatch.ps1` 启动，不要绕过脚本手敲 `dx serve`（脚本负责清 `sccache`、挂双 wrapper、配 `LIB` 与 `lld-link.exe`） |
+| PS 5.1 下编 wrapper 报 `--config` TOML 错误 | 脚本已改用临时 `CARGO_BUILD_BUILD_DIR` 并在 `finally` 还原，切勿改回裸 `--config 'build.build-dir="..."'` |
 
 ## 七、别做的事
 
