@@ -22,9 +22,6 @@ pub const UNASSIGNED_QUEUE_SESSION_ID: &str = "unassigned-queue";
 /// Milliseconds in one 24-hour day.
 pub const DAY_MS: u64 = 86_400_000;
 
-/// Milliseconds in 7 days (default visual fold boundary on Progress Board).
-pub const SEVEN_DAYS_MS: u64 = 7 * DAY_MS;
-
 /// Maximum branches retained for visual display per session card/modal.
 /// KPI totals are always accumulated across all branches before truncation.
 const MAX_DISPLAY_BRANCHES: usize = 6;
@@ -78,25 +75,15 @@ fn naive_date_key(date: NaiveDate) -> LocalDateKey {
     (date.year(), date.month() as u8, date.day() as u8)
 }
 
-/// Resolves `(year, month, day)` in the given fixed UTC offset (seconds).
-#[must_use]
-pub fn local_date_from_epoch_ms(
-    ts_ms: u64,
-    tz_offset_secs: i32,
-) -> Option<LocalDateKey> {
-    local_naive_date(ts_ms, tz_offset_secs).map(naive_date_key)
-}
-
 /// Returns `(month, day)` in the given timezone offset, falling back to UTC
 /// civil conversion if the timestamp is outside `chrono`'s valid range.
 #[must_use]
 pub fn civil_month_day_in_tz(ts_ms: u64, tz_offset_secs: i32) -> (u8, u8) {
-    if let Some((_, month, day)) =
-        local_date_from_epoch_ms(ts_ms, tz_offset_secs)
-    {
+    if let Some(date) = local_naive_date(ts_ms, tz_offset_secs) {
+        let (_, month, day) = naive_date_key(date);
         (month, day)
     } else {
-        civil_month_day_from_epoch_ms(normalize_epoch_ms(ts_ms))
+        civil_month_day_utc_fallback(normalize_epoch_ms(ts_ms))
     }
 }
 
@@ -128,8 +115,7 @@ pub fn is_older_than_7d_in_tz(
 
 /// Single source of truth mapping a session's `updated_at` timestamp to its
 /// local calendar-day bucket key (clamping minor future clock skew to Today).
-#[must_use]
-pub fn bucket_date_for_session(
+fn bucket_date_for_session(
     updated_at_ms: u64,
     now_ms: u64,
     tz_offset_secs: i32,
@@ -156,19 +142,7 @@ pub fn matches_day_filter(
         == Some(selected_day)
 }
 
-/// Returns true when a normalized timestamp is strictly older than 7 days
-/// relative to `now_ms`. Zero/unknown timestamps are treated as not older so
-/// brand-new sessions are never hidden behind the fold.
-#[must_use]
-pub const fn is_older_than_7d(updated_at_ms: u64, now_ms: u64) -> bool {
-    let ts = normalize_epoch_ms(updated_at_ms);
-    ts > 0 && now_ms.saturating_sub(ts) > SEVEN_DAYS_MS
-}
-
-/// Howard Hinnant's civil-from-days algorithm returning `(month, day)` for
-/// zero-dependency 7-day chart axis labels and older relative dates.
-#[must_use]
-pub const fn civil_month_day_from_epoch_ms(ts_ms: u64) -> (u8, u8) {
+const fn civil_month_day_utc_fallback(ts_ms: u64) -> (u8, u8) {
     let z = (ts_ms / DAY_MS).cast_signed() + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097).cast_unsigned();
@@ -439,7 +413,7 @@ pub fn compute_daily_7d_in_tz(
             } else {
                 let bucket_ts =
                     now_ms.saturating_sub(u64::from(offset) * DAY_MS);
-                let (m, d) = civil_month_day_from_epoch_ms(bucket_ts);
+                let (m, d) = civil_month_day_utc_fallback(bucket_ts);
                 ((0, m, d), m, d)
             };
             DailyActivityBucket {
@@ -471,16 +445,6 @@ pub fn compute_daily_7d_in_tz(
         }
     }
     buckets
-}
-
-/// Buckets non-archived sessions into 7 daily columns using the host's current
-/// local timezone.
-#[must_use]
-pub fn compute_daily_7d(
-    groups: &[&SessionBoardGroup],
-    now_ms: u64,
-) -> Vec<DailyActivityBucket> {
-    compute_daily_7d_in_tz(groups, now_ms, local_tz_offset_secs())
 }
 
 /// Pre-aggregated KPI metrics painted by `flowy-ui::charts::donut_chart` and bars.
@@ -1702,9 +1666,9 @@ mod tests {
         assert_eq!(normalize_epoch_ms(now_ms), now_ms);
         assert_eq!(normalize_epoch_ms(0), 0);
 
-        assert!(!is_older_than_7d(now_ms - DAY_MS, now_ms));
-        assert!(is_older_than_7d(now_ms - 8 * DAY_MS, now_ms));
-        assert!(!is_older_than_7d(0, now_ms));
+        assert!(!is_older_than_7d_in_tz(now_ms - DAY_MS, now_ms, 0));
+        assert!(is_older_than_7d_in_tz(now_ms - 8 * DAY_MS, now_ms, 0));
+        assert!(!is_older_than_7d_in_tz(0, now_ms, 0));
 
         let make_group =
             |id: &str, updated_at: u64, active: bool, archived: bool| {
@@ -1741,7 +1705,7 @@ mod tests {
         assert_eq!(kpi.active_sessions, 1);
         assert_eq!(kpi.archived_sessions, 1);
 
-        let buckets = compute_daily_7d(&refs, now_ms);
+        let buckets = compute_daily_7d_in_tz(&refs, now_ms, 0);
         assert_eq!(buckets.len(), 7);
         assert_eq!(buckets[6].day_offset, 0);
         assert_eq!(buckets[6].active_or_blocked, 1);

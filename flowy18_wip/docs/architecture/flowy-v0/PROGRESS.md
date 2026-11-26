@@ -1091,4 +1091,21 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
   cargo test --locked -p flowy-studio                                : 112 passed, 0 failed, 0 ignored (2.71s)
   cargo check --locked -p flowy-desktop                              : 0 error, 0 warning (27.19s)
   ```
-- **范围与发布状态**：PR #496（`feat/flowy-router-kernel`，open / 待合流）仅触及 `flowy-agent-core`（6 文件）、`flowy-agent`（15 文件）与 `flowy18_wip/docs/architecture/flowy-v0/`（7 份同步文档）；零触碰 `flowy-studio` / `flowy-app` / `flowy-ui` / `flowy-i18n` / 根 workspace；主工作区 `D:\workSpace\git_clone_test\allo` 保持 100% 干净。
+- **范围与发布状态**：PR #496（`feat/flowy-router-kernel`，已于 `origin/main@aa522353f` 合入 `main`）仅触及 `flowy-agent-core`（6 文件）、`flowy-agent`（15 文件）与 `flowy18_wip/docs/architecture/flowy-v0/`（7 份同步文档）；零触碰 `flowy-studio` / `flowy-app` / `flowy-ui` / `flowy-i18n` / 根 workspace；主工作区 `D:\workSpace\git_clone_test\allo` 保持 100% 干净。
+
+---
+
+## 任务 23 · PR #497 工作台体验打磨（进度看板 7 日本地反筛、资料库右键/锚点修复、快搜分类与 5 秒归档撤销）+ 审查减脂（`feat/flowy-studio-ux-polish`，2026-11-26）
+
+- **工位与基线**：暖构建 worktree `.agents/worktrees/feat-flowy-local-receipt`（分支 `feat/flowy-studio-ux-polish`，PR #497），在 PR #496 合入 `origin/main@aa522353f` 后零冲突线性 rebase。
+- **边界核验**：严格 **0 改动** `flowy-agent-core` / `flowy-agent` / `flowy-ui` / `flowy-studio/src/overview/flow_modal.rs` / 根工作区，仅改动 `flowy-studio`、`flowy-app`、`flowy-i18n`（23 语种，924 键对称）、`flowy18_wip/Cargo.lock`（复用工作区 `chrono`）与本目录修订 9.11 同步文档。
+- **三切片落地与两轮审查减脂**：
+  - **Slice A（进度看板）**：复用工作区 `chrono` 按显式本地偏移 `local_offset_secs` 分桶近 7 日自然日，支持点击柱状图反筛、卡片头内联统计与可关闭日期 chip；二轮清理彻底删除 4 个 UTC 旧公开死 API（`SEVEN_DAYS_MS` / `local_date_from_epoch_ms` / `is_older_than_7d` / `compute_daily_7d`）、私有化 2 个内部辅助并抽取 `format_bucket_day_label` 消除 3× 重复格式化。
+  - **Slice B（资料库）**：`Popup::Item { id, anchor_id }` 根治网格视图 `...` 错位锚点；列表与网格全面接入右键菜单并修 `set_items` 消失条目悬空弹窗；严格守住 `LibraryModel` 无磁盘路径契约，对 `Missing`/`Corrupt` 隐藏失效「另存为」、用 `arrow_up_right` 区分「回到原对话」、引入语义 `status_pill` 与收藏星标及带文件名的唯一无障碍标签。
+  - **Slice C（快搜 + 5 秒归档撤销 + 清死代码）**：快搜新增 5 类筛选芯片（`Tab`/`Shift+Tab` 轮切保焦）与 UTF-8 安全 `StyledText` 高亮（二轮将 `tokenize_query` 外提到每帧 1 次，空查询 Library/Projects 排序改借用 `Vec<&_>` 消除深拷贝）；右下角 5 秒轻量归档撤销条（`.occlude()` + `!modal_active()` + 悬浮窗避让 + 脱敏 + `was_viewing_active` 守卫，二轮将 `ArchiveUndoController` 压减至 ~30 行单一代际实现）；删死枚举 `Section::Search` 及 23 语种孤立键 `section.search`。
+- **最终串行全量门禁与双主题实机 E2E**：
+  - `cargo fmt --all -- --check`：0 diff；`check-ui-contracts.mjs`：24/24 自测 + 全库 PASS；
+  - 9-Crate `cargo clippy --all-targets -- -D warnings`（含 `flowy-desktop`）：**0 error, 0 warning**（26.79s）；
+  - 8-Crate 串行 `cargo test`：**654 / 654 PASS**（core 117 / agent 246 / studio 114 / skills 66 / app 56 / ui 46 / i18n 8 / shell 1；0 failed，5 ignored）；
+  - 双主题实机 E2E（`ui-shot.ps1 -DataMode Clone`，`zh-CN`，`1280×820`）：Dark **32 / 32** + Light **31 / 31** 全绿（`ok=True, failures=0, log_errors=0, APPDATA_RESTORED, RUNNING_FLOWY=0`）；
+  - 预览包 `C:\Users\38788\AppData\Local\FlowyPreview\flowy-app.exe`（`79,359,488` 字节，`SHA-256: 4171AC5CD9858DC50EEAF00B90273CE456FFE0B9983875F8049D233281F4C96A`）已同步。

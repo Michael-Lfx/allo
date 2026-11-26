@@ -12,8 +12,7 @@ const ARCHIVE_UNDO_TIMEOUT: Duration = Duration::from_secs(5);
 struct ArchiveUndoEntry {
     session_id: String,
     title: String,
-    was_active: bool,
-    generation: u64,
+    was_viewing_active: bool,
     _timer: Task<()>,
 }
 
@@ -25,43 +24,14 @@ pub(super) struct ArchiveUndoController {
 }
 
 impl ArchiveUndoController {
-    const fn next_generation(&mut self) -> u64 {
+    const fn bump(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.generation
     }
 
-    fn set(
-        &mut self,
-        session_id: String,
-        title: String,
-        was_viewing_active: bool,
-        generation: u64,
-        timer: Task<()>,
-    ) {
-        self.active = Some(ArchiveUndoEntry {
-            session_id,
-            title,
-            was_active: was_viewing_active,
-            generation,
-            _timer: timer,
-        });
-    }
-
     pub(super) fn clear(&mut self) {
+        self.bump();
         self.active = None;
-    }
-
-    fn clear_if_generation(&mut self, generation: u64) -> bool {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|entry| entry.generation == generation)
-        {
-            self.active = None;
-            true
-        } else {
-            false
-        }
     }
 
     fn clear_if_session(&mut self, session_id: &str) {
@@ -70,18 +40,8 @@ impl ArchiveUndoController {
             .as_ref()
             .is_some_and(|entry| entry.session_id == session_id)
         {
-            self.active = None;
+            self.clear();
         }
-    }
-
-    fn take(&mut self) -> Option<(String, bool)> {
-        self.active
-            .take()
-            .map(|entry| (entry.session_id, entry.was_active))
-    }
-
-    fn active_title(&self) -> Option<&str> {
-        self.active.as_ref().map(|entry| entry.title.as_str())
     }
 }
 
@@ -399,22 +359,23 @@ impl FlowyApp {
                 panel.refresh_board_now(cx);
             });
             if archived {
-                let generation = self.archive_undo.next_generation();
+                let generation = self.archive_undo.bump();
                 let timer = cx.spawn(async move |weak, cx| {
                     cx.background_executor().timer(ARCHIVE_UNDO_TIMEOUT).await;
                     let _ = weak.update(cx, |app, cx| {
-                        if app.archive_undo.clear_if_generation(generation) {
+                        if app.archive_undo.generation == generation
+                            && app.archive_undo.active.take().is_some()
+                        {
                             cx.notify();
                         }
                     });
                 });
-                self.archive_undo.set(
-                    session_id.to_owned(),
+                self.archive_undo.active = Some(ArchiveUndoEntry {
+                    session_id: session_id.to_owned(),
                     title,
                     was_viewing_active,
-                    generation,
-                    timer,
-                );
+                    _timer: timer,
+                });
             } else {
                 self.archive_undo.clear_if_session(session_id);
             }
@@ -423,23 +384,23 @@ impl FlowyApp {
     }
 
     pub(super) fn undo_last_archive(&mut self, cx: &mut Context<'_, Self>) {
-        let Some((session_id, was_viewing_active)) = self.archive_undo.take()
-        else {
+        self.archive_undo.bump();
+        let Some(entry) = self.archive_undo.active.take() else {
             return;
         };
         let result = self
             .studio
             .read(cx)
             .agent
-            .set_session_archived(&session_id, false);
+            .set_session_archived(&entry.session_id, false);
         if let Err(key) = result {
             self.studio.update(cx, |panel, cx| panel.note(key, cx));
         } else {
-            let should_reopen = was_viewing_active
+            let should_reopen = entry.was_viewing_active
                 && self.studio.read(cx).agent.active_session_id().is_none();
             self.studio.update(cx, |panel, cx| {
                 if should_reopen {
-                    panel.open_session(&session_id, cx);
+                    panel.open_session(&entry.session_id, cx);
                 }
                 panel.refresh_board_now(cx);
             });
@@ -454,7 +415,11 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> Option<AnyElement> {
-        let title = self.archive_undo.active_title()?;
+        let title = self
+            .archive_undo
+            .active
+            .as_ref()
+            .map(|entry| entry.title.as_str())?;
         let message = self.tf("chat.archived_toast", &[("title", title)]);
         let undo_label = self.t("chat.undo");
         let close_label = self.t("ui.close");

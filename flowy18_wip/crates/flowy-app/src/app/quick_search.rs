@@ -83,28 +83,30 @@ impl QuickSearchState {
     }
 }
 
-/// Finds sorted, merged UTF-8 byte ranges in `text` matching any whitespace-
-/// separated token in `query` (case-insensitive). Every returned range is
-/// guaranteed to sit on valid UTF-8 char boundaries of `text`, even when
-/// `char::to_lowercase` expands one character into multiple scalars (e.g. `İ`).
-#[must_use]
-pub(super) fn highlight_byte_ranges(
-    text: &str,
-    query: &str,
-) -> Vec<std::ops::Range<usize>> {
-    if text.is_empty() || query.trim().is_empty() {
-        return Vec::new();
-    }
+/// Splits and deduplicates a search query into lowercase character tokens once
+/// per render frame so match highlighting avoids redundant per-row work.
+fn tokenize_query(query: &str) -> Vec<Vec<char>> {
     let mut tokens: Vec<Vec<char>> = query
         .split_whitespace()
         .map(|tok| tok.chars().flat_map(char::to_lowercase).collect())
         .filter(|tok: &Vec<char>| !tok.is_empty())
         .collect();
-    if tokens.is_empty() {
-        return Vec::new();
-    }
     tokens.sort_unstable();
     tokens.dedup();
+    tokens
+}
+
+/// Finds sorted, merged UTF-8 byte ranges in `text` matching any pre-tokenized
+/// lowercase query token. Every returned range is guaranteed to sit on valid
+/// UTF-8 char boundaries of `text`, even when `char::to_lowercase` expands one
+/// character into multiple scalars (e.g. `İ`).
+fn highlight_byte_ranges_tokens(
+    text: &str,
+    tokens: &[Vec<char>],
+) -> Vec<std::ops::Range<usize>> {
+    if text.is_empty() || tokens.is_empty() {
+        return Vec::new();
+    }
 
     let mut lower_chars = Vec::with_capacity(text.len());
     let mut lower_spans: Vec<(usize, usize)> = Vec::with_capacity(text.len());
@@ -117,7 +119,7 @@ pub(super) fn highlight_byte_ranges(
     }
 
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    for tok in &tokens {
+    for tok in tokens {
         let tlen = tok.len();
         if tlen > lower_chars.len() {
             continue;
@@ -152,15 +154,24 @@ pub(super) fn highlight_byte_ranges(
     merged
 }
 
+#[cfg(test)]
+fn highlight_byte_ranges(
+    text: &str,
+    query: &str,
+) -> Vec<std::ops::Range<usize>> {
+    let tokens = tokenize_query(query);
+    highlight_byte_ranges_tokens(text, &tokens)
+}
+
 fn highlighted_text(
     text: String,
-    query: &str,
+    tokens: &[Vec<char>],
     base_font: Font,
     base_color: gpui::Rgba,
     accent: gpui::Rgba,
     accent_bg: gpui::Rgba,
 ) -> AnyElement {
-    let ranges = highlight_byte_ranges(&text, query);
+    let ranges = highlight_byte_ranges_tokens(&text, tokens);
     if ranges.is_empty() {
         return text.into_any_element();
     }
@@ -459,22 +470,23 @@ impl FlowyApp {
                     }
                 }
                 SearchScope::Library => {
-                    let mut items = self.library.read(cx).items().to_vec();
+                    let library = self.library.read(cx);
+                    let mut items: Vec<_> = library.items().iter().collect();
                     items.sort_by(|a, b| {
                         b.delivered_at_ms.cmp(&a.delivered_at_ms)
                     });
-                    for item in items.iter().take(10) {
+                    for item in items.into_iter().take(10) {
                         rows.push(Self::library_hit_row(item, 10));
                     }
                 }
                 SearchScope::Projects => {
-                    let mut projects = studio.projects.clone();
+                    let mut projects: Vec<_> = studio.projects.iter().collect();
                     projects.sort_by(|a, b| {
                         b.pinned
                             .cmp(&a.pinned)
                             .then_with(|| a.name.cmp(&b.name))
                     });
-                    for proj in projects.iter().take(10) {
+                    for proj in projects.into_iter().take(10) {
                         rows.push(self.project_hit_row(proj, 10));
                     }
                 }
@@ -679,7 +691,8 @@ impl FlowyApp {
         window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let query = self.quick_search.query.read(cx).value().trim().to_owned();
+        let query_tokens =
+            tokenize_query(self.quick_search.query.read(cx).value().trim());
         let rows = self.quick_search_results(cx);
         let selected = if rows.is_empty() {
             0
@@ -792,7 +805,7 @@ impl FlowyApp {
                 let title = row.title;
                 let title_node = highlighted_text(
                     title.clone(),
-                    &query,
+                    &query_tokens,
                     title_font.clone(),
                     self.theme.ink(),
                     accent,
@@ -801,7 +814,7 @@ impl FlowyApp {
                 let subtitle_node = row.subtitle.map(|sub| {
                     highlighted_text(
                         sub,
-                        &query,
+                        &query_tokens,
                         sub_font.clone(),
                         self.theme.muted(),
                         accent,

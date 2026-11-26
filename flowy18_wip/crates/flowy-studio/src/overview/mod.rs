@@ -95,24 +95,16 @@ impl StudioPanel {
         }
     }
 
-    fn format_day_key_label(
-        &self,
-        day_key: LocalDateKey,
-        today_key: Option<LocalDateKey>,
-    ) -> String {
-        if today_key == Some(day_key) {
+    fn format_bucket_day_label(&self, bucket: &DailyActivityBucket) -> String {
+        if bucket.day_offset == 0 {
             self.t("board.kpi_today")
         } else {
-            format!("{}/{}", day_key.1, day_key.2)
+            format!("{}/{}", bucket.month, bucket.day)
         }
     }
 
     fn format_bucket_summary(&self, bucket: &DailyActivityBucket) -> String {
-        let day_label = if bucket.day_offset == 0 {
-            self.t("board.kpi_today")
-        } else {
-            format!("{}/{}", bucket.month, bucket.day)
-        };
+        let day_label = self.format_bucket_day_label(bucket);
         self.tf(
             "board.day_summary",
             &[
@@ -401,8 +393,18 @@ impl StudioPanel {
             .flex()
             .flex_col()
             .gap(self.theme.space(16.))
-            .child(self.board_kpi_strip(&scoped_kpi, &scoped_daily_7d, cx))
-            .child(self.board_filter_bar(&scoped_kpi, today_key, cx))
+            .child(self.board_kpi_strip(
+                &scoped_kpi,
+                &scoped_daily_7d,
+                active_day_filter,
+                cx,
+            ))
+            .child(self.board_filter_bar(
+                &scoped_kpi,
+                today_key,
+                active_day_filter,
+                cx,
+            ))
             .child(sessions_col)
             .into_any_element()
     }
@@ -415,6 +417,7 @@ impl StudioPanel {
         &self,
         kpi: &BoardKpiSummary,
         daily_7d: &[DailyActivityBucket],
+        selected_day: Option<LocalDateKey>,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let segments = vec![
@@ -586,11 +589,6 @@ impl StudioPanel {
             .max()
             .unwrap_or(0)
             .max(1);
-        let selected_day = if self.board_filter == BoardFilter::Archived {
-            None
-        } else {
-            self.board_day_filter
-        };
         let selected_bucket = selected_day
             .and_then(|key| daily_7d.iter().find(|b| b.date_key == key));
         let mut chart_cols = div()
@@ -651,11 +649,7 @@ impl StudioPanel {
                     .justify_end()
                     .child(div().w_full().h(px(3.)).bg(self.theme.line()))
             };
-            let day_label = if bucket.day_offset == 0 {
-                self.t("board.kpi_today")
-            } else {
-                format!("{}/{}", bucket.month, bucket.day)
-            };
+            let day_label = self.format_bucket_day_label(bucket);
             let a11y_label = self.format_bucket_summary(bucket);
             let is_today = bucket.day_offset == 0;
             let is_selected = selected_day == Some(bucket.date_key);
@@ -1006,6 +1000,7 @@ impl StudioPanel {
         &self,
         kpi: &BoardKpiSummary,
         today_key: Option<LocalDateKey>,
+        active_day_filter: Option<LocalDateKey>,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let mut filters = vec![
@@ -1078,10 +1073,12 @@ impl StudioPanel {
             );
         }
 
-        if let Some(day_key) = self.board_day_filter
-            && self.board_filter != BoardFilter::Archived
-        {
-            let day_label = self.format_day_key_label(day_key, today_key);
+        if let Some(day_key) = active_day_filter {
+            let day_label = if today_key == Some(day_key) {
+                self.t("board.kpi_today")
+            } else {
+                format!("{}/{}", day_key.1, day_key.2)
+            };
             let chip_label = format!("{day_label} \u{00d7}");
             pills = pills.child(
                 theme::interactive(

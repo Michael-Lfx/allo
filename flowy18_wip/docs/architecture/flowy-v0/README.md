@@ -11,18 +11,18 @@
 | --- | --- |
 | `一页纸.md` | **3 分钟了解全貌。** 它是什么、交什么、不做什么 |
 | `实现对照.md` | **每个重要环节：我们选了什么 / 对比方案是什么 / 为什么不选 / 证据在哪。** 想挑刺先读这份 |
-| `最终方案.md` | **结论稿（修订 9.10）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.8 演进与落地账本、**§12.9 PR-2A 会话级轻量 Router 与多 Work 并发内核落地、对抗加固与 PR-2B 接缝契约** |
-| `证据.md` | **全部实测记录（§11.1–§11.37）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.36 实测总账、**§11.37 PR-2A（PR #496）纵向验证、故障注入、深度审查加固与 475/475 门禁账本**及被推翻的结论 |
+| `最终方案.md` | **结论稿（修订 9.11）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.9 演进与落地账本、**§12.10 PR #497 进度看板 7 日本地反筛、资料库右键/锚点修复、快搜分类筛选、5 秒归档撤销与深度去膨胀账本** |
+| `证据.md` | **全部实测记录（§11.1–§11.38）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.37 实测总账、**§11.38 PR #497（基于 `origin/main@aa522353f`）两轮审查清理减脂、654/654 8-Crate 门禁与双主题实机 E2E 账本**及被推翻的结论 |
 | `跨平台沙箱与进程回收预留方案.md` | **【跨平台预留蓝图】** Windows 优先通用层（`RunFence` 两阶段回收 + MIT 净室 `shell_policy` + 诚实 `SandboxAvailability`）与 macOS Seatbelt / Linux `bwrap` / Windows AppContainer 接入规格与验收矩阵 |
 | `参照.md` | 五款工作台横评、AutoLoop 借鉴分级、sub agent 与 super agent 的区别、**§10.5 OpenAI Dot 四轮实测对照与老爷爷对抗审查分级** |
 | `先记.md` | 六件暂时不做的事，每件写明「什么时候该回来看」 |
 | `审查交接.md` | **【历史快照】** 2026-11-23 交给外部审查者的材料，含审查结论与修正清单 |
 | `V0-执行计划.md` | **【现役执行计划】** 经 2026-11-25 需求方拍板与真机巡检重订的 Phase 1–Phase 4 收口计划（文末完整归档首轮底稿） |
-| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §19（PR-2A `feat/flowy-router-kernel` / PR #496）。** 唯一现役状态、模块速查、PR-2B 接线 API 契约、踩坑清单与实施指引 |
+| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §20（PR #496 已合入 `origin/main@aa522353f` + PR #497 修订 9.11 现役总账与 654 基线）与 §19（PR-2B 冻结 API 契约）。** 唯一现役状态、模块速查、踩坑清单与实施指引 |
 
 ## 现状一句话
 
-**方案修订至 9.10（保留 9.1–9.9 全部正文），实测覆盖 §11.1–§11.37。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
+**方案修订至 9.11（保留 9.1–9.10 全部正文），实测覆盖 §11.1–§11.38。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
 
 **代码侧（2026-11-25 · `feat/flowy-v0-rc@f47804a9d`）**：工作树 `.agents/worktrees/feat-flowy-local-receipt` 已合流 `feat/flowy-super-ui` 并完成 10 轮纯内核可靠性加固与路线 1 v2 收口（`f8fb6b491`..`f47804a9d`，0 碰 UI）：拆解 `handle/` 与 `verify/` 目录、补齐 `RunFence` 两阶段取消回收、MIT 净室跨平台 Shell 静态安全策略 + 诚实沙箱能力层、单次 HTTP 工具调用 `complete_structured`（真云端 L3 实测提速 3.26×）与 §6.8 `PROVENANCE_INVALID` 溯源拦截（`flowy-agent-core` 90 / `flowy-agent` 168 / 真云端 L3 1 全绿，`clippy -D warnings` 0 警告，`cargo check -p flowy-app` 通过）；仅剩 V6 外发通道按 `BLOCKED.md` §5 停等拍板。
 
@@ -32,7 +32,9 @@
 
 **导航/全局快搜/进度看板 v2 体验收口（2026-11-26 · PR #495 `origin/main@feb010a56` · 修订 9.9）**：完成顶部栏 Windows 拖拽命中区修复、零依赖 `Ctrl+K` 全局快搜（带密钥前置脱敏）、左上角主助理品牌胶囊合并与 GPU 流动光带、侧栏「进度看板 / 资料库」更名与新建任务常驻、进度看板 v2（3 卡扩容可视化 + 近 7 日动态柱状图 + 5 类交付物占比 + 7 天前折叠 + 同名文件逐级路径消歧）、自动标题失败重试与 `pinned`/`archived` 双文件原子持久化、统一右键/操作菜单（置顶/重命名/归档/删除，兼容 S4 运行态归档保护）；全量通过独立对抗审查（6 P1 + 5 P2 全修复）、8-Crate `628 / 628` 单测、`clippy -D warnings` 0 警告及 `20 / 20` 实机桌面视觉 E2E 验收（详见 `最终方案.md` §12.8 与 `证据.md` §11.36）。
 
-**PR-2A 会话级轻量 Router 与多 Work 并发内核（2026-11-26 · `feat/flowy-router-kernel` / PR #496 open，基于 `origin/main@feb010a56` · 修订 9.10）**：在零改动 UI/App/i18n 边界内完成 `SessionRole::{Standard, Router, Worker}`、`WorkAccessMode::{ReadOnly, ReadWrite}`、`PendingRouterFollowup` 持久化 FIFO、`AcceptanceQueue::accept_strict`（`AcceptedMessage` 装箱保 `240B`）、`PreToolDecision::SuspendWithCard`、4 亚秒控制工具（统一 `spawn_blocking`）、`RouterInbox` 合并回投、只读三工具白名单、可恢复级联删除及 PR #495 全部耦合护栏；经深度 `/code-review` + `carl-idea-king` + `/ponytail` 修复 5 项 `[Required]` 并清理死导出/重复代码，三 crate **475 / 475** 全绿（core 117 / agent 246 / studio 112）、`clippy --all-targets` 0 警告、`flowy-desktop` check 0 错误，待合流后启动 PR-2B UI 接线（详见 `最终方案.md` §12.9、`证据.md` §11.37 与 `交接给下一个agent.md` §19）。
+**PR-2A 会话级轻量 Router 与多 Work 并发内核（2026-11-26 · `feat/flowy-router-kernel` / PR #496 已合入 `origin/main@aa522353f` · 修订 9.10）**：在零改动 UI/App/i18n 边界内完成 `SessionRole::{Standard, Router, Worker}`、`WorkAccessMode::{ReadOnly, ReadWrite}`、`PendingRouterFollowup` 持久化 FIFO、`AcceptanceQueue::accept_strict`（`AcceptedMessage` 装箱保 `240B`）、`PreToolDecision::SuspendWithCard`、4 亚秒控制工具（统一 `spawn_blocking`）、`RouterInbox` 合并回投、只读三工具白名单、可恢复级联删除及 PR #495 全部耦合护栏；经深度 `/code-review` + `carl-idea-king` + `/ponytail` 修复 5 项 `[Required]` 并清理死导出/重复代码，三 crate **475 / 475** 全绿（core 117 / agent 246 / studio 112）、`clippy --all-targets` 0 警告、`flowy-desktop` check 0 错误，已合入 `main` 待启动 PR-2B UI 接线（详见 `最终方案.md` §12.9、`证据.md` §11.37 与 `交接给下一个agent.md` §19）。
+
+**工作台体验打磨、真 Bug 修复与审查减脂（2026-11-26 · `feat/flowy-studio-ux-polish` / PR #497，已线性 rebase 至 `origin/main@aa522353f` · 修订 9.11）**：在零改动 `flowy-agent-core` / `flowy-agent` / `flowy-ui` / `overview/flow_modal.rs` 边界内完成三块聚焦改进——① **进度看板** 复用工作区 `chrono` 实现本地自然日 7 日分桶、柱状图点击反筛、卡片头内联统计、可关闭日期 chip 与本地日相对时间对齐；② **资料库** 修复网格视图 `...` 菜单错位锚点（`Popup::Item { id, anchor_id }`）、补齐列表/网格统一右键菜单、守住无磁盘路径契约并隐藏 `Missing`/`Corrupt` 无效「另存为」、区分图标与语义徽章/收藏星标及唯一无障碍标签；③ **全局快搜 + 5 秒归档撤销 + 清理死代码** 新增 5 类筛选芯片（`Tab`/`Shift+Tab` 轮切保焦）与 UTF-8 安全 `StyledText` 高亮、右下角轻量 5 秒归档撤销条（`.occlude()` + `!modal_active()` + 悬浮窗避让 + 脱敏）并删除死枚举 `Section::Search` 与 23 语种孤立键 `section.search`（924 键对称）；经两轮审查（对抗审查 + rebase 后 `/code-review` / `/ponytail` / `/laoyeye` 减脂净删 `-89` 行），全量通过 `check-ui-contracts.mjs`（24/24 + 全库）、9-crate `clippy --all-targets -D warnings` 0 警告、8-crate **654 / 654** 串行全绿与双主题实机 E2E（Dark `32/32` + Light `31/31`，`log_errors=0`，详见 `最终方案.md` §12.10、`证据.md` §11.38 与 `交接给下一个agent.md` §20）。
 
 ## 三条最容易踩的
 
