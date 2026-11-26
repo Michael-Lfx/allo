@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} पर ध्यान आवश्यक है",
   "chat.bg_work_queued": "कतार में",
   "chat.bg_work_stop": "रोकें",
-  "card.from_work": "कार्य से: {title}"
+  "card.from_work": "कार्य से: {title}",
+  "shell.notify_task_done_title": "कार्य पूरा हुआ",
+  "shell.notify_task_done_body": "आपका कार्य पूरा हो गया है। परिणाम देखने के लिए {product} खोलें।",
+  "shell.notify_task_done_named_body": "\"{title}\" पूरा हो गया है। परिणाम देखने के लिए {product} खोलें।",
+  "shell.notify_task_attention_title": "आपकी पुष्टि आवश्यक है",
+  "shell.notify_task_attention_body": "अगला चरण पुष्टि करने के लिए {product} खोलें।",
+  "shell.notify_task_error_title": "कार्य में त्रुटि आई",
+  "shell.notify_task_error_body": "कार्य बाधित हो गया। जांचने के लिए {product} खोलें।",
+  "settings.local_data": "स्थानीय डेटा और बैकअप",
+  "settings.local_data_help": "वार्तालाप इतिहास और स्टार्टअप से पहले के स्नैपशॉट स्थानीय रूप से sessions और backups में सहेजे जाते हैं।",
+  "settings.open_folder": "फ़ोल्डर खोलें"
 }

@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} потребує уваги",
   "chat.bg_work_queued": "У черзі",
   "chat.bg_work_stop": "Зупинити",
-  "card.from_work": "Із завдання: {title}"
+  "card.from_work": "Із завдання: {title}",
+  "shell.notify_task_done_title": "Завдання виконано",
+  "shell.notify_task_done_body": "Завдання завершено. Відкрийте {product}, щоб переглянути результат.",
+  "shell.notify_task_done_named_body": "«{title}» завершено. Відкрийте {product}, щоб переглянути результат.",
+  "shell.notify_task_attention_title": "Потрібне підтвердження",
+  "shell.notify_task_attention_body": "Відкрийте {product}, щоб підтвердити наступний крок.",
+  "shell.notify_task_error_title": "Помилка завдання",
+  "shell.notify_task_error_body": "Завдання перервано помилкою. Відкрийте {product} для перевірки.",
+  "settings.local_data": "Локальні дані та резервні копії",
+  "settings.local_data_help": "Історія розмов і передзапускові знімки зберігаються локально у теках sessions та backups.",
+  "settings.open_folder": "Відкрити теку"
 }

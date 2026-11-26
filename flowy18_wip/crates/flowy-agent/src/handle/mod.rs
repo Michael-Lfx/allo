@@ -241,6 +241,10 @@ struct Live {
     role: SessionRole,
     root_session_id: Option<String>,
     access_mode: WorkAccessMode,
+    /// True while the current turn is a background host event (`[WorkEventBatch]` / `SystemEvent`).
+    active_turn_is_internal: bool,
+    /// Non-busy status captured before an internal turn so transient failures restore cleanly.
+    active_turn_prev_status: Option<TurnStatus>,
 }
 
 struct ResumedSubmission {
@@ -813,6 +817,8 @@ impl AgentHandle {
                         role: record.role,
                         root_session_id: record.root_session_id,
                         access_mode: record.access_mode,
+                        active_turn_is_internal: false,
+                        active_turn_prev_status: None,
                     },
                 );
             }
@@ -910,6 +916,7 @@ impl AgentHandle {
             &state.root,
             &engine,
             state.artifact_store.get(),
+            &[],
         );
         // Desktop is single-instance: any remaining unexpired lease belongs to
         // a crashed predecessor process and must transition immediately to
@@ -2917,6 +2924,8 @@ impl Harness {
                 role,
                 root_session_id,
                 access_mode,
+                active_turn_is_internal: false,
+                active_turn_prev_status: None,
             },
         );
         if make_active {
@@ -3204,11 +3213,10 @@ impl Harness {
             }
             prompt.source = prompt_source;
         }
-        let is_internal_event_turn = is_router_announcement
-            || matches!(
-                prompt.source,
-                MessageSource::SystemEvent { .. } | MessageSource::CardResume
-            );
+        let is_background_announcement = is_router_announcement
+            || matches!(prompt.source, MessageSource::SystemEvent { .. });
+        let is_internal_event_turn = is_background_announcement
+            || matches!(prompt.source, MessageSource::CardResume);
         let skip_auto_title =
             core_session.role == SessionRole::Worker || is_internal_event_turn;
         let pre_resolved_contract = resumed.and_then(|item| item.contract);
@@ -3471,7 +3479,17 @@ impl Harness {
             let mut live = lock(&state.live);
             let session = live.get_mut(&id).expect("active session exists");
             let now = now_ms();
-            session.status = TurnStatus::Running;
+            let prev_status =
+                std::mem::replace(&mut session.status, TurnStatus::Running);
+            session.active_turn_is_internal = is_background_announcement;
+            session.active_turn_prev_status =
+                is_background_announcement.then(|| {
+                    if prev_status.is_busy() {
+                        TurnStatus::Completed
+                    } else {
+                        prev_status
+                    }
+                });
             session.turn_started_at = Some(now);
             session.updated_at = now;
             session.heartbeat = Some(BranchHeartbeat {

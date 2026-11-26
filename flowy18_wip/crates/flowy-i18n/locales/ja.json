@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} 件の対応が必要",
   "chat.bg_work_queued": "待機中",
   "chat.bg_work_stop": "停止",
-  "card.from_work": "タスクより：{title}"
+  "card.from_work": "タスクより：{title}",
+  "shell.notify_task_done_title": "タスクが完了しました",
+  "shell.notify_task_done_body": "結果の準備ができました。{product} を開いて確認してください。",
+  "shell.notify_task_done_named_body": "「{title}」が完了しました。{product} を開いて確認してください。",
+  "shell.notify_task_attention_title": "確認が必要です",
+  "shell.notify_task_attention_body": "{product} を開いて次の操作を確認してください。",
+  "shell.notify_task_error_title": "タスクが中断されました",
+  "shell.notify_task_error_body": "エラーが発生しました。{product} を開いて詳細を確認してください。",
+  "settings.local_data": "ローカルデータとバックアップ",
+  "settings.local_data_help": "会話履歴と起動前スナップショットはこの端末の sessions と backups に保存されます。",
+  "settings.open_folder": "フォルダを開く"
 }

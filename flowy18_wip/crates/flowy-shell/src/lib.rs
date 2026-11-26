@@ -8,6 +8,7 @@ mod notify;
 // `gpui-tray` bridges several GPUI type graphs behind cargo features; the workspace
 // selects `gpui-kit`, whose real package is `gpui-pre`, so the tray types match.
 mod tray;
+mod wake;
 
 use gpui::{App, actions};
 use std::cell::RefCell;
@@ -52,7 +53,10 @@ pub use autostart::{
     is_enabled as autostart_enabled, set_enabled as set_autostart,
 };
 pub use deep_link::{DeepLink, parse as parse_deep_link, take_pending};
-pub use notify::{NotifyKind, show_update_notification};
+pub use notify::{
+    NotifyKind, show_task_notification, show_update_notification,
+};
+pub use wake::{WakeSignal, signal_wake, take_wake};
 
 pub fn brand() -> Brand {
     *BRAND

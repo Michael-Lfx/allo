@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} erfordert Aufmerksamkeit",
   "chat.bg_work_queued": "In Warteschlange",
   "chat.bg_work_stop": "Stopp",
-  "card.from_work": "Aus Aufgabe: {title}"
+  "card.from_work": "Aus Aufgabe: {title}",
+  "shell.notify_task_done_title": "Aufgabe abgeschlossen",
+  "shell.notify_task_done_body": "Deine Aufgabe ist fertig. Öffne {product}, um das Ergebnis anzusehen.",
+  "shell.notify_task_done_named_body": "\"{title}\" ist fertig. Öffne {product}, um das Ergebnis anzusehen.",
+  "shell.notify_task_attention_title": "Aufgabe benötigt Eingabe",
+  "shell.notify_task_attention_body": "Öffne {product}, um den nächsten Schritt zu bestätigen.",
+  "shell.notify_task_error_title": "Aufgabe mit Fehler gestoppt",
+  "shell.notify_task_error_body": "Ein Fehler hat die Aufgabe unterbrochen. Öffne {product} zur Prüfung.",
+  "settings.local_data": "Lokale Daten & Backups",
+  "settings.local_data_help": "Gesprächsverläufe und Vorab-Snapshots werden lokal unter sessions und backups gespeichert.",
+  "settings.open_folder": "Ordner öffnen"
 }

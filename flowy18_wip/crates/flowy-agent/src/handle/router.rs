@@ -354,7 +354,7 @@ fn dispatch_work_tool(
             "type": "object",
             "properties": {
                 "brief": { "type": "string", "description": "Clear, self-contained task brief for the Worker." },
-                "mode": { "type": "string", "enum": ["read_only", "read_write"], "description": "Workspace access mode. Defaults to read_write for new works; read_only workers can run concurrently on the same project." },
+                "mode": { "type": "string", "enum": ["read_only", "read_write"], "description": "Workspace access mode. `read_only` ONLY exposes `read_file`/`glob`/`grep` (no shell/curl) and can run concurrently. Tasks needing shell commands, network/curl calls, file edits, or artifact creation MUST use `read_write` (even for read-only inspection)." },
                 "target_work_id": { "type": "string", "description": "Existing child Worker ID to continue (keeps original origin, workspace, and access_mode)." },
                 "target_object_ids": { "type": "array", "items": { "type": "string" }, "description": "Optional object IDs owned by child Workers to locate and target the exact owning Worker." },
                 "request_id": { "type": "string", "description": "Caller-supplied idempotency key preventing duplicate work creation on retries." }
@@ -760,15 +760,23 @@ pub(super) fn build_router_system_prompt(
     is_announcement: bool,
 ) -> String {
     let mut out = format!(
-        "{} You are Flowy's lightweight conversation Router. Reply concisely and honestly to the user while delegating file editing, document creation, shell commands, and verification to asynchronous Worker sessions via `dispatch_work`. Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing.",
+        "{} You are Flowy's lightweight conversation Router. Follow strict turn discipline: (1) Before calling tools or `dispatch_work`, emit at most ONE short opening acknowledgement sentence — never write filler narration between tool calls (no \"已派发，我看一下结果\" / \"还在跑，稍等我再查\"). (2) Delegate file editing, document creation, shell/network commands (`curl`), and verification to Worker sessions via `dispatch_work`; note `read_only` Workers only have `read_file`/`glob`/`grep` (no shell), so shell/network queries require `read_write` with read-only constraints in the brief. (3) After dispatching background Workers, stop and yield the turn immediately so Workers run asynchronously — do NOT poll `query_work_status` repeatedly in a loop unless the user explicitly asked for an immediate status check. (4) Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing.",
         super::BASE_BEHAVIOR_PROMPT
     );
-    if is_announcement {
-        out.push_str(
-            "\nThis is an automatic `[WorkEventBatch]` progress announcement turn. Summarize the authoritative Worker state honestly for the user without dispatching or retrying work.",
-        );
-    }
     let works = harness.child_works(router_id);
+    if is_announcement {
+        let (active_running, waiting_user) =
+            super::work_events::sibling_work_counts(&works);
+        if active_running > 0 && waiting_user == 0 {
+            out.push_str(
+                "\nThis is an automatic `[WorkEventBatch]` progress announcement turn while other sibling Workers are STILL running (`active_running > 0`). Emit ONLY ONE short progress sentence reporting the completed/failed item and remaining background work — do NOT write a multi-section wrap-up, options list, or final conclusion until sibling Workers settle, and do not dispatch or retry work.",
+            );
+        } else {
+            out.push_str(
+                "\nThis is an automatic `[WorkEventBatch]` progress announcement turn. Summarize the authoritative Worker state honestly for the user without dispatching or retrying work.",
+            );
+        }
+    }
     if works.is_empty() {
         return out;
     }
@@ -1033,6 +1041,8 @@ impl Harness {
                             role: SessionRole::Worker,
                             root_session_id: Some(router_id.to_owned()),
                             access_mode: mode,
+                            active_turn_is_internal: false,
+                            active_turn_prev_status: None,
                         },
                     );
                     let _ = engine.set_session_title(
@@ -1326,5 +1336,47 @@ impl Harness {
             | PendingCard::ToolApproval { created_at_ms, .. } => *created_at_ms,
         });
         cards
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AgentHandle, LlmConfig};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn router_prompt_and_dispatch_schema_enforce_turn_discipline_and_ro_limits()
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "flowy-router-prompt-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let handle =
+            AgentHandle::with_config(dir.clone(), LlmConfig::default());
+        let router_id = handle.create_router_session().unwrap();
+
+        let prompt =
+            build_router_system_prompt(&handle.inner, &router_id, false);
+        assert!(prompt.contains("ONE short opening acknowledgement sentence"));
+        assert!(prompt.contains("do NOT poll `query_work_status` repeatedly"));
+        assert!(prompt.contains(
+            "`read_only` Workers only have `read_file`/`glob`/`grep`"
+        ));
+
+        let tool = dispatch_work_tool(Arc::downgrade(&handle.inner), router_id);
+        let mode_desc = tool.parameters["properties"]["mode"]["description"]
+            .as_str()
+            .expect("mode description must exist");
+        assert!(mode_desc.contains("read_file"));
+        assert!(mode_desc.contains("no shell/curl"));
+        assert!(mode_desc.contains("read_write"));
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

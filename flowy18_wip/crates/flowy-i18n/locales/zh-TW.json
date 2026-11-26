@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} 個任務需要處理",
   "chat.bg_work_queued": "排隊中",
   "chat.bg_work_stop": "停止",
-  "card.from_work": "來自任務：{title}"
+  "card.from_work": "來自任務：{title}",
+  "shell.notify_task_done_title": "任務已完成",
+  "shell.notify_task_done_body": "已有最新結果，點擊回到 {product} 查看。",
+  "shell.notify_task_done_named_body": "「{title}」已處理完成，點擊回到 {product} 查看。",
+  "shell.notify_task_attention_title": "任務需要你確認",
+  "shell.notify_task_attention_body": "請開啟 {product} 確認下一步操作。",
+  "shell.notify_task_error_title": "任務遇到中斷",
+  "shell.notify_task_error_body": "任務處理發生異常，請開啟 {product} 查看詳情。",
+  "settings.local_data": "本機資料與備份",
+  "settings.local_data_help": "對話紀錄與啟動前自動備份儲存在本機（sessions 與 backups 目錄）。",
+  "settings.open_folder": "開啟資料夾"
 }

@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} vereist aandacht",
   "chat.bg_work_queued": "In wachtrij",
   "chat.bg_work_stop": "Stoppen",
-  "card.from_work": "Van taak: {title}"
+  "card.from_work": "Van taak: {title}",
+  "shell.notify_task_done_title": "Taak voltooid",
+  "shell.notify_task_done_body": "Je taak is klaar. Open {product} om het resultaat te bekijken.",
+  "shell.notify_task_done_named_body": "\"{title}\" is voltooid. Open {product} voor het resultaat.",
+  "shell.notify_task_attention_title": "Taak wacht op invoer",
+  "shell.notify_task_attention_body": "Open {product} om de volgende stap te bevestigen.",
+  "shell.notify_task_error_title": "Fout tijdens taak",
+  "shell.notify_task_error_body": "De taak is onderbroken. Open {product} om te controleren.",
+  "settings.local_data": "Lokale gegevens en back-ups",
+  "settings.local_data_help": "Gespreksgeschiedenis en snapshots vóór opstarten worden lokaal opgeslagen in sessions en backups.",
+  "settings.open_folder": "Map openen"
 }

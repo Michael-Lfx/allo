@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} precisa de atenção",
   "chat.bg_work_queued": "Na fila",
   "chat.bg_work_stop": "Parar",
-  "card.from_work": "Da tarefa: {title}"
+  "card.from_work": "Da tarefa: {title}",
+  "shell.notify_task_done_title": "Tarefa concluída",
+  "shell.notify_task_done_body": "Sua tarefa terminou. Abra o {product} para ver o resultado.",
+  "shell.notify_task_done_named_body": "\"{title}\" foi concluída. Abra o {product} para ver o resultado.",
+  "shell.notify_task_attention_title": "Tarefa aguarda confirmação",
+  "shell.notify_task_attention_body": "Abra o {product} para confirmar o próximo passo.",
+  "shell.notify_task_error_title": "A tarefa encontrou um erro",
+  "shell.notify_task_error_body": "Algo interrompeu a tarefa. Abra o {product} para verificar.",
+  "settings.local_data": "Dados locais e backups",
+  "settings.local_data_help": "Histórico e instantâneos pré-inicialização ficam salvos localmente em sessions e backups.",
+  "settings.open_folder": "Abrir pasta"
 }

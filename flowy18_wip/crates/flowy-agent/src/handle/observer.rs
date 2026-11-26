@@ -28,13 +28,22 @@ pub(super) fn is_internal_control_line_text(text: &str) -> bool {
 }
 
 pub(super) fn extract_session_preview(lines: &[ChatLine]) -> Option<String> {
+    let mut saw_later_process = false;
     let raw = lines.iter().rev().find_map(|line| match line {
+        ChatLine::Reasoning { .. }
+        | ChatLine::ToolCall { .. }
+        | ChatLine::Tool { .. }
+        | ChatLine::ToolResult { .. } => {
+            saw_later_process = true;
+            None
+        }
         ChatLine::Assistant { text } => {
             let trimmed = text.trim();
-            (!trimmed.is_empty()).then_some(trimmed)
+            (!trimmed.is_empty() && !saw_later_process).then_some(trimmed)
         }
         ChatLine::User { text } => {
             let trimmed = text.trim();
+            saw_later_process = false;
             (!trimmed.is_empty() && !is_internal_control_line_text(trimmed))
                 .then_some(trimmed)
         }
@@ -297,27 +306,45 @@ impl TurnObserver for UiObserver {
             live.get_mut(session).map(|live| {
                 live.projection.flush();
                 promote_latest_turn_verifications(&mut live.projection.lines);
-                let next_status = match outcome {
-                    LoopOutcome::Completed => TurnStatus::Completed,
-                    LoopOutcome::Aborted => TurnStatus::Stopped,
-                    LoopOutcome::WaitingForUser => TurnStatus::WaitingForUser,
-                    // `delivery_failed` ran before this terminal callback. Keep
-                    // the dedicated status so the retry action remains visible.
-                    LoopOutcome::Failed
-                        if matches!(
-                            live.status,
+                let was_internal =
+                    std::mem::take(&mut live.active_turn_is_internal);
+                let prev_status = live.active_turn_prev_status.take();
+                let suppress_internal_error =
+                    was_internal && outcome == LoopOutcome::Failed;
+                let next_status = if suppress_internal_error {
+                    tracing::warn!(
+                        target: "flowy.prompt",
+                        stage = "UiObserver::finished",
+                        session = %session,
+                        "internal announcement turn failed; restoring prior session status"
+                    );
+                    prev_status.unwrap_or(TurnStatus::Completed)
+                } else {
+                    match outcome {
+                        LoopOutcome::Completed => TurnStatus::Completed,
+                        LoopOutcome::Aborted => TurnStatus::Stopped,
+                        LoopOutcome::WaitingForUser => {
+                            TurnStatus::WaitingForUser
+                        }
+                        // `delivery_failed` ran before this terminal callback. Keep
+                        // the dedicated status so the retry action remains visible.
+                        LoopOutcome::Failed
+                            if matches!(
+                                live.status,
+                                TurnStatus::DeliveryFailed
+                            ) =>
+                        {
                             TurnStatus::DeliveryFailed
-                        ) =>
-                    {
-                        TurnStatus::DeliveryFailed
+                        }
+                        // Store an i18n key, never a raw English message: this value
+                        // is persisted in the index and may be rendered later.
+                        LoopOutcome::Failed => TurnStatus::Error {
+                            message: "chat.status_error".into(),
+                        },
                     }
-                    // Store an i18n key, never a raw English message: this value
-                    // is persisted in the index and may be rendered later.
-                    LoopOutcome::Failed => TurnStatus::Error {
-                        message: "chat.status_error".into(),
-                    },
                 };
-                if outcome != LoopOutcome::Completed {
+                if outcome != LoopOutcome::Completed && !suppress_internal_error
+                {
                     live.projection.lines.push(ChatLine::Status {
                         text: next_status.key().into(),
                     });
@@ -1188,6 +1215,8 @@ pub(super) fn import_engine_sessions(
                 role: record.role,
                 root_session_id: record.root_session_id,
                 access_mode: record.access_mode,
+                active_turn_is_internal: false,
+                active_turn_prev_status: None,
             },
         );
     }

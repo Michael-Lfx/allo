@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} needs attention",
   "chat.bg_work_queued": "Queued",
   "chat.bg_work_stop": "Stop",
-  "card.from_work": "From work: {title}"
+  "card.from_work": "From work: {title}",
+  "shell.notify_task_done_title": "Task complete",
+  "shell.notify_task_done_body": "Your task finished. Open {product} to view the result.",
+  "shell.notify_task_done_named_body": "\"{title}\" finished. Open {product} to view the result.",
+  "shell.notify_task_attention_title": "Task needs your input",
+  "shell.notify_task_attention_body": "Open {product} to confirm the next step.",
+  "shell.notify_task_error_title": "Task hit an error",
+  "shell.notify_task_error_body": "Something interrupted the task. Open {product} to inspect.",
+  "settings.local_data": "Local data and backups",
+  "settings.local_data_help": "Conversation history and pre-launch snapshots are saved locally under sessions and backups.",
+  "settings.open_folder": "Open folder"
 }

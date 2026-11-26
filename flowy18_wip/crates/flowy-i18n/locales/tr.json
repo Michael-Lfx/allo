@@ -931,5 +931,15 @@
   "chat.bg_tasks_failed": "{count} ilgilenilmeyi bekliyor",
   "chat.bg_work_queued": "Sırada",
   "chat.bg_work_stop": "Durdur",
-  "card.from_work": "Görevden: {title}"
+  "card.from_work": "Görevden: {title}",
+  "shell.notify_task_done_title": "Görev tamamlandı",
+  "shell.notify_task_done_body": "Göreviniz bitti. Sonucu görmek için {product} uygulamasını açın.",
+  "shell.notify_task_done_named_body": "\"{title}\" tamamlandı. Sonucu görmek için {product} uygulamasını açın.",
+  "shell.notify_task_attention_title": "Onayınız gerekiyor",
+  "shell.notify_task_attention_body": "Sonraki adımı onaylamak için {product} uygulamasını açın.",
+  "shell.notify_task_error_title": "Görev hatayla durdu",
+  "shell.notify_task_error_body": "Bir hata görevi kesintiye uğrattı. İncelemek için {product} uygulamasını açın.",
+  "settings.local_data": "Yerel veriler ve yedekler",
+  "settings.local_data_help": "Sohbet geçmişi ve açılış öncesi anlık görüntüler yerel olarak sessions ve backups altında saklanır.",
+  "settings.open_folder": "Klasörü aç"
 }
