@@ -2785,6 +2785,10 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
                     g.enter_and_wait("hold-router-for-del");
                     return MockReply::Text("router-del-done".into());
                 }
+                if req.last_user == "queued-followup-blocks-del" {
+                    g.record_arrival("queued-followup-del-ran");
+                    return MockReply::Text("followup-del-done".into());
+                }
                 if req.last_user.starts_with("[WorkEventBatch]") {
                     g.record_arrival("announce-nebula-done");
                     return MockReply::Text("后台研究已完成".into());
@@ -2948,11 +2952,12 @@ fn pr495_coupling_search_folds_workers_skips_system_events_archive_checks_childr
         "delete_session must refuse Router with active turn / pending_router_followups"
     );
     gate.release("hold-router-for-del");
+    gate.wait_for_key("queued-followup-del-ran", Duration::from_secs(5));
     wait_until(
         Duration::from_secs(5),
         || {
             handle.pending_router_followups(&router_id).is_empty()
-                && !handle.session_status(&router_id).is_busy()
+                && !handle.inner.is_session_busy_or_active(&router_id)
         },
         "queued followup drained before delete",
     );
@@ -3066,5 +3071,573 @@ fn review_hardening_guards_reject_non_router_submit_and_skip_auto_id_pollution()
         persisted.dispatch_requests.is_empty(),
         "omitting request_id must not pollute SessionRecord::dispatch_requests: {:?}",
         persisted.dispatch_requests
+    );
+}
+
+// =========================================================================
+// Test 18 (PR-2B Suite 2 / Q5): Identical follow-up texts with distinct
+// submission_ids both survive restart projection rebuild and execute strictly
+// once; queue accepts 1..=16 and rejects the 17th with `notice.router_queue_full`.
+// =========================================================================
+#[test]
+fn pr2b_identical_followup_texts_survive_restart_and_queue_capacity_enforces_16()
+ {
+    let root = temp_dir("pr2b-identical-fifo-cap");
+    let gate = PromptGate::new();
+    let seen_after_restart = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_c = Arc::clone(&seen_after_restart);
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, g| {
+            if req.last_user == "hold-turn-1" {
+                g.enter_and_wait("hold-turn-1");
+                return MockReply::Text("turn-1-done".into());
+            }
+            if req.last_user == "hold-cap-turn" {
+                g.enter_and_wait("hold-cap-turn");
+                return MockReply::Text("cap-done".into());
+            }
+            if req.last_user == "identical-followup-cmd" {
+                let count = {
+                    let mut list = seen_c.lock().unwrap();
+                    list.push(req.last_user.clone());
+                    list.len()
+                };
+                if count == 2 {
+                    g.record_arrival("both-identical-executed");
+                }
+                return MockReply::Text(format!("reply-#{count}"));
+            }
+            MockReply::Text(format!("ok:{}", req.last_user))
+        }),
+    );
+
+    // Part A: Two identical follow-up texts with distinct submission_ids survive restart.
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    let router_id = handle.create_router_session().unwrap();
+    handle
+        .submit_router_message(&router_id, 18001, "hold-turn-1")
+        .unwrap();
+    gate.wait_for_key("hold-turn-1", Duration::from_secs(5));
+
+    handle
+        .submit_router_message(&router_id, 18002, "identical-followup-cmd")
+        .unwrap();
+    handle
+        .submit_router_message(&router_id, 18003, "identical-followup-cmd")
+        .unwrap();
+    assert_eq!(handle.pending_router_followups(&router_id).len(), 2);
+
+    // Simulate crash while Turn 1 is still active and both identical follow-ups are persisted.
+    drop(handle);
+
+    // Reopen fresh handle: boot() must keep BOTH identical user bubbles and run BOTH.
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
+    gate.wait_for_key("both-identical-executed", Duration::from_secs(5));
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            reopened.pending_router_followups(&router_id).is_empty()
+                && !reopened.session_status(&router_id).is_busy()
+        },
+        "both identical follow-ups completed after restart",
+    );
+    assert_eq!(
+        *seen_after_restart.lock().unwrap(),
+        vec![
+            "identical-followup-cmd".to_owned(),
+            "identical-followup-cmd".to_owned(),
+        ],
+        "two identical follow-up texts with distinct submission_ids must both execute"
+    );
+    let user_bubble_count = reopened
+        .session_lines(&router_id)
+        .iter()
+        .filter(|line| {
+            matches!(line, ChatLine::User { text } if text == "identical-followup-cmd")
+        })
+        .count();
+    assert_eq!(
+        user_bubble_count, 2,
+        "both identical user bubbles must remain projected after restart"
+    );
+
+    // Part B: Capacity limit 1..=16 succeed, 17th fails with `notice.router_queue_full`.
+    let cap_router = reopened.create_router_session().unwrap();
+    reopened
+        .submit_router_message(&cap_router, 18100, "hold-cap-turn")
+        .unwrap();
+    gate.wait_for_key("hold-cap-turn", Duration::from_secs(5));
+    for i in 1..=16_u128 {
+        assert_eq!(
+            reopened
+                .submit_router_message(
+                    &cap_router,
+                    18100 + i,
+                    &format!("queued-{i}"),
+                )
+                .as_deref(),
+            Ok(cap_router.as_str()),
+            "follow-up #{i} within 16-item capacity must succeed"
+        );
+    }
+    assert_eq!(reopened.pending_router_followups(&cap_router).len(), 16);
+    assert_eq!(
+        reopened.submit_router_message(&cap_router, 18117, "overflow-17"),
+        Err("notice.router_queue_full"),
+        "17th follow-up must fail closed with notice.router_queue_full"
+    );
+    assert_eq!(reopened.pending_router_followups(&cap_router).len(), 16);
+
+    gate.release_all();
+    drop(reopened);
+}
+
+// =========================================================================
+// Test 19 (PR-2B Suites 2 & 3 / Q3 & Q4): Two child Workers awaiting approval
+// stay isolated (resolving W1 leaves W2 pending while Router keeps chatting);
+// child Verification + Artifact project into parent Router strictly once across
+// refresh & restart; child override notifies parent Router and persists badge.
+// =========================================================================
+#[test]
+fn pr2b_two_workers_approval_isolation_child_card_projection_and_override() {
+    let root = temp_dir("pr2b-two-workers-proj");
+    let gate = PromptGate::new();
+    let shell_tool_name = if cfg!(windows) { "powershell" } else { "bash" };
+    let risky_cmd = if cfg!(windows) {
+        "Remove-Item -Recurse -Force ./stale_cache"
+    } else {
+        "rm -rf ./stale_cache"
+    };
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, g| {
+            if is_router_req(req) {
+                if req.last_user == "launch-two-workers"
+                    && req.last_tool_result.is_none()
+                {
+                    return MockReply::ToolCalls(vec![
+                        (
+                            "c-w1".into(),
+                            "dispatch_work".into(),
+                            json!({"brief": "worker-one-approval", "request_id": "req-w1"}),
+                        ),
+                        (
+                            "c-w2".into(),
+                            "dispatch_work".into(),
+                            json!({"brief": "worker-two-approval", "request_id": "req-w2"}),
+                        ),
+                    ]);
+                }
+                if req.last_user == "chat-while-both-parked" {
+                    g.record_arrival("router-replied-while-workers-parked");
+                    return MockReply::Text("router-answered-2nd-msg".into());
+                }
+                return MockReply::Text("router-ok".into());
+            }
+
+            if req.last_user.contains("worker-one-approval") {
+                if req.last_tool_result.is_none() {
+                    return MockReply::ToolCalls(vec![(
+                        "w1-risky".into(),
+                        shell_tool_name.to_owned(),
+                        json!({"command": risky_cmd}),
+                    )]);
+                }
+                return MockReply::Text("w1-finished".into());
+            }
+            if req.last_user.contains("worker-two-approval") {
+                if req.last_tool_result.is_none() {
+                    return MockReply::ToolCalls(vec![(
+                        "w2-risky".into(),
+                        shell_tool_name.to_owned(),
+                        json!({"command": risky_cmd}),
+                    )]);
+                }
+                return MockReply::Text("w2-finished".into());
+            }
+            if req.last_user.contains("[ToolApproved]")
+                && req.last_tool_result.is_none()
+            {
+                return MockReply::ToolCalls(vec![(
+                    "w1-deck".into(),
+                    "create_deck".into(),
+                    json!({
+                        "path": "w1_bad.pptx",
+                        "title": "W1 Deck",
+                        "slides": ["Only 1 slide"]
+                    }),
+                )]);
+            }
+            if let Some(res) = req.last_tool_result.as_deref()
+                && res.contains("w1_bad.pptx")
+                && !res.contains("report_id")
+            {
+                return MockReply::ToolCalls(vec![(
+                    "w1-verify".into(),
+                    "verify_deck".into(),
+                    json!({
+                        "path": "w1_bad.pptx",
+                        "slides": 3,
+                        "anchors": [{"anchor": "S2-title", "value": "Missing Slide"}]
+                    }),
+                )]);
+            }
+            g.record_arrival("w1-verified-failed");
+            MockReply::Text("w1-needs-override".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    handle.select_session(&router_id).unwrap();
+
+    handle
+        .submit_router_message(&router_id, 19001, "launch-two-workers")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(8),
+        || handle.root_pending_cards(&router_id).len() == 2,
+        "both child workers parked on ToolApproval",
+    );
+
+    let cards = handle.root_pending_cards(&router_id);
+    assert_eq!(cards.len(), 2);
+    assert!(
+        cards.iter().all(|c| c.owner_role == SessionRole::Worker
+            && c.owner_session_id != router_id),
+        "both pending cards must belong to child Workers: {cards:?}"
+    );
+    assert!(
+        handle.session_pending_cards(&router_id).is_empty(),
+        "Router itself has no own pending cards"
+    );
+
+    // Q4: While both Workers await approval, Router still accepts and replies to 2nd message!
+    handle
+        .submit_router_message(&router_id, 19002, "chat-while-both-parked")
+        .unwrap();
+    gate.wait_for_key(
+        "router-replied-while-workers-parked",
+        Duration::from_secs(5),
+    );
+    wait_idle(&handle, &router_id, "router 2nd message settled");
+
+    // Resolve ONLY W1's approval card -> W1 resumes and emits failed Verification card;
+    // W2 stays untouched in `awaiting_approval`!
+    let w1_card = cards[0].clone();
+    let w2_card = cards[1].clone();
+    let w1_args_hash = match &w1_card.card {
+        PendingCard::ToolApproval { args_hash, .. } => args_hash.clone(),
+        other @ PendingCard::Disambiguation { .. } => {
+            panic!("expected ToolApproval card on W1, got {other:?}")
+        }
+    };
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: w1_card.owner_session_id.clone(),
+            card_id: w1_card.card.card_id().to_owned(),
+            selection: CardSelection::ApproveTool {
+                args_hash: w1_args_hash,
+            },
+        })
+        .expect("approve W1 tool card");
+
+    gate.wait_for_key("w1-verified-failed", Duration::from_secs(8));
+    wait_until(
+        Duration::from_secs(8),
+        || {
+            handle.chat_history().rows.iter().any(|line| {
+                matches!(
+                    line,
+                    ChatLine::Verification {
+                        source_session_id: Some(src),
+                        ok: false,
+                        ..
+                    } if src == &w1_card.owner_session_id
+                )
+            })
+        },
+        "W1 failed verification card projected onto parent Router timeline",
+    );
+
+    // W2's approval card must remain intact and isolated!
+    let remaining_cards = handle.root_pending_cards(&router_id);
+    assert_eq!(remaining_cards.len(), 1);
+    assert_eq!(
+        remaining_cards[0].owner_session_id,
+        w2_card.owner_session_id
+    );
+
+    // Projected verification card appears strictly ONCE in parent Router chat_history()
+    // and carries `source_session_id = Some(w1_id)`.
+    let projected_v: Vec<_> = handle
+        .chat_history()
+        .rows
+        .into_iter()
+        .filter_map(|line| match line {
+            ChatLine::Verification {
+                report_id,
+                artifact_path,
+                override_used,
+                source_session_id,
+                ..
+            } => Some((
+                report_id,
+                artifact_path,
+                override_used,
+                source_session_id,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        projected_v.len(),
+        1,
+        "child Verification must appear strictly once on parent Router timeline"
+    );
+    let (report_id, artifact_path, override_used, source_sid) =
+        projected_v[0].clone();
+    assert!(!override_used);
+    assert_eq!(
+        source_sid.as_deref(),
+        Some(w1_card.owner_session_id.as_str())
+    );
+
+    // Q3: Override targeting explicit `w1_id` commits artifact, emits Session update
+    // for parent Router, and updates projected verification + artifact strictly once!
+    let _ = handle.drain_updates();
+    let artifact_id = handle
+        .override_deliver_artifact(
+            &w1_card.owner_session_id,
+            &report_id,
+            &artifact_path,
+        )
+        .expect("override child W1 verification card");
+    let updates = handle.drain_updates();
+    assert!(
+        updates.iter().any(
+            |u| matches!(u, AgentUpdate::Session { id } if id == &router_id)
+        ),
+        "overriding child Worker must emit AgentUpdate::Session for parent Router: {updates:?}"
+    );
+    assert_eq!(handle.root_session_id(&w1_card.owner_session_id), router_id);
+
+    // Check once before restart AND once after restart -> strictly 1 verification (overridden)
+    // and strictly 1 artifact row on parent Router timeline!
+    let assert_projected_once = |h: &AgentHandle| {
+        let rows = h.chat_history().rows;
+        let v_count = rows
+            .iter()
+            .filter(|l| {
+                matches!(
+                    l,
+                    ChatLine::Verification {
+                        report_id: rid,
+                        override_used: true,
+                        source_session_id: Some(src),
+                        ..
+                    } if rid == &report_id && src == &w1_card.owner_session_id
+                )
+            })
+            .count();
+        let a_count = rows
+            .iter()
+            .filter(|l| {
+                matches!(l, ChatLine::Artifact { artifact_id: aid } if aid == &artifact_id)
+            })
+            .count();
+        assert_eq!(
+            v_count, 1,
+            "overridden child Verification must appear strictly once"
+        );
+        assert_eq!(
+            a_count, 1,
+            "committed child Artifact must appear strictly once"
+        );
+    };
+    assert_projected_once(&handle);
+
+    drop(handle);
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
+    reopened.select_session(&router_id).unwrap();
+    assert_projected_once(&reopened);
+}
+
+// =========================================================================
+// Test 20 (PR-2B Suite 4): Live-cloud Router 2-message non-blocking E2E.
+// Same Router conversation dispatches a real workspace Worker task, verifies
+// Worker 1 is active & unfinished, submits a 2nd user message on the same
+// conversation, verifies Router answers the 2nd message independently while
+// Worker 1 continues, and logs full IDs/timestamps for release evidence.
+// =========================================================================
+#[test]
+#[ignore = "hits live cloud gateway server.flowyaipc.com using local Flowy auth session"]
+fn pr2b_live_cloud_router_two_messages_non_blocking_e2e() {
+    let appdata =
+        std::env::var("APPDATA").expect("APPDATA env var must be set");
+    let session_path = std::path::PathBuf::from(appdata)
+        .join("Flowy")
+        .join("Flowy")
+        .join("data")
+        .join("auth")
+        .join("session.json");
+    let raw = std::fs::read_to_string(&session_path)
+        .expect("read local Flowy auth session.json");
+    let session: Value =
+        serde_json::from_str(&raw).expect("parse auth session.json");
+    let api_key = session
+        .get("access_token")
+        .and_then(Value::as_str)
+        .expect("access_token in session.json")
+        .to_owned();
+
+    let root = temp_dir("pr2b-live-cloud-e2e");
+    let llm = LlmConfig {
+        provider: "flowy".to_owned(),
+        model: "AIPC-qwen3.8-flash".to_owned(),
+        base_url: "https://server.flowyaipc.com/claw/v1".to_owned(),
+        api_key: Some(api_key),
+        ..LlmConfig::default()
+    };
+    let handle = AgentHandle::with_config(root.to_path_buf(), llm);
+    handle.set_autonomous_drain(true);
+
+    let t0 = Instant::now();
+    let sub1: u128 = 20_001;
+    let sub2: u128 = 20_002;
+    let router_id = handle.create_router_session().expect("create live router");
+    handle.select_session(&router_id).unwrap();
+    println!(
+        "[LIVE-E2E +{:>5}ms] created router_id={router_id} role={:?}",
+        t0.elapsed().as_millis(),
+        handle.session_role(&router_id)
+    );
+
+    // Message 1: ask Router to dispatch a real multi-step workspace deliverable (PPTX).
+    let msg1 = "请帮我在后台派工做一份 3 页的《青禾季度复盘》PPT，文件名叫 qinghe_q3_live.pptx，包含封面、核心指标和下一步计划三页，并完成校验与交付。";
+    let res1 = handle
+        .submit_router_message(&router_id, sub1, msg1)
+        .expect("submit msg1");
+    assert_eq!(res1, router_id);
+    println!(
+        "[LIVE-E2E +{:>5}ms] submitted msg1 submission_id={sub1} router_id={router_id}",
+        t0.elapsed().as_millis()
+    );
+
+    // Wait until Worker 1 is created AND actively running/queued (not yet finished).
+    let mut worker_id = String::new();
+    let mut worker_state_when_seen = String::new();
+    let spawn_deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < spawn_deadline {
+        let works = handle.child_works(&router_id);
+        if let Some(first) = works.first() {
+            worker_id = first.work_id.clone();
+            worker_state_when_seen = first.state.clone();
+            if matches!(
+                first.state.as_str(),
+                "running" | "queued" | "verifying" | "awaiting_approval"
+            ) {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    assert!(
+        !worker_id.is_empty(),
+        "Router must spawn at least one child Worker for PPTX brief"
+    );
+    assert!(
+        matches!(
+            worker_state_when_seen.as_str(),
+            "running" | "queued" | "verifying" | "awaiting_approval"
+        ),
+        "expected Worker 1 to be active/unfinished when submitting msg2, got state={worker_state_when_seen}"
+    );
+    println!(
+        "[LIVE-E2E +{:>5}ms] confirmed child worker_id={worker_id} root={} state={worker_state_when_seen} (UNFINISHED)",
+        t0.elapsed().as_millis(),
+        handle.root_session_id(&worker_id)
+    );
+
+    // Message 2 in the SAME conversation while Worker 1 is still unfinished!
+    let msg2 = "趁后台任务还在跑，顺便直接回答我一个问题：17 乘以 23 等于多少？只回答数字和一句话即可，不要取消刚才的任务。";
+    let res2 = handle
+        .submit_router_message(&router_id, sub2, msg2)
+        .expect("submit msg2 while worker 1 runs");
+    assert_eq!(res2, router_id);
+    println!(
+        "[LIVE-E2E +{:>5}ms] submitted msg2 submission_id={sub2} while worker_id={worker_id} active",
+        t0.elapsed().as_millis()
+    );
+
+    // Wait for Router to answer Message 2 (`391`).
+    let msg2_deadline = Instant::now() + Duration::from_secs(60);
+    let mut msg2_reply = None;
+    let mut worker_state_at_msg2_reply = String::new();
+    while Instant::now() < msg2_deadline {
+        let rows = handle.session_lines(&router_id);
+        if let Some(reply) = rows.iter().rev().find_map(|line| match line {
+            ChatLine::Assistant { text } if text.contains("391") => {
+                Some(text.clone())
+            }
+            _ => None,
+        }) {
+            msg2_reply = Some(reply);
+            worker_state_at_msg2_reply = handle
+                .child_works(&router_id)
+                .into_iter()
+                .find(|w| w.work_id == worker_id)
+                .map_or_else(|| "missing".into(), |w| w.state);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    let reply = msg2_reply.expect("Router must answer msg2 with 391");
+    println!(
+        "[LIVE-E2E +{:>5}ms] Router answered msg2 reply={:?} worker_state_at_reply={worker_state_at_msg2_reply}",
+        t0.elapsed().as_millis(),
+        reply
+    );
+
+    // Wait for Worker 1 to finish or reach terminal/approval state (bounded 120s).
+    let settle_deadline = Instant::now() + Duration::from_secs(120);
+    let mut final_worker = None;
+    while Instant::now() < settle_deadline {
+        if let Some(w) = handle
+            .child_works(&router_id)
+            .into_iter()
+            .find(|w| w.work_id == worker_id)
+        {
+            let settled = !matches!(
+                w.state.as_str(),
+                "running" | "queued" | "verifying" | "stopping"
+            );
+            final_worker = Some(w);
+            if settled {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let final_w = final_worker.expect("worker summary present");
+    println!(
+        "[LIVE-E2E +{:>5}ms] final worker_id={} state={} artifacts={:?} top_level_sessions={}",
+        t0.elapsed().as_millis(),
+        final_w.work_id,
+        final_w.state,
+        final_w.delivered_artifact_ids,
+        handle.list_sessions().len()
+    );
+    assert_eq!(handle.list_sessions().len(), 1);
+    assert_eq!(handle.root_session_id(&worker_id), router_id);
+    assert_ne!(
+        final_w.state, "stopped",
+        "Message 2 must NOT cancel Worker 1"
     );
 }

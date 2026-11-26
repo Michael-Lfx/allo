@@ -307,6 +307,104 @@ impl StudioPanel {
         self.cancel_task_target(TaskTarget::Session(session_id.to_owned()), cx);
     }
 
+    /// Stops ONLY the Router's active reply without cancelling child Workers or
+    /// discarding queued follow-ups (Q6).
+    pub(crate) fn stop_router_reply_target(
+        &self,
+        router_id: &str,
+        cx: &Context<'_, Self>,
+    ) {
+        let agent = self.agent.clone();
+        let rid = router_id.to_owned();
+        let job = cx.background_executor().spawn(async move {
+            let outcome = agent.stop_router_reply(&rid);
+            let updates = agent.drain_updates();
+            (outcome, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (outcome, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                panel.process_agent_updates(updates, cx);
+                match outcome {
+                    Ok(res) if res.outcome == "finalizing_not_cancellable" => {
+                        panel.emit_notice(Some("notice.cancel_finalizing"), cx);
+                    }
+                    Ok(_) => {
+                        panel.refresh_chat(cx);
+                        panel.refresh_board_snapshot();
+                    }
+                    Err(error) => {
+                        panel.emit_notice(Some(error), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Cancels one specific child Worker owned by `root_session_id`, leaving
+    /// the parent Router and all sibling Workers untouched (Q6).
+    pub(crate) fn cancel_child_work(
+        &self,
+        root_session_id: &str,
+        worker_id: &str,
+        cx: &Context<'_, Self>,
+    ) {
+        let agent = self.agent.clone();
+        let rid = root_session_id.to_owned();
+        let wid = worker_id.to_owned();
+        let job = cx.background_executor().spawn(async move {
+            let outcome = agent.cancel_work(&rid, &wid);
+            let updates = agent.drain_updates();
+            (outcome, updates)
+        });
+        cx.spawn(async move |weak, cx| {
+            let (outcome, updates) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                panel.process_agent_updates(updates, cx);
+                match outcome {
+                    Ok(res) if res.outcome == "finalizing_not_cancellable" => {
+                        panel.emit_notice(Some("notice.cancel_finalizing"), cx);
+                    }
+                    Ok(_) => {
+                        panel.sync_receipts();
+                        panel.refresh_chat(cx);
+                        panel.refresh_board_snapshot();
+                    }
+                    Err(error) => {
+                        panel.emit_notice(Some(error), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Opens the parent Router conversation (if not already focused) and opens
+    /// the right-hand inspector sheet pinned to child `worker_id` (Q2).
+    pub(crate) fn open_child_work_in_parent(
+        &mut self,
+        root_session_id: &str,
+        worker_id: &str,
+        title: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.agent.active_session_id().as_deref() != Some(root_session_id)
+            || self.surface != StudioSurface::Chat
+        {
+            self.open_session(root_session_id, cx);
+        }
+        self.open_work_inspector(
+            crate::deliverables::InspectedWork::Session {
+                id: worker_id.to_owned(),
+                title,
+            },
+            cx,
+        );
+    }
+
     /// Cancels a queued or active deferred acceptance receipt directly.
     pub(crate) fn cancel_receipt(
         &self,

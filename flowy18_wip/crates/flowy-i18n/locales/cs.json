@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Zrušit filtr data",
   "search.scope_all": "Vše",
   "chat.archived_toast": "Archivováno „{title}“",
-  "chat.undo": "Zpět"
+  "chat.undo": "Zpět",
+  "notice.router_queue_full": "Fronta čekajících zpráv je plná — počkejte na dokončení aktuální odpovědi.",
+  "chat.router_followup_queued": "{count} ve frontě",
+  "chat.bg_tasks_this_chat": "Tato konverzace",
+  "chat.bg_tasks_other_chats": "Další konverzace",
+  "chat.bg_tasks_needs_approval": "{count} čeká na potvrzení",
+  "chat.bg_tasks_failed": "{count} vyžaduje pozornost",
+  "chat.bg_work_queued": "Ve frontě",
+  "chat.bg_work_stop": "Zastavit",
+  "card.from_work": "Z úkolu: {title}"
 }

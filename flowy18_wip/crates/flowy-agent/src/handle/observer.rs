@@ -1474,6 +1474,7 @@ fn parse_verification_line_with_index(
         semantic_hint,
         override_used,
         provenance_warnings,
+        source_session_id: None,
     })
 }
 

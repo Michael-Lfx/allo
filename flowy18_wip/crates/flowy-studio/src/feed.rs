@@ -50,6 +50,7 @@ pub enum ArtifactAction {
         artifact_id: String,
     },
     OverrideDeliver {
+        session_id: Option<String>,
         report_id: String,
         artifact_path: String,
     },
@@ -1093,8 +1094,10 @@ impl ChatFeed {
                 semantic_hint,
                 override_used,
                 provenance_warnings,
+                source_session_id,
             } => self.verification_card(
                 index,
+                source_session_id.as_deref(),
                 report_id,
                 artifact_path,
                 artifact_hash,
@@ -1432,6 +1435,7 @@ impl ChatFeed {
     fn verification_card(
         &self,
         index: usize,
+        source_session_id: Option<&str>,
         report_id: &str,
         artifact_path: &str,
         artifact_hash: &str,
@@ -1931,6 +1935,7 @@ impl ChatFeed {
             feed.toggle_override_check(toggle_key.clone(), cx);
         }));
 
+        let action_owner = source_session_id.map(str::to_owned);
         let action_btn = theme::Button::new(
             ("verify-override-submit", row_id),
             self.t("verify.override.action"),
@@ -1942,6 +1947,7 @@ impl ChatFeed {
             &self.theme,
             cx.listener(move |_, _, _, cx| {
                 cx.emit(ArtifactAction::OverrideDeliver {
+                    session_id: action_owner.clone(),
                     report_id: action_report.clone(),
                     artifact_path: action_path.clone(),
                 });
@@ -3011,6 +3017,7 @@ mod tests {
                     semantic_hint: Some("标题与正文一致".into()),
                     override_used: false,
                     provenance_warnings: Vec::new(),
+                    source_session_id: Some("w-child-42".into()),
                 }],
                 cx,
             );
@@ -3080,9 +3087,12 @@ mod tests {
         assert!(matches!(
             events.lock().unwrap().as_slice(),
             [ArtifactAction::OverrideDeliver {
+                session_id,
                 report_id,
                 artifact_path,
-            }] if report_id == "report-42" && artifact_path == "outputs/sub/deck.pptx"
+            }] if session_id.as_deref() == Some("w-child-42")
+                && report_id == "report-42"
+                && artifact_path == "outputs/sub/deck.pptx"
         ));
     }
 
@@ -3102,6 +3112,7 @@ mod tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
         ];
         assert!(collect_latest_deliverables(&failed_only).is_none());
@@ -3119,6 +3130,7 @@ mod tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
             ChatLine::Verification {
                 report_id: "r3".into(),
@@ -3129,6 +3141,7 @@ mod tests {
                 semantic_hint: None,
                 override_used: true,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
             ChatLine::Artifact {
                 artifact_id: "a1".into(),
@@ -3160,6 +3173,7 @@ mod tests {
                     semantic_hint: Some("第1页写成华南区".into()),
                     override_used: false,
                     provenance_warnings: Vec::new(),
+                    source_session_id: None,
                 }],
                 cx,
             );

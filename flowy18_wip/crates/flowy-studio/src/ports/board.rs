@@ -583,10 +583,19 @@ impl BoardDataSource for AgentHandle {
 
         for summary in &sessions {
             let lines = self.session_lines(&summary.id);
-            let is_busy = busy_ids.contains(&summary.id);
+            let is_router = self.session_role(&summary.id)
+                == flowy_agent::SessionRole::Router;
+            let child_works = if is_router {
+                self.child_works(&summary.id)
+            } else {
+                Vec::new()
+            };
+            let is_busy = busy_ids.contains(&summary.id)
+                || child_works.iter().any(|w| busy_ids.contains(&w.work_id));
             let status = self.session_status(&summary.id);
             let delivery_failed = matches!(status, TurnStatus::DeliveryFailed);
-            let live_heartbeat = is_busy
+            let live_heartbeat = busy_ids
+                .contains(&summary.id)
                 .then(|| self.session_heartbeat(&summary.id))
                 .flatten();
             let session_receipts = receipts_by_session
@@ -608,7 +617,7 @@ impl BoardDataSource for AgentHandle {
             let mut branches = project_session_branches(
                 summary,
                 &lines,
-                is_busy,
+                busy_ids.contains(&summary.id),
                 delivery_failed,
                 live_heartbeat.as_ref(),
                 &session_receipts,
@@ -616,6 +625,32 @@ impl BoardDataSource for AgentHandle {
                 session_contract.clone(),
                 |work_id| work_contracts.get(work_id).cloned(),
             );
+
+            if !child_works.is_empty() {
+                let child_branches =
+                    super::router_projection::project_router_child_branches(
+                        summary,
+                        &child_works,
+                        &overridden_hashes,
+                        |wid| self.session_lines(wid),
+                        |wid| {
+                            receipts_by_session
+                                .remove(&Some(wid.to_owned()))
+                                .unwrap_or_default()
+                        },
+                        |wid| {
+                            session_contracts
+                                .get(wid)
+                                .cloned()
+                                .or_else(|| work_contracts.get(wid).cloned())
+                                .or_else(|| self.session_work_status(wid))
+                        },
+                    );
+                if !child_branches.is_empty() {
+                    branches.retain(|b| !matches!(b.phase, BranchPhase::Idle));
+                    branches.extend(child_branches);
+                }
+            }
 
             let has_blocker =
                 branches.iter().any(|branch| branch.phase.is_blocker());
@@ -856,7 +891,7 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
     clippy::too_many_arguments,
     reason = "pure snapshot projection helper keeping BoardDataSource testable"
 )]
-fn project_session_branches<F>(
+pub(super) fn project_session_branches<F>(
     summary: &SessionSummary,
     lines: &[ChatLine],
     is_busy: bool,
@@ -884,6 +919,7 @@ where
             semantic_hint,
             override_used,
             provenance_warnings,
+            ..
         } = line
         {
             let norm_path = display_path_str(artifact_path);
@@ -1301,6 +1337,7 @@ mod tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
             ChatLine::Verification {
                 report_id: "rep-002".into(),
@@ -1311,6 +1348,7 @@ mod tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
         ];
         let contract = WorkContractProgress {
@@ -1534,6 +1572,7 @@ mod tests {
             semantic_hint: None,
             override_used: false,
             provenance_warnings: Vec::new(),
+            source_session_id: None,
         });
         let mut branches = project_session_branches(
             &summary,
@@ -1898,5 +1937,164 @@ mod tests {
         let year_buckets = compute_daily_7d_in_tz(&[&dec27], jan2_ms, tz);
         assert_eq!(year_buckets[0].date_key, (2025, 12, 27));
         assert_eq!(year_buckets[0].completed_or_delivered, 1);
+    }
+
+    #[test]
+    fn pr2b_board_folds_router_child_works_and_strict_receipts_without_unassigned_leak()
+     {
+        let parent = SessionSummary {
+            id: "r-parent".into(),
+            title: "Qinghe Router".into(),
+            updated_at: 1_760_000_000_000,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let w1_id = "w-delivered-1".to_owned();
+        let w2_id = "w-pending-2".to_owned();
+
+        let child_works = vec![
+            flowy_agent::ChildWorkSummary {
+                work_id: w1_id.clone(),
+                root_session_id: parent.id.clone(),
+                title: "Build slides".into(),
+                state: "delivered".into(),
+                access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                origin: flowy_agent::SessionOrigin::Home,
+                workspace_root: None,
+                turn_status: TurnStatus::Completed,
+                updated_at: 1_760_000_001_000,
+                contract_revision: Some(1),
+                delivered_artifact_ids: vec!["art-1".into()],
+                missing_items: Vec::new(),
+                objects: Vec::new(),
+                last_stop_handoff: None,
+                heartbeat: None,
+                pending_cards: Vec::new(),
+            },
+            flowy_agent::ChildWorkSummary {
+                work_id: w2_id.clone(),
+                root_session_id: parent.id.clone(),
+                title: "Update quote".into(),
+                state: "awaiting_approval".into(),
+                access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                origin: flowy_agent::SessionOrigin::Home,
+                workspace_root: None,
+                turn_status: TurnStatus::WaitingForUser,
+                updated_at: 1_760_000_002_000,
+                contract_revision: Some(1),
+                delivered_artifact_ids: Vec::new(),
+                missing_items: Vec::new(),
+                objects: Vec::new(),
+                last_stop_handoff: None,
+                heartbeat: None,
+                pending_cards: vec![flowy_agent::PendingCard::ToolApproval {
+                    card_id: "card-w2".into(),
+                    tool_name: "powershell".into(),
+                    command_preview: "Remove-Item ./tmp".into(),
+                    args_hash: "deadbeef".into(),
+                    risk_reason: "deletes files".into(),
+                    target_summary: "workspace".into(),
+                    created_at_ms: 1_760_000_002_000,
+                }],
+            },
+        ];
+
+        // Child W1 delivered a verified pptx; child W2 has a queued strict receipt + approval card.
+        let mut child_lines: HashMap<&str, Vec<ChatLine>> = HashMap::new();
+        child_lines.insert(
+            w1_id.as_str(),
+            vec![ChatLine::Verification {
+                report_id: "rep-w1".into(),
+                artifact_path: r"D:\Work\Qinghe.pptx".into(),
+                artifact_hash: "aabbccdd11223344".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some(w1_id.clone()),
+            }],
+        );
+        child_lines.insert(w2_id.as_str(), Vec::new());
+
+        let root = temp_board_root("pr2b-router-fold");
+        let queue = flowy_agent::AcceptanceQueue::new(root.clone());
+        let w2_strict_receipt = queue
+            .accept_strict(
+                &w2_id,
+                "worker 2 strict work",
+                Some("req-w2"),
+                1_760_000_002_000,
+            )
+            .unwrap();
+        let legacy_unassigned_receipt = queue
+            .accept(None, "legacy unassigned task", 1_760_000_003_000)
+            .unwrap();
+
+        let mut receipts_by_session: HashMap<
+            Option<String>,
+            Vec<(AcceptedMessage, ReceiptState)>,
+        > = HashMap::new();
+        receipts_by_session.insert(
+            Some(w2_id.clone()),
+            vec![(w2_strict_receipt, ReceiptState::Queued)],
+        );
+        receipts_by_session.insert(
+            None,
+            vec![(legacy_unassigned_receipt, ReceiptState::Queued)],
+        );
+
+        let child_branches =
+            crate::ports::router_projection::project_router_child_branches(
+                &parent,
+                &child_works,
+                &std::collections::BTreeSet::new(),
+                |wid| child_lines.get(wid).cloned().unwrap_or_default(),
+                |wid| {
+                    receipts_by_session
+                        .remove(&Some(wid.to_owned()))
+                        .unwrap_or_default()
+                },
+                |_| None,
+            );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Child W2's strict receipt was drained into parent Router and never left in unassigned!
+        assert!(
+            !receipts_by_session.contains_key(&Some(w2_id.clone())),
+            "child strict_target receipt must be consumed by parent Router group"
+        );
+        assert_eq!(
+            receipts_by_session.get(&None).map(Vec::len),
+            Some(1),
+            "truly unassigned legacy receipt must remain in unassigned bucket"
+        );
+
+        // Verify folded branches carry W1's delivered PPTX, W2's queued receipt, and W2's approval blocker.
+        assert!(child_branches.iter().any(|b| {
+            b.id.starts_with(&format!("work:{w1_id}:"))
+                && matches!(b.phase, BranchPhase::Delivered { .. })
+                && b.format == DeliverableFormat::Slides
+        }));
+        assert!(child_branches.iter().any(|b| {
+            b.id.starts_with(&format!("work:{w2_id}:"))
+                && matches!(b.phase, BranchPhase::Queued { .. })
+        }));
+        assert!(child_branches.iter().any(|b| {
+            b.id == format!("work:{w2_id}:approval")
+                && matches!(b.phase, BranchPhase::NeedsApproval { .. })
+        }));
+
+        // KPI counts each folded branch strictly once.
+        let mut kpi = BoardKpiSummary::default();
+        for b in &child_branches {
+            accumulate_kpi(&mut kpi, b);
+        }
+        assert_eq!(kpi.delivered_count, 1);
+        assert_eq!(kpi.slides_count, 1);
+        assert_eq!(kpi.running_count, 1);
+        assert_eq!(kpi.approval_count, 1);
+        assert_eq!(kpi.total_branches, 3);
     }
 }

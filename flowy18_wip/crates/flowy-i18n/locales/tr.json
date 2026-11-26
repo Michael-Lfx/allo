@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Tarih filtresini temizle",
   "search.scope_all": "Tümü",
   "chat.archived_toast": "\"{title}\" arşivlendi",
-  "chat.undo": "Geri al"
+  "chat.undo": "Geri al",
+  "notice.router_queue_full": "Bekleyen takip kuyruğu dolu — mevcut yanıtın bitmesini bekleyin.",
+  "chat.router_followup_queued": "{count} sırada",
+  "chat.bg_tasks_this_chat": "Bu konuşma",
+  "chat.bg_tasks_other_chats": "Diğer konuşmalar",
+  "chat.bg_tasks_needs_approval": "{count} onay bekliyor",
+  "chat.bg_tasks_failed": "{count} ilgilenilmeyi bekliyor",
+  "chat.bg_work_queued": "Sırada",
+  "chat.bg_work_stop": "Durdur",
+  "card.from_work": "Görevden: {title}"
 }

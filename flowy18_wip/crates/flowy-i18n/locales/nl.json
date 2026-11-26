@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Datumfilter wissen",
   "search.scope_all": "Alles",
   "chat.archived_toast": "\"{title}\" gearchiveerd",
-  "chat.undo": "Ongedaan maken"
+  "chat.undo": "Ongedaan maken",
+  "notice.router_queue_full": "De wachtrij voor vervolgberichten is vol — wacht tot het huidige antwoord klaar is.",
+  "chat.router_followup_queued": "{count} in wachtrij",
+  "chat.bg_tasks_this_chat": "Dit gesprek",
+  "chat.bg_tasks_other_chats": "Andere gesprekken",
+  "chat.bg_tasks_needs_approval": "{count} wacht op bevestiging",
+  "chat.bg_tasks_failed": "{count} vereist aandacht",
+  "chat.bg_work_queued": "In wachtrij",
+  "chat.bg_work_stop": "Stoppen",
+  "card.from_work": "Van taak: {title}"
 }

@@ -9,6 +9,7 @@
 mod board;
 mod local_env;
 mod local_path;
+mod router_projection;
 mod trace;
 
 pub use board::{

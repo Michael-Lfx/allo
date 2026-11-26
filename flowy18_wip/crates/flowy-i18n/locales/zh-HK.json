@@ -922,5 +922,14 @@
   "board.clear_day_filter": "清除日期篩選",
   "search.scope_all": "全部",
   "chat.archived_toast": "已封存「{title}」",
-  "chat.undo": "復原"
+  "chat.undo": "復原",
+  "notice.router_queue_full": "待處理訊息已滿，請等目前回覆完成後再發送。",
+  "chat.router_followup_queued": "待回覆 {count} 條",
+  "chat.bg_tasks_this_chat": "本對話任務",
+  "chat.bg_tasks_other_chats": "其他對話",
+  "chat.bg_tasks_needs_approval": "{count} 個任務待你確認",
+  "chat.bg_tasks_failed": "{count} 個任務需要處理",
+  "chat.bg_work_queued": "排隊中",
+  "chat.bg_work_stop": "停止",
+  "card.from_work": "來自任務：{title}"
 }

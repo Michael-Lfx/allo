@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Hapus filter tanggal",
   "search.scope_all": "Semua",
   "chat.archived_toast": "\"{title}\" diarsipkan",
-  "chat.undo": "Urungkan"
+  "chat.undo": "Urungkan",
+  "notice.router_queue_full": "Antrean pesan tindak lanjut penuh — tunggu balasan saat ini selesai.",
+  "chat.router_followup_queued": "{count} dalam antrean",
+  "chat.bg_tasks_this_chat": "Percakapan ini",
+  "chat.bg_tasks_other_chats": "Percakapan lainnya",
+  "chat.bg_tasks_needs_approval": "{count} menunggu konfirmasi",
+  "chat.bg_tasks_failed": "{count} perlu perhatian",
+  "chat.bg_work_queued": "Dalam antrean",
+  "chat.bg_work_stop": "Hentikan",
+  "card.from_work": "Dari tugas: {title}"
 }

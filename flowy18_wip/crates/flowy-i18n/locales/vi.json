@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Xóa bộ lọc ngày",
   "search.scope_all": "Tất cả",
   "chat.archived_toast": "Đã lưu trữ \"{title}\"",
-  "chat.undo": "Hoàn tác"
+  "chat.undo": "Hoàn tác",
+  "notice.router_queue_full": "Hàng đợi tin nhắn đã đầy — vui lòng đợi phản hồi hiện tại hoàn tất.",
+  "chat.router_followup_queued": "{count} đang chờ",
+  "chat.bg_tasks_this_chat": "Cuộc trò chuyện này",
+  "chat.bg_tasks_other_chats": "Cuộc trò chuyện khác",
+  "chat.bg_tasks_needs_approval": "{count} đang chờ xác nhận",
+  "chat.bg_tasks_failed": "{count} cần xử lý",
+  "chat.bg_work_queued": "Đang chờ",
+  "chat.bg_work_stop": "Dừng",
+  "card.from_work": "Từ tác vụ: {title}"
 }

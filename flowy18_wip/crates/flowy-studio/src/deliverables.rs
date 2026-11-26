@@ -203,14 +203,58 @@ impl StudioPanel {
                 }
                 RightDrawerTab::Steps => {
                     if let Some(sid) = &active_session {
+                        let child_works = if self.agent.session_role(sid)
+                            == flowy_agent::SessionRole::Router
+                        {
+                            self.agent.child_works(sid)
+                        } else {
+                            Vec::new()
+                        };
                         let title = self.agent.session_title();
-                        self.work_inspector_view(
+                        let inspector = self.work_inspector_view(
                             &InspectedWork::Session {
                                 id: sid.clone(),
                                 title,
                             },
                             cx,
-                        )
+                        );
+                        if child_works.is_empty() {
+                            inspector
+                        } else {
+                            let mut col = div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(self.theme.space(8.));
+                            let mut works_card = div()
+                                .w_full()
+                                .px(self.theme.space(12.))
+                                .pt(self.theme.space(12.))
+                                .flex()
+                                .flex_col()
+                                .gap(self.theme.space(6.))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(self.theme.muted())
+                                        .child(
+                                            self.t("chat.bg_tasks_this_chat"),
+                                        ),
+                                );
+                            for (ix, work) in child_works.iter().enumerate() {
+                                works_card = works_card.child(
+                                    self.render_child_work_row(
+                                        ("drawer-child-work", ix as u64),
+                                        work,
+                                        None,
+                                        cx,
+                                    ),
+                                );
+                            }
+                            col = col.child(works_card).child(inspector);
+                            col.into_any_element()
+                        }
                     } else {
                         div()
                             .p(self.theme.space(12.))
@@ -638,7 +682,10 @@ impl StudioPanel {
                                 .render(
                                     &self.theme,
                                     cx.listener(move |panel, _, _, cx| {
-                                        panel.open_session(&open_id, cx);
+                                        let root_id = panel
+                                            .agent
+                                            .root_session_id(&open_id);
+                                        panel.open_session(&root_id, cx);
                                         panel.close_right_sheet(cx);
                                     }),
                                 ),
@@ -654,9 +701,22 @@ impl StudioPanel {
                                     .render(
                                         &self.theme,
                                         cx.listener(move |panel, _, _, cx| {
-                                            panel.stop_session_turn(
-                                                &stop_id, cx,
-                                            );
+                                            if panel.agent.session_role(&stop_id)
+                                                == flowy_agent::SessionRole::Worker
+                                            {
+                                                let root_id = panel
+                                                    .agent
+                                                    .root_session_id(&stop_id);
+                                                panel.cancel_child_work(
+                                                    &root_id,
+                                                    &stop_id,
+                                                    cx,
+                                                );
+                                            } else {
+                                                panel.stop_session_turn(
+                                                    &stop_id, cx,
+                                                );
+                                            }
                                         }),
                                     ),
                                 )

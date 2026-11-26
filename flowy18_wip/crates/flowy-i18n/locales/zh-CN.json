@@ -922,5 +922,14 @@
   "board.clear_day_filter": "清除日期筛选",
   "search.scope_all": "全部",
   "chat.archived_toast": "已归档「{title}」",
-  "chat.undo": "撤销"
+  "chat.undo": "撤销",
+  "notice.router_queue_full": "待处理消息已满，请等当前回复完成后再发。",
+  "chat.router_followup_queued": "待回复 {count} 条",
+  "chat.bg_tasks_this_chat": "本会话任务",
+  "chat.bg_tasks_other_chats": "其他会话",
+  "chat.bg_tasks_needs_approval": "{count} 个任务待你确认",
+  "chat.bg_tasks_failed": "{count} 个任务需要处理",
+  "chat.bg_work_queued": "排队中",
+  "chat.bg_work_stop": "停止",
+  "card.from_work": "来自任务：{title}"
 }

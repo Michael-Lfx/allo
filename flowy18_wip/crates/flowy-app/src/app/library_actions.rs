@@ -214,7 +214,8 @@ impl FlowyApp {
         let previous = agent.active_session_id();
         let session_id = session_id.to_owned();
         let artifact_id = artifact_id.to_owned();
-        let target = session_id.clone();
+        let target_root = agent.root_session_id(&session_id);
+        let target = target_root.clone();
         let anchor = artifact_id.clone();
         let job = cx.background_executor().spawn(async move {
             if !agent.source_available(&target) { return Err("library.source.unavailable"); }
@@ -236,7 +237,7 @@ impl FlowyApp {
                 }
                 if result.is_ok()
                     && app.studio.read(cx).agent.active_session_id().as_deref()
-                        == Some(&session_id)
+                        == Some(target_root.as_str())
                 {
                     let focused = app.studio.update(cx, |panel, cx| {
                         panel.show_selected_artifact(&artifact_id, cx)

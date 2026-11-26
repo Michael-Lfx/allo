@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Скинути фільтр дати",
   "search.scope_all": "Усе",
   "chat.archived_toast": "Архівовано «{title}»",
-  "chat.undo": "Скасувати"
+  "chat.undo": "Скасувати",
+  "notice.router_queue_full": "Черга очікуваних повідомлень заповнена — дочекайтеся завершення поточної відповіді.",
+  "chat.router_followup_queued": "{count} у черзі",
+  "chat.bg_tasks_this_chat": "Ця розмова",
+  "chat.bg_tasks_other_chats": "Інші розмови",
+  "chat.bg_tasks_needs_approval": "{count} очікує підтвердження",
+  "chat.bg_tasks_failed": "{count} потребує уваги",
+  "chat.bg_work_queued": "У черзі",
+  "chat.bg_work_stop": "Зупинити",
+  "card.from_work": "Із завдання: {title}"
 }

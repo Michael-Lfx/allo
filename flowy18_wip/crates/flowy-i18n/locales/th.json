@@ -922,5 +922,14 @@
   "board.clear_day_filter": "ล้างตัวกรองวันที่",
   "search.scope_all": "ทั้งหมด",
   "chat.archived_toast": "เก็บ \"{title}\" แล้ว",
-  "chat.undo": "เลิกทำ"
+  "chat.undo": "เลิกทำ",
+  "notice.router_queue_full": "คิวข้อความรอตอบเต็มแล้ว กรุณารอให้คำตอบปัจจุบันเสร็จก่อน",
+  "chat.router_followup_queued": "รอตอบ {count} รายการ",
+  "chat.bg_tasks_this_chat": "การสนทนานี้",
+  "chat.bg_tasks_other_chats": "การสนทนาอื่น",
+  "chat.bg_tasks_needs_approval": "{count} งานรอยืนยัน",
+  "chat.bg_tasks_failed": "{count} งานต้องตรวจสอบ",
+  "chat.bg_work_queued": "อยู่ในคิว",
+  "chat.bg_work_stop": "หยุด",
+  "card.from_work": "จากงาน: {title}"
 }
