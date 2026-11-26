@@ -449,6 +449,29 @@ pub fn ready_trigger() -> usize {
     ready_trigger_for_target(ready_target())
 }
 
+// ── m3 概念缺口回灌教练（learning-maintenance-loop 波）────────────────────
+
+/// 概念缺口回灌开关（m3，`NOMI_LEARNING_COACH_FINDINGS_INPUT`）：**缺省
+/// off**——教练输入是每一批提名都要读的面，收益未经真机 A/B 证实前不缺省
+/// 开，与 u06 课时历史压缩同款「缺省关、显式开」反向语义：未设 / off / 0 /
+/// false = 关（教练上下文不读评审留痕，提示词逐字节回基线）；其它取值
+/// （on/1/true/…）= 开（service 装配教练上下文时从 findings 表取概念缺口，
+/// 渲染为教练面专属的【未处置概念缺口（评审留痕）】块）。缺省值待真机 A/B
+/// （缺口概念覆盖率升且打回率不升）才翻 on。
+pub const COACH_FINDINGS_INPUT_SWITCH_ENV: &str = "NOMI_LEARNING_COACH_FINDINGS_INPUT";
+
+/// 概念缺口回灌开关判定（**缺省关**——取值语义与 [`verify_batch_enabled_value`]
+/// 反向，见常量注记；取值注入面，纯函数——测试不触进程 env）：未设 = 关；
+/// 显式非 off 取值 = 开。
+pub fn coach_findings_input_enabled_value(value: Option<&str>) -> bool {
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+}
+
+/// 概念缺口回灌开关的进程读数（[`coach_findings_input_enabled_value`] 同款语义）。
+pub fn coach_findings_input_enabled() -> bool {
+    coach_findings_input_enabled_value(std::env::var(COACH_FINDINGS_INPUT_SWITCH_ENV).ok().as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +614,29 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes"] {
             assert!(lesson_history_compact_enabled_value(Some(value)), "{value:?} = 开");
+        }
+    }
+
+    /// 概念缺口回灌开关（m3）：**缺省 off**（教练输入是每批提名都读的面，
+    /// 收益未经真机 A/B 证实前不缺省开）；显式非 off 取值 = 开。与 u06 同为
+    /// 纯函数面测试（不触进程 env）。
+    #[test]
+    fn coach_findings_input_switch_defaults_off_and_requires_explicit_on() {
+        assert!(
+            !coach_findings_input_enabled_value(None),
+            "未设 = 关（缺省 off）"
+        );
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(
+                !coach_findings_input_enabled_value(Some(value)),
+                "{value:?} = 关"
+            );
+        }
+        for value in ["on", "1", "true", "yes", ""] {
+            assert!(
+                coach_findings_input_enabled_value(Some(value)),
+                "{value:?} = 开（设了但非 off 取值即算显式开——与 o2 同款语义）"
+            );
         }
     }
 

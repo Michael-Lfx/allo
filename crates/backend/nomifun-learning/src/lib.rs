@@ -30,7 +30,8 @@ pub use switches::{
     live_archive_enabled_with_unset_default, redraft_splice_enabled,
     redraft_splice_enabled_value, review_context_v2_enabled,
     review_context_v2_enabled_value, tier_priority_enabled, tier_priority_enabled_value,
-    variant_v2_enabled, variant_v2_enabled_value,
+    variant_v2_enabled, variant_v2_enabled_value, coach_findings_input_enabled,
+    coach_findings_input_enabled_value, COACH_FINDINGS_INPUT_SWITCH_ENV,
 };
 
 pub use completer::{CallUsage, LearningCompleter, LlmUsageDelta, LlmUsageMeter};

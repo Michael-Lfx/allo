@@ -18254,3 +18254,269 @@ async fn repair_round_logs_its_outcome_readings() {
         assert!(line.contains(field), "skipped 结束行缺 {field:?}：{line}");
     }
 }
+
+// ── m3（概念缺口回灌教练）：教练输入接线 ──────────────────────────────────
+
+/// 捕获教练 user 消息的 completer（sb1 地形清单接线同款）：每次起草把 user
+/// 推进缓冲后回 Timeout——恰一次调用、批次转 failed，捕获面只有上下文装配。
+struct CoachPromptCapture(std::sync::Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl LearningCompleter for CoachPromptCapture {
+    async fn complete(
+        &self,
+        _: Option<(&str, &str)>,
+        _: &str,
+        _: &str,
+        _: u32,
+    ) -> Result<String, AppError> {
+        unreachable!("growth pipeline only uses the json seam")
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        _: Option<(&str, &str)>,
+        _: &str,
+        user: &str,
+        _: u32,
+        _: Option<f32>,
+    ) -> Result<String, AppError> {
+        self.0.lock().unwrap().push(user.to_owned());
+        Err(AppError::Timeout("capture only (test)".into()))
+    }
+}
+
+/// 往 findings 表落一行留痕（列同 `append_structure_findings` 的写面；node
+/// 留空 = 全课面）。
+async fn insert_finding(
+    service: &LearningService,
+    course_id: &str,
+    seq: i64,
+    source: &str,
+    field: &str,
+    issue: &str,
+    advice: &str,
+) {
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, ?, ?, '', ?, ?, ?)",
+    )
+    .bind(now_ms())
+    .bind(course_id)
+    .bind(seq)
+    .bind(source)
+    .bind(field)
+    .bind(issue)
+    .bind(advice)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+}
+
+/// 走真实 `kick_growth` 路径取教练 user 消息（第 0 次捕获）。
+async fn captured_coach_prompt(
+    service: &LearningService,
+    owner: &UserId,
+    course_id: &str,
+    capture: &CoachPromptCapture,
+) -> String {
+    let course = LearningCourseId::parse(course_id).unwrap();
+    assert!(
+        service
+            .kick_growth(owner, &course, true, None)
+            .await
+            .unwrap()
+    );
+    for _ in 0..500 {
+        if !capture.0.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        wait_for_batch_status(service, course_id, "failed").await,
+        "capture completer fails the batch; the run must terminate"
+    );
+    let prompts = capture.0.lock().unwrap();
+    assert!(!prompts.is_empty(), "教练调用未到达");
+    prompts[0].clone()
+}
+
+/// 本机真实留痕的旗舰缺口行（DB seq 13）及其在教练上下文里的行形。
+const M3_GAP_ISSUE: &str = "已教概念账中未见容器、接口、元素、返回类型等基础概念，本批迭代器协议与结果类型又直接依赖它们，疑似课程在抽象与类型系统线的前置底座存在缺口。";
+const M3_GAP_ADVICE: &str =
+    "后续批次可先补铸容器、接口、返回类型等基础概念，再承载迭代器协议与结果类型等前沿节点。";
+const M3_GAP_LINE: &str = "- 已教概念账中未见容器、接口、元素、返回类型等基础概念，本批迭代器协议与结果类型又直接依赖它们，疑似课程在抽象与类型系统线的前置底座存在缺口（建议：后续批次可先补铸容器、接口、返回类型等基础概念，再承载迭代器协议与结果类型等前沿节点）";
+/// 缺口块的框架语（测试侧硬编码，不读实现常量）。
+const M3_GAP_FRAMING: &str = "评审在往批留痕里指出、截至留痕时账内没有的概念缺口——参考不是指令：缺口可能已被后续批次补上，以【已教概念账】为准；是否先补、补哪些由你按学习顺序判断。";
+
+/// m3 on 臂：`NOMI_LEARNING_COACH_FINDINGS_INPUT=on` 时教练 user 里出现
+/// 【未处置概念缺口（评审留痕）】块——块头 + 框架语 + 缺口行，落在已教概念
+/// 账之后；已放行的注记与预算留痕不进，近形复述并入原行。并留一行
+/// `coach concept gaps assembled` 读数（rows = 扫过几行、gaps = 出几行）——
+/// 真机 A/B 靠它确认 on 臂真的渲染了缺口块。
+/// env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+#[tokio::test]
+#[serial_test::serial]
+async fn coach_input_carries_concept_gaps_when_the_switch_is_on() {
+    use crate::switches::{COACH_FINDINGS_INPUT_SWITCH_ENV, switch_env_guard};
+    pad_global_tracing_subscriber();
+    let _switch = switch_env_guard(COACH_FINDINGS_INPUT_SWITCH_ENV, Some("on"));
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    // 四行留痕：缺口原行 / 已放行的注记 / 缺口的近形复述 / 预算留痕。
+    insert_finding(
+        &service,
+        &course_id,
+        1,
+        "concept-review",
+        "",
+        M3_GAP_ISSUE,
+        M3_GAP_ADVICE,
+    )
+    .await;
+    insert_finding(
+        &service,
+        &course_id,
+        2,
+        "concept-review",
+        "title",
+        "标题与 intent 中的「接口」「容器」是编程领域常见用语，概念登记表与已教账均无对应条目；本批把它们作为描述性用语放行（指涉的正是本点所教的统一取用约定）",
+        "若后续要把「接口」「容器」作为独立教学点，走课程用语表增词提案正式立项，或在改写标题时统一措辞",
+    )
+    .await;
+    insert_finding(
+        &service,
+        &course_id,
+        3,
+        "concept-review",
+        "",
+        "已教概念账中未见容器、接口、元素、返回类型等基础概念，本批迭代器协议与结果类型直接依赖它们，疑似课程在抽象与类型系统线的前置底座存在缺口。",
+        "",
+    )
+    .await;
+    insert_finding(
+        &service,
+        &course_id,
+        4,
+        "growth-budget",
+        "",
+        "自动补批超时（墙钟 10 分钟）：本批尚未过评审门，不再发起评审（3 个节点在途作废）",
+        "",
+    )
+    .await;
+
+    let capture = Arc::new(CoachPromptCapture(Mutex::new(Vec::new())));
+    *service.course_completer.write().unwrap() = Some(capture.clone());
+    let (buffer, _logs) = capture_thread_logs();
+    let prompt = captured_coach_prompt(&service, &owner, &course_id, capture.as_ref()).await;
+
+    let block = format!("\n【未处置概念缺口（评审留痕）】\n{M3_GAP_FRAMING}\n{M3_GAP_LINE}\n");
+    let at = prompt
+        .find(&block)
+        .unwrap_or_else(|| panic!("on 臂：教练 user 带缺口块（块头 + 框架语 + 行）：{prompt}"));
+    assert!(
+        prompt[..at].contains("【已教概念账"),
+        "缺口块落在已教概念账之后：{prompt}"
+    );
+    assert!(
+        prompt[at + block.len()..].starts_with("\n【"),
+        "缺口块之后紧接下一个块头：{prompt}"
+    );
+    assert_eq!(
+        prompt.matches(M3_GAP_LINE).count(),
+        1,
+        "近形复述并入原行：缺口行恰一次"
+    );
+    assert!(
+        !prompt.contains("作为描述性用语放行"),
+        "已放行的注记不进缺口块：{prompt}"
+    );
+    assert!(
+        !prompt.contains("自动补批超时"),
+        "预算留痕不进缺口块：{prompt}"
+    );
+
+    let captured = captured_log_text(&buffer);
+    let line = captured
+        .lines()
+        .find(|line| line.contains("coach concept gaps assembled"))
+        .unwrap_or_else(|| panic!("on 臂留一行缺口读数：\n{captured}"));
+    // rows = 读到的 concept-review 行数（预算留痕在 SQL 里就滤掉了，不计）；
+    // gaps = 去重封顶后出的行数。
+    for field in [
+        format!("course=\"{course_id}\""),
+        "rows=3".to_owned(),
+        "gaps=1".to_owned(),
+    ] {
+        assert!(line.contains(&field), "读数行缺 {field:?}：{line}");
+    }
+}
+
+/// m3 off 臂：开关未设（缺省）或显式 off 时，留痕里有缺口行教练也读不到
+/// ——缺口字段恒空，提示词不带块头也不带行。env 是进程全局态：`#[serial]`。
+#[tokio::test]
+#[serial_test::serial]
+async fn coach_input_leaves_concept_gaps_out_unless_the_switch_is_on() {
+    use crate::switches::{COACH_FINDINGS_INPUT_SWITCH_ENV, switch_env_guard};
+    for switch in [None, Some("off")] {
+        let _switch = switch_env_guard(COACH_FINDINGS_INPUT_SWITCH_ENV, switch);
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        insert_finding(
+            &service,
+            &course_id,
+            1,
+            "concept-review",
+            "",
+            M3_GAP_ISSUE,
+            M3_GAP_ADVICE,
+        )
+        .await;
+        let capture = Arc::new(CoachPromptCapture(Mutex::new(Vec::new())));
+        *service.course_completer.write().unwrap() = Some(capture.clone());
+        let prompt = captured_coach_prompt(&service, &owner, &course_id, capture.as_ref()).await;
+        assert!(
+            !prompt.contains("【未处置概念缺口"),
+            "{switch:?}：off 臂不带缺口块头：{prompt}"
+        );
+        assert!(
+            !prompt.contains(M3_GAP_LINE),
+            "{switch:?}：off 臂不带缺口行：{prompt}"
+        );
+    }
+}
+
+/// m3 读失败不拖垮生长：on 臂下 findings 表读不到（表被删），缺口节回空串、
+/// 留一行 warn，教练调用照常到达——缺口节是参考，永远不让生长回合失败
+/// （与唤醒通道同律）。env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+#[tokio::test]
+#[serial_test::serial]
+async fn concept_gap_read_failure_never_fails_the_growth_round() {
+    use crate::switches::{COACH_FINDINGS_INPUT_SWITCH_ENV, switch_env_guard};
+    pad_global_tracing_subscriber();
+    let _switch = switch_env_guard(COACH_FINDINGS_INPUT_SWITCH_ENV, Some("on"));
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    sqlx::query("DROP TABLE learning_structure_findings")
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let capture = Arc::new(CoachPromptCapture(Mutex::new(Vec::new())));
+    *service.course_completer.write().unwrap() = Some(capture.clone());
+    let (buffer, _logs) = capture_thread_logs();
+    // 教练调用必须到达（到不了即 panic）：读失败没有被上抛成回合失败。
+    let prompt = captured_coach_prompt(&service, &owner, &course_id, capture.as_ref()).await;
+    assert!(
+        !prompt.contains("【未处置概念缺口"),
+        "读失败 = 缺口节回空：{prompt}"
+    );
+    let captured = captured_log_text(&buffer);
+    assert!(
+        captured
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("coach concept gaps read failed")),
+        "读失败留一行 warn：\n{captured}"
+    );
+}

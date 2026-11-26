@@ -1,6 +1,7 @@
 use super::*;
 
 use super::progress::attempt_not_skipped_sql;
+use crate::learning_graph::concept_gaps::{FindingRow, concept_gap_lines};
 use crate::learning_graph::concept_search;
 use crate::models::{ConceptSearchMode, ConceptSearchResults};
 
@@ -3238,7 +3239,8 @@ impl LearningService {
     /// 教练上下文（g3 九块）：地形清单（按挂载覆盖折叠，ADR-0018 决定 2）与
     /// 地形门口从本课 structure_json 快照重读（课程内铁律：只读本课快照与
     /// 本课挂载行，不触碰概念登记表）；无快照 = 两块均为空，教练退回自行
-    /// 盘点。同一份上下文起草、重裁、评审复用——评审面渲染时不含地形清单
+    /// 盘点。同一份上下文起草、重裁、评审复用——评审面渲染时不含地形清单，
+    /// 也不含概念缺口附注（m3，教练面专属；开关 on 臂才装配）
     /// （[`crate::learning_graph::CoachContext::render_for_review`]）。
     async fn build_coach_context(
         &self,
@@ -3348,6 +3350,13 @@ impl LearningService {
         // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）——取数在
         // struct 字面量前（goal/title 随 goal 字段移动）。
         let course_context_words = course_context_terms(&title, &goal).join("、");
+        // m3 未处置概念缺口（on 臂；off 臂恒空 = 提示词基线逐字节）：开关在
+        // 装配时读一次，off 臂不读表。
+        let concept_gaps = if crate::coach_findings_input_enabled() {
+            self.coach_concept_gaps(course_id).await
+        } else {
+            String::new()
+        };
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
             proficiency_statement,
@@ -3362,7 +3371,45 @@ impl LearningService {
             registry_excerpt,
             // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）。
             course_context_words,
+            // m3 未处置概念缺口（on 臂；off 臂恒空 = 提示词基线逐字节）。
+            concept_gaps,
         })
+    }
+
+    /// m3 未处置概念缺口（教练面专属块的正文）：本课评审留痕（source =
+    /// concept-review）最近 200 行过纯机械面
+    /// （[`crate::learning_graph::concept_gaps`]：认缺口 → 去重 → 封顶 →
+    /// 渲染行），行间换行连接、不带块头。**旁路**：读失败只 warn 并回空串
+    /// ——缺口节是参考，永远不拖垮生长回合（与唤醒通道同律）。不碰水位：
+    /// 水位的意思是「修补已读」，与教练消费无关。on 臂留一行读数（rows =
+    /// 扫过几行、gaps = 出几行），真机 A/B 靠它确认 on 臂真的渲染了缺口块。
+    async fn coach_concept_gaps(&self, course_id: &LearningCourseId) -> String {
+        let rows: Vec<FindingRow> = match sqlx::query_as(
+            "SELECT seq, source, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? AND source = 'concept-review' ORDER BY seq DESC LIMIT 200",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    error = %error,
+                    "coach concept gaps read failed — 缺口节不阻断生长"
+                );
+                return String::new();
+            }
+        };
+        let lines = concept_gap_lines(&rows);
+        tracing::info!(
+            course = course_id.as_str(),
+            rows = rows.len(),
+            gaps = lines.len(),
+            "coach concept gaps assembled"
+        );
+        lines.join("\n")
     }
 
     /// 课程内课时标题表（行为摘要渲染卡点用）。
@@ -6468,8 +6515,9 @@ fn ledger_action(
     }
 }
 
-/// 展示截断（池行超长保护）。
-fn truncate_text(text: &str, max_chars: usize) -> String {
+/// 展示截断（池行超长保护）。`pub(crate)`：m3 概念缺口行
+/// （`learning_graph::concept_gaps`）沿用同一截断口径，经 `service::mod` 再导出。
+pub(crate) fn truncate_text(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_owned();
     }

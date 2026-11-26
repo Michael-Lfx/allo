@@ -15,8 +15,9 @@
 //! context (goal + declarations, the terrain list, the terrain doors, ready
 //! count, roster, taught ledger, coverage gauge, behavior digest, registry
 //! excerpt). The review renders the same context minus the terrain list
-//! (ADR-0018): the knowledge structure feeds no review verdict. Deterministic
-//! gates hold the decision power:
+//! (ADR-0018: the knowledge structure feeds no review verdict) and minus the
+//! optional concept-gap note (m3: a review must not read its own earlier
+//! findings as a fact source). Deterministic gates hold the decision power:
 //! shape violations (ng.*), semantic gate rejections and concept-review
 //! rejections each inject their clause report back into the next attempt
 //! (≤3 rounds, the whole batch re-emitted); a structurally valid batch then
@@ -30,6 +31,7 @@
 pub mod advice_alias;
 pub mod alias_records;
 pub mod basis_declaration;
+pub mod concept_gaps;
 pub mod concept_search;
 pub mod definition_audit;
 pub mod defnear;
@@ -671,34 +673,51 @@ pub struct CoachContext {
     /// + 学习目标的最大 munch 切片（w02）——教练每一批 prompt 与评审 user
     /// 共用（评审面同读此字段）。
     pub course_context_words: String,
+    /// 块 6 附注：未处置概念缺口行（m3）——评审留痕里「账内缺席 × 教学依赖 ×
+    /// 未放行」的缺口（去重封顶后的行，换行连接、不带块头；行格式见
+    /// [`concept_gaps`]）。**教练面专属**：评审不得把自己的往批留痕当事实
+    /// 源。service 按开关装配（`NOMI_LEARNING_COACH_FINDINGS_INPUT`），off
+    /// 臂恒空 = 零字节。
+    pub concept_gaps: String,
 }
+
+/// 概念缺口块的框架语（m3）：留痕是往批评审的观察——缺口可能已被后续批次
+/// 补上，账本才是事实；先补什么由教练按学习顺序判断（m3 只把缺口摆到面前，
+/// 不做定向补源调度）。
+const CONCEPT_GAP_FRAMING: &str = "评审在往批留痕里指出、截至留痕时账内没有的概念缺口——参考不是指令：缺口可能已被后续批次补上，以【已教概念账】为准；是否先补、补哪些由你按学习顺序判断。";
 
 /// [`CoachContext`] 的两个渲染面（ADR-0018 决定 1：一个上下文、两个渲染
 /// 函数——同源渲染，不是第二份渲染体）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderSurface {
-    /// 教练（起草 / 重裁）：九块全渲染。
+    /// 教练（起草 / 重裁）：九块全渲染，外加未处置概念缺口附注（非空时）。
     Coach,
-    /// 评审：唯一差别是跳过地形清单块。
+    /// 评审：与教练面恰三处不同——跳过地形清单块、首批纪律入口句换评审版、
+    /// 不带概念缺口附注（m3；仅该字段非空时才构成差异）。
     Review,
 }
 
 impl CoachContext {
-    /// 教练面（起草 [`coach_draft`] / 重裁 [`coach_redraft`]）：九块全渲染。
+    /// 教练面（起草 [`coach_draft`] / 重裁 [`coach_redraft`]）：九块全渲染，
+    /// 外加未处置概念缺口附注（m3；[`Self::concept_gaps`] 非空时）。
     pub(crate) fn render(&self) -> String {
         self.render_on(RenderSurface::Coach)
     }
 
     /// 评审面（ADR-0018 决定 1：知识结构退出评审输入）：与 [`Self::render`]
-    /// 同源，只跳过地形清单块（连同它的前导换行）——其余各块逐字节相同。
-    /// 首批纪律不分渲染面（评审同样要核对入口起点）。
+    /// 同源，三处不同——①跳过地形清单块（连同它的前导换行）；②首批纪律的
+    /// 入口句换评审版（评审不带清单，不得自指缺失材料；首批纪律本身不分
+    /// 渲染面——评审同样要核对入口起点，判据不减）；③不带概念缺口附注
+    /// （m3：评审不得把自己的往批留痕当事实源——那会动打回率）。其余各块
+    /// 逐字节相同。
     pub(crate) fn render_for_review(&self) -> String {
         self.render_on(RenderSurface::Review)
     }
 
     /// 9 块渲染，顺序即注意力序（g3 裁决）：学习目标（+程度/基础声明）→
-    /// 地形清单（教练面）→ 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
-    /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
+    /// 地形清单（教练面）→ 地形门口 → 当前就绪 → 花名册 → 已教概念账（+
+    /// 未处置概念缺口附注，教练面专属、空则整块省略）→ 覆盖读数（纯展示）
+    /// → 行为摘要 → 登记表切片。
     fn render_on(&self, surface: RenderSurface) -> String {
         let gap = growth_batch_cap(self.ready_count);
         let mut text = String::new();
@@ -783,6 +802,15 @@ impl CoachContext {
             "\n【已教概念账（跨课程全局：含学习者在其他课程所学）】\n{}\n",
             if self.taught_summary.is_empty() { "（空——本批节点不得依赖本批产出的概念：assumes 只能留空或假定课程外常识，需要前提的概念留到下一批）" } else { &self.taught_summary }
         ));
+        // 块 6 附注：未处置概念缺口（m3；**教练面专属**）。评审留痕是线索不是
+        // 事实——评审面不渲染这一块：评审不得把自己的往批留痕当事实源（那会
+        // 动打回率）。空 = 整块连同前导换行一并省略（off 臂零字节）。
+        if surface == RenderSurface::Coach && !self.concept_gaps.is_empty() {
+            text.push_str(&format!(
+                "\n【未处置概念缺口（评审留痕）】\n{CONCEPT_GAP_FRAMING}\n{}\n",
+                self.concept_gaps
+            ));
+        }
         // 块 7：覆盖读数（纯展示；本课程存量口径，与全局账数字无关）。
         if !self.coverage_gauge.is_empty() {
             text.push_str(&format!("\n【覆盖读数（本课程存量口径；纯展示，不构成本批依据）】\n{}\n", self.coverage_gauge));
@@ -6228,10 +6256,13 @@ mod tests {
     /// 把清单字段清空再走教练面渲染（空字段整块省略是既有行为，正是「跳过
     /// 结构块」的定义）——多一个空行、少一个块都会红。首批与后续批各比一次。
     ///
-    /// 两个渲染面**恰有两处**不同：①地形清单块（评审跳过）；②首批纪律的入口
-    /// 句（教练按地形清单的入门档起步；评审不带清单，不得自指缺失材料）。第
-    /// 二处是 ADR-0018 决定 1 的必然结果，测试显式钉住它——再出现第三处差异
-    /// 会红。
+    /// 两个渲染面的差异**恰三处**：①地形清单块（评审跳过）；②首批纪律的入口
+    /// 句（教练按地形清单的入门档起步；评审不带清单，不得自指缺失材料）；
+    /// ③概念缺口附注（m3，教练面专属）。本夹具的缺口字段为空——③不出现，
+    /// 所以这里逐字节比出的是前两处；第二处是 ADR-0018 决定 1 的必然结果，
+    /// 测试显式钉住它。③由
+    /// `coach_render_carries_the_concept_gap_block_and_the_review_render_does_not`
+    /// 单独钉住：再出现第四处差异，这两个测试必有一个红。
     #[test]
     fn review_render_is_the_coach_render_minus_the_terrain_list_block() {
         let full = CoachContext {
@@ -6248,6 +6279,7 @@ mod tests {
             ready_count: 1,
             registry_excerpt: "水温｜水的口感与萃取".into(),
             course_context_words: "手冲、咖啡".into(),
+            concept_gaps: String::new(),
         };
         for (label, roster, doors_framing) in [
             ("首批", String::new(), "首批入口重点参照"),
@@ -6310,7 +6342,7 @@ mod tests {
             first_review.contains("入口节点须是基线学习者今天真能起步的最底层台阶"),
             "评审版入口句在位（判据不减）：{first_review}"
         );
-        // 后续批没有首批纪律、清单也为空：两渲染面逐字节相同。
+        // 后续批没有首批纪律、清单也为空、缺口字段也为空：两渲染面逐字节相同。
         let listless_later = CoachContext {
             roster: "在学 | 节点A".to_owned(),
             terrain_list: String::new(),
@@ -6319,7 +6351,118 @@ mod tests {
         assert_eq!(
             listless_later.render(),
             listless_later.render_for_review(),
-            "非首批且无清单：两渲染面逐字节相同"
+            "非首批、无清单、无缺口：两渲染面逐字节相同"
+        );
+    }
+
+    // ── m3（概念缺口回灌教练）：缺口块教练面专属 ────────────────────────────
+
+    /// m3 渲染测试的基线上下文：非首批（花名册非空）、无地形清单、无门口
+    /// ——两个渲染面在缺口块之外逐字节相同。
+    fn gapless_context() -> CoachContext {
+        CoachContext {
+            goal: "学会手冲一杯咖啡".into(),
+            roster: "在学 | 节点A".into(),
+            taught_summary: "水温@会用".into(),
+            coverage_gauge: "已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无".into(),
+            behavior_digest: "近窗正确率 80%".into(),
+            ready_count: 1,
+            registry_excerpt: "水温｜水的口感与萃取".into(),
+            ..Default::default()
+        }
+    }
+
+    /// m3（D2/D3）：概念缺口块**教练面专属**——落在【已教概念账】之后、
+    /// 【覆盖读数】之前，块头 + 框架语 + 行；评审面既无块头也无行（评审不得
+    /// 把自己的往批留痕当事实源）。逐字节对照：教练面渲染去掉整块 == 同一
+    /// 上下文的评审面渲染——缺口块是本特性给教练面引入的唯一差异。
+    #[test]
+    fn coach_render_carries_the_concept_gap_block_and_the_review_render_does_not() {
+        let lines = "- 已教概念账中未见容器、接口等基础概念，本批节点直接依赖它们（建议：后续批次先补教）\n\
+                     - 「死锁」在已教账中没出现，本批 intent 以它为内容依赖";
+        let with_gaps = CoachContext {
+            concept_gaps: lines.to_owned(),
+            ..gapless_context()
+        };
+        let coach = with_gaps.render();
+        let review = with_gaps.render_for_review();
+        let block = "\n【未处置概念缺口（评审留痕）】\n\
+                     评审在往批留痕里指出、截至留痕时账内没有的概念缺口——参考不是指令：缺口可能已被后续批次补上，以【已教概念账】为准；是否先补、补哪些由你按学习顺序判断。\n\
+                     - 已教概念账中未见容器、接口等基础概念，本批节点直接依赖它们（建议：后续批次先补教）\n\
+                     - 「死锁」在已教账中没出现，本批 intent 以它为内容依赖\n";
+        let at = coach
+            .find(block)
+            .unwrap_or_else(|| panic!("教练面：块头 + 框架语 + 行整块在位：{coach}"));
+        assert_eq!(
+            coach.matches("【未处置概念缺口").count(),
+            1,
+            "缺口块恰出现一次：{coach}"
+        );
+        assert_eq!(
+            at,
+            gapless_context().render().find("\n【覆盖读数").unwrap(),
+            "缺口块紧接在已教概念账块之后（起点 = 无缺口时覆盖读数块头的位置）"
+        );
+        assert!(
+            coach[..at].ends_with("】\n水温@会用\n"),
+            "块前是已教概念账块的结尾：{coach}"
+        );
+        assert!(
+            coach[at + block.len()..].starts_with("\n【覆盖读数"),
+            "块后紧接覆盖读数块头：{coach}"
+        );
+        assert!(
+            !review.contains("【未处置概念缺口"),
+            "评审面不带缺口块头：{review}"
+        );
+        for line in lines.split('\n') {
+            assert!(!review.contains(line), "评审面不带缺口行「{line}」：{review}");
+        }
+        assert_eq!(
+            coach.replace(block, ""),
+            review,
+            "缺口块是教练面相对评审面多出的唯一内容（逐字节）"
+        );
+    }
+
+    /// m3 空态：`concept_gaps` 为空 = 零字节——两个渲染面都逐字节回到加这个
+    /// 字段之前的渲染（off 臂）。期望值是加字段之前对同一上下文抄下的全文；
+    /// 多一个空行、少一个块都会红。`#[serial]`：全文含就绪目标读数（进程
+    /// 全局 env），守卫钉「未设 = 5」。
+    #[test]
+    #[serial_test::serial]
+    fn concept_gap_free_context_renders_the_pre_m3_baseline_bytes() {
+        let _guard = crate::switches::switch_env_guard(
+            crate::switches::READY_TARGET_SWITCH_ENV,
+            None,
+        );
+        let expected = "\
+【学习目标】
+学会手冲一杯咖啡
+
+【当前就绪】1 个（目标 5 个，缺口 4 个）
+
+【花名册】
+在学 | 节点A
+
+【已教概念账（跨课程全局：含学习者在其他课程所学）】
+水温@会用
+
+【覆盖读数（本课程存量口径；纯展示，不构成本批依据）】
+已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无
+
+【行为摘要】
+近窗正确率 80%
+
+【概念登记表（邻近切片，铸名前先查撞名）】
+水温｜水的口感与萃取
+";
+        let context = gapless_context();
+        assert_eq!(context.render(), expected, "教练面：空缺口字段 = 加字段前的全文");
+        assert_eq!(
+            context.render_for_review(),
+            expected,
+            "评审面：空缺口字段 = 加字段前的全文"
         );
     }
 
