@@ -239,6 +239,18 @@ dx serve --hot-patch
 （`exit 1` / `LNK1104`）。改用 cargo 走同一 wrapper 能构建成功，所以问题在
 dx 的调用参数，不在 MSVC 或 wrapper。热补丁入口仍是 `dx serve`，卡点未变。
 
+## 动效原语与无障碍总闸（2026-11-26 实测增补）
+
+1. **严禁硬编码 `cx.set_reduce_motion(true)`**：
+   - `flowy-app` 早期曾在窗口启动时硬编码 `cx.set_reduce_motion(true)`，导致所有 `with_spring`、旋转动画与过渡在开发机上全部静默跳过。
+   - 正确做法是按系统/主题的 `MotionPolicy` 驱动（`Full` 启用平滑变换，`Reduced` 降级为 0 位移直达态）。
+2. **`Icon` 零重排 GPU 变换（`with_transformation` / `with_timed_transformation`）**：
+   - `gpui-pre 0.3.14` 原生支持在 `svg()` 上挂 `Transformation::rotate(radians)` 与 `with_animation(..., Animation::new(dur).repeat(), ...)`，完全走 GPU 变换而不触发布局抖动。
+   - 仓库已通过 `flowy-ui/src/icons.rs` 封装透出，用于 `+ → ×`（45° 旋转）与 `loader_circle` / `refresh_cw` 持续旋转。
+3. **叶级 `with_spring` 与 `#[gpui::test]` 多帧断言**：
+   - 浮层（Popover / Modal）与右侧抽屉的弹簧入场过渡仅挂在**叶级内容节点**（`flowy-ui/src/{motion,overlays}.rs`），绝不包裹外层布局壳，避免破坏 `flex_1().min_w_0()` 收缩或圆角裁切。
+   - 在 `#[gpui::test]` 中验证动效与布局边界时，必须显式调用 `window.draw(cx).clear(cx)` 并推进测试时钟后，再断言 `debug_bounds()` 或状态变化；跳过绘制调用会让 `debug_bounds()` 断言失真。
+
 ## 相关文档
 
 - `DESIGN.md` —— 界面规则与布局陷阱
