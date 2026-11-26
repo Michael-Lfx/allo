@@ -922,5 +922,14 @@
   "board.clear_day_filter": "तिथि फ़िल्टर हटाएँ",
   "search.scope_all": "सभी",
   "chat.archived_toast": "\"{title}\" संग्रहीत किया गया",
-  "chat.undo": "पूर्ववत करें"
+  "chat.undo": "पूर्ववत करें",
+  "notice.router_queue_full": "लंबित संदेश कतार भर गई है — कृपया वर्तमान उत्तर पूरा होने की प्रतीक्षा करें।",
+  "chat.router_followup_queued": "{count} कतार में",
+  "chat.bg_tasks_this_chat": "यह बातचीत",
+  "chat.bg_tasks_other_chats": "अन्य बातचीत",
+  "chat.bg_tasks_needs_approval": "{count} पुष्टि की प्रतीक्षा में",
+  "chat.bg_tasks_failed": "{count} पर ध्यान आवश्यक है",
+  "chat.bg_work_queued": "कतार में",
+  "chat.bg_work_stop": "रोकें",
+  "card.from_work": "कार्य से: {title}"
 }

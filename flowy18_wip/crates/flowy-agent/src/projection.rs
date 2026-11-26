@@ -83,6 +83,10 @@ pub enum ChatLine {
         override_used: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         provenance_warnings: Vec<String>,
+        /// Owning session ID when projected from a child Worker onto a parent
+        /// Router timeline (`None` for lines owned directly by the active session).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_session_id: Option<String>,
     },
 }
 

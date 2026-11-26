@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Datumsfilter löschen",
   "search.scope_all": "Alle",
   "chat.archived_toast": "„{title}“ archiviert",
-  "chat.undo": "Rückgängig"
+  "chat.undo": "Rückgängig",
+  "notice.router_queue_full": "Die Warteschlange für Folgenachrichten ist voll – bitte warte auf die aktuelle Antwort.",
+  "chat.router_followup_queued": "{count} in Warteschlange",
+  "chat.bg_tasks_this_chat": "Diese Unterhaltung",
+  "chat.bg_tasks_other_chats": "Andere Unterhaltungen",
+  "chat.bg_tasks_needs_approval": "{count} wartet auf Bestätigung",
+  "chat.bg_tasks_failed": "{count} erfordert Aufmerksamkeit",
+  "chat.bg_work_queued": "In Warteschlange",
+  "chat.bg_work_stop": "Stopp",
+  "card.from_work": "Aus Aufgabe: {title}"
 }

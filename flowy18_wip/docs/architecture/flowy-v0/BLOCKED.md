@@ -11,7 +11,7 @@
 | **§3** | `flowy18_wip` 首次冷构建与二进制入口 | ✅ **已于 2026-11-23 核实结案** | `cargo build -p flowy-desktop --bin flowy-app` |
 | **§4** | 任务 14 全类型硬门：无核验器类型的显式豁免边界 | ✅ **已于 2026-11-25 拍板结案** | 采用推荐方案 A：`.pptx` 强制走核验报告；尚无核验器的已知类型（`csv/pdf/md/txt/json/html`）走显式豁免表（`EXEMPT_NO_VERIFIER_V0`）并写审计事件；未知扩展名默认阻断 |
 | **§5** | V6 外发通道、凭据存储与单向门策略 | 🔴 **硬阻塞（停等拍板）** | **严禁动工**；不接邮件/Webhook/IM 发送，停在本地交付门与卡片层 |
-| **§6** | Super Agent 后续切片排期（S4 已合流 / PR-2A 待合 / PR-2B & S5 顺延） | ✅ **S4 已于 PR #494 合流** · 🟡 **PR-2A（PR #496）open 待合，PR-2B 与 S5 顺延下轮** | S1–S3（PR #492）、S4 目录级并发池（PR #494）与导航/看板 v2（PR #495）均已合入 `origin/main@feb010a56`；PR-2A 轻量 Router 内核（PR #496）已完成 475/475 验证与深度审查加固；后续顺延 PR-2B（Studio/App/i18n Router UI 接线）与 S5（休眠跳表 / OS 沙箱 `Enforced`），V6（§5）仍硬阻塞 |
+| **§6** | Super Agent 后续切片排期（S4 / PR-2A / PR #497 已合流 · PR-2B 已审查收口待合 · S5 顺延） | ✅ **S4（PR #494）、PR-2A（PR #496）与 PR #497 已合流** · 🟡 **PR-2B（`feat/flowy-router-ui`）已完成 Rebase + 审查减脂 + 661/661 门禁待合，S5 顺延下轮** | S1–S3（PR #492）、S4 目录级并发池（PR #494）、导航/看板 v2（PR #495）、PR-2A 轻量 Router 内核（PR #496）与工作台打磨（PR #497）均已合入 `origin/main@eb30a4d21`；PR-2B（Router UI 接线 Q1–Q6）已线性 rebase 至 `eb30a4d21` 并完成 `/code-review` + `/laoyeye` + `/ponytail` 全部修复与减脂，通过 8-Crate 661/661、9-Crate clippy 0 警告、真云端非阻塞 E2E 与双主题双语视觉审计；后续顺延 S5（休眠跳表 / OS 沙箱 `Enforced`），V6（§5）仍硬阻塞 |
 
 ---
 

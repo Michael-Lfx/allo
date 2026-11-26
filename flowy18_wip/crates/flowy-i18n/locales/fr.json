@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Effacer le filtre de date",
   "search.scope_all": "Tout",
   "chat.archived_toast": "« {title} » archivée",
-  "chat.undo": "Annuler"
+  "chat.undo": "Annuler",
+  "notice.router_queue_full": "La file d'attente de suivi est pleine — attendez la fin de la réponse actuelle.",
+  "chat.router_followup_queued": "{count} en file d'attente",
+  "chat.bg_tasks_this_chat": "Cette conversation",
+  "chat.bg_tasks_other_chats": "Autres conversations",
+  "chat.bg_tasks_needs_approval": "{count} en attente de confirmation",
+  "chat.bg_tasks_failed": "{count} nécessite votre attention",
+  "chat.bg_work_queued": "En file d'attente",
+  "chat.bg_work_stop": "Arrêter",
+  "card.from_work": "De la tâche : {title}"
 }

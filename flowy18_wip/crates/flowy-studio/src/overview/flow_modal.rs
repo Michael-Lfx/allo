@@ -703,6 +703,10 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let action_sid = branch
+            .owner_session_id
+            .as_deref()
+            .unwrap_or(group.session_id.as_str());
         let left_card = match &branch.phase {
             BranchPhase::NeedsApproval {
                 report_id,
@@ -712,6 +716,7 @@ impl StudioPanel {
                 semantic_hint,
                 provenance_warnings,
             } => self.modal_approval_card(
+                action_sid,
                 &group.session_id,
                 report_id,
                 artifact_path,
@@ -904,6 +909,7 @@ impl StudioPanel {
     fn modal_approval_card(
         &self,
         session_id: &str,
+        open_session_id: &str,
         report_id: &str,
         artifact_path: &str,
         summary: &str,
@@ -918,6 +924,7 @@ impl StudioPanel {
         let has_report = !report_id.trim().is_empty();
         let overriding = self.overriding_reports.contains(report_id);
         let sid = session_id.to_owned();
+        let open_sid = open_session_id.to_owned();
         let rid = report_id.to_owned();
         let apath = artifact_path.to_owned();
         let toggle_key = ack_key;
@@ -991,77 +998,96 @@ impl StudioPanel {
             );
         }
 
-        body = body
-            .child(
-                theme::interactive(
-                    "fm-override-ack",
-                    confirm_label.clone(),
-                    &self.theme,
-                )
-                .role(gpui::Role::CheckBox)
-                .aria_toggled(ack.into())
-                .flex()
-                .items_center()
-                .gap(self.theme.space(6.))
-                .cursor_pointer()
-                .text_xs()
-                .text_color(self.theme.muted())
-                .on_click(cx.listener(move |panel, _, _, cx| {
-                    if panel.flow_modal.override_ack_key.as_deref()
-                        == Some(toggle_key.as_str())
-                    {
-                        panel.flow_modal.override_ack_key = None;
-                    } else {
-                        panel.flow_modal.override_ack_key =
-                            Some(toggle_key.clone());
-                    }
-                    cx.notify();
-                }))
+        if has_report {
+            body = body
                 .child(
-                    div()
-                        .size(px(14.))
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(if ack {
-                            self.theme.status_attention()
+                    theme::interactive(
+                        "fm-override-ack",
+                        confirm_label.clone(),
+                        &self.theme,
+                    )
+                    .role(gpui::Role::CheckBox)
+                    .aria_toggled(ack.into())
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(6.))
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if panel.flow_modal.override_ack_key.as_deref()
+                            == Some(toggle_key.as_str())
+                        {
+                            panel.flow_modal.override_ack_key = None;
                         } else {
-                            self.theme.border_strong()
-                        })
-                        .bg(if ack {
-                            self.theme.status_attention()
-                        } else {
-                            self.theme.card()
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(ack, |box_el| {
-                            box_el.child(
-                                theme::icons::check()
-                                    .size(px(10.))
-                                    .text_color(self.theme.on_ink()),
-                            )
-                        }),
+                            panel.flow_modal.override_ack_key =
+                                Some(toggle_key.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .size(px(14.))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(if ack {
+                                self.theme.status_attention()
+                            } else {
+                                self.theme.border_strong()
+                            })
+                            .bg(if ack {
+                                self.theme.status_attention()
+                            } else {
+                                self.theme.card()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(ack, |box_el| {
+                                box_el.child(
+                                    theme::icons::check()
+                                        .size(px(10.))
+                                        .text_color(self.theme.on_ink()),
+                                )
+                            }),
+                    )
+                    .child(confirm_label),
                 )
-                .child(confirm_label),
-            )
-            .child(
+                .child(
+                    theme::Button::new(
+                        "fm-override-submit",
+                        self.t("verify.override.action"),
+                    )
+                    .variant(theme::ControlVariant::Primary)
+                    .size(theme::ControlSize::Small)
+                    .disabled(!ack || overriding)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.confirm_override_for_session(
+                                &sid, &rid, &apath, cx,
+                            );
+                        }),
+                    ),
+                );
+        } else {
+            body = body.child(
                 theme::Button::new(
-                    "fm-override-submit",
-                    self.t("verify.override.action"),
+                    "fm-open-approval-chat",
+                    self.t("drawer.work_open_session"),
                 )
                 .variant(theme::ControlVariant::Primary)
                 .size(theme::ControlSize::Small)
-                .disabled(!(ack && has_report) || overriding)
+                .trailing_icon(theme::icons::arrow_up_right().size(px(12.)))
                 .render(
                     &self.theme,
                     cx.listener(move |panel, _, _, cx| {
-                        panel.confirm_override_for_session(
-                            &sid, &rid, &apath, cx,
-                        );
+                        panel.close_flow_modal(cx);
+                        panel.open_session(&open_sid, cx);
                     }),
                 ),
             );
+        }
 
         div()
             .flex_1()
@@ -1094,9 +1120,12 @@ impl StudioPanel {
         branch: &WorkBranchSummary,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let retry_sid = group.session_id.clone();
-        let retrying = self.retrying_delivery.as_deref()
-            == Some(group.session_id.as_str());
+        let retry_sid = branch
+            .owner_session_id
+            .clone()
+            .unwrap_or_else(|| group.session_id.clone());
+        let retrying =
+            self.retrying_delivery.as_deref() == Some(retry_sid.as_str());
         div()
             .flex_1()
             .min_w(px(240.))
@@ -1151,7 +1180,10 @@ impl StudioPanel {
         branch: &WorkBranchSummary,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let stop_sid = group.session_id.clone();
+        let stop_sid = branch
+            .owner_session_id
+            .clone()
+            .unwrap_or_else(|| group.session_id.clone());
         let can_stop = !group.is_synthetic();
         div()
             .flex_1()

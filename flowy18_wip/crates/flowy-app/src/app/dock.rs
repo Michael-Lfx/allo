@@ -116,11 +116,19 @@ impl FlowyApp {
                 .filter(|s| studio.agent.session_needs_attention(&s.id))
                 .map(|s| s.id.clone())
                 .collect();
+            let mut busy_ids = studio.agent.busy_session_ids();
+            let mut busy_roots: Vec<String> = busy_ids
+                .iter()
+                .map(|id| studio.agent.root_session_id(id))
+                .collect();
+            busy_ids.append(&mut busy_roots);
+            busy_ids.sort();
+            busy_ids.dedup();
             let snapshot = DockSessionSnapshot {
                 sessions,
                 projects: studio.projects.clone(),
                 active_session: studio.agent.active_session_id(),
-                busy_ids: studio.agent.busy_session_ids(),
+                busy_ids,
                 attention_ids,
             };
             (

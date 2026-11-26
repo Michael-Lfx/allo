@@ -969,17 +969,68 @@ impl AgentHandle {
                     && !rec.pending_router_followups.is_empty()
                     && let Some(live) = lock(&state.live).get_mut(&rec.id)
                 {
-                    for item in &rec.pending_router_followups {
-                        let already_tail = live
-                            .projection
-                            .lines
-                            .iter()
-                            .rev()
-                            .take(rec.pending_router_followups.len() + 2)
-                            .any(|line| matches!(line, ChatLine::User { text } if text == &item.text));
-                        if !already_tail {
-                            live.projection.push_user(&item.text);
+                    // Reconcile pending follow-ups against both committed
+                    // `rec.messages` and already-persisted `live.projection`:
+                    // normal restart already has the bubbles in `index.json`,
+                    // whereas a crash before `persist_index` (or corrupt index
+                    // rebuild) lacks them. Counting surplus projected bubbles
+                    // per text preserves two identical follow-ups without
+                    // ever duplicating them on clean restart.
+                    let mut committed_counts: HashMap<String, usize> =
+                        HashMap::new();
+                    for msg in &rec.messages {
+                        if msg.role == Role::User
+                            && !matches!(
+                                msg.source,
+                                MessageSource::SystemEvent { .. }
+                            )
+                        {
+                            let fallback = msg.text();
+                            let label = msg
+                                .display_text
+                                .as_deref()
+                                .unwrap_or(fallback.as_str())
+                                .trim();
+                            if !label.is_empty() {
+                                *committed_counts
+                                    .entry(label.to_owned())
+                                    .or_insert(0) += 1;
+                            }
                         }
+                    }
+                    let mut projected_counts: HashMap<String, usize> =
+                        HashMap::new();
+                    for line in &live.projection.lines {
+                        if let ChatLine::User { text } = line {
+                            *projected_counts
+                                .entry(text.trim().to_owned())
+                                .or_insert(0) += 1;
+                        }
+                    }
+                    let mut extra_projected: HashMap<String, usize> =
+                        HashMap::new();
+                    for (text, proj) in projected_counts {
+                        let committed =
+                            committed_counts.get(&text).copied().unwrap_or(0);
+                        if proj > committed {
+                            extra_projected.insert(text, proj - committed);
+                        }
+                    }
+                    for item in &rec.pending_router_followups {
+                        let already_committed = rec.messages.iter().any(|m| {
+                            m.role == Role::User && m.id == item.submission_id
+                        });
+                        if already_committed {
+                            continue;
+                        }
+                        let key = item.text.trim();
+                        if let Some(rem) = extra_projected.get_mut(key)
+                            && *rem > 0
+                        {
+                            *rem -= 1;
+                            continue;
+                        }
+                        live.projection.push_user(&item.text);
                     }
                 }
             }
@@ -1605,11 +1656,27 @@ impl AgentHandle {
             })
     }
 
-    /// Returns `true` when `session_id` has an unsettled failed verification
-    /// gate in its latest turn, a `Partial` latest submission, or a
-    /// turn/delivery error awaiting user attention.
+    /// Returns `true` when `session_id` (or any owned child Worker when
+    /// `session_id` is a [`SessionRole::Router`]) has an unsettled failed
+    /// verification gate in its latest turn, a pending card, a `Partial` latest
+    /// submission, or a turn/delivery error awaiting user attention.
     #[must_use]
     pub fn session_needs_attention(&self, session_id: &str) -> bool {
+        if self.single_session_needs_attention(session_id) {
+            return true;
+        }
+        if self.inner.session_role(session_id) == SessionRole::Router {
+            let engine = lock(&self.inner.engine).clone();
+            if let Some(eng) = engine {
+                return eng.child_sessions(session_id).iter().any(|child| {
+                    self.single_session_needs_attention(&child.id)
+                });
+            }
+        }
+        false
+    }
+
+    fn single_session_needs_attention(&self, session_id: &str) -> bool {
         let live_attention = lock(&self.inner.state.live)
             .get(session_id)
             .is_some_and(|session| {
@@ -1818,6 +1885,122 @@ impl AgentHandle {
         )
     }
 
+    /// Atomically validate the UI's captured draft context (`expected_active`,
+    /// `expected_generation`, `expected_workspace`), lazily create a
+    /// [`SessionRole::Router`] when no session is active, and submit `text`
+    /// with idempotent `submission`.
+    ///
+    /// Rolls back a freshly created empty Router if submission fails before
+    /// committing so failed first sends never leave ghost conversations behind.
+    pub fn submit_router_chat_if_active(
+        &self,
+        submission: u128,
+        text: &str,
+        expected_active: Option<&str>,
+        expected_generation: u64,
+        expected_workspace: Option<AgentWorkspace>,
+    ) -> Result<String, &'static str> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err("notice.prompt_empty");
+        }
+        if self.inner.is_initializing() {
+            return Err("library.loading");
+        }
+        let state = &self.inner.state;
+        if *lock(&state.load_failed) {
+            return Err("notice.session_storage_failed");
+        }
+        let _dispatch = lock(&state.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
+        if let Some(existing_sid) = engine.submitted_session(submission) {
+            return Ok(existing_sid);
+        }
+        let expected_card_id = format!("disambig-submission-{submission:032x}");
+        if let Some(existing_sid) =
+            engine.sessions().into_iter().find_map(|rec| {
+                rec.pending_cards
+                    .iter()
+                    .any(|card| card.card_id() == expected_card_id)
+                    .then_some(rec.id)
+            })
+        {
+            return Ok(existing_sid);
+        }
+        let still_current = state.context_generation.load(Ordering::Acquire)
+            == expected_generation
+            && lock(&state.active).as_deref() == expected_active;
+        if let Some(router_id) = expected_active {
+            if self.inner.session_role(router_id) != SessionRole::Router {
+                return Err("notice.agent_failed");
+            }
+            return self.inner.submit_message_targeted_locked(
+                Some(router_id),
+                text,
+                Some(submission),
+                None,
+                None,
+                None,
+                None,
+            );
+        }
+        let origin = match &expected_workspace {
+            Some(ws) => SessionOrigin::Project {
+                project_id: Some(ws.project_id.clone()),
+            },
+            None => SessionOrigin::Home,
+        };
+        let router_id = self.inner.create_session_with_role_inner(
+            origin.clone(),
+            expected_workspace.clone(),
+            still_current,
+            SessionRole::Router,
+            None,
+            WorkAccessMode::ReadWrite,
+        )?;
+        let created_home_dir =
+            matches!(origin, SessionOrigin::Home).then(|| {
+                state
+                    .root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&router_id)
+            });
+        match self.inner.submit_message_targeted_locked(
+            Some(&router_id),
+            text,
+            Some(submission),
+            None,
+            None,
+            None,
+            None,
+        ) {
+            Ok(sid) => {
+                if still_current {
+                    *lock(&state.workspace_for_new_sessions) =
+                        expected_workspace;
+                    *lock(&state.origin_for_new_sessions) = origin;
+                }
+                Ok(sid)
+            }
+            Err(err) => {
+                let _ = engine.remove_session(&router_id);
+                lock(&state.live).remove(&router_id);
+                if lock(&state.active).as_deref() == Some(router_id.as_str()) {
+                    *lock(&state.active) = None;
+                }
+                if let Some(dir) = created_home_dir.as_deref() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                let _ = persist_index(state);
+                state.push_update(AgentUpdate::Sessions);
+                Err(err)
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_before_worker_strict_enqueue_hook(
         &self,
@@ -1883,18 +2066,121 @@ impl AgentHandle {
     }
 
     pub fn chat_history(&self) -> ChatHistory {
-        let active = lock(&self.inner.state.active).clone();
-        active
-            .and_then(|id| {
-                lock(&self.inner.state.live).get(&id).map(|session| {
-                    ChatHistory {
-                        rows: session.projection.visible_lines(),
-                        streaming: session.projection.streaming_row(),
-                        status: session.status.clone(),
-                    }
-                })
+        let Some(active_id) = lock(&self.inner.state.active).clone() else {
+            return ChatHistory::default();
+        };
+        let Some((mut rows, streaming, status, role)) =
+            lock(&self.inner.state.live).get(&active_id).map(|session| {
+                (
+                    session.projection.visible_lines(),
+                    session.projection.streaming_row(),
+                    session.status.clone(),
+                    session.role,
+                )
             })
-            .unwrap_or_default()
+        else {
+            return ChatHistory::default();
+        };
+        if role == SessionRole::Router {
+            self.append_projected_child_cards(&active_id, &mut rows);
+        }
+        ChatHistory {
+            rows,
+            streaming,
+            status,
+        }
+    }
+
+    /// Deterministically project owned child Workers' `Verification` (tagged
+    /// with `source_session_id`) and `Artifact` cards onto a parent Router
+    /// timeline, deduplicated by report/artifact identity so refresh and
+    /// restart render each card strictly once.
+    fn append_projected_child_cards(
+        &self,
+        router_id: &str,
+        rows: &mut Vec<ChatLine>,
+    ) {
+        let Some(engine) = lock(&self.inner.engine).clone() else {
+            return;
+        };
+        let mut children = engine.child_sessions(router_id);
+        if children.is_empty() {
+            return;
+        }
+        // Sort by monotonic worker id ascending so ordering stays stable across
+        // refresh and restart.
+        children.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let mut seen_artifacts: BTreeSet<String> = rows
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::Artifact { artifact_id } => Some(artifact_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut seen_reports: HashMap<String, usize> = HashMap::new();
+        for (idx, line) in rows.iter().enumerate() {
+            if let ChatLine::Verification {
+                report_id,
+                artifact_path,
+                ..
+            } = line
+            {
+                let key = verification_dedup_key(report_id, artifact_path);
+                seen_reports.insert(key, idx);
+            }
+        }
+
+        let live = lock(&self.inner.state.live);
+        for child in &children {
+            let Some(child_live) = live.get(&child.id) else {
+                continue;
+            };
+            for line in &child_live.projection.lines {
+                match line {
+                    ChatLine::Verification {
+                        report_id,
+                        artifact_path,
+                        artifact_hash,
+                        ok,
+                        issues,
+                        semantic_hint,
+                        override_used,
+                        provenance_warnings,
+                        ..
+                    } => {
+                        let key =
+                            verification_dedup_key(report_id, artifact_path);
+                        let card = ChatLine::Verification {
+                            report_id: report_id.clone(),
+                            artifact_path: artifact_path.clone(),
+                            artifact_hash: artifact_hash.clone(),
+                            ok: *ok,
+                            issues: issues.clone(),
+                            semantic_hint: semantic_hint.clone(),
+                            override_used: *override_used,
+                            provenance_warnings: provenance_warnings.clone(),
+                            source_session_id: Some(child.id.clone()),
+                        };
+                        if let Some(&existing_idx) = seen_reports.get(&key) {
+                            rows[existing_idx] = card;
+                        } else {
+                            seen_reports.insert(key, rows.len());
+                            rows.push(card);
+                        }
+                    }
+                    ChatLine::Artifact { artifact_id }
+                        if seen_artifacts.insert(artifact_id.clone()) =>
+                    {
+                        rows.push(ChatLine::Artifact {
+                            artifact_id: artifact_id.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        drop(live);
     }
 
     pub fn turn_status(&self) -> TurnStatus {
@@ -2086,7 +2372,10 @@ impl AgentHandle {
         self.inner.can_run_turns()
     }
 
-    fn root_session_id_for(&self, session_id: &str) -> String {
+    /// Resolve the top-level root conversation ID for `session_id` (returns
+    /// parent Router ID for a child `Worker`, or `session_id` itself otherwise).
+    #[must_use]
+    pub fn root_session_id(&self, session_id: &str) -> String {
         self.inner.root_session_id_for(session_id)
     }
 
@@ -3447,6 +3736,20 @@ impl Harness {
         let workspace = lock(&self.state.workspace_for_new_sessions).clone();
         let origin = lock(&self.state.origin_for_new_sessions).clone();
         self.create_session_inner(origin, workspace, true)
+    }
+}
+
+/// Canonical deduplication key for projected verification cards across refresh
+/// and restart (prefers non-empty `report_id`, falls back to normalized path).
+fn verification_dedup_key(report_id: &str, artifact_path: &str) -> String {
+    let rid = report_id.trim();
+    if rid.is_empty() {
+        format!(
+            "path:{}",
+            crate::delivery::artifact_key(std::path::Path::new(artifact_path))
+        )
+    } else {
+        format!("report:{rid}")
     }
 }
 

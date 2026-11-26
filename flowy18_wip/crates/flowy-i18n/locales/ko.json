@@ -922,5 +922,14 @@
   "board.clear_day_filter": "날짜 필터 지우기",
   "search.scope_all": "전체",
   "chat.archived_toast": "\"{title}\" 보관됨",
-  "chat.undo": "실행 취소"
+  "chat.undo": "실행 취소",
+  "notice.router_queue_full": "대기 중인 메시지가 가득 찼습니다. 현재 응답이 끝난 뒤 다시 보내주세요.",
+  "chat.router_followup_queued": "응답 대기 {count}건",
+  "chat.bg_tasks_this_chat": "현재 대화 작업",
+  "chat.bg_tasks_other_chats": "다른 대화",
+  "chat.bg_tasks_needs_approval": "{count}개 작업 확인 대기 중",
+  "chat.bg_tasks_failed": "{count}개 작업 확인 필요",
+  "chat.bg_work_queued": "대기 중",
+  "chat.bg_work_stop": "중지",
+  "card.from_work": "작업 출처: {title}"
 }

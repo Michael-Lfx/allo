@@ -148,7 +148,8 @@ impl StudioPanel {
             .child(header)
     }
 
-    /// Renders persisted pending decision cards for the active conversation.
+    /// Renders persisted pending decision cards for the active conversation
+    /// (both Router's own choice cards and routed child Worker approval cards).
     pub(crate) fn pending_cards_slot(
         &self,
         cx: &Context<'_, Self>,
@@ -156,10 +157,22 @@ impl StudioPanel {
         let Some(session_id) = self.agent.active_session_id() else {
             return div().into_any_element();
         };
-        let cards = self.agent.session_pending_cards(&session_id);
-        if cards.is_empty() {
+        let routed_cards = self.agent.root_pending_cards(&session_id);
+        if routed_cards.is_empty() {
             return div().into_any_element();
         }
+        let child_titles: std::collections::HashMap<String, String> =
+            if self.agent.session_role(&session_id)
+                == flowy_agent::SessionRole::Router
+            {
+                self.agent
+                    .child_works(&session_id)
+                    .into_iter()
+                    .map(|w| (w.work_id, w.title))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
         let mut stack = div()
             .id("pending-cards-stack")
             .flex_1()
@@ -172,8 +185,22 @@ impl StudioPanel {
             .flex()
             .flex_col()
             .gap(self.theme.space(8.));
-        for card in &cards {
-            stack = stack.child(match card {
+        for routed in &routed_cards {
+            let owner_id = routed.owner_session_id.as_str();
+            let root_id = routed.root_session_id.as_str();
+            let source_label = (routed.owner_role
+                == flowy_agent::SessionRole::Worker)
+                .then(|| {
+                    let raw_title = child_titles
+                        .get(owner_id)
+                        .filter(|t| !t.trim().is_empty())
+                        .map_or_else(
+                            || crate::ports::short_id(owner_id),
+                            |t| crate::ports::redact_trace_text(t),
+                        );
+                    self.tf("card.from_work", &[("title", &raw_title)])
+                });
+            stack = stack.child(match &routed.card {
                 PendingCard::Disambiguation {
                     card_id,
                     prompt,
@@ -182,7 +209,9 @@ impl StudioPanel {
                     allow_multi,
                     ..
                 } => self.render_disambiguation_card(
-                    &session_id,
+                    owner_id,
+                    root_id,
+                    source_label.as_deref(),
                     card_id,
                     prompt,
                     impact_boundary,
@@ -199,7 +228,9 @@ impl StudioPanel {
                     command_preview,
                     ..
                 } => self.render_tool_approval_card(
-                    &session_id,
+                    owner_id,
+                    root_id,
+                    source_label.as_deref(),
                     card_id,
                     tool_name,
                     target_summary,
@@ -220,11 +251,13 @@ impl StudioPanel {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "maps 1:1 from PendingCard::Disambiguation fields"
+        reason = "maps 1:1 from PendingCard::Disambiguation fields plus routed owner"
     )]
     fn render_disambiguation_card(
         &self,
         session_id: &str,
+        root_session_id: &str,
+        source_label: Option<&str>,
         card_id: &str,
         prompt: &str,
         impact_boundary: &str,
@@ -265,6 +298,7 @@ impl StudioPanel {
         for option in options {
             let is_selected = selected_ids.contains(&option.object_id);
             let sid = session_id.to_owned();
+            let root_session_id_opt = root_session_id.to_owned();
             let cid = card_id.to_owned();
             let oid = option.object_id.clone();
             let opt_hash = stable_card_hash(&[session_id, card_id, &oid]);
@@ -377,8 +411,10 @@ impl StudioPanel {
                             }
                             cx.notify();
                         } else {
+                            let root_opt = root_session_id_opt.clone();
                             panel.resolve_pending_card(
                                 sid.clone(),
+                                root_opt,
                                 cid.clone(),
                                 CardSelection::Disambiguate {
                                     object_ids: vec![oid.clone()],
@@ -392,6 +428,7 @@ impl StudioPanel {
         }
 
         let sid_confirm = session_id.to_owned();
+        let root_confirm = root_session_id.to_owned();
         let cid_confirm = card_id.to_owned();
         let confirm_ids = selected_ids;
         let boundary = crate::ports::redact_trace_text(impact_boundary.trim());
@@ -401,7 +438,7 @@ impl StudioPanel {
             ("pending-disambig-card", card_hash),
             "chat-pending-disambig-card",
             self.t("card.disambig_title"),
-            None,
+            source_label.map(str::to_owned),
         )
         .when(!boundary.is_empty(), |card| {
             card.child(
@@ -443,6 +480,7 @@ impl StudioPanel {
                             }
                             panel.resolve_pending_card(
                                 sid_confirm.clone(),
+                                root_confirm.clone(),
                                 cid_confirm.clone(),
                                 CardSelection::Disambiguate {
                                     object_ids: confirm_ids.clone(),
@@ -459,11 +497,13 @@ impl StudioPanel {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "maps 1:1 from PendingCard::ToolApproval fields"
+        reason = "maps 1:1 from PendingCard::ToolApproval fields plus routed owner"
     )]
     fn render_tool_approval_card(
         &self,
         session_id: &str,
+        root_session_id: &str,
+        source_label: Option<&str>,
         card_id: &str,
         tool_name: &str,
         target_summary: &str,
@@ -481,16 +521,22 @@ impl StudioPanel {
             MAX_COMMAND_PREVIEW_CHARS,
         );
         let sid_ok = session_id.to_owned();
+        let root_ok = root_session_id.to_owned();
         let cid_ok = card_id.to_owned();
         let hash_ok = args_hash.to_owned();
         let sid_no = session_id.to_owned();
+        let root_no = root_session_id.to_owned();
         let cid_no = card_id.to_owned();
+        let badge = match source_label {
+            Some(src) => Some(format!("{src} \u{00b7} {tool_name}")),
+            None => Some(tool_name.to_owned()),
+        };
 
         self.pending_card_shell(
             ("pending-tool-approval-card", card_hash),
             "chat-pending-tool-approval-card",
             self.t("card.tool_approval_title"),
-            Some(tool_name.to_owned()),
+            badge,
         )
         .when(!reason.is_empty(), |card| {
             card.child(
@@ -550,6 +596,7 @@ impl StudioPanel {
                             }
                             panel.resolve_pending_card(
                                 sid_no.clone(),
+                                root_no.clone(),
                                 cid_no.clone(),
                                 CardSelection::DenyTool { reason: None },
                                 cx,
@@ -573,6 +620,7 @@ impl StudioPanel {
                             }
                             panel.resolve_pending_card(
                                 sid_ok.clone(),
+                                root_ok.clone(),
                                 cid_ok.clone(),
                                 CardSelection::ApproveTool {
                                     args_hash: hash_ok.clone(),
@@ -718,6 +766,7 @@ impl StudioPanel {
     pub(crate) fn resolve_pending_card(
         &mut self,
         session_id: String,
+        root_session_id: String,
         card_id: String,
         selection: CardSelection,
         cx: &mut Context<'_, Self>,
@@ -763,8 +812,10 @@ impl StudioPanel {
                         if notice == "notice.card_not_found" {
                             panel.pending_card_selected.remove(&guard_key);
                         }
-                        if panel.agent.active_session_id().as_deref()
-                            == Some(guard_key.0.as_str())
+                        let active = panel.agent.active_session_id();
+                        if active.as_deref() == Some(guard_key.0.as_str())
+                            || active.as_deref()
+                                == Some(root_session_id.as_str())
                         {
                             panel.emit_notice(Some(notice), cx);
                         }
@@ -905,6 +956,8 @@ mod tests {
                 let disambig = self.panel.update(cx, |panel, cx| {
                     panel.render_disambiguation_card(
                         "s-test",
+                        "s-test",
+                        None,
                         "card-disambig",
                         "把刚才那份的报价改成 32 万元",
                         "我只改你选的那份，其余保持 30 万元",
@@ -929,6 +982,8 @@ mod tests {
                 let empty_disambig = self.panel.update(cx, |panel, cx| {
                     panel.render_disambiguation_card(
                         "s-test",
+                        "s-test",
+                        None,
                         "card-disambig-empty",
                         "empty options guard",
                         "",
@@ -940,6 +995,8 @@ mod tests {
                 let approval = self.panel.update(cx, |panel, cx| {
                     panel.render_tool_approval_card(
                         "s-test",
+                        "s-test",
+                        None,
                         "card-tool",
                         "powershell",
                         "workspace/build",

@@ -1000,6 +1000,7 @@ mod guard_tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
         ];
         upsert_verification_line(
@@ -1013,6 +1014,7 @@ mod guard_tests {
                 semantic_hint: None,
                 override_used: false,
                 provenance_warnings: Vec::new(),
+                source_session_id: None,
             },
         );
         lines.push(ChatLine::Assistant {
@@ -1438,6 +1440,7 @@ mod guard_tests {
                     semantic_hint: None,
                     override_used: false,
                     provenance_warnings: Vec::new(),
+                    source_session_id: None,
                 },
             ];
             lock(&handle.inner.state.live)
@@ -1463,6 +1466,7 @@ mod guard_tests {
                     semantic_hint: None,
                     override_used: false,
                     provenance_warnings: Vec::new(),
+                    source_session_id: None,
                 },
             ];
             lock(&handle.inner.state.live)

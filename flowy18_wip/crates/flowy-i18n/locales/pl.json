@@ -922,5 +922,14 @@
   "board.clear_day_filter": "Wyczyść filtr daty",
   "search.scope_all": "Wszystko",
   "chat.archived_toast": "Zarchiwizowano „{title}”",
-  "chat.undo": "Cofnij"
+  "chat.undo": "Cofnij",
+  "notice.router_queue_full": "Kolejka oczekujących wiadomości jest pełna — poczekaj na zakończenie bieżącej odpowiedzi.",
+  "chat.router_followup_queued": "{count} w kolejce",
+  "chat.bg_tasks_this_chat": "Ta rozmowa",
+  "chat.bg_tasks_other_chats": "Inne rozmowy",
+  "chat.bg_tasks_needs_approval": "{count} czeka na potwierdzenie",
+  "chat.bg_tasks_failed": "{count} wymaga uwagi",
+  "chat.bg_work_queued": "W kolejce",
+  "chat.bg_work_stop": "Zatrzymaj",
+  "card.from_work": "Z zadania: {title}"
 }

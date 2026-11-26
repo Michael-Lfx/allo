@@ -922,5 +922,14 @@
   "board.clear_day_filter": "日付フィルターを解除",
   "search.scope_all": "すべて",
   "chat.archived_toast": "「{title}」をアーカイブしました",
-  "chat.undo": "元に戻す"
+  "chat.undo": "元に戻す",
+  "notice.router_queue_full": "待機中のメッセージがいっぱいです。現在の応答が終わってから送信してください。",
+  "chat.router_followup_queued": "返信待ち {count} 件",
+  "chat.bg_tasks_this_chat": "この会話のタスク",
+  "chat.bg_tasks_other_chats": "他の会話",
+  "chat.bg_tasks_needs_approval": "{count} 件の確認待ち",
+  "chat.bg_tasks_failed": "{count} 件の対応が必要",
+  "chat.bg_work_queued": "待機中",
+  "chat.bg_work_stop": "停止",
+  "card.from_work": "タスクより：{title}"
 }

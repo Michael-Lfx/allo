@@ -3487,20 +3487,37 @@ mod tests {
         cx.read_entity(&app, |app, cx| {
             let panel = app.studio.read(cx);
             let sessions = panel.agent.list_sessions();
-            assert_eq!(sessions.len(), 1, "the click should create one task");
-            let active = panel.agent.active_session_id();
-            let created = sessions
-                .iter()
-                .find(|session| Some(&session.id) == active.as_ref())
-                .expect("the new task should be selected");
             assert_eq!(
-                created.project_id.as_deref(),
+                sessions.len(),
+                0,
+                "clicking project + must defer Router creation until first send (0 empty sessions)"
+            );
+            assert!(panel.agent.active_session_id().is_none());
+            assert_eq!(
+                panel.active_project_id.as_deref(),
                 Some(project_id.as_str())
             );
-            assert_eq!(created.title, "");
+            assert_eq!(
+                panel
+                    .agent
+                    .active_workspace()
+                    .map(|ws| ws.project_id),
+                Some(project_id.clone())
+            );
             assert_eq!(panel.surface, StudioSurface::Home);
             assert_eq!(app.section, Section::Studio);
             assert!(app.expanded_projects.contains(&project_id));
+        });
+        // Clicking project `+` a second time still creates zero empty sessions.
+        cx.simulate_mouse_down(button, gpui::MouseButton::Left, modifiers);
+        cx.simulate_mouse_up(button, gpui::MouseButton::Left, modifiers);
+        draw(cx);
+        cx.read_entity(&app, |app, cx| {
+            assert_eq!(
+                app.studio.read(cx).agent.list_sessions().len(),
+                0,
+                "repeated project + clicks must never leave empty sessions"
+            );
         });
         let focused = cx.update(|window, cx| {
             let handle = app
@@ -3513,6 +3530,29 @@ mod tests {
             handle.is_focused(window)
         });
         assert!(focused, "the composer should take focus");
+        // Once a task actually starts in the project, its sidebar row aligns
+        // cleanly with the dock navigation row's left edge.
+        app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                let project = panel
+                    .projects
+                    .iter()
+                    .find(|p| p.id == project_id)
+                    .cloned()
+                    .expect("created project exists");
+                let sid = panel
+                    .agent
+                    .create_router_project_session(
+                        flowy_agent::AgentWorkspace {
+                            project_id: project.id,
+                            root: project.root,
+                        },
+                    )
+                    .expect("create project router task");
+                panel.open_session(&sid, cx);
+            });
+        });
+        draw(cx);
         let task_label = cx.read_entity(&app, |app, _| app.t("dock.new_task"));
         let (nav_left, task_left) = cx.update(|window, _| {
             let mut rows: Vec<_> = window

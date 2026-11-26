@@ -111,11 +111,10 @@ impl FlowyApp {
         self.projects_open = true;
         self.expanded_projects.insert(id.to_owned());
         self.push_section(Section::Studio, cx);
-        let created = self.studio.update(cx, |panel, cx| {
-            panel.open_project(id, cx)?;
-            panel.create_task(cx)
-        });
-        if let Err(key) = created {
+        let opened = self
+            .studio
+            .update(cx, |panel, cx| panel.open_project(id, cx));
+        if let Err(key) = opened {
             self.studio.update(cx, |panel, cx| panel.note(key, cx));
         } else {
             let prompt = self.studio.read(cx).prompt.read(cx).focus_handle(cx);

@@ -2,10 +2,10 @@
 
 use super::{
     AgentHandle, AgentUpdate, ArtifactRecord, ArtifactStore, BTreeSet,
-    ChatLine, DeliveryCommit, Path, PathBuf, SessionOrigin, TurnStatus,
-    UiState, apply_delivery_commit_to_live, confined_to, confirm_commit_audit,
-    lock, log_storage_io_error, next_stamp, now_ms, persist_index,
-    reconcile_partial_work_after_override,
+    ChatLine, DeliveryCommit, Path, PathBuf, SessionOrigin, SessionRole,
+    TurnStatus, UiState, apply_delivery_commit_to_live, confined_to,
+    confirm_commit_audit, lock, log_storage_io_error, next_stamp, now_ms,
+    persist_index, reconcile_partial_work_after_override,
 };
 use crate::artifact_store::PublicationState;
 
@@ -763,7 +763,7 @@ impl AgentHandle {
             &receipt.sha256,
             now_ms(),
         );
-        let root_session_id = self.root_session_id_for(session_id);
+        let root_session_id = self.root_session_id(session_id);
         tracing::info!(
             target: "flowy.delivery",
             session_id = %session_id,
@@ -803,6 +803,7 @@ fn finish_override_live_update(
     now: u64,
 ) {
     let target_key = crate::delivery::artifact_key(full_path);
+    let mut parent_root_to_notify: Option<String> = None;
     if let Some(live) = lock(&state.live).get_mut(session_id) {
         for line in &mut live.projection.lines {
             if let ChatLine::Verification {
@@ -826,6 +827,12 @@ fn finish_override_live_update(
             });
         }
         live.updated_at = now;
+        if live.role == SessionRole::Worker
+            && let Some(root_id) = live.root_session_id.as_deref()
+            && root_id != session_id
+        {
+            parent_root_to_notify = Some(root_id.to_owned());
+        }
     }
     if persist_index(state).is_err() {
         state.report_storage_error();
@@ -834,5 +841,8 @@ fn finish_override_live_update(
     state.push_update(AgentUpdate::Session {
         id: session_id.to_owned(),
     });
+    if let Some(root_id) = parent_root_to_notify {
+        state.push_update(AgentUpdate::Session { id: root_id });
+    }
     state.push_update(AgentUpdate::Sessions);
 }

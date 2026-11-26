@@ -1109,3 +1109,23 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
   - 8-Crate 串行 `cargo test`：**654 / 654 PASS**（core 117 / agent 246 / studio 114 / skills 66 / app 56 / ui 46 / i18n 8 / shell 1；0 failed，5 ignored）；
   - 双主题实机 E2E（`ui-shot.ps1 -DataMode Clone`，`zh-CN`，`1280×820`）：Dark **32 / 32** + Light **31 / 31** 全绿（`ok=True, failures=0, log_errors=0, APPDATA_RESTORED, RUNNING_FLOWY=0`）；
   - 预览包 `C:\Users\38788\AppData\Local\FlowyPreview\flowy-app.exe`（`79,359,488` 字节，`SHA-256: 4171AC5CD9858DC50EEAF00B90273CE456FFE0B9983875F8049D233281F4C96A`）已同步。
+
+---
+
+## 任务 24 · PR-2B Router UI 接线（Q1–Q6）、PR #497 线性 Rebase 与审查减脂收口（`feat/flowy-router-ui`，2026-11-26）
+
+- **工位与基线**：复用暖构建 worktree `.agents/worktrees/feat-router-kernel`（分支 `feat/flowy-router-ui`），已在 PR #497 合入后线性 rebase 至 `origin/main@eb30a4d21`；主工作区 `d:/workSpace/git_clone_test/allo` 保持 100% 干净。
+- **边界核验**：改动严格收口于 `flowy18_wip/` 内 `flowy-agent`（薄接缝）、`flowy-studio`、`flowy-app`、23 份 `flowy-i18n/locales/*.json`（+9 键 → **933 键**全对称，LF 换行）与本目录修订 9.12 同步文档；**0 触碰** `flowy-agent-core` / `flowy-ui` / `flowy-skills` / V6 外发通道 / 根 workspace。
+- **Q1–Q6 落地总览**：
+  - **Q1（三入口延迟建 Router + 项目继承与防串项目）**：Home 首发、侧栏 `new_task`（继承当前可见项目，点项目胶囊 `×` 仅解绑草稿保留文字）、项目 `+`（取消立即建空会话）全部延后到首条消息经 `AgentHandle::submit_router_chat_if_active` 原子校验、建 `SessionRole::Router` 并在失败时完整回滚；历史 `Standard` 会话保留原路径。
+  - **Q2 & Q5（后台状态槽 + 双区弹层 + 队列反馈）**：新增 `flowy-studio/src/router_works.rs`（事件驱动缓存 `PopoverWorksSnapshot`，O(1) 渲染零每帧锁扫），Chat `bg-tasks-slot` 与 Home 恢复胶囊统一显示 `awaiting_approval` 关注态 / 活跃计数，弹层分 `本会话任务 / 其他会话任务` 按 `work_id` 去重且点击跳父 Router 定位子 Work；`pending_router_followups` 经内核确认后清本次草稿并显示 `待回复 N 条` 胶囊（同文重启去重由 `handle/mod.rs::boot()` 精确对账）。
+  - **Q3 & Q4（子核验卡 / 产物投射 + 不锁输入审批路由）**：`chat_history()` 确定性投射子 Worker `Verification`（携带 `source_session_id`）与 `Artifact`（刷新/重启严格 1 次），`ArtifactAction::OverrideDeliver` 显式携带 `session_id` 走 `confirm_override_for_session`；`pending_cards_slot` 消费 `root_pending_cards` 并带来源标签，仅 Router 自身待答选卡才暂停发送，子 Worker 审批不锁主输入框且失败错误回显在父 Router；`ports/router_projection.rs` 将子 Worker 与 `strict_target` 回执折叠入父 Router 看板分组（零未归属泄漏）。
+  - **Q6（主停止 vs 单路停止）**：主停止仅调用 `stop_router_reply`（保留子 Worker 与已入队 follow-up），单路停止调用 `cancel_work(root_id, worker_id)`。
+- **Rebase 后 `/code-review` + `/laoyeye`（`carl-idea-king` / `kaz-neat-freak`）+ `/ponytail` 深度修复与减脂**：
+  - 修复 6 项 `[Required]`：① `WorkBranchSummary` 新增 `owner_session_id` 使看板 Flowchart Modal 覆盖交付 / 重试交付 / 单路停止精准命中子 Worker，无核验报告的审批阻塞改「打开原对话」直跳父 Router；② `StudioPanel` 增加事件驱动缓存 `popover_works` 彻底消除 `Render::render` 每帧 O(N) 锁扫；③ `ports/board.rs` 折叠子 Worker `updated_at` 补齐 PR #497 本地 7 日日历下钻语义；④ Home 恢复胶囊改读 `router_bg_pill_summary()` 与弹层数字和关注态 100% 同源；⑤ `handle/mod.rs::boot()` `committed_counts` 对齐 `observer.rs:1501` 排除 `SystemEvent`；⑥ `stop_session_turn` 收口为唯一按 `SessionRole` 分流停止入口。
+  - 完成 7 项死代码与冗余清理：删除私有重复 `AgentHandle::root_session_id_for`、删除无生产调用方的公共 API `StudioPanel::create_task`、删除隐式回退薄壳 `confirm_override_delivery`、合并 `stop_router_reply_target`/`cancel_child_work` 样板为 `run_stop_work_action`、合并 `send_prompt` 重复 `accept_deferred` 分支、抽取 `apply_draft_project`、拆分 `router_works.rs` 历史行渲染并瘦身。
+- **最终串行全量门禁基线（`origin/main@eb30a4d21` + 审查减脂后实跑）**：
+  - `cargo fmt --all -- --check`：0 diff；`check-ui-contracts.mjs`：24/24 自测 + 全库 PASS；
+  - 9-Crate `cargo clippy --locked --all-targets -- -D warnings`：**0 error, 0 warning**；
+  - 8-Crate 串行 `cargo test --locked`（`flowy-agent` `--test-threads=1`）：**661 / 661 PASS**（core 117 / agent 248 / studio 119 / skills 66 / app 56 / ui 46 / i18n 8 / shell 1；0 failed，6 ignored）；
+  - `cargo check --locked -p flowy-desktop`：0 error；真云端同会话双消息非阻塞 E2E **1 / 1 PASS**；双主题双语桌面实机视觉审计（9 PNG）`ok=True, failures=0, log_errors=0`。

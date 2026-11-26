@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-26 修订 9.11 更新）**：**直接先读 §20（PR #496 已合入 `origin/main@aa522353f` + PR #497 `feat/flowy-studio-ux-polish` 修订 9.11 现役总账与 654/654 全量基线）**，再按需查 §19（PR-2B 冻结 `AgentHandle` 契约表）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§19 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §20 不一致处，**一律以 §20 为准**。
+> **现役唯一入口（2026-11-26 修订 9.12 更新）**：**直接先读 §21（PR #497 已合入 `origin/main@eb30a4d21` + PR-2B `feat/flowy-router-ui` 修订 9.12 现役总账与 661/661 全量基线）**，再按需查 §19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§20 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §21 不一致处，**一律以 §21 为准**。
 
 ---
 
@@ -684,4 +684,42 @@ cargo test --manifest-path flowy18_wip/Cargo.toml -p flowy-i18n -p flowy-ui -p f
 
 1. **PR-2B（Studio / App / i18n Router UI 接线）**：PR #496 现已合入 `main`；待 PR #497 合流后直接基于最新 `origin/main` 消费 §19.2 冻结的 `AgentHandle` 契约完成 Router 新建会话、`panel.rs` 解除后台 `Worker` 发送阻断、`ports/board.rs` 与 `deliverables.rs` 多分支泳道/待人卡路由与双主题实机 E2E。
 2. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：按 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 推进三端真机实测。
+3. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。
+
+---
+
+## 21. 2026-11-26 现役最新总账（PR #497 已合入 `origin/main@eb30a4d21` + PR-2B · `feat/flowy-router-ui` 修订 9.12 收口）
+
+> **唯一最新真相（对应 `最终方案.md` 修订 9.12 §12.11 与 `证据.md` §11.39）**：PR #496（PR-2A）与 PR #497（工作台 UX 打磨）均已合入 `origin/main@eb30a4d21`；工作树 `.agents/worktrees/feat-router-kernel`（分支 `feat/flowy-router-ui`，**PR-2B**）已完成线性 rebase、全部 Q1–Q6 Router UI 接线、`/code-review` + `/laoyeye` + `/ponytail` 深度修复与减脂，通过 8-Crate **661 / 661** 全绿、9-Crate `clippy --all-targets -D warnings` 0 警告、真云端同会话双消息非阻塞 E2E（`1/1`）与双主题双语视觉审计。**保留该暖构建工作树（切勿删除）**以加速后续开发。
+
+### 21.1 PR-2B 改动速查与核心不变量
+
+- **严格 0 触碰**：`flowy-agent-core` / `flowy-ui` / `flowy-skills` / V6 外发通道 / 根 workspace；主工作区 `d:/workSpace/git_clone_test/allo` 保持 100% 干净。
+- **`flowy-agent`（薄接缝）**：`submit_router_chat_if_active`（原子上下文校验 + 延迟建 Router + 失败回滚）；`chat_history()` 确定性投射子 Worker `Verification`（含 `source_session_id`）与 `Artifact`；`override_deliver_artifact` 联动通知父 Router；`session_needs_attention` 聚合子 Worker；`boot()` 恢复 `pending_router_followups` 气泡对齐 `observer.rs:1501` 排除 `SystemEvent`；清理重复私有 `AgentHandle::root_session_id_for`。
+- **`flowy-studio` & `flowy-app`**：
+  - `router_works.rs`（新增）+ `panel.rs`：事件驱动缓存 `popover_works: PopoverWorksSnapshot`（O(1) 渲染零每帧锁扫），Chat 状态槽、Home 恢复胶囊与双区弹层（`本会话任务 / 其他会话任务`）共享同一真相源与关注态；删除生产死 API `StudioPanel::create_task` 与隐式薄壳 `confirm_override_delivery`。
+  - `ports/router_projection.rs`（新增）+ `ports/board.rs` + `overview/flow_modal.rs`：折叠子 Worker 与 `strict_target` 回执入父 Router 组，每条子分支携带 `owner_session_id` 使 Flowchart Modal 覆盖/重试/停止精准命中子 Worker（无报告审批卡直提供「打开对话」跳父 Router），并用 `fold_group_updated_at` 合并子 Worker 时间戳兼容 PR #497 7 日日历下钻。
+  - `work_actions.rs` + `deliverables.rs` + `pending_card.rs` + `feed.rs` + `projects.rs` + `dock.rs` + `library_actions.rs`：`stop_session_turn` 单一按 `SessionRole` 分流停止；`OverrideDeliver` 显式带 `session_id`；`root_pending_cards` 聚合审批不锁主输入框。
+- **`flowy-i18n`（23 语种）**：新增 9 键（在 PR #497 的 924 键基础上增至 **933 键**全对称，LF 换行）。
+
+### 21.2 现役验证命令与最新全量基线（PR-2B @ `origin/main@eb30a4d21`）
+
+```powershell
+# 在 .agents/worktrees/feat-router-kernel/flowy18_wip 下严格串行执行（禁止并发跑 cargo）：
+$env:CARGO_BUILD_BUILD_DIR = Join-Path $env:LOCALAPPDATA 'Temp\flowy18-router-build'
+node scripts/check-ui-contracts.mjs --self-test                  # 24/24 passed
+node scripts/check-ui-contracts.mjs                              # PASS
+cargo fmt --all -- --check                                       # 0 diff
+cargo clippy --locked --all-targets -p flowy-agent-core -p flowy-agent -p flowy-i18n -p flowy-ui -p flowy-studio -p flowy-app -p flowy-skills -p flowy-shell -p flowy-desktop -- -D warnings  # 0 warning
+cargo test --locked -p flowy-agent-core                          # 117 passed (2 ignored)
+cargo test --locked -p flowy-shell -p flowy-skills -p flowy-i18n -p flowy-ui -p flowy-studio -p flowy-app  # 1 + 66 + 8 + 46 + 119 + 56 = 296 passed
+cargo test --locked -p flowy-agent -- --test-threads=1           # 248 passed (4 ignored)
+cargo check --locked -p flowy-desktop                            # 0 error
+# 8-Crate 合计：661 passed / 0 failed (6 ignored)；真云端 Router E2E 1/1 PASS；双主题双语视觉审计 9 PNG 全绿
+```
+
+### 21.3 下一 PR 接手优先级
+
+1. **合流 PR-2B（`feat/flowy-router-ui`）**：确认推送并合入 `main` 后，可按需在真实桌面再补 1 轮看板 Flowchart Modal 子 Worker 交互截图与 `FlowyPreview\flowy-app.exe` 刷新。
+2. **S5（休眠/唤醒跳表探针 + 真机 OS 沙箱 `Enforced`）**：按 [`跨平台沙箱与进程回收预留方案.md`](跨平台沙箱与进程回收预留方案.md) 在三端真机实测逃逸阻断后升级 `Enforced`。
 3. **V6 外发通道**：仍受 [`BLOCKED.md`](BLOCKED.md) §5 硬阻塞，未经拍板严禁动工。

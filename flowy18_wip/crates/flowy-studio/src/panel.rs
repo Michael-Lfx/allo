@@ -263,6 +263,9 @@ pub struct StudioPanel {
     pub(crate) popover: ActivePopover,
     pub(crate) credits_close: Option<Task<()>>,
     pub(crate) board_snapshot: crate::ports::WorkBoardSnapshot,
+    /// Event-driven cached Router child-Works / background-tasks snapshot so
+    /// `Render::render` never scans `AgentHandle` locks per frame.
+    pub(crate) popover_works: crate::router_works::PopoverWorksSnapshot,
     pub(crate) local_env: crate::ports::LocalEnvSnapshot,
     pub(crate) board_filter: crate::overview::BoardFilter,
     pub(crate) board_project_filter: Option<String>,
@@ -280,6 +283,7 @@ pub struct StudioPanel {
     pub(crate) installed_skills: Vec<crate::ports::SkillChip>,
     pub(crate) board_generation: u64,
     pub(crate) last_board_refresh: Option<std::time::Instant>,
+    pub(crate) last_popover_works_refresh: Option<std::time::Instant>,
     pub(crate) last_trace_refresh: Option<std::time::Instant>,
     pub tiers: Vec<TierView>,
     pub i18n: I18n,
@@ -477,14 +481,23 @@ impl StudioPanel {
                         artifact_id: artifact_id.clone(),
                     }),
                     ArtifactAction::OverrideDeliver {
+                        session_id,
                         report_id,
                         artifact_path,
                     } => {
-                        panel.confirm_override_delivery(
-                            report_id,
-                            artifact_path,
-                            cx,
-                        );
+                        let target = session_id
+                            .clone()
+                            .or_else(|| panel.agent.active_session_id());
+                        if let Some(owner) = target {
+                            panel.confirm_override_for_session(
+                                &owner,
+                                report_id,
+                                artifact_path,
+                                cx,
+                            );
+                        } else {
+                            panel.emit_notice(Some("chat.publish.context"), cx);
+                        }
                     }
                 }
             });
@@ -604,6 +617,7 @@ impl StudioPanel {
             },
             credits_close: None,
             board_snapshot: crate::ports::WorkBoardSnapshot::default(),
+            popover_works: crate::router_works::PopoverWorksSnapshot::default(),
             local_env: crate::ports::LocalEnvSnapshot::default(),
             board_filter: crate::overview::BoardFilter::All,
             board_project_filter: None,
@@ -618,6 +632,7 @@ impl StudioPanel {
             installed_skills: Vec::new(),
             board_generation: 0,
             last_board_refresh: None,
+            last_popover_works_refresh: None,
             last_trace_refresh: None,
             tiers: Vec::new(),
             i18n,
@@ -809,30 +824,48 @@ impl StudioPanel {
         if structural_update || status_changed {
             self.refresh_board_snapshot();
             self.last_trace_refresh = Some(std::time::Instant::now());
-        } else if self.surface == StudioSurface::Board
-            && self.last_board_refresh.is_none_or(|last| {
-                last.elapsed() >= Duration::from_millis(1200)
-            })
-        {
-            // While streaming deltas, only refresh the board when it is open
-            // and at most once per 1.2s to avoid per-token work.
-            self.refresh_board_snapshot();
-            self.last_trace_refresh = Some(std::time::Instant::now());
-        } else if let Some(trace_sid) = self.active_trace_session_id()
-            && updates.iter().any(|update| {
+        } else {
+            let active_sid = self.agent.active_session_id();
+            let background_session_updated = updates.iter().any(|update| {
                 matches!(
                     update,
                     flowy_agent::AgentUpdate::Session { id }
-                        if id == &trace_sid
+                        if active_sid.as_deref() != Some(id.as_str())
                 )
-            })
-            && self
-                .last_trace_refresh
-                .is_none_or(|last| last.elapsed() >= Duration::from_millis(300))
-        {
-            self.refresh_trace_cache();
-            self.last_trace_refresh = Some(std::time::Instant::now());
-            cx.notify();
+            });
+            if (background_session_updated || self.is_bg_tasks_open())
+                && self.last_popover_works_refresh.is_none_or(|last| {
+                    last.elapsed() >= Duration::from_millis(400)
+                })
+            {
+                self.refresh_popover_works();
+                cx.notify();
+            }
+            if self.surface == StudioSurface::Board
+                && self.last_board_refresh.is_none_or(|last| {
+                    last.elapsed() >= Duration::from_millis(1200)
+                })
+            {
+                // While streaming deltas, only refresh the board when it is open
+                // and at most once per 1.2s to avoid per-token work.
+                self.refresh_board_snapshot();
+                self.last_trace_refresh = Some(std::time::Instant::now());
+            } else if let Some(trace_sid) = self.active_trace_session_id()
+                && updates.iter().any(|update| {
+                    matches!(
+                        update,
+                        flowy_agent::AgentUpdate::Session { id }
+                            if id == &trace_sid
+                    )
+                })
+                && self.last_trace_refresh.is_none_or(|last| {
+                    last.elapsed() >= Duration::from_millis(300)
+                })
+            {
+                self.refresh_trace_cache();
+                self.last_trace_refresh = Some(std::time::Instant::now());
+                cx.notify();
+            }
         }
         if !self.agent.autonomous_drain() {
             let background_claim_settled = self.agent.has_active_claim()
@@ -947,6 +980,7 @@ impl StudioPanel {
         if self.surface != surface {
             self.invalidate_submission(cx);
             self.surface = surface;
+            self.refresh_popover_works();
             cx.notify();
         }
     }
@@ -1064,16 +1098,39 @@ impl StudioPanel {
         self.refresh_trace_cache();
     }
 
+    /// Binds (or clears) the pending draft project workspace and origin for
+    /// lazily created Router sessions (Q1).
+    pub(crate) fn apply_draft_project(
+        &mut self,
+        project: Option<&crate::projects::Project>,
+    ) {
+        if let Some(project) = project {
+            let project_id = project.id.clone();
+            self.active_project_id = Some(project_id.clone());
+            self.agent
+                .set_workspace_for_new_sessions(Some(AgentWorkspace {
+                    project_id: project.id.clone(),
+                    root: project.root.clone(),
+                }));
+            self.agent
+                .set_origin_for_new_sessions(SessionOrigin::Project {
+                    project_id: Some(project_id),
+                });
+        } else {
+            self.active_project_id = None;
+            self.agent.set_workspace_for_new_sessions(None);
+            self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+        }
+    }
+
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.close_all_popovers();
         self.flow_modal.close();
         self.clear_right_sheet();
-        self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
-        self.agent.set_workspace_for_new_sessions(None);
-        self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+        self.apply_draft_project(None);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.refresh_board_snapshot();
@@ -1083,15 +1140,18 @@ impl StudioPanel {
     }
 
     pub fn new_task(&mut self, cx: &mut Context<'_, Self>) {
+        let inherited_project = self
+            .active_project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|p| p.id == id))
+            .cloned();
         match self.agent.clear_active() {
             Ok(()) => {
                 self.invalidate_submission(cx);
                 self.close_all_popovers();
                 self.flow_modal.close();
                 self.clear_right_sheet();
-                self.active_project_id = None;
-                self.agent.set_workspace_for_new_sessions(None);
-                self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+                self.apply_draft_project(inherited_project.as_ref());
                 self.surface = StudioSurface::Home;
                 self.refresh_chat(cx);
                 self.refresh_board_snapshot();
@@ -1126,6 +1186,9 @@ impl StudioPanel {
     /// Toggles the floating background-tasks popover anchored above the composer.
     pub fn toggle_bg_tasks(&mut self, cx: &mut Context<'_, Self>) {
         self.toggle_popover(ActivePopover::BgTasks);
+        if self.is_bg_tasks_open() {
+            self.refresh_popover_works();
+        }
         cx.notify();
     }
 
@@ -1181,18 +1244,11 @@ impl StudioPanel {
             .collect()
     }
 
-    /// Total active/queued works shown in the background-tasks pill.
+    /// Total active/attention/queued works shown in the background-tasks pill
+    /// and Home resume pill (backed by the cached `popover_works` snapshot).
     #[must_use]
     pub fn background_work_count(&self) -> usize {
-        let running_ids = self.background_running_session_ids();
-        let mut running = running_ids.len();
-        if self.surface != StudioSurface::Chat
-            && running == 0
-            && (self.status.is_busy() || self.submission_pending)
-        {
-            running = 1;
-        }
-        running + self.popover_visible_receipts(&running_ids).len()
+        self.popover_total_count()
     }
 
     /// Total active/queued works across all sessions (including foreground),
@@ -1227,6 +1283,7 @@ impl StudioPanel {
         {
             self.surface = StudioSurface::Chat;
             self.refresh_chat(cx);
+            self.refresh_popover_works();
             cx.notify();
             return;
         }
@@ -1236,32 +1293,8 @@ impl StudioPanel {
         if let Some(session) = latest_default {
             self.open_session(&session.id, cx);
         } else {
-            self.new_task(cx);
+            self.reset_session(cx);
         }
-    }
-
-    /// Creates an empty session in the workspace `open_project` just prepared.
-    pub fn create_task(
-        &mut self,
-        cx: &mut Context<'_, Self>,
-    ) -> Result<(), &'static str> {
-        self.agent.set_origin_for_new_sessions(
-            match self.active_project_id.as_ref() {
-                Some(project_id) => SessionOrigin::Project {
-                    project_id: Some(project_id.clone()),
-                },
-                None => SessionOrigin::Home,
-            },
-        );
-        self.agent.create_session()?;
-        self.invalidate_submission(cx);
-        self.clear_right_sheet();
-        self.surface = StudioSurface::Home;
-        self.refresh_chat(cx);
-        self.set_prompt_text("", cx);
-        cx.emit(StudioEvent::SessionsChanged);
-        cx.notify();
-        Ok(())
     }
 
     /// Marks the cloud route ready and refreshes receipts/board state.
@@ -1412,24 +1445,6 @@ impl StudioPanel {
             .update(cx, |feed, cx| feed.set_artifacts(artifacts, cx));
     }
 
-    pub(crate) fn confirm_override_delivery(
-        &mut self,
-        report_id: &str,
-        artifact_path: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(session_id) = self.agent.active_session_id() else {
-            self.emit_notice(Some("chat.publish.context"), cx);
-            return;
-        };
-        self.confirm_override_for_session(
-            &session_id,
-            report_id,
-            artifact_path,
-            cx,
-        );
-    }
-
     /// Explicit override bound to a specific session and real non-empty
     /// verification `report_id` (required by kernel `f8fb6b491`). Runs on a
     /// background worker with an in-flight guard so large SHA-256 hashes and
@@ -1514,20 +1529,24 @@ impl StudioPanel {
             self.clear_right_sheet();
             self.surface = StudioSurface::Home;
             self.document = DocumentSession::new(self.product);
-            self.active_project_id = None;
-            self.agent.set_workspace_for_new_sessions(None);
-            self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+            self.apply_draft_project(None);
             self.set_prompt_text("", cx);
         } else if let Some(crate::deliverables::InspectedWork::Session {
             id,
             ..
         }) = &self.inspected_work
         {
-            let still_exists = self
-                .agent
-                .list_sessions()
-                .iter()
-                .any(|session| &session.id == id);
+            let sessions = self.agent.list_sessions();
+            let still_exists = sessions.iter().any(|session| {
+                session.id == *id
+                    || (self.agent.session_role(&session.id)
+                        == flowy_agent::SessionRole::Router
+                        && self
+                            .agent
+                            .child_works(&session.id)
+                            .iter()
+                            .any(|work| work.work_id == *id))
+            });
             if !still_exists {
                 self.clear_right_sheet();
             }
@@ -1544,16 +1563,17 @@ impl StudioPanel {
         artifact_id: &str,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), &'static str> {
+        let target_root = self.agent.root_session_id(session_id);
         if !self
             .agent
             .list_sessions()
             .iter()
-            .any(|session| session.id == session_id)
+            .any(|session| session.id == target_root)
         {
             return Err("library.source.unavailable");
         }
         let previous = self.agent.active_session_id();
-        self.agent.select_session(session_id)?;
+        self.agent.select_session(&target_root)?;
         self.invalidate_submission(cx);
         self.refresh_chat(cx);
         if !self.focus_artifact(artifact_id, cx) {
@@ -1638,12 +1658,23 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        let has_pending_card =
+        let active_session = self.agent.active_session_id();
+        let active_role = active_session
+            .as_deref()
+            .map(|sid| self.agent.session_role(sid));
+        let is_legacy_standard =
+            active_role == Some(flowy_agent::SessionRole::Standard);
+        let use_router_path = !is_legacy_standard;
+
+        // Only pause sending when the active conversation ITSELF has a pending
+        // card (Router's own disambiguation card or Standard's card). Child
+        // Worker approval cards never block the main Router conversation (Q4).
+        let has_own_pending_card =
             matches!(self.status, flowy_agent::TurnStatus::WaitingForUser)
-                || self.agent.active_session_id().is_some_and(|sid| {
-                    !self.agent.session_pending_cards(&sid).is_empty()
+                || active_session.as_deref().is_some_and(|sid| {
+                    !self.agent.session_pending_cards(sid).is_empty()
                 });
-        if has_pending_card {
+        if has_own_pending_card {
             self.emit_notice(Some("notice.card_pending"), cx);
             return;
         }
@@ -1651,37 +1682,25 @@ impl StudioPanel {
         let waiting_for_cloud = self.catalog_loading
             || ((!self.cloud_ready || model.is_none())
                 && self.agent.requires_cloud_ready());
-        if !running
-            && !waiting_for_cloud
-            && (!self.cloud_ready || model.is_none())
-        {
-            tracing::debug!(
-                target: "flowy.prompt",
-                stage = "StudioPanel::send_prompt",
-                reason = "cloud_or_model",
-                "reject"
-            );
-            self.emit_notice(Some("notice.agent_failed"), cx);
-            return;
-        }
-        // A turn that is already running (or waiting for cloud catalog readiness)
-        // cannot start immediately. The host takes responsibility for the draft
-        // right away and hands back a durable receipt, so nothing is lost.
-        if running || waiting_for_cloud {
+        // Legacy Standard sessions defer whenever running or awaiting cloud
+        // startup; fresh drafts defer only during cold-start catalog load;
+        // existing Router sessions never fall back into `accept_deferred`.
+        let should_defer = if is_legacy_standard {
+            running || waiting_for_cloud
+        } else {
+            waiting_for_cloud && active_session.is_none()
+        };
+        if should_defer {
             match self.agent.accept_deferred(&text) {
                 Ok(receipt) => {
                     tracing::debug!(
                         target: "flowy.prompt",
                         stage = "StudioPanel::send_prompt",
                         receipt = %receipt.id,
+                        legacy = is_legacy_standard,
                         "accepted-deferred"
                     );
-                    // gpui-pre dropped `emplace`; the queueing entry point
-                    // is `set_prompt_text`, drained at the top of render.
                     self.set_prompt_text("", cx);
-                    // The receipt is the feedback now. Saying "added to this
-                    // session's task list" while no such list existed was a
-                    // lie; `pending_receipts` is rendered by `workspace()`.
                     if self.agent.autonomous_drain() {
                         self.sync_receipts();
                         self.refresh_board_snapshot();
@@ -1694,6 +1713,21 @@ impl StudioPanel {
             }
             return;
         }
+        if !self.cloud_ready || model.is_none() {
+            let key = if !is_legacy_standard && self.catalog_loading {
+                "library.loading"
+            } else {
+                "notice.agent_failed"
+            };
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "StudioPanel::send_prompt",
+                reason = "cloud_or_model",
+                "reject"
+            );
+            self.emit_notice(Some(key), cx);
+            return;
+        }
         let id = *self.submission.get_or_insert_with(new_submission_id);
         self.submission_generation = self.submission_generation.wrapping_add(1);
         let generation = self.submission_generation;
@@ -1701,20 +1735,41 @@ impl StudioPanel {
         let stop = Arc::new(AtomicBool::new(false));
         self.submission_stop = Some(stop.clone());
         self.refresh_working(cx);
+        self.refresh_popover_works();
         cx.notify();
         let agent = self.agent.clone();
         let expected_generation = agent.context_generation();
-        let expected_active = agent.active_session_id();
-        let workspace = agent.active_workspace();
+        let expected_active = active_session;
+        let expected_workspace =
+            if let Some(pid) = self.active_project_id.as_deref() {
+                self.projects.iter().find(|p| p.id == pid).map(|p| {
+                    AgentWorkspace {
+                        project_id: p.id.clone(),
+                        root: p.root.clone(),
+                    }
+                })
+            } else {
+                agent.active_workspace()
+            };
         let submitted_text = text.clone();
         let expected = expected_active.clone();
         let worker_stop = stop.clone();
         let worker_agent = agent.clone();
         let job = cx.background_executor().spawn(async move {
-            let result = if workspace.is_some_and(|workspace| {
+            let result = if worker_stop.load(Ordering::Acquire) {
+                Err("notice.agent_busy")
+            } else if expected_workspace.as_ref().is_some_and(|workspace| {
                 !crate::projects::root_available(&workspace.root)
             }) {
                 Err("project.folder_unavailable")
+            } else if use_router_path {
+                worker_agent.submit_router_chat_if_active(
+                    id,
+                    &submitted_text,
+                    expected.as_deref(),
+                    expected_generation,
+                    expected_workspace,
+                )
             } else {
                 worker_agent.submit_chat_if_active(
                     id,
@@ -1726,8 +1781,12 @@ impl StudioPanel {
             let stopped = if let Ok(session_id) = &result
                 && worker_stop.load(Ordering::Acquire)
             {
-                let _ = worker_agent
-                    .cancel_task(TaskTarget::Session(session_id.clone()));
+                if use_router_path {
+                    let _ = worker_agent.stop_router_reply(session_id);
+                } else {
+                    let _ = worker_agent
+                        .cancel_task(TaskTarget::Session(session_id.clone()));
+                }
                 true
             } else {
                 false
@@ -1745,8 +1804,12 @@ impl StudioPanel {
                 let session_id = session_id.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        let _ =
-                            agent.cancel_task(TaskTarget::Session(session_id));
+                        if use_router_path {
+                            let _ = agent.stop_router_reply(&session_id);
+                        } else {
+                            let _ = agent
+                                .cancel_task(TaskTarget::Session(session_id));
+                        }
                     })
                     .detach();
             }
@@ -1772,7 +1835,15 @@ impl StudioPanel {
                         }
                         panel.surface = StudioSurface::Chat;
                         panel.refresh_chat(cx);
+                        panel.refresh_board_snapshot();
                         panel.emit_notice(None, cx);
+                        cx.emit(StudioEvent::SessionsChanged);
+                    }
+                    Ok(_) => {
+                        // User switched context mid-send: keep the new context's
+                        // draft untouched while refreshing sessions/board.
+                        panel.submission = None;
+                        panel.refresh_board_snapshot();
                         cx.emit(StudioEvent::SessionsChanged);
                     }
                     Err(key)
@@ -1810,7 +1881,7 @@ impl StudioPanel {
             }
             cx.notify();
         } else if let Some(session_id) = self.agent.active_session_id() {
-            self.cancel_task_target(TaskTarget::Session(session_id), cx);
+            self.stop_session_turn(&session_id, cx);
         }
     }
 
@@ -2081,8 +2152,11 @@ impl StudioPanel {
         id: &str,
         cx: &mut Context<'_, Self>,
     ) -> Result<(), &'static str> {
-        let Some(project) =
-            self.projects.iter().find(|project| project.id == id)
+        let Some(project) = self
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .cloned()
         else {
             return Err("project.folder_unavailable");
         };
@@ -2090,24 +2164,15 @@ impl StudioPanel {
             self.emit_notice(Some("project.folder_unavailable"), cx);
             return Err("project.folder_unavailable");
         }
-        let workspace = AgentWorkspace {
-            project_id: project.id.clone(),
-            root: project.root.clone(),
-        };
-        let project_id = project.id.clone();
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.flow_modal.close();
         self.clear_right_sheet();
-        self.agent.set_workspace_for_new_sessions(Some(workspace));
-        self.agent
-            .set_origin_for_new_sessions(SessionOrigin::Project {
-                project_id: Some(project_id.clone()),
-            });
-        self.active_project_id = Some(project_id);
+        self.apply_draft_project(Some(&project));
         self.surface = StudioSurface::Home;
         self.set_prompt_text("", cx);
         self.refresh_chat(cx);
+        self.refresh_popover_works();
         self.refresh_local_env();
         self.emit_notice(clear_error, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -3404,7 +3469,8 @@ mod tests {
                 .unwrap();
             assert!(!report.ok);
 
-            panel.confirm_override_delivery(
+            panel.confirm_override_for_session(
+                &session_id,
                 &report.id,
                 "outputs/submission-override-test/deck.pptx",
                 cx,
@@ -3733,6 +3799,7 @@ mod tests {
                     preview: None,
                     branches: vec![crate::ports::WorkBranchSummary {
                         id: "b-demo".into(),
+                        owner_session_id: None,
                         skill_label: crate::ports::SkillLabel::Key(
                             "board.skill_work",
                         ),
@@ -3782,5 +3849,227 @@ mod tests {
         );
         assert_eq!(format_skill_prompt(Some(&chip), ""), "");
         assert_eq!(format_skill_prompt(None, "plain prompt"), "plain prompt");
+    }
+
+    #[gpui::test]
+    fn pr2b_entry_three_paths_create_zero_empty_sessions_and_inherit_project_or_unbind(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "pr2b-entry-zero");
+        let dir_a = root.join("proj-alpha");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        panel.update(cx, |panel, cx| {
+            // Home -> repeated `new_task` creates 0 sessions.
+            panel.new_task(cx);
+            panel.new_task(cx);
+            assert_eq!(panel.agent.list_sessions().len(), 0);
+            assert!(panel.active_project_id.is_none());
+
+            // Create & open Project A -> `new_task` inherits Project A without creating an empty session.
+            let proj_a = panel
+                .create_project("Alpha", &dir_a, cx)
+                .expect("create project A");
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(proj_a.id.as_str())
+            );
+            panel.new_task(cx);
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(proj_a.id.as_str()),
+                "new_task from a Project view must inherit active_project_id"
+            );
+            assert_eq!(
+                panel.agent.active_workspace().map(|w| w.project_id),
+                Some(proj_a.id.clone())
+            );
+            assert_eq!(panel.agent.list_sessions().len(), 0);
+
+            // Project capsule `×` (`bind_default_workspace`) unbinds ONLY the draft, keeping text!
+            panel.fill_prompt("draft survives project unbind", cx);
+            panel.bind_default_workspace(cx);
+            assert!(panel.active_project_id.is_none());
+            assert!(panel.agent.active_workspace().is_none());
+            assert_eq!(
+                visible_prompt(panel, cx),
+                "draft survives project unbind"
+            );
+            assert_eq!(panel.agent.list_sessions().len(), 0);
+
+            // Opening Chief Assistant from a project returns cleanly to Home with 0 empty sessions.
+            panel.open_project(&proj_a.id, cx).unwrap();
+            panel.open_chief_assistant(cx);
+            assert!(panel.active_project_id.is_none());
+            assert!(panel.agent.active_workspace().is_none());
+            assert_eq!(panel.agent.list_sessions().len(), 0);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn pr2b_first_send_project_a_then_switch_to_project_b_preserves_b_draft_and_routes_to_a(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "pr2b-switch-ab");
+        let dir_a = root.join("proj-a");
+        let dir_b = root.join("proj-b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let (proj_a_id, proj_b_id) = panel.update(cx, |panel, cx| {
+            let a = panel.create_project("ProjA", &dir_a, cx).unwrap();
+            let b = panel.create_project("ProjB", &dir_b, cx).unwrap();
+            panel.open_project(&a.id, cx).unwrap();
+            panel.fill_prompt("message strictly for A", cx);
+            panel.send_prompt(cx);
+            assert!(panel.submission_pending);
+
+            // Mid-send switch to Project B and type a new draft for B.
+            panel.open_project(&b.id, cx).unwrap();
+            panel.fill_prompt("unsent draft for B", cx);
+            (a.id, b.id)
+        });
+        cx.run_until_parked();
+        cx.read_entity(&panel, |panel, cx| {
+            // Project B stays selected and its draft is completely untouched.
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(proj_b_id.as_str())
+            );
+            assert_eq!(visible_prompt(panel, cx), "unsent draft for B");
+            // Exactly 1 Router session exists, belonging strictly to Project A (0 for B).
+            let sessions = panel.agent.list_sessions();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(
+                sessions[0].project_id.as_deref(),
+                Some(proj_a_id.as_str())
+            );
+            assert_eq!(
+                panel.agent.session_role(&sessions[0].id),
+                flowy_agent::SessionRole::Router
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn pr2b_legacy_standard_session_and_router_stop_and_locate_source_coexist(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "pr2b-legacy-compat");
+        let standard_id = panel.update(cx, |panel, cx| {
+            let sid = panel.agent.create_home_session().unwrap();
+            assert_eq!(
+                panel.agent.session_role(&sid),
+                flowy_agent::SessionRole::Standard
+            );
+            panel.open_session(&sid, cx);
+            panel.fill_prompt("legacy standard prompt", cx);
+            panel.send_prompt(cx);
+            sid
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            assert_eq!(
+                panel.agent.active_session_id().as_deref(),
+                Some(standard_id.as_str())
+            );
+            assert_eq!(
+                panel.agent.session_role(&standard_id),
+                flowy_agent::SessionRole::Standard
+            );
+            assert!(panel.agent.has_messages());
+            panel.stop_turn(cx);
+
+            // Router session uses Router role and supports child card error
+            // surfacing on parent Router (`resolve_pending_card`).
+            let router_id = panel
+                .agent
+                .create_router_session()
+                .expect("create router session");
+            assert_eq!(
+                panel.agent.session_role(&router_id),
+                flowy_agent::SessionRole::Router
+            );
+            panel.open_session(&router_id, cx);
+            panel.resolve_pending_card(
+                "w-missing-child".into(),
+                router_id.clone(),
+                "card-missing".into(),
+                flowy_agent::CardSelection::ApproveTool {
+                    args_hash: "deadbeef".into(),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.read_entity(&panel, |panel, _| {
+            assert!(
+                panel.notice.is_some(),
+                "child Worker card resolution failure must surface notice on parent Router"
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn pr2b_cached_popover_and_home_pill_unify_child_work_attention_counts(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "pr2b-cached-pill");
+        panel.update(cx, |panel, cx| {
+            // Seed cached popover snapshot with an awaiting_approval child work
+            // in another Router conversation and verify Home + Chat pills and
+            // `background_work_count` share one exact count and Attention tone.
+            panel.popover_works = crate::router_works::PopoverWorksSnapshot {
+                current_works: Vec::new(),
+                other_works: vec![(
+                    "Parent Router".into(),
+                    flowy_agent::ChildWorkSummary {
+                        work_id: "w-attn-1".into(),
+                        root_session_id: "r-parent-1".into(),
+                        title: "Dangerous shell step".into(),
+                        state: "awaiting_approval".into(),
+                        access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                        origin: flowy_agent::SessionOrigin::Home,
+                        workspace_root: None,
+                        turn_status: flowy_agent::TurnStatus::WaitingForUser,
+                        updated_at: 1_760_000_000_000,
+                        contract_revision: None,
+                        delivered_artifact_ids: Vec::new(),
+                        missing_items: Vec::new(),
+                        objects: Vec::new(),
+                        last_stop_handoff: None,
+                        heartbeat: None,
+                        pending_cards: Vec::new(),
+                    },
+                )],
+                legacy_running_sessions: Vec::new(),
+                legacy_receipts: Vec::new(),
+            };
+            panel.surface = StudioSurface::Home;
+            assert_eq!(panel.background_work_count(), 1);
+            assert_eq!(panel.popover_total_count(), 1);
+            let pill = panel
+                .router_bg_pill_summary()
+                .expect("Home pill must surface awaiting_approval child work");
+            assert_eq!(pill.count, 1);
+            assert_eq!(pill.tone, crate::router_works::BgPillTone::Attention);
+            assert_eq!(
+                pill.label,
+                panel.tf("chat.bg_tasks_needs_approval", &[("count", "1")])
+            );
+
+            // Opening Flowchart Modal on a child Worker branch without a report
+            // still resolves cleanly and never leaves a dangling state.
+            let router_id =
+                panel.agent.create_router_session().expect("create router");
+            panel.stop_session_turn(&router_id, cx);
+        });
+        cx.run_until_parked();
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
