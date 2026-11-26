@@ -83,20 +83,27 @@ pub enum PreToolDecision {
 pub type PreToolHook =
     Arc<dyn Fn(&str, &serde_json::Value) -> PreToolDecision + Send + Sync>;
 
-/// Deterministic canonical JSON representation of `(tool_name, args)` with
-/// recursively sorted object keys so SHA-256 `args_hash` values are stable
-/// across JSON key permutations.
+/// Deterministic canonical JSON representation of `(tool_name, args)`.
+///
+/// Recursively sorts object keys and strips cosmetic shell metadata
+/// (`description`) so SHA-256 `args_hash` values are stable across retries.
 #[must_use]
 pub fn canonical_tool_args_json(
     tool_name: &str,
     args: &serde_json::Value,
 ) -> String {
-    fn canonicalize(val: &serde_json::Value) -> serde_json::Value {
+    fn canonicalize(
+        val: &serde_json::Value,
+        strip_shell_desc: bool,
+    ) -> serde_json::Value {
         match val {
             serde_json::Value::Object(map) => {
                 let mut sorted = BTreeMap::new();
                 for (k, v) in map {
-                    sorted.insert(k.clone(), canonicalize(v));
+                    if strip_shell_desc && k == "description" {
+                        continue;
+                    }
+                    sorted.insert(k.clone(), canonicalize(v, false));
                 }
                 let mut out = serde_json::Map::new();
                 for (k, v) in sorted {
@@ -105,13 +112,27 @@ pub fn canonical_tool_args_json(
                 serde_json::Value::Object(out)
             }
             serde_json::Value::Array(items) => serde_json::Value::Array(
-                items.iter().map(canonicalize).collect(),
+                items.iter().map(|item| canonicalize(item, false)).collect(),
             ),
+            serde_json::Value::Number(n) => {
+                if n.is_f64()
+                    && let Some(f) = n.as_f64()
+                    && f.is_finite()
+                    && f.fract() == 0.0
+                    && let Ok(whole) = format!("{f:.0}").parse::<i64>()
+                {
+                    return serde_json::Value::Number(
+                        serde_json::Number::from(whole),
+                    );
+                }
+                serde_json::Value::Number(n.clone())
+            }
             other => other.clone(),
         }
     }
+    let strip_shell_desc = matches!(tool_name, "bash" | "powershell");
     let payload = serde_json::json!({
-        "args": canonicalize(args),
+        "args": canonicalize(args, strip_shell_desc),
         "tool": tool_name,
     });
     serde_json::to_string(&payload).unwrap_or_default()
@@ -234,11 +255,25 @@ pub async fn run_turn(
         });
     let suspended_card: Arc<Mutex<Option<PendingCard>>> =
         Arc::new(Mutex::new(None));
+    let cancel_for_hook = request.signal.clone();
     let before_tool_call: Option<rpi_agent::hooks::BeforeToolCall> =
         request.pre_tool_hook.map(|hook| {
             let slot = Arc::clone(&suspended_card);
             let cb: rpi_agent::hooks::BeforeToolCall =
                 Arc::new(move |ctx, _signal| {
+                    if cancel_for_hook.is_cancelled() {
+                        return Box::pin(async {
+                            Some(BeforeToolCallResult {
+                                block: true,
+                                reason: Some(
+                                    "CANCELLED: turn was cancelled before tool execution"
+                                        .to_owned(),
+                                ),
+                                terminate: true,
+                                args: None,
+                            })
+                        });
+                    }
                     let already_suspended = slot
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -382,7 +417,7 @@ pub async fn run_turn(
         run_agent_loop(prompts, context, config, emit, stream_fn)
             .await
             .map_err(|error| error.to_string())?;
-    let pending_approval = suspended_card
+    let mut pending_approval = suspended_card
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
@@ -391,10 +426,13 @@ pub async fn run_turn(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     let raw_outcome = outcome_of(&new_messages);
-    let (outcome, error) = if pending_approval.is_some() {
-        (LoopOutcome::WaitingForUser, None)
-    } else if raw_outcome == LoopOutcome::Aborted {
+    let (outcome, error) = if raw_outcome == LoopOutcome::Aborted
+        || request.signal.is_cancelled()
+    {
+        pending_approval = None;
         (LoopOutcome::Aborted, None)
+    } else if pending_approval.is_some() {
+        (LoopOutcome::WaitingForUser, None)
     } else if let Some(trip) = breaker_trip {
         (
             LoopOutcome::Failed,
@@ -708,28 +746,49 @@ fn is_readonly_idempotent_tool(tool_name: &str) -> bool {
     )
 }
 
+fn has_transient_http_status(lower: &str) -> bool {
+    const CODES: [&str; 4] = ["429", "502", "503", "504"];
+    CODES.iter().any(|code| {
+        lower.contains(&format!("http {code}"))
+            || lower.contains(&format!("http/{code}"))
+            || lower.contains(&format!("status {code}"))
+            || lower.contains(&format!("status: {code}"))
+            || lower.contains(&format!("status={code}"))
+            || lower.contains(&format!("status code {code}"))
+            || lower.contains(&format!("error {code}"))
+            || lower.contains(&format!("code {code}"))
+            || lower.contains(&format!("code: {code}"))
+            || lower.contains(&format!("code={code}"))
+            || lower.contains(&format!("{code} too many requests"))
+            || lower.contains(&format!("{code} bad gateway"))
+            || lower.contains(&format!("{code} service unavailable"))
+            || lower.contains(&format!("{code} gateway timeout"))
+    })
+}
+
 fn is_transient_tool_error(raw_error: &str) -> bool {
     let lower = raw_error.to_ascii_lowercase();
-    [
-        "timeout",
-        "timed out",
-        "temporarily unavailable",
-        "temporary",
-        "rate limit",
-        "429",
-        "502",
-        "503",
-        "504",
-        "connection reset",
-        "broken pipe",
-        "sharing violation",
-        "try again",
-        "eagain",
-        "ebusy",
-        "resource busy",
-    ]
-    .iter()
-    .any(|cue| lower.contains(cue))
+    has_transient_http_status(&lower)
+        || [
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "temporary",
+            "rate limit",
+            "too many requests",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "connection reset",
+            "broken pipe",
+            "sharing violation",
+            "try again",
+            "eagain",
+            "ebusy",
+            "resource busy",
+        ]
+        .iter()
+        .any(|cue| lower.contains(cue))
 }
 
 fn normalize_signature(raw: &str, max_chars: usize) -> String {
@@ -781,20 +840,27 @@ fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
 fn should_trip_same_error_breaker(
     new_messages: &[AgentMessage],
 ) -> Option<SameErrorTrip> {
-    let mut call_targets: HashMap<&str, String> = HashMap::new();
+    let mut call_targets: HashMap<&str, (String, usize)> = HashMap::new();
+    let mut assistant_turn: usize = 0;
     let mut last_key: Option<(String, String, String)> = None;
+    let mut last_turn: Option<usize> = None;
     let mut streak: usize = 0;
+    let mut trailing_trip: Option<SameErrorTrip> = None;
 
     for message in new_messages {
         match message {
             AgentMessage::Assistant(assistant) => {
+                assistant_turn = assistant_turn.saturating_add(1);
                 for block in &assistant.content {
                     if let Content::ToolCall(call) = block {
                         call_targets.insert(
                             call.id.as_str(),
-                            canonical_tool_args_json(
-                                &call.name,
-                                &call.arguments,
+                            (
+                                canonical_tool_args_json(
+                                    &call.name,
+                                    &call.arguments,
+                                ),
+                                assistant_turn,
                             ),
                         );
                     }
@@ -803,28 +869,35 @@ fn should_trip_same_error_breaker(
             AgentMessage::ToolResult(result) => {
                 if !result.is_error {
                     last_key = None;
+                    last_turn = None;
                     streak = 0;
+                    trailing_trip = None;
                     continue;
                 }
                 let tool_name = normalize_signature(&result.tool_name, 80);
-                let target_sig = call_targets
+                let (target_sig, turn_idx) = call_targets
                     .get(result.tool_call_id.as_str())
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| (String::new(), assistant_turn));
                 let (error_sig, raw_error) = tool_error_signature(result);
                 let key =
                     (tool_name.clone(), target_sig.clone(), error_sig.clone());
                 if last_key.as_ref() == Some(&key) {
-                    streak += 1;
+                    if last_turn != Some(turn_idx) {
+                        streak += 1;
+                        last_turn = Some(turn_idx);
+                    }
                 } else {
                     last_key = Some(key);
+                    last_turn = Some(turn_idx);
                     streak = 1;
+                    trailing_trip = None;
                 }
                 let transient = is_readonly_idempotent_tool(&tool_name)
                     && is_transient_tool_error(&raw_error);
                 let limit = if transient { 3 } else { 2 };
                 if streak >= limit {
-                    return Some(SameErrorTrip {
+                    trailing_trip = Some(SameErrorTrip {
                         tool_name,
                         target_sig,
                         error_sig,
@@ -836,7 +909,7 @@ fn should_trip_same_error_breaker(
             _ => {}
         }
     }
-    None
+    trailing_trip
 }
 
 fn message_char_len(message: &AgentMessage) -> usize {
@@ -2499,5 +2572,164 @@ mod tests {
                 panic!("expected PendingCard::ToolApproval, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn canonical_args_strip_shell_description_and_breaker_respects_turns_and_trailing_success()
+     {
+        // 1. Shell `description` drift and float-vs-int timeout normalize identically.
+        let a = serde_json::json!({
+            "command": "rm -rf ./deliverables",
+            "description": "first wording",
+            "timeout": 120,
+        });
+        let b = serde_json::json!({
+            "timeout": 120.0,
+            "description": "different wording",
+            "command": "rm -rf ./deliverables",
+        });
+        assert_eq!(
+            super::canonical_tool_args_json("bash", &a),
+            super::canonical_tool_args_json("bash", &b)
+        );
+        // Non-shell tool preserves `description`.
+        assert_ne!(
+            super::canonical_tool_args_json("write_file", &a),
+            super::canonical_tool_args_json("write_file", &b)
+        );
+
+        // 2. Bare digits like line 503 or 429 bytes are not transient HTTP errors.
+        assert!(!super::is_transient_tool_error("parse error at line 503"));
+        assert!(!super::is_transient_tool_error("wrote 429 bytes"));
+        assert!(super::is_transient_tool_error(
+            "HTTP 503 Service Unavailable"
+        ));
+        assert!(super::is_transient_tool_error("status=429 rate exceeded"));
+
+        // 3. Same-turn parallel failures do not trip, and a trailing success resets.
+        let mk_assistant = |calls: &[(&str, &str)]| {
+            let mut msg = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                "m",
+                0,
+            );
+            msg.content = calls
+                .iter()
+                .map(|(id, path)| {
+                    Content::ToolCall(rpi_ai::types::ToolCall {
+                        kind: rpi_ai::types::ToolCallType,
+                        id: (*id).into(),
+                        name: "write_file".into(),
+                        arguments: serde_json::json!({"path": path}),
+                        thought_signature: None,
+                        namespace: None,
+                        recorded: None,
+                    })
+                })
+                .collect();
+            AgentMessage::Assistant(Box::new(msg))
+        };
+        let mk_res = |id: &str, is_error: bool, text: &str| {
+            AgentMessage::ToolResult(Box::new(
+                rpi_ai::types::ToolResultMessage {
+                    role: rpi_ai::types::ToolResultRole,
+                    tool_call_id: id.into(),
+                    tool_name: "write_file".into(),
+                    content: vec![Content::text(text)],
+                    details: None,
+                    usage: None,
+                    added_tool_names: Vec::new(),
+                    is_error,
+                    timestamp: 0,
+                },
+            ))
+        };
+        let same_turn_batch = vec![
+            mk_assistant(&[("c1", "a.txt"), ("c2", "a.txt")]),
+            mk_res("c1", true, "denied"),
+            mk_res("c2", true, "denied"),
+        ];
+        assert!(
+            super::should_trip_same_error_breaker(&same_turn_batch).is_none(),
+            "duplicate calls inside a single assistant turn must not trip before the model sees the error"
+        );
+        let trailing_ok = vec![
+            mk_assistant(&[("c1", "a.txt")]),
+            mk_res("c1", true, "denied"),
+            mk_assistant(&[("c2", "a.txt"), ("c3", "b.txt")]),
+            mk_res("c2", true, "denied"),
+            mk_res("c3", false, "ok"),
+        ];
+        assert!(
+            super::should_trip_same_error_breaker(&trailing_ok).is_none(),
+            "trailing successful tool result provides new evidence and must clear prior streak"
+        );
+        let real_repeat = vec![
+            mk_assistant(&[("c1", "a.txt")]),
+            mk_res("c1", true, "denied"),
+            mk_assistant(&[("c2", "a.txt")]),
+            mk_res("c2", true, "denied"),
+        ];
+        assert!(
+            super::should_trip_same_error_breaker(&real_repeat).is_some(),
+            "two consecutive assistant turns with identical error must trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_turn_takes_priority_over_pre_tool_approval() {
+        let signal = CancelToken::new();
+        let hook_signal = signal.clone();
+        let tool = make_test_tool(crate::tools::ToolDefinition::new(
+            "powershell",
+            "risky shell command",
+            serde_json::json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    crate::types::ToolExecutionResult::success_text(
+                        "ran",
+                        serde_json::json!({"ok": true}),
+                    )
+                })
+            },
+        ));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook: super::PreToolHook = Arc::new(move |name, args| {
+            // Simulate cancel arriving right as before_tool_call runs.
+            hook_signal.cancel();
+            super::PreToolDecision::Ask {
+                target_summary: name.to_owned(),
+                args_hash: super::canonical_tool_args_json(name, args),
+                risk_reason: "risky".to_owned(),
+                command_preview: "rm -rf ./deliverables".to_owned(),
+            }
+        });
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                session_id: Some("s-abort-wins".into()),
+                system: String::new(),
+                history: Vec::new(),
+                prompt: "clean".into(),
+                route: route(),
+                tools: vec![tool],
+                signal,
+                pre_tool_hook: Some(hook),
+            },
+            make_tool_stream(
+                "powershell",
+                serde_json::json!({"command": "rm -rf ./deliverables"}),
+                calls,
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Aborted);
+        assert!(
+            result.pending_approval.is_none(),
+            "cancelled turn must discard pending_approval instead of parking WaitingForUser"
+        );
     }
 }

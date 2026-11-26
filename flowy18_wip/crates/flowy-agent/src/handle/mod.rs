@@ -63,14 +63,12 @@ use self::guards::{
     build_pre_tool_hook, ensure_tool_cwd, session_working_directory,
     tool_registry, tool_target,
 };
-pub use self::guards::{
-    canonical_tool_args_hash, confined_to, has_reserved_device_component,
-};
+pub use self::guards::{confined_to, has_reserved_device_component};
 use self::observer::{
     UiObserver, apply_delivery_commit_to_live, backfill_conversation_artifacts,
-    capture_turn_artifacts, confirm_commit_audit, ensure_engine_session,
-    extract_session_preview, finish_interrupted_lines, hydrate_engine,
-    import_engine_sessions, mark_delivery_failed,
+    capture_turn_artifacts, clear_live_heartbeat, confirm_commit_audit,
+    ensure_engine_session, extract_session_preview, finish_interrupted_lines,
+    hydrate_engine, import_engine_sessions, mark_delivery_failed,
     migrate_legacy_source_deletions, persist_index, recover_session_deletions,
     sync_engine_titles,
 };
@@ -121,26 +119,6 @@ pub enum CancelOutcome {
     Cancelled,
     AlreadySettled,
     FinalizingNotCancellable,
-}
-
-/// Outcome of submitting a contract-revising follow-up against a session that
-/// may already have an active turn.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ReviseOutcome {
-    /// Session was idle; dispatched immediately with the evolved contract.
-    Dispatched { session_id: String },
-    /// Active turn was cancelled via `RunFence`, waited to settle, and
-    /// redispatched with the incremented `contract_revision`.
-    Redispatched { session_id: String, revision: u32 },
-    /// Revision prompt was ambiguous across multiple writable deliverables and
-    /// parked a persisted [`PendingCard::Disambiguation`] (`TurnStatus::WaitingForUser`).
-    WaitingForDisambiguation { session_id: String, card_id: String },
-    /// Active turn crossed its finalizing delivery commit point and cannot be
-    /// cancelled; follow-up was queued durably for automatic dispatch next.
-    QueuedAfterFinalizing { receipt_id: String },
-    /// Cancelled turn is still reaping child processes past the bounded wait
-    /// (or another turn raced into the session); follow-up was queued durably.
-    QueuedWhileStopping { receipt_id: String },
 }
 
 /// User selection submitted to resolve a persisted [`PendingCard`].
@@ -223,10 +201,11 @@ struct Live {
     heartbeat: Option<BranchHeartbeat>,
 }
 
-pub struct ResumedSubmission {
+struct ResumedSubmission {
     pub(super) contract: Option<crate::verify::BriefContract>,
     pub(super) skip_contract_evolve: bool,
     pub(super) model_prompt_override: Option<String>,
+    pub(super) model_prompt_suffix: Option<String>,
     pub(super) display_text_override: Option<String>,
     pub(super) skip_push_user_line: bool,
     pub(super) preserve_turn_denial: bool,
@@ -1195,84 +1174,10 @@ impl AgentHandle {
     }
 
     pub fn create_session(&self) -> Result<String, &'static str> {
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.inner.state.load_failed) {
-            return Err("notice.session_storage_failed");
-        }
-        let id = format!("s-{}", next_stamp());
-        let now = now_ms();
         let workspace =
             lock(&self.inner.state.workspace_for_new_sessions).clone();
         let origin = lock(&self.inner.state.origin_for_new_sessions).clone();
-        let session_workspace = match &origin {
-            SessionOrigin::Home => {
-                let root = self
-                    .inner
-                    .state
-                    .root
-                    .join("sessions")
-                    .join("workspaces")
-                    .join(&id);
-                std::fs::create_dir_all(&root).map_err(|error| {
-                    log_storage_io_error(
-                        "create session workspace",
-                        &root,
-                        &error,
-                    );
-                    "notice.session_storage_failed"
-                })?;
-                Some(SessionWorkspace { root })
-            }
-            SessionOrigin::Project { .. } => {
-                workspace.as_ref().map(|workspace| SessionWorkspace {
-                    root: workspace.root.clone(),
-                })
-            }
-            SessionOrigin::Unknown => None,
-        };
-        let engine = lock(&self.inner.engine)
-            .clone()
-            .ok_or("notice.agent_failed")?;
-        // The durable history write may fail on the same broken volume the
-        // index uses; the live session still works in memory and the failure is
-        // reported through `AgentUpdate::StorageError`.
-        engine
-            .create_session_with_metadata(
-                id.clone(),
-                now,
-                origin.clone(),
-                session_workspace.clone(),
-            )
-            .map_err(|_| "notice.session_storage_failed")?;
-        lock(&self.inner.state.live).insert(
-            id.clone(),
-            Live {
-                projection: ChatProjection::new(),
-                title: String::new(),
-                titled: false,
-                auto_title_pending: false,
-                title_signal: CancelToken::new(),
-                status: TurnStatus::Idle,
-                updated_at: now,
-                turn_started_at: None,
-                workspace,
-                origin,
-                session_workspace,
-                heartbeat: None,
-            },
-        );
-        *lock(&self.inner.state.active) = Some(id.clone());
-        self.inner
-            .state
-            .context_generation
-            .fetch_add(1, Ordering::AcqRel);
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        self.inner.state.push_update(AgentUpdate::Sessions);
-        Ok(id)
+        self.inner.create_session_inner(origin, workspace, true)
     }
 
     pub fn select_session(&self, id: &str) -> Result<(), &'static str> {
@@ -1375,24 +1280,6 @@ impl AgentHandle {
         text: &str,
     ) -> Result<String, &'static str> {
         self.submit_message(text, Some(submission), None)
-    }
-
-    /// Submit a prompt targeted at an explicit `reply_to_object_id` (0ms
-    /// deterministic fast-path bypassing multi-object ambiguity).
-    pub fn submit_chat_for_object(
-        &self,
-        submission: u128,
-        text: &str,
-        reply_to_object_id: Option<&str>,
-    ) -> Result<String, &'static str> {
-        self.inner.submit_message_targeted(
-            None,
-            text,
-            Some(submission),
-            None,
-            None,
-            reply_to_object_id,
-        )
     }
 
     /// Submit the captured UI request only while its original selection is
@@ -1566,6 +1453,15 @@ impl Harness {
     pub(super) fn create_background_home_session(
         &self,
     ) -> Result<String, &'static str> {
+        self.create_session_inner(SessionOrigin::Home, None, false)
+    }
+
+    fn create_session_inner(
+        &self,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        make_active: bool,
+    ) -> Result<String, &'static str> {
         if self.is_initializing() {
             return Err("library.loading");
         }
@@ -1574,23 +1470,37 @@ impl Harness {
         }
         let id = format!("s-{}", next_stamp());
         let now = now_ms();
-        let root = self
-            .state
-            .root
-            .join("sessions")
-            .join("workspaces")
-            .join(&id);
-        std::fs::create_dir_all(&root).map_err(|error| {
-            log_storage_io_error("create session workspace", &root, &error);
-            "notice.session_storage_failed"
-        })?;
-        let session_workspace = Some(SessionWorkspace { root });
+        let session_workspace = match &origin {
+            SessionOrigin::Home => {
+                let root = self
+                    .state
+                    .root
+                    .join("sessions")
+                    .join("workspaces")
+                    .join(&id);
+                std::fs::create_dir_all(&root).map_err(|error| {
+                    log_storage_io_error(
+                        "create session workspace",
+                        &root,
+                        &error,
+                    );
+                    "notice.session_storage_failed"
+                })?;
+                Some(SessionWorkspace { root })
+            }
+            SessionOrigin::Project { .. } => {
+                workspace.as_ref().map(|workspace| SessionWorkspace {
+                    root: workspace.root.clone(),
+                })
+            }
+            SessionOrigin::Unknown => None,
+        };
         let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
         engine
             .create_session_with_metadata(
                 id.clone(),
                 now,
-                SessionOrigin::Home,
+                origin.clone(),
                 session_workspace.clone(),
             )
             .map_err(|_| "notice.session_storage_failed")?;
@@ -1605,12 +1515,16 @@ impl Harness {
                 status: TurnStatus::Idle,
                 updated_at: now,
                 turn_started_at: None,
-                workspace: None,
-                origin: SessionOrigin::Home,
+                workspace,
+                origin,
                 session_workspace,
                 heartbeat: None,
             },
         );
+        if make_active {
+            *lock(&self.state.active) = Some(id.clone());
+            self.state.context_generation.fetch_add(1, Ordering::AcqRel);
+        }
         if persist_index(&self.state).is_err() {
             self.state.report_storage_error();
         }
@@ -1769,6 +1683,11 @@ impl Harness {
                 .and_then(|item| item.display_text_override.as_deref())
                 .unwrap_or(text);
             prompt = PromptTurn::with_display(override_model, display);
+        } else if let Some(suffix) = resumed
+            .as_ref()
+            .and_then(|item| item.model_prompt_suffix.as_deref())
+        {
+            prompt.model.push_str(suffix);
         }
         let pre_resolved_contract = resumed.and_then(|item| item.contract);
         let title_prompt = text.to_owned();
@@ -1803,6 +1722,9 @@ impl Harness {
         run_config.registry = tool_registry(&cwd, &skills, active_skills);
         run_config.pre_tool_hook =
             Some(build_pre_tool_hook(id.clone(), cwd, Arc::clone(state)));
+        let mut staged_intents_for_turn: Option<
+            crate::publish_tool::StagedIntentLog,
+        > = None;
         if core_session.origin == SessionOrigin::Home
             && let Some(submission) = submission
             && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -1903,11 +1825,15 @@ impl Harness {
                     Some(failures),
                 ),
             );
+            let staged_log: crate::publish_tool::StagedIntentLog =
+                Arc::new(Mutex::new(Vec::new()));
+            staged_intents_for_turn = Some(Arc::clone(&staged_log));
             run_config.registry.register(
                 crate::publish_tool::definition_with_revision(
                     store.clone(),
                     Some(delivery),
                     expected_revision,
+                    Some(staged_log),
                 ),
             );
             run_config.delivery_committer = Some(Arc::new(store));
@@ -2056,6 +1982,45 @@ impl Harness {
                     &id,
                     completed_submission,
                 );
+            } else if matches!(outcome, Ok(LoopOutcome::Aborted))
+                && let Some(staged_log) = staged_intents_for_turn
+            {
+                let pending = std::mem::take(
+                    &mut *staged_log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                if !pending.is_empty() {
+                    let expected_sub = completed_submission
+                        .map(|s| format!("submission-{s:032x}"));
+                    let live_delivery_failed =
+                        lock(&state.live).get(&id).is_some_and(|session| {
+                            matches!(session.status, TurnStatus::DeliveryFailed)
+                        });
+                    let has_durable_commit =
+                        expected_sub.as_deref().is_some_and(|sub| {
+                            engine.session(&id).is_some_and(|rec| {
+                                rec.delivery_commits
+                                    .iter()
+                                    .any(|commit| commit.submission_id == sub)
+                            })
+                        });
+                    if !live_delivery_failed && !has_durable_commit {
+                        let gate = crate::delivery::DeliveryStore::new(
+                            state.root.join("delivery"),
+                        );
+                        let now = now_ms();
+                        for (delivery_id, artifact_path, sha256) in pending {
+                            let _ = gate.abort_intent(
+                                &delivery_id,
+                                &artifact_path,
+                                &sha256,
+                                "turn_aborted",
+                                now,
+                            );
+                        }
+                    }
+                }
             }
             if matches!(outcome, Ok(LoopOutcome::WaitingForUser)) {
                 // PendingCard::ToolApproval is durably persisted in
@@ -2244,74 +2209,9 @@ impl Harness {
         {
             return Ok(id);
         }
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.state.load_failed) {
-            return Err("notice.session_storage_failed");
-        }
-        let id = format!("s-{}", next_stamp());
-        let now = now_ms();
         let workspace = lock(&self.state.workspace_for_new_sessions).clone();
         let origin = lock(&self.state.origin_for_new_sessions).clone();
-        let session_workspace = match &origin {
-            SessionOrigin::Home => {
-                let root = self
-                    .state
-                    .root
-                    .join("sessions")
-                    .join("workspaces")
-                    .join(&id);
-                std::fs::create_dir_all(&root).map_err(|error| {
-                    log_storage_io_error(
-                        "create session workspace",
-                        &root,
-                        &error,
-                    );
-                    "notice.session_storage_failed"
-                })?;
-                Some(SessionWorkspace { root })
-            }
-            SessionOrigin::Project { .. } => {
-                workspace.as_ref().map(|workspace| SessionWorkspace {
-                    root: workspace.root.clone(),
-                })
-            }
-            SessionOrigin::Unknown => None,
-        };
-        let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
-        engine
-            .create_session_with_metadata(
-                id.clone(),
-                now,
-                origin.clone(),
-                session_workspace.clone(),
-            )
-            .map_err(|_| "notice.session_storage_failed")?;
-        lock(&self.state.live).insert(
-            id.clone(),
-            Live {
-                projection: ChatProjection::new(),
-                title: String::new(),
-                titled: false,
-                auto_title_pending: false,
-                title_signal: CancelToken::new(),
-                status: TurnStatus::Idle,
-                updated_at: now,
-                turn_started_at: None,
-                workspace,
-                origin,
-                session_workspace,
-                heartbeat: None,
-            },
-        );
-        *lock(&self.state.active) = Some(id.clone());
-        self.state.context_generation.fetch_add(1, Ordering::AcqRel);
-        if persist_index(&self.state).is_err() {
-            self.state.report_storage_error();
-        }
-        self.state.push_update(AgentUpdate::Sessions);
-        Ok(id)
+        self.create_session_inner(origin, workspace, true)
     }
 }
 

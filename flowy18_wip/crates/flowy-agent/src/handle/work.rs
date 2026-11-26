@@ -8,9 +8,9 @@ use super::{
     AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate, ArtifactStore,
     BTreeSet, CancelOutcome, CardAction, CardActionOutcome, CardSelection,
     ChatLine, Engine, MessageSource, Ordering, PendingCard, ReceiptState,
-    ResumedSubmission, ReviseOutcome, Role, SessionRecord, SubmissionOutcome,
-    TaskTarget, TurnState, TurnStatus, WorkStatus, lock, log_storage_io_error,
-    now_ms, persist_index,
+    ResumedSubmission, Role, SessionRecord, SubmissionOutcome, TaskTarget,
+    TurnState, TurnStatus, WorkStatus, clear_live_heartbeat, lock,
+    log_storage_io_error, now_ms, persist_index,
 };
 use crate::artifact_store::PublicationState;
 
@@ -413,6 +413,9 @@ impl AgentHandle {
         if self.is_initializing() {
             return Err("library.loading");
         }
+        if self.inner.is_session_busy_or_active(session_id) {
+            return Err("notice.agent_busy");
+        }
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
@@ -477,8 +480,8 @@ impl AgentHandle {
                     .filter(|opt| object_ids.contains(&opt.object_id))
                     .map(|opt| opt.label.clone())
                     .collect();
-                let model_prompt = format!(
-                    "{prompt}\n\n[已确认修改目标：{}；影响边界：{impact_boundary}]",
+                let suffix = format!(
+                    "\n\n[已确认修改目标：{}；影响边界：{impact_boundary}]",
                     selected_labels.join("、")
                 );
                 self.resume_after_card_resolution(CardResumeSpec {
@@ -491,7 +494,8 @@ impl AgentHandle {
                     resumed: ResumedSubmission {
                         contract: Some(updated_brief),
                         skip_contract_evolve: false,
-                        model_prompt_override: Some(model_prompt),
+                        model_prompt_override: None,
+                        model_prompt_suffix: Some(suffix),
                         display_text_override: None,
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
@@ -543,6 +547,7 @@ impl AgentHandle {
                         contract: None,
                         skip_contract_evolve: true,
                         model_prompt_override: Some(resume_prompt.clone()),
+                        model_prompt_suffix: None,
                         display_text_override: Some(String::new()),
                         skip_push_user_line: true,
                         preserve_turn_denial: false,
@@ -594,6 +599,7 @@ impl AgentHandle {
                         contract: None,
                         skip_contract_evolve: true,
                         model_prompt_override: Some(deny_prompt.clone()),
+                        model_prompt_suffix: None,
                         display_text_override: Some(String::new()),
                         skip_push_user_line: true,
                         preserve_turn_denial: true,
@@ -622,6 +628,28 @@ impl AgentHandle {
             approval_grant,
             denial_rollback,
         } = spec;
+        let has_remaining_cards = engine
+            .with_session(session_id, |rec| !rec.pending_cards.is_empty())
+            .unwrap_or(false);
+        if has_remaining_cards {
+            if let Some(session) =
+                lock(&self.inner.state.live).get_mut(session_id)
+            {
+                session.status = TurnStatus::WaitingForUser;
+                session.updated_at = now_ms();
+            }
+            if persist_index(&self.inner.state).is_err() {
+                self.inner.state.report_storage_error();
+            }
+            self.inner.state.push_update(AgentUpdate::Session {
+                id: session_id.to_owned(),
+            });
+            self.inner.state.push_update(AgentUpdate::Sessions);
+            return Ok(CardActionOutcome::CardResolved {
+                card_id: card_id.to_owned(),
+                resumed: false,
+            });
+        }
         {
             let mut live = lock(&self.inner.state.live);
             if let Some(session) = live.get_mut(session_id) {
@@ -813,24 +841,37 @@ impl AgentHandle {
             return;
         };
         if eng.wait_until_idle(&id, std::time::Duration::from_millis(50)) {
-            let mut live = lock(&self.inner.state.live);
-            if let Some(session) = live.get_mut(&id)
-                && matches!(session.status, TurnStatus::Stopping)
-            {
-                session.status = TurnStatus::Stopped;
-                session.turn_started_at = None;
-                let already_stopped = matches!(
-                    session.projection.lines.last(),
-                    Some(ChatLine::Status { text })
-                        if text == TurnStatus::Stopped.key()
-                );
-                if !already_stopped {
-                    session.projection.lines.push(ChatLine::Status {
-                        text: TurnStatus::Stopped.key().into(),
-                    });
+            let transitioned = {
+                let mut live = lock(&self.inner.state.live);
+                if let Some(session) = live.get_mut(&id)
+                    && matches!(session.status, TurnStatus::Stopping)
+                {
+                    session.status = TurnStatus::Stopped;
+                    session.turn_started_at = None;
+                    clear_live_heartbeat(session);
+                    session.updated_at = now_ms();
+                    let already_stopped = matches!(
+                        session.projection.lines.last(),
+                        Some(ChatLine::Status { text })
+                            if text == TurnStatus::Stopped.key()
+                    );
+                    if !already_stopped {
+                        session.projection.lines.push(ChatLine::Status {
+                            text: TurnStatus::Stopped.key().into(),
+                        });
+                    }
+                    true
+                } else {
+                    false
                 }
+            };
+            if transitioned {
+                if persist_index(&self.inner.state).is_err() {
+                    self.inner.state.report_storage_error();
+                }
+                self.inner.state.push_update(AgentUpdate::Session { id });
+                self.inner.state.push_update(AgentUpdate::Sessions);
             }
-            drop(live);
         }
     }
 
@@ -951,140 +992,6 @@ impl AgentHandle {
             None
         };
         Ok((CancelOutcome::Cancelled, reap_wait))
-    }
-
-    /// Submit a contract-revising follow-up against `session_id`:
-    /// - If idle: dispatches immediately with the evolved contract.
-    /// - If active & cancellable: cancels via `RunFence`, waits briefly for
-    ///   reaping to settle, and redispatches with the incremented
-    ///   `contract_revision` (preventing stale-contract self-blocking without
-    ///   mutating an in-flight tool stream).
-    /// - If finalizing, still reaping past the grace wait, or raced by another
-    ///   turn: queues durably in `AcceptanceQueue` pinned to `session_id`.
-    pub fn revise_active_contract_or_queue(
-        &self,
-        session_id: &str,
-        text: &str,
-        reply_to_object_id: Option<&str>,
-    ) -> Result<ReviseOutcome, &'static str> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err("notice.prompt_empty");
-        }
-        if self.is_initializing() {
-            return Err("library.loading");
-        }
-        if *lock(&self.inner.state.load_failed) {
-            return Err("notice.session_storage_failed");
-        }
-        if !lock(&self.inner.state.live).contains_key(session_id) {
-            return Err("notice.agent_failed");
-        }
-        let busy = self.inner.is_session_busy_or_active(session_id);
-        let was_active = if busy {
-            match self
-                .cancel_task(TaskTarget::Session(session_id.to_owned()))?
-            {
-                CancelOutcome::FinalizingNotCancellable => {
-                    let receipt =
-                        self.accept_deferred_for_session(session_id, text)?;
-                    return Ok(ReviseOutcome::QueuedAfterFinalizing {
-                        receipt_id: receipt.id,
-                    });
-                }
-                CancelOutcome::Cancelled | CancelOutcome::AlreadySettled => {}
-            }
-            let engine = lock(&self.inner.engine).clone();
-            let settled = engine.as_ref().is_none_or(|eng| {
-                eng.wait_until_idle(
-                    session_id,
-                    std::time::Duration::from_secs(2),
-                )
-            });
-            if !settled {
-                let receipt =
-                    self.accept_deferred_for_session(session_id, text)?;
-                return Ok(ReviseOutcome::QueuedWhileStopping {
-                    receipt_id: receipt.id,
-                });
-            }
-            true
-        } else {
-            false
-        };
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
-        let submission = u128::from_le_bytes(bytes);
-        match self.inner.submit_message_targeted(
-            Some(session_id),
-            text,
-            Some(submission),
-            None,
-            None,
-            reply_to_object_id,
-        ) {
-            Ok(_) => {}
-            Err("notice.agent_busy") => {
-                // Another worker (e.g. autonomous drain) raced into the session
-                // right after settle; queue durably instead of dropping the edit.
-                let receipt =
-                    self.accept_deferred_for_session(session_id, text)?;
-                return Ok(ReviseOutcome::QueuedWhileStopping {
-                    receipt_id: receipt.id,
-                });
-            }
-            Err(err) => return Err(err),
-        }
-        if let Some(card) = self
-            .session_pending_cards(session_id)
-            .into_iter()
-            .rev()
-            .find(|card| matches!(card, PendingCard::Disambiguation { .. }))
-        {
-            return Ok(ReviseOutcome::WaitingForDisambiguation {
-                session_id: session_id.to_owned(),
-                card_id: card.card_id().to_owned(),
-            });
-        }
-        if !was_active {
-            return Ok(ReviseOutcome::Dispatched {
-                session_id: session_id.to_owned(),
-            });
-        }
-        let engine = lock(&self.inner.engine).clone();
-        let revision = engine
-            .as_ref()
-            .and_then(|eng| {
-                eng.with_session(session_id, |rec| {
-                    rec.work_contract.as_ref().map_or(1, |wc| wc.revision)
-                })
-            })
-            .unwrap_or(1);
-        Ok(ReviseOutcome::Redispatched {
-            session_id: session_id.to_owned(),
-            revision,
-        })
-    }
-
-    fn accept_deferred_for_session(
-        &self,
-        session_id: &str,
-        text: &str,
-    ) -> Result<AcceptedMessage, &'static str> {
-        let receipt = AcceptanceQueue::new(self.inner.state.root.clone())
-            .accept(Some(session_id), text, now_ms())
-            .map_err(|_| {
-                self.inner.state.report_storage_error();
-                "notice.session_storage_failed"
-            })?;
-        self.inner.state.push_update(AgentUpdate::Receipt {
-            id: receipt.id.clone(),
-            state: ReceiptState::Queued,
-        });
-        if self.inner.state.autonomous_drain.load(Ordering::Acquire) {
-            self.inner.kick_autonomous_drain();
-        }
-        Ok(receipt)
     }
 
     fn cancel_receipt_locked(

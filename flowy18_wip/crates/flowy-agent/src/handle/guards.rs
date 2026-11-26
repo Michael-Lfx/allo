@@ -14,7 +14,7 @@ use super::{
 /// Compute a deterministic SHA-256 hex digest over `(tool_name, canonical(args))`
 /// so `PendingCard::ToolApproval` approvals are pinned to exact invocation args.
 #[must_use]
-pub fn canonical_tool_args_hash(
+pub(super) fn canonical_tool_args_hash(
     tool_name: &str,
     args: &serde_json::Value,
 ) -> String {

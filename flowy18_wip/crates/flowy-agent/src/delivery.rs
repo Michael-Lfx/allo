@@ -1015,25 +1015,10 @@ impl DeliveryStore {
     where
         F: FnOnce(&[u8]) -> io::Result<T>,
     {
-        self.deliver_with_revision(artifact, allow_override, None, now_ms, send)
-    }
-
-    /// Deliver `artifact` through `send`, enforcing `expected_contract_revision`.
-    pub fn deliver_with_revision<T, F>(
-        &self,
-        artifact: &Path,
-        allow_override: bool,
-        expected_contract_revision: Option<u32>,
-        now_ms: u64,
-        send: F,
-    ) -> io::Result<DeliveryResult<T>>
-    where
-        F: FnOnce(&[u8]) -> io::Result<T>,
-    {
         let (mut result, artifact_hash) = self.stage_with_hash(
             artifact,
             allow_override,
-            expected_contract_revision,
+            None,
             now_ms,
             false,
             send,

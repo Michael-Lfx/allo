@@ -1,7 +1,7 @@
 //! Explicit, host-owned artifact publishing tool.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use flowy_agent_core::tools::ToolDefinition;
 use flowy_agent_core::{
@@ -14,6 +14,11 @@ use serde_json::json;
 use crate::artifact_store::{ArtifactStore, PrepareArtifact};
 use crate::delivery::DeliveryStore;
 use crate::handle::now_ms;
+
+/// `(delivery_id, artifact_path, sha256)` entries staged during one turn so
+/// the host can abort unresolved `deliver_intent` records if the turn ends
+/// without producing a durable `DeliveryCommit`.
+pub type StagedIntentLog = Arc<Mutex<Vec<(String, String, String)>>>;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,13 +53,14 @@ pub fn definition(
     store: ArtifactStore,
     gate: Option<DeliveryStore>,
 ) -> Arc<ToolDefinition> {
-    definition_with_revision(store, gate, None)
+    definition_with_revision(store, gate, None, None)
 }
 
 pub fn definition_with_revision(
     store: ArtifactStore,
     gate: Option<DeliveryStore>,
     expected_contract_revision: Option<u32>,
+    staged_intents: Option<StagedIntentLog>,
 ) -> Arc<ToolDefinition> {
     Arc::new(
         ToolDefinition::new(
@@ -73,6 +79,7 @@ pub fn definition_with_revision(
             move |args: ToolCallArgs, context: ToolRunContext| {
                 let store = store.clone();
                 let gate = gate.clone();
+                let staged_intents = staged_intents.clone();
                 Box::pin(async move {
                     if context.signal.is_cancelled() {
                         return publish_error("CANCELLED", "chat.publish.cancelled", "File publication was cancelled.");
@@ -196,6 +203,7 @@ pub fn definition_with_revision(
                     let session_id_clone = session_id.clone();
                     let submission_id_clone = submission_id.clone();
                     let signal_clone = context.signal.clone();
+                    let staged_log = staged_intents.clone();
                     tokio::task::spawn_blocking(move || {
                         let (receipt, staged_intent) =
                             if let Some(gate) = &gate_clone {
@@ -320,6 +328,21 @@ pub fn definition_with_revision(
                                 "chat.publish.cancelled",
                                 "File publication was cancelled.",
                             );
+                        }
+                        if let (
+                            Some(log),
+                            Some((_, delivery_id, artifact_path)),
+                        ) = (staged_log, staged_intent)
+                        {
+                            log.lock()
+                                .unwrap_or_else(
+                                    std::sync::PoisonError::into_inner,
+                                )
+                                .push((
+                                    delivery_id,
+                                    artifact_path,
+                                    receipt.sha256.clone(),
+                                ));
                         }
                         let summary = json!({
                             "status": "staged",
@@ -641,8 +664,12 @@ mod tests {
         )
         .unwrap();
 
-        let tool =
-            super::definition_with_revision(store.clone(), Some(gate), Some(2));
+        let tool = super::definition_with_revision(
+            store.clone(),
+            Some(gate),
+            Some(2),
+            None,
+        );
         let result = (tool.execute)(
             ToolCallArgs {
                 call_id: "call-stale-rev".to_owned(),

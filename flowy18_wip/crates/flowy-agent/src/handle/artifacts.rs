@@ -464,7 +464,7 @@ impl AgentHandle {
         let latest_report = gate.latest_report(&full_path).ok().flatten();
         let current_contract_revision = engine
             .session(session_id)
-            .and_then(|rec| rec.work_contract.map(|c| c.revision));
+            .and_then(|rec| rec.work_contract.map(|c| c.revision.max(1)));
         let target_revision = latest_report
             .as_ref()
             .and_then(|report| report.contract_revision)

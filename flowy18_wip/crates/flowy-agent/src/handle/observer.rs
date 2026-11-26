@@ -304,43 +304,13 @@ impl TurnObserver for UiObserver {
                         text: next_status.key().into(),
                     });
                 }
-                if let Some(hb) = live.heartbeat.as_mut() {
-                    hb.current_action.clear();
-                    hb.next_check_hint = None;
-                    hb.awaiting_evidence = false;
-                }
+                clear_live_heartbeat(live);
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
                 next_status
             })
         };
-        // Turn-scoped UserDenied and unconsumed one-shot ToolApproval grants
-        // expire once this turn finishes.
-        lock(&self.state.denied_tool_turns).remove(session);
-        lock(&self.state.approved_tool_calls).remove(session);
-        // Interrupted turns can leave cached tool arguments behind.
-        lock(&self.state.tool_args)
-            .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        // Persist index.json with the target status BEFORE flipping `live.status`
-        // out of `Running`, so callers polling `session_status` never observe a
-        // terminal status while disk I/O still holds the `RunFence` ticket.
-        if persist_index_with_status(
-            &self.state,
-            next_status.as_ref().map(|status| (session, status)),
-        )
-        .is_err()
-        {
-            self.state.report_storage_error();
-        }
-        if let Some(status) = next_status
-            && let Some(live) = lock(&self.state.live).get_mut(session)
-        {
-            live.status = status;
-        }
-        self.state.push_update(AgentUpdate::Session {
-            id: session.to_owned(),
-        });
-        self.state.push_update(AgentUpdate::Sessions);
+        self.finish_session_settle(session, next_status, true);
     }
 
     fn waiting_for_user(&self, session: &str, card: &PendingCard) {
@@ -379,26 +349,11 @@ impl TurnObserver for UiObserver {
                 false
             }
         };
-        lock(&self.state.approved_tool_calls).remove(session);
-        lock(&self.state.tool_args)
-            .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        let staged = TurnStatus::WaitingForUser;
-        if persist_index_with_status(
-            &self.state,
-            has_live.then_some((session, &staged)),
-        )
-        .is_err()
-        {
-            self.state.report_storage_error();
-        }
-        if has_live && let Some(live) = lock(&self.state.live).get_mut(session)
-        {
-            live.status = TurnStatus::WaitingForUser;
-        }
-        self.state.push_update(AgentUpdate::Session {
-            id: session.to_owned(),
-        });
-        self.state.push_update(AgentUpdate::Sessions);
+        self.finish_session_settle(
+            session,
+            has_live.then_some(TurnStatus::WaitingForUser),
+            false,
+        );
     }
 
     fn storage_error(&self, session: &str) {
@@ -436,33 +391,56 @@ impl TurnObserver for UiObserver {
                         });
                     }
                 }
-                if let Some(hb) = live.heartbeat.as_mut() {
-                    hb.current_action.clear();
-                    hb.next_check_hint = None;
-                    hb.awaiting_evidence = false;
-                }
+                clear_live_heartbeat(live);
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
                 transition
             })
         };
-        lock(&self.state.denied_tool_turns).remove(session);
+        self.finish_session_settle(
+            session,
+            should_mark_stopped.then_some(TurnStatus::Stopped),
+            true,
+        );
+    }
+}
+
+pub(super) fn clear_live_heartbeat(live: &mut Live) {
+    if let Some(hb) = live.heartbeat.as_mut() {
+        hb.current_action.clear();
+        hb.next_check_hint = None;
+        hb.awaiting_evidence = false;
+    }
+}
+
+impl UiObserver {
+    fn finish_session_settle(
+        &self,
+        session: &str,
+        staged_status: Option<TurnStatus>,
+        clear_denials: bool,
+    ) {
+        if clear_denials {
+            lock(&self.state.denied_tool_turns).remove(session);
+        }
         lock(&self.state.approved_tool_calls).remove(session);
         lock(&self.state.tool_args)
             .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
-        let staged = TurnStatus::Stopped;
+        // Persist index.json with the target status BEFORE flipping `live.status`
+        // out of `Running`, so callers polling `session_status` never observe a
+        // terminal status while disk I/O still holds the `RunFence` ticket.
         if persist_index_with_status(
             &self.state,
-            should_mark_stopped.then_some((session, &staged)),
+            staged_status.as_ref().map(|status| (session, status)),
         )
         .is_err()
         {
             self.state.report_storage_error();
         }
-        if should_mark_stopped
+        if let Some(status) = staged_status
             && let Some(live) = lock(&self.state.live).get_mut(session)
         {
-            live.status = TurnStatus::Stopped;
+            live.status = status;
         }
         self.state.push_update(AgentUpdate::Session {
             id: session.to_owned(),

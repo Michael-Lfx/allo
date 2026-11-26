@@ -222,21 +222,18 @@ impl Harness {
             .map_err(|_| "notice.session_storage_failed")?
             .into_iter()
             .find(|receipt| {
-                let target_waiting = receipt
+                let target = receipt
                     .target_session_id
                     .as_deref()
-                    .is_some_and(|sid| self.is_session_waiting_for_user(sid));
-                if target_waiting {
-                    return false;
-                }
-                match receipt.session_hint.as_deref() {
-                    // A receipt belongs to the session it was submitted from.
-                    // While that session is running, reaping after cancel, or
-                    // parked in WaitingForUser, wait for it instead of taking
+                    .or(receipt.session_hint.as_deref());
+                match target {
+                    // A receipt belongs to the session it was bound/submitted
+                    // from. While that session is running, reaping after cancel,
+                    // or parked in WaitingForUser, wait for it instead of taking
                     // the receipt and inflating its attempt count.
-                    Some(hint) => {
-                        !self.is_session_busy_or_active(hint)
-                            && !self.is_session_waiting_for_user(hint)
+                    Some(sid) => {
+                        !self.is_session_busy_or_active(sid)
+                            && !self.is_session_waiting_for_user(sid)
                     }
                     None => true,
                 }
@@ -366,41 +363,43 @@ impl Harness {
             );
             return Err(error);
         }
-        let hb_queue = AcceptanceQueue::new(state.root.clone());
-        let hb_receipt = claimed.id.clone();
-        let hb_attempt = attempt_id.clone();
-        let interval_ms = (lease_ms / 3).max(20);
-        self.runtime.spawn(async move {
-            let mut ticker = tokio::time::interval(
-                std::time::Duration::from_millis(interval_ms),
-            );
-            ticker.tick().await;
-            loop {
-                tokio::select! {
-                    () = heartbeat_cancel.cancelled() => break,
-                    _ = ticker.tick() => {
-                        match hb_queue.renew_lease(
-                            &hb_receipt,
-                            &hb_attempt,
-                            now_ms(),
-                            lease_ms,
-                        ) {
-                            Ok(true) => {}
-                            Ok(false) => break,
-                            Err(error) => {
-                                tracing::warn!(
-                                    target: "flowy.acceptance",
-                                    receipt_id = %hb_receipt,
-                                    attempt_id = %hb_attempt,
-                                    %error,
-                                    "lease heartbeat renewal failed"
-                                );
+        if !heartbeat_cancel.is_cancelled() {
+            let hb_queue = AcceptanceQueue::new(state.root.clone());
+            let hb_receipt = claimed.id.clone();
+            let hb_attempt = attempt_id.clone();
+            let interval_ms = (lease_ms / 3).max(20);
+            self.runtime.spawn(async move {
+                let mut ticker = tokio::time::interval(
+                    std::time::Duration::from_millis(interval_ms),
+                );
+                ticker.tick().await;
+                loop {
+                    tokio::select! {
+                        () = heartbeat_cancel.cancelled() => break,
+                        _ = ticker.tick() => {
+                            match hb_queue.renew_lease(
+                                &hb_receipt,
+                                &hb_attempt,
+                                now_ms(),
+                                lease_ms,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => break,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "flowy.acceptance",
+                                        receipt_id = %hb_receipt,
+                                        attempt_id = %hb_attempt,
+                                        %error,
+                                        "lease heartbeat renewal failed"
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
         let root_session_id = self.root_session_id_for(&session);
         tracing::info!(
             target: "flowy.acceptance",
@@ -547,7 +546,7 @@ impl Harness {
                 return;
             }
             let needs_wakeup = match harness.run_accepted_once() {
-                Ok(Some(_)) => false,
+                Ok(Some(_)) => !harness.has_active_claim(),
                 Ok(None) => true,
                 Err(error) => {
                     tracing::warn!(
@@ -641,12 +640,13 @@ impl Harness {
                     && !r.cancelled
                     && !r.quarantined
                     && r.completed_at_ms.is_none()
-                    && !r.target_session_id.as_deref().is_some_and(|sid| {
-                        self.is_session_waiting_for_user(sid)
-                    })
-                    && !r.session_hint.as_deref().is_some_and(|sid| {
-                        self.is_session_waiting_for_user(sid)
-                    })
+                    && !r
+                        .target_session_id
+                        .as_deref()
+                        .or(r.session_hint.as_deref())
+                        .is_some_and(|sid| {
+                            self.is_session_waiting_for_user(sid)
+                        })
             })
             .map(|r| {
                 let avail = r.available_at_ms.unwrap_or(0);

@@ -1957,21 +1957,21 @@ fn revise_active_contract_cancels_redispatches_with_new_revision_and_persists_st
     .unwrap();
     assert_eq!(gate.check_for_revision(&deck, Some(1)).unwrap(), None);
 
-    // Mid-flight contract mutation cancels rev=1 via RunFence and redispatches rev=2.
-    let outcome = handle
-        .revise_active_contract_or_queue(
-            &session,
-            "只把汇报日期改成 2026-12-02",
-            None,
-        )
-        .expect("revise active contract");
+    // Mid-flight contract mutation cancels rev=1 via RunFence, waits to settle,
+    // and submits rev=2 through the production cancel_task + submit_chat flow.
     assert_eq!(
-        outcome,
-        crate::ReviseOutcome::Redispatched {
-            session_id: session.clone(),
-            revision: 2,
-        }
+        handle
+            .cancel_task(crate::TaskTarget::Session(session.clone()))
+            .expect("cancel active rev=1 turn"),
+        crate::CancelOutcome::Cancelled
     );
+    let stop_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < stop_deadline
+        && handle.session_status(&session).is_busy()
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(handle.session_status(&session), TurnStatus::Stopped);
 
     // Cancelled rev=1 left a durable 5-element StopHandoffManifest.
     let handoff = handle
@@ -1980,6 +1980,19 @@ fn revise_active_contract_cancels_redispatches_with_new_revision_and_persists_st
     assert_eq!(handoff.input_revision, 1);
     assert_ne!(handoff.command_summary, "");
     assert_ne!(handoff.rollback_hint, "");
+
+    handle
+        .submit_chat(902, "只把汇报日期改成 2026-12-02")
+        .expect("submit rev=2 after cancel settle");
+    assert_eq!(
+        flowy_agent_core::SessionIndex::load(&scratch.0)
+            .unwrap()
+            .get(&session)
+            .and_then(|rec| rec.work_contract.as_ref())
+            .map(|wc| wc.revision),
+        Some(2),
+        "follow-up contract mutation must advance revision to 2"
+    );
 
     // Old rev=1 report is now hard-blocked against rev=2.
     assert_eq!(

@@ -52,10 +52,7 @@ pub use autostart::{
     is_enabled as autostart_enabled, set_enabled as set_autostart,
 };
 pub use deep_link::{DeepLink, parse as parse_deep_link, take_pending};
-pub use notify::{
-    NotifyKind, NotifyTier, should_emit_notification, show_update_notification,
-    show_work_notification,
-};
+pub use notify::{NotifyKind, show_update_notification};
 
 pub fn brand() -> Brand {
     *BRAND

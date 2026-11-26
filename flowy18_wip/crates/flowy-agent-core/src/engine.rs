@@ -391,6 +391,10 @@ impl Engine {
                 format!("session {id} not found"),
             )
         })?;
+        let prev_cards = record.pending_cards.clone();
+        let prev_contract = record.work_contract.clone();
+        let prev_status = record.status.clone();
+        let prev_updated = record.updated_at;
         record.pending_cards.retain(|existing| {
             if existing.card_id() == card.card_id() {
                 return false;
@@ -409,7 +413,18 @@ impl Engine {
         }
         record.status = TurnState::WaitingForUser;
         record.updated_at = now_ms();
-        inner.index.save(&self.root)
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pending_cards = prev_cards;
+                record.work_contract = prev_contract;
+                record.status = prev_status;
+                record.updated_at = prev_updated;
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
     }
 
     /// Remove and return a persisted pending card by `card_id`, optionally
@@ -435,6 +450,9 @@ impl Engine {
         else {
             return Ok(None);
         };
+        let prev_contract = record.work_contract.clone();
+        let prev_status = record.status.clone();
+        let prev_updated = record.updated_at;
         let removed = record.pending_cards.remove(pos);
         if let Some(contract) = updated_contract {
             record.work_contract = Some(contract);
@@ -443,7 +461,15 @@ impl Engine {
             record.status = next_status;
         }
         record.updated_at = now_ms();
-        inner.index.save(&self.root)?;
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pending_cards.insert(pos, removed);
+                record.work_contract = prev_contract;
+                record.status = prev_status;
+                record.updated_at = prev_updated;
+            }
+            return Err(error);
+        }
         drop(inner);
         Ok(Some(removed))
     }
@@ -586,19 +612,17 @@ impl Engine {
             .collect()
     }
 
-    /// Defensively cancel every active run fence (for process shutdown / handle
-    /// teardown) so child tool processes are signaled to exit immediately.
+    /// Defensively cancel every cancellable active run fence (for process
+    /// shutdown / handle teardown) so child tool processes are signaled to exit
+    /// immediately while preserving sessions currently finalizing a durable
+    /// delivery commit.
     pub fn cancel_all_active(&self) {
-        let fences: Vec<Arc<RunFence>> = self
+        let inner = self
             .inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fences
-            .values()
-            .cloned()
-            .collect();
-        for fence in fences {
-            if fence.is_active() {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, fence) in &inner.fences {
+            if !inner.finalizing.contains(id.as_str()) && fence.is_active() {
                 fence.cancel_active();
             }
         }
@@ -732,6 +756,28 @@ impl Engine {
         inner.finalizing.remove(session_id);
         drop(inner);
         clean
+    }
+
+    /// Either settle a cancelled run (when `armed == false`) or notify the
+    /// observer while `inner.finalizing` blocks concurrent `request_cancel`
+    /// and then release `ticket`.
+    fn finish_non_commit<F>(
+        &self,
+        armed: bool,
+        session_id: &str,
+        prompt: &str,
+        cancel_trace: &Mutex<CancelTrace>,
+        ticket: &RunTicket,
+        notify: F,
+    ) -> bool
+    where
+        F: FnOnce(),
+    {
+        if !armed {
+            self.settle_cancelled_run(session_id, prompt, cancel_trace, ticket);
+            return false;
+        }
+        self.finish_after_observer(session_id, ticket, notify)
     }
 
     /// Run one turn against the configured provider. The caller spawns this;
@@ -1070,10 +1116,21 @@ impl Engine {
                             .retain(|c| c.card_id() != card.card_id());
                         record.pending_cards.push(card.clone());
                     }
+                    let effective_outcome = if result.outcome
+                        != LoopOutcome::Aborted
+                        && commit.is_none()
+                        && !record.pending_cards.is_empty()
+                    {
+                        LoopOutcome::WaitingForUser
+                    } else {
+                        result.outcome
+                    };
+                    let effective_card = pending_approval
+                        .or_else(|| record.pending_cards.first().cloned());
                     record.status =
-                        status_for(result.outcome, error.as_deref());
+                        status_for(effective_outcome, error.as_deref());
                     if let Some(sub_id) = submission_id.as_ref() {
-                        match result.outcome {
+                        match effective_outcome {
                             LoopOutcome::Completed => {
                                 let missing = missing_required_for_submission(
                                     record, sub_id,
@@ -1114,7 +1171,7 @@ impl Engine {
                             }
                         }
                     }
-                    Ok((result.outcome, commit, pending_approval))
+                    Ok((effective_outcome, commit, effective_card))
                 }
                 Err(message) => {
                     tracing::warn!(
@@ -1146,22 +1203,22 @@ impl Engine {
                     message: "could not save turn history".to_owned(),
                 };
                 inner.index.upsert(before);
-                if !ticket.is_current() {
-                    drop(inner);
-                    self.settle_cancelled_run(
-                        session_id,
-                        prompt,
-                        &cancel_trace,
-                        &ticket,
-                    );
-                    return Ok(LoopOutcome::Aborted);
+                let armed = ticket.is_current();
+                if armed {
+                    inner.finalizing.insert(session_id.to_owned());
                 }
-                inner.finalizing.insert(session_id.to_owned());
                 drop(inner);
-                if !self.finish_after_observer(session_id, &ticket, || {
-                    self.observer.storage_error(session_id);
-                    self.observer.finished(session_id, LoopOutcome::Failed);
-                }) {
+                if !self.finish_non_commit(
+                    armed,
+                    session_id,
+                    prompt,
+                    &cancel_trace,
+                    &ticket,
+                    || {
+                        self.observer.storage_error(session_id);
+                        self.observer.finished(session_id, LoopOutcome::Failed);
+                    },
+                ) {
                     return Ok(LoopOutcome::Aborted);
                 }
                 return Err(RunError::Storage(error));
@@ -1175,21 +1232,21 @@ impl Engine {
                     (outcome, commit)
                 }
                 Ok((LoopOutcome::WaitingForUser, None, Some(card))) => {
-                    if !ticket.is_current() {
-                        drop(inner);
-                        self.settle_cancelled_run(
-                            session_id,
-                            prompt,
-                            &cancel_trace,
-                            &ticket,
-                        );
-                        return Ok(LoopOutcome::Aborted);
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
                     }
-                    inner.finalizing.insert(session_id.to_owned());
                     drop(inner);
-                    if !self.finish_after_observer(session_id, &ticket, || {
-                        self.observer.waiting_for_user(session_id, &card);
-                    }) {
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer.waiting_for_user(session_id, &card);
+                        },
+                    ) {
                         return Ok(LoopOutcome::Aborted);
                     }
                     return Ok(LoopOutcome::WaitingForUser);
@@ -1200,41 +1257,42 @@ impl Engine {
                     // split durable history from live UI state and
                     // `wait_until_idle` never wakes up before live status leaves
                     // `Running`.
-                    if !ticket.is_current() {
-                        drop(inner);
-                        self.settle_cancelled_run(
-                            session_id,
-                            prompt,
-                            &cancel_trace,
-                            &ticket,
-                        );
-                        return Ok(LoopOutcome::Aborted);
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
                     }
-                    inner.finalizing.insert(session_id.to_owned());
                     drop(inner);
-                    if !self.finish_after_observer(session_id, &ticket, || {
-                        self.observer.finished(session_id, outcome);
-                    }) {
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer.finished(session_id, outcome);
+                        },
+                    ) {
                         return Ok(LoopOutcome::Aborted);
                     }
                     return Ok(outcome);
                 }
                 Err(error) => {
-                    if !ticket.is_current() {
-                        drop(inner);
-                        self.settle_cancelled_run(
-                            session_id,
-                            prompt,
-                            &cancel_trace,
-                            &ticket,
-                        );
-                        return Ok(LoopOutcome::Aborted);
+                    let armed = ticket.is_current();
+                    if armed {
+                        inner.finalizing.insert(session_id.to_owned());
                     }
-                    inner.finalizing.insert(session_id.to_owned());
                     drop(inner);
-                    if !self.finish_after_observer(session_id, &ticket, || {
-                        self.observer.finished(session_id, LoopOutcome::Failed);
-                    }) {
+                    if !self.finish_non_commit(
+                        armed,
+                        session_id,
+                        prompt,
+                        &cancel_trace,
+                        &ticket,
+                        || {
+                            self.observer
+                                .finished(session_id, LoopOutcome::Failed);
+                        },
+                    ) {
                         return Ok(LoopOutcome::Aborted);
                     }
                     return Err(error);
@@ -1570,7 +1628,13 @@ impl CancelTrace {
         name: &str,
         result_text: &str,
         is_error: bool,
+        aborted: bool,
     ) {
+        if aborted {
+            // Preserve the interrupted entry in `in_flight_tools` so
+            // `StopHandoffManifest.pending_checks` reports `interrupted:*`.
+            return;
+        }
         let entry = self.in_flight_tools.remove(call_id);
         if is_error {
             return;
@@ -1679,10 +1743,9 @@ impl CancelTrace {
             }
         }
         let rollback_hint = if self.modified_files.is_empty() {
-            "本轮尚未写入工作区文件，可直接重新发送指令。".to_owned()
+            "card.stop_rollback_none".to_owned()
         } else {
-            "已修改文件位于会话工作目录且未对外发布，可检查并回退后重跑。"
-                .to_owned()
+            "card.stop_rollback_modified".to_owned()
         };
         StopHandoffManifest {
             input_revision,
@@ -1739,10 +1802,11 @@ impl AgentEmitter for EngineEmitter {
             if let (Some(trace), Some((call_id, name, text, is_error))) =
                 (&trace, trace_end)
             {
+                let aborted = !publisher.is_current() && is_error;
                 trace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .record_tool_end(&call_id, &name, &text, is_error);
+                    .record_tool_end(&call_id, &name, &text, is_error, aborted);
             }
             publisher.publish(|| match event {
                 AgentEvent::MessageUpdate {
@@ -3199,9 +3263,17 @@ mod tests {
             manifest
                 .pending_checks
                 .iter()
+                .any(|item| item.contains("interrupted:slow_reap")),
+            "interrupted tool must be preserved in pending_checks: {:?}",
+            manifest.pending_checks
+        );
+        assert!(
+            manifest
+                .pending_checks
+                .iter()
                 .any(|item| item.contains("青禾项目报价汇报.pptx"))
         );
-        assert_ne!(manifest.rollback_hint, "");
+        assert_eq!(manifest.rollback_hint, "card.stop_rollback_modified");
         assert_eq!(observer.settled.lock().unwrap().len(), 1);
     }
 
@@ -3261,6 +3333,7 @@ mod tests {
             "verify_deck",
             r#"{"ok":false,"artifact":"outputs/deck.pptx","issues":[{"code":"STRUCTURE"}]}"#,
             false,
+            false,
         );
         // Passing verify_artifact with {"ok": true} clears quote.xlsx from pending_checks.
         trace.record_tool_start(
@@ -3272,6 +3345,7 @@ mod tests {
             "c2",
             "verify_artifact",
             r#"{"ok":true,"artifact":"outputs/quote.xlsx","issues":[]}"#,
+            false,
             false,
         );
 
@@ -3358,5 +3432,57 @@ mod tests {
             ran_when_idle,
             "observer.finished must complete before RunTicket releases wait_until_idle"
         );
+    }
+
+    #[test]
+    fn park_and_take_pending_card_roll_back_in_memory_state_on_save_error() {
+        struct NoopObserver;
+        impl TurnObserver for NoopObserver {}
+        let scratch = Scratch::new("pending-card-rollback");
+        let engine =
+            Engine::open(scratch.0.clone(), config(), Arc::new(NoopObserver))
+                .unwrap();
+        engine.create_session("s-rb".into(), 1).unwrap();
+        let card = crate::session::PendingCard::ToolApproval {
+            card_id: "card-rb-1".into(),
+            created_at_ms: 10,
+            tool_name: "bash".into(),
+            target_summary: "bash".into(),
+            args_hash: "h1".into(),
+            risk_reason: "risk".into(),
+            command_preview: "rm -rf ./deliverables".into(),
+        };
+        // Break history.json path so `index.save` fails.
+        let history_path = crate::session::SessionIndex::path(&scratch.0);
+        let _ = std::fs::remove_file(&history_path);
+        std::fs::create_dir(&history_path).unwrap();
+
+        assert!(
+            engine
+                .park_pending_card("s-rb", card.clone(), None)
+                .is_err()
+        );
+        let after_failed_park = engine.session("s-rb").unwrap();
+        assert_eq!(after_failed_park.pending_cards.len(), 0);
+        assert_eq!(after_failed_park.status, TurnState::Idle);
+
+        // Restore path, park cleanly, then break again and verify take rolls back.
+        std::fs::remove_dir(&history_path).unwrap();
+        engine
+            .park_pending_card("s-rb", card.clone(), None)
+            .unwrap();
+        assert_eq!(engine.session("s-rb").unwrap().pending_cards.len(), 1);
+
+        let _ = std::fs::remove_file(&history_path);
+        std::fs::create_dir(&history_path).unwrap();
+        assert!(
+            engine
+                .take_pending_card("s-rb", "card-rb-1", TurnState::Idle, None)
+                .is_err()
+        );
+        let after_failed_take = engine.session("s-rb").unwrap();
+        assert_eq!(after_failed_take.pending_cards, vec![card]);
+        assert_eq!(after_failed_take.status, TurnState::WaitingForUser);
+        let _ = std::fs::remove_dir(&history_path);
     }
 }

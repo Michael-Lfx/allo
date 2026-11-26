@@ -2042,23 +2042,154 @@ mod guard_tests {
             .unwrap();
         wait_idle(&handle, &sid);
 
-        let outcome = handle
-            .revise_active_contract_or_queue(
-                &sid,
-                "把刚才那份的报价改成 32 万元。",
+        handle
+            .submit_chat(203, "把刚才那份的报价改成 32 万元。")
+            .expect("ambiguous submit parks disambiguation card");
+        assert_eq!(
+            handle.session_status(&sid),
+            super::TurnStatus::WaitingForUser
+        );
+        let cards = handle.session_pending_cards(&sid);
+        assert!(
+            cards.iter().any(|card| matches!(
+                card,
+                flowy_agent_core::PendingCard::Disambiguation { card_id, .. }
+                    if !card_id.is_empty()
+            )),
+            "ambiguous follow-up must park PendingCard::Disambiguation, got {cards:?}"
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn queued_disambiguation_does_not_starve_other_sessions_and_multicard_resolves_sequentially()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-disambig-queue-multicard-{}", next_stamp()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wait_idle = |handle: &AgentHandle, sid: &str| {
+            for _ in 0..200 {
+                if !handle.session_status(sid).is_busy() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("session {sid} remained busy");
+        };
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let sid_a = handle.create_home_session().unwrap();
+        handle
+            .submit_chat(
+                301,
+                "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid_a);
+        handle
+            .submit_chat(
+                302,
+                "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx",
+            )
+            .unwrap();
+        wait_idle(&handle, &sid_a);
+
+        // Queue an ambiguous follow-up on session A AND an independent task
+        // for a new session (no active selection). Autonomous drain must park A
+        // on disambiguation and STILL drain the independent receipt cleanly.
+        let r_ambig = handle
+            .accept_deferred("把刚才那份的报价改成 32 万元。")
+            .expect("accept ambiguous");
+        handle.clear_active().unwrap();
+        let r_other = handle
+            .accept_deferred("总结一下今天的会议纪要")
+            .expect("accept independent");
+        handle.set_autonomous_drain(true);
+
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let a_waiting = handle.session_status(&sid_a)
+                == super::TurnStatus::WaitingForUser;
+            let other_done = handle.receipt_state(&r_other.id)
+                == Some(flowy_agent_core::ReceiptState::Completed);
+            if a_waiting && other_done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            handle.receipt_state(&r_ambig.id),
+            Some(flowy_agent_core::ReceiptState::Completed)
+        );
+        assert_eq!(
+            handle.session_status(&sid_a),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(
+            handle.receipt_state(&r_other.id),
+            Some(flowy_agent_core::ReceiptState::Completed),
+            "parking a disambiguation card must not starve queued receipts for other sessions"
+        );
+
+        // Park a second card on session A and verify resolving card #1 keeps
+        // WaitingForUser (`resumed: false`) instead of launching a turn while
+        // card #2 is still pending.
+        let first_card = handle.session_pending_cards(&sid_a)[0].clone();
+        let flowy_agent_core::PendingCard::Disambiguation {
+            card_id: first_id,
+            options,
+            ..
+        } = &first_card
+        else {
+            panic!("expected disambiguation card, got {first_card:?}");
+        };
+        let first_id = first_id.clone();
+        let first_opt = options[0].object_id.clone();
+        let engine = super::lock(&handle.inner.engine).clone().unwrap();
+        engine
+            .park_pending_card(
+                &sid_a,
+                flowy_agent_core::PendingCard::ToolApproval {
+                    card_id: "card-second-approval".into(),
+                    created_at_ms: 99,
+                    tool_name: "bash".into(),
+                    target_summary: "bash".into(),
+                    args_hash: "hash-second".into(),
+                    risk_reason: "risk".into(),
+                    command_preview: "rm -rf ./deliverables".into(),
+                },
                 None,
             )
-            .expect("ambiguous revise");
-        assert!(
-            matches!(
-                outcome,
-                super::ReviseOutcome::WaitingForDisambiguation {
-                    ref session_id,
-                    ref card_id,
-                } if session_id == &sid && !card_id.is_empty()
-            ),
-            "ambiguous revise must return WaitingForDisambiguation, got {outcome:?}"
+            .unwrap();
+        let outcome = handle
+            .apply_card_action(super::CardAction::ResolveCard {
+                session_id: sid_a.clone(),
+                card_id: first_id.clone(),
+                selection: super::CardSelection::Disambiguate {
+                    object_ids: vec![first_opt],
+                },
+            })
+            .expect("resolve first of two cards");
+        assert_eq!(
+            outcome,
+            super::CardActionOutcome::CardResolved {
+                card_id: first_id,
+                resumed: false,
+            }
         );
+        assert_eq!(
+            handle.session_status(&sid_a),
+            super::TurnStatus::WaitingForUser
+        );
+        assert_eq!(handle.session_pending_cards(&sid_a).len(), 1);
 
         drop(handle);
         let _ = std::fs::remove_dir_all(&root);
