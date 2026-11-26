@@ -35,9 +35,10 @@ import { BackendHttpError } from '@/common/adapter/httpBridge';
 // 用真实 Provider（其 ipc effects 在测试宿主失败即降级、被 catch），不 mock
 // （bun 的 mock.module 进程全局常驻，污染 test:ui 全套件——同波测试纪律）。
 import { CloudAuthProvider } from '@/renderer/hooks/context/CloudAuthContext';
+import { ipcBridge } from '@/common';
 import { learningApi } from '../api';
 import type { CourseDetail, StructureFindingsView } from '../types';
-import { StructureFindingsSection } from './structure/StructureFindingsSection';
+import { StructureFindingsLoader, StructureFindingsSection } from './structure/StructureFindingsSection';
 import LearningGraphWorkspace from './LearningGraphWorkspace';
 
 // ── jsdom 宿主（LearningGraphWorkspace.header-collapse.test 同仪式） ─────────────
@@ -258,9 +259,10 @@ const findingsView: StructureFindingsView = {
 const noop = () => undefined;
 
 /** 挂载图工作区（header-collapse 同款补丁：声明/补批判定拒绝防真发、历史
- * 为空）；留痕读数由调用方注入。 */
+ * 为空）；留痕读数由调用方注入，结构投影默认空壳（要数的用例自己给 stub）。 */
 const mountGraphWorkspace = async (
-  structureFindings: (courseId: string) => Promise<StructureFindingsView>
+  structureFindings: (courseId: string) => Promise<StructureFindingsView>,
+  graphStructure: () => Promise<typeof structureView> = async () => structureView
 ) => {
   if (root) {
     await act(async () => {
@@ -271,7 +273,7 @@ const mountGraphWorkspace = async (
   container.innerHTML = '';
   storageMap.clear();
   learningApi.quizProgress = async () => ({ settled_count: 2, trigger_count: 6, due: false });
-  learningApi.graphStructure = async () => structureView;
+  learningApi.graphStructure = graphStructure;
   learningApi.basisView = async () => {
     throw new Error('off (test fixture)');
   };
@@ -483,5 +485,179 @@ describe('LearningGraphWorkspace 评审留痕段（m1）', () => {
     expect(text.indexOf('服务暂时不可用，请稍后再试')).toBeLessThan(
       text.indexOf('提名别名「Option 类型」')
     );
+  });
+});
+
+// ── 修复批 A13 / A14：重取竞态与刷新面 ──────────────────────────────────────
+
+type GenerationFrame = { course_id: string; event?: string };
+
+/** 捕获 `learning.courseGeneration` 的订阅者：工作区里多个消费方各自订阅
+ * （结构投影 / 留痕段 / 生成事件 hook），测试里统一收下再手动发帧。直接换
+ * 属性、afterEach 还原——不用 mock.module（进程全局常驻，污染全套件）。 */
+const originalCourseGenerationOn = ipcBridge.learning.courseGeneration.on;
+const captureGenerationFrames = () => {
+  const handlers = new Set<(frame: GenerationFrame) => void>();
+  (
+    ipcBridge.learning.courseGeneration as unknown as {
+      on: (callback: (frame: GenerationFrame) => void) => () => void;
+    }
+  ).on = (callback) => {
+    handlers.add(callback);
+    return () => {
+      handlers.delete(callback);
+    };
+  };
+  return {
+    fire: (frame: GenerationFrame) => {
+      for (const handler of [...handlers]) handler(frame);
+    },
+    handlerCount: () => handlers.size,
+  };
+};
+
+/** 只挂留痕取数壳（取数壳的重取由 WS 帧驱动，工作区里同时有多个订阅方，
+ * 单独挂壳才能把 `structureFindings` 的并发请求控准）。 */
+const mountFindingsLoader = async (courseId: string) => {
+  if (root) {
+    await act(async () => {
+      root!.unmount();
+    });
+    root = null;
+  }
+  container.innerHTML = '';
+  storageMap.clear();
+  const instance = await initTestI18n('zh-CN');
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(
+      <I18nextProvider i18n={instance}>
+        <StructureFindingsLoader courseId={courseId} />
+      </I18nextProvider>
+    );
+  });
+};
+
+/** 一帧读数（只填断言要用的字段）。 */
+const findingsPage = (
+  seq: number,
+  overrides: Partial<StructureFindingsView> = {}
+): StructureFindingsView => ({
+  findings: [
+    {
+      seq,
+      ts: 0,
+      source: 'concept-review',
+      node: '',
+      field: 'teaches',
+      issue: `第 ${seq} 条留痕`,
+      advice: '',
+      read_by_repair: true,
+    },
+  ],
+  total: 1,
+  watermark: seq,
+  unread: 0,
+  ...overrides,
+});
+
+afterEach(() => {
+  (
+    ipcBridge.learning.courseGeneration as unknown as {
+      on: typeof originalCourseGenerationOn;
+    }
+  ).on = originalCourseGenerationOn;
+});
+
+describe('评审留痕段的重取（修复批）', () => {
+  test('重取重叠：迟到的旧响应不覆盖较新的读数（A13）', async () => {
+    const frames = captureGenerationFrames();
+    const pending: ((view: StructureFindingsView) => void)[] = [];
+    learningApi.structureFindings = () =>
+      new Promise<StructureFindingsView>((resolve) => {
+        pending.push(resolve);
+      });
+
+    await mountFindingsLoader('course-graph-1');
+    expect(pending).toHaveLength(1);
+
+    // 两帧连到（growth_* 成串到达的常态）：第二个请求在第一个未回时发出。
+    await act(async () => {
+      frames.fire({ course_id: 'course-graph-1', event: 'growth_completed' });
+      frames.fire({ course_id: 'course-graph-1', event: 'growth_completed' });
+    });
+    expect(pending).toHaveLength(3);
+
+    // 先回最新的（第 3 个请求），再回最早那个——旧响应迟到。
+    await act(async () => {
+      pending[2](findingsPage(9, { unread: 0 }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      pending[0](findingsPage(1, { unread: 5 }));
+      await Promise.resolve();
+    });
+
+    // 行在折叠内容里（默认收起）：先看标题读数，再展开看行。
+    expect(container.textContent ?? '').toContain('最近 1 条');
+    expect(container.textContent ?? '').not.toContain('修补未读');
+    const title = findingsTitle();
+    expect(title).not.toBeNull();
+    await act(async () => {
+      title!.click();
+    });
+    const text = container.textContent ?? '';
+    expect(text).toContain('第 9 条留痕');
+    expect(text).not.toContain('第 1 条留痕');
+  });
+});
+
+describe('结构投影跟随后台回合的终态帧（A14 / B7）', () => {
+  test('修补 / 挂载终态帧各自重取一次；开始帧与别的课程不重取', async () => {
+    const frames = captureGenerationFrames();
+    let structureCalls = 0;
+    await mountGraphWorkspace(async () => findingsView, async () => {
+      structureCalls += 1;
+      return structureView;
+    });
+    const baseline = structureCalls;
+    expect(baseline).toBeGreaterThan(0);
+
+    const fireAndSettle = async (frame: GenerationFrame) => {
+      await act(async () => {
+        frames.fire(frame);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+
+    for (const event of [
+      'structure_repair_completed',
+      'structure_repair_failed',
+      'structure_repair_cancelled',
+      'structure_mount_completed',
+      'structure_mount_failed',
+      'structure_mount_cancelled',
+    ]) {
+      const before = structureCalls;
+      await fireAndSettle({ course_id: 'course-graph-1', event });
+      // 每个终态帧恰重取一次。
+      if (structureCalls !== before + 1) {
+        throw new Error(`${event} 必须重取一次结构投影（实际 ${structureCalls - before} 次）`);
+      }
+    }
+
+    // 开始帧：那一刻投影还没变，不重取。
+    for (const event of ['structure_repair_started', 'structure_mount_started']) {
+      const before = structureCalls;
+      await fireAndSettle({ course_id: 'course-graph-1', event });
+      if (structureCalls !== before) {
+        throw new Error(`${event} 不该重取结构投影（实际重取 ${structureCalls - before} 次）`);
+      }
+    }
+    // 别的课程的终态帧不重取本课的投影。
+    const beforeOther = structureCalls;
+    await fireAndSettle({ course_id: 'another-course', event: 'structure_repair_completed' });
+    expect(structureCalls).toBe(beforeOther);
   });
 });

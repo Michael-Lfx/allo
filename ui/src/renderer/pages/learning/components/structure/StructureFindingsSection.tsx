@@ -1,5 +1,5 @@
 import { Alert, Tag, Typography } from '@arco-design/web-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
@@ -37,9 +37,13 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
   new_aliases: 'learning.learningGraphFindingsFieldNewAliases',
 };
 
-/** 机器名 → 展示文案：已知值走词典，未知值原样透出。 */
+/** 机器名 → 展示文案：已知值走词典，未知值原样透出。
+ *
+ * `field` 是评审写的自由文本（无枚举校验）：`labels[name]` 会命中原型成员
+ * （`constructor` / `toString` / `__proto__` …），把函数当词典 key 塞给 `t`。
+ * 只认自有属性。 */
 function machineLabel(t: Translate, labels: Record<string, string>, machineName: string): string {
-  const key = labels[machineName];
+  const key = Object.hasOwn(labels, machineName) ? labels[machineName] : undefined;
   return key === undefined ? machineName : t(key);
 }
 
@@ -175,21 +179,29 @@ export function StructureFindingsLoader({ courseId }: { courseId: string }) {
   const { t } = useTranslation();
   const [view, setView] = useState<StructureFindingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 请求序号：WS 帧成串到达（growth_* 每个都触发一次重取），重取会重叠；只
+  // 认最后发出的那一个的结果，迟到的旧响应不得把 read_by_repair / unread /
+  // 行集翻回旧读数。
+  const latestRequestRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
+      const request = latestRequestRef.current + 1;
+      latestRequestRef.current = request;
       learningApi
         .structureFindings(courseId)
         .then((next) => {
-          if (cancelled) return;
+          if (cancelled || request !== latestRequestRef.current) return;
           setView(next);
           // 后续重取成功即清掉上一次的失败态（错误不是终态）。
           setError(null);
         })
         .catch((loadError) => {
           // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
-          if (!cancelled) setError(errorMessage(t, loadError));
+          if (!cancelled && request === latestRequestRef.current) {
+            setError(errorMessage(t, loadError));
+          }
         });
     };
     load();

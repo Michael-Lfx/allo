@@ -16,8 +16,11 @@
 //!   只是各有一张登记表——两种意图在登记表与账本里都可区分（触发源 =
 //!   `repair_followup`）。
 //!
-//! 失败只留痕：Failed 动作簿行由挂载回合自己写，不重试；挂载保持失效，横幅
-//! 提示手动「重新检查」，定时臂到点也会补挂。
+//! 没挂回去的只留痕、不重试：失败时 Failed 动作簿行由挂载回合自己写；挂载
+//! 保持失效，结构图页签的挂载卡一直挂着「结构已更新，待重新检查」。之后的
+//! 补挂看开关——自动维护开着：定时臂到点补挂；运行期关着：重挂不启动、定
+//! 时臂也被按住，只有用户点「重新检查」或把自动维护打开（之后的下一个到期
+//! tick 才挂）才挂得回去。
 
 use super::*;
 
@@ -30,10 +33,11 @@ pub struct RepairFollowupWake {
 }
 
 impl LearningService {
-    /// 登记一次修补后重挂（R-b）：结构修补 `applied`、终态 Done 账本行落了之
-    /// 后调用（见 `run_structure_repair_with_trigger`）。**不设准入**——它只跟
-    /// 在一次刚改了结构的修补之后，全量重挂正是它的目的；生长唤醒的 stale /
-    /// 待挂阈值 / 去抖三道闸不适用于它，也不动它们。准入在执行时另核（见
+    /// 登记一次修补后重挂（R-b）：结构修补 `applied` 的结构写盘**之后**立即
+    /// 调用——在修补审计行与 Done 账本行之前（见
+    /// `run_structure_repair_with_trigger`）。**不设准入**——它只跟在一次刚改了
+    /// 结构的修补之后，全量重挂正是它的目的；生长唤醒的 stale / 待挂阈值 /
+    /// 去抖三道闸不适用于它，也不动它们。准入在执行时另核（见
     /// [`Self::run_repair_followup_mount`]）。只登记 + 发信号，不在这里挂载。
     pub async fn register_repair_followup_wake(
         &self,
@@ -84,7 +88,9 @@ impl LearningService {
         // 自动维护运行期关（`learning.maintenanceAutoEnabled=false`）同样不启
         // 动：重挂回合是自动维护的一种，与调度器同一组开关（环境闸
         // `NOMI_LEARNING_AUTO_MAINTENANCE=off` 本就不注册调度器）。未启动的重挂
-        // 不重排——挂载保持失效，横幅提示手动「重新检查」，定时臂到点也会补挂。
+        // 不重排，而关着期间定时臂同样被按住——挂载保持失效，结构图页签的
+        // 挂载卡一直挂着「结构已更新，待重新检查」，直到用户点「重新检查」，
+        // 或把自动维护打开（之后的下一个到期 tick 在维护回合里挂）。
         if !self.maintenance_settings().await.enabled {
             tracing::info!(
                 course = course_id.as_str(),

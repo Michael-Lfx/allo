@@ -204,7 +204,10 @@ HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses/{id}/system-actions?limit=`（系统动作簿读侧：按课程
 倒序，缺省 50、上限 200；课程不存在/软删 404，归档课仍可读，y04）、
 `/api/learning/courses/{id}/graph/structure`（结构读侧投影：200 恒答、
-`structure: null` = 未生成；软删/不存在 404；含挂载三态投影 `mounts`）与
+`structure: null` = 未生成；软删/不存在 404；含挂载三态投影 `mounts`）、
+`.../graph/structure/findings?limit=`（评审留痕读侧：按 `seq` 倒序，缺省
+50、上限 200；每行带 `read_by_repair` = 修补回合读过，不是已修复；课程
+不存在/软删 404，归档课仍可读）与
 `.../graph/structure/regenerate|mount|repair`（重跑生成 / 挂载回合 /
 修补回合，j08/j09；进度走 WS structure_* 事件）、
 `/api/learning/xp/reading` 与 `/api/learning/xp/calendar`（XP 读数与日历，
@@ -245,24 +248,31 @@ UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_sourc
 `basis` + `result` + `reason` + `actor_user_id` + `at`。
 
 - `kind` ∈ `maintenance_repair | maintenance_mount | growth`；
-  `trigger_source` ∈ `timer | manual | settlement | auto_refill`；
+  `trigger_source` ∈ `timer | manual | settlement | auto_refill |
+  growth_followup | repair_followup`（`growth_followup` = 生长落库后唤醒的
+  仅挂载回合，ADR-0018；`repair_followup` = 修补应用后唤醒的全量重挂，
+  ADR-0019）；
   `result` ∈ `done | failed`。三组枚举是 Rust 单源
   （`learning_graph::system_action`），DB 无 CHECK（ADR-0015），读侧宽容。
 - `basis` 是触发时的一句判据读数（如 `unconsumed=2 observations=0`、
-  `pending_mount=1 stale=true`、`ready=0`），写侧截断 ≤200 字。
+  `pending_mount=1 stale=true`、`ready=0`；修补的 applied 行另带
+  `ops=N stale=0|1`），写侧截断 ≤200 字。
 - `reason` 只在 failed 时非空。**不设 `ref_id` 一类的多态关联列**：动作簿
   的读面只需"何时、哪门课、什么动作、成没成、为什么"，批次/审计行/挂载行
   的技术 id 不跨表复制（data-and-identifier-standards §1）。
-- `actor_user_id` 只记手动动作的操作者；timer/settlement/auto_refill 为
-  NULL（课程共享，账本不按用户过滤——他人的维护动作同样可见）。
+- `actor_user_id` 只记手动动作的操作者；其余自动触发源（timer / settlement /
+  auto_refill / growth_followup / repair_followup）为 NULL（课程共享，账本
+  不按用户过滤——他人的维护动作同样可见）。
 
 **写点清单**（全部 fail-open：写失败只 `tracing::warn!`，永不阻断动作）：
 
 1. `run_maintenance_tick`：每课每次修补/挂载终态一行（trigger=timer）；
-   桩数据为 `unconsumed/observations` 与 `pending_mount/stale` 读数。
+   桩数据为 `unconsumed/observations` 与 `pending_mount/stale` 读数（修补的
+   applied 行另带 `ops=N stale=0|1`）。
 2. `run_structure_repair` / `run_structure_mount`（手动包装 = manual，tick =
-   timer）：成功 applied/mounted → Done；真失败 → Failed + reason；**
-  同键忙拒（Conflict）与用户取消零行**。
+   timer，修补后重挂 = repair_followup，生长唤醒的仅挂载 = growth_followup）：
+   成功 applied/mounted → Done；真失败 → Failed + reason；**
+   同键忙拒（Conflict）与用户取消零行**。
 3. `kick_growth`：成功落库 → Done（basis = `ready=N`）；
    真失败 → Failed；取消零行；空手批（idle）零行。trigger 由调用方给：
    结算钩子 = settlement，POST grow 缺省 manual、前端自动补批

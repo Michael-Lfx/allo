@@ -148,7 +148,7 @@ pub use models::{
 };
 pub use models::{
     MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
-    LearningTaskGateReadout, GrowthVerdictView,
+    LearningTaskGateReadout, GrowthVerdictView, MountRoundSummary,
 };
 pub use service::{
     DEFAULT_AUTO_REFILL_ENABLED, DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,

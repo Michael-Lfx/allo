@@ -17709,8 +17709,9 @@ async fn cancelled_repair_round_registers_no_repair_followup_wake() {
 }
 
 /// 修补回合进行中把一张表删掉的 completer：LLM 一回来就 `DROP TABLE`，再回
-/// 给定产物——用来制造「结构已写、后一步写库失败」的窗口（水位推进排在结构
-/// 写之后；回合开头已读过水位表，读数正常，这里让回合末尾的推进必然失败）。
+/// 给定产物——用来制造「结构已写、后一步写库失败」的窗口。被删的表必须是
+/// 结构写**之后**才会被写的那张：水位表（回合末尾的推进；回合开头已读过水
+/// 位表，读数正常）或修补审计表（结构写之后紧跟着的审计行）。
 struct DropTableCompleter {
     pool: sqlx::SqlitePool,
     table: &'static str,
@@ -17789,6 +17790,60 @@ async fn applied_repair_still_registers_the_remount_when_the_watermark_advance_f
             user_id: user_id.clone(),
         }],
         "结构变了就必须有重挂意图，哪怕后一步水位推进失败"
+    );
+}
+
+/// 课程当前落盘的结构列的 hash（与挂载失效判定同一个函数算）。
+async fn stored_structure_hash(service: &LearningService, course: &LearningCourseId) -> u64 {
+    let raw: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(course.as_str())
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    crate::learning_graph::mounting::hash_structure_column(&raw).0
+}
+
+/// 登记紧跟在结构写盘**之后**（ADR-0019「结构已经变了就必须重挂」）：修补审计
+/// 行落表失败（`?`-fatal）同样让回合以 Err 收场，而它排在结构写之后——重挂
+/// 意图不能跟着审计行一起丢。这条路径上 Done 行根本没走到。
+#[tokio::test]
+#[serial_test::serial]
+async fn applied_repair_registers_the_remount_before_the_audit_row_can_fail() {
+    let (service, user_id, course) = seed_maintenance_course_with_structure(
+        1,
+        1,
+        ScriptedCompleter::new("{}", false),
+        ledger_valid_structure(),
+    )
+    .await;
+    let hash_before = stored_structure_hash(&service, &course).await;
+    *service.course_completer.write().unwrap() = Some(Arc::new(DropTableCompleter {
+        pool: service.pool_for_tests().clone(),
+        table: "learning_structure_repairs",
+        reply: rename_block_ops(),
+    }));
+
+    let error = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .expect_err("修补审计行落表失败：回合以 Err 收场");
+
+    // 夹具前提：失败发生在结构写之后——落盘的结构 hash 确实变了。
+    assert_ne!(
+        stored_structure_hash(&service, &course).await,
+        hash_before,
+        "结构已改：{error}"
+    );
+
+    assert_eq!(
+        service.take_repair_followup_wakes(),
+        vec![RepairFollowupWake {
+            course_id: course.clone(),
+            user_id: user_id.clone(),
+        }],
+        "结构变了就必须有重挂意图，哪怕紧随其后的审计行落表失败"
     );
 }
 
@@ -18449,6 +18504,76 @@ async fn coach_input_carries_concept_gaps_when_the_switch_is_on() {
         format!("course=\"{course_id}\""),
         "rows=3".to_owned(),
         "gaps=1".to_owned(),
+    ] {
+        assert!(line.contains(&field), "读数行缺 {field:?}：{line}");
+    }
+}
+
+/// 块名是「未处置」：缺口点名的概念已全部进了已教概念账，这条缺口就不再回
+/// 灌教练——否则补上了的缺口会一直重放到它掉出读表窗口。同一轮里点名的概
+/// 念已教的丢、没教的照出，差别只在已教账；读数行以 `resolved` 报被丢掉的
+/// 组数。env 是进程全局态：`#[serial]` + Drop 恢复守卫。
+#[tokio::test]
+#[serial_test::serial]
+async fn coach_input_leaves_out_concept_gaps_whose_concepts_are_already_taught() {
+    use crate::switches::{COACH_FINDINGS_INPUT_SWITCH_ENV, switch_env_guard};
+    pad_global_tracing_subscriber();
+    let _switch = switch_env_guard(COACH_FINDINGS_INPUT_SWITCH_ENV, Some("on"));
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    // 两行缺口：一行点名「向量基础」（夹具的节点 A 已教），一行点名「死锁」
+    // （没教）。
+    insert_finding(
+        &service,
+        &course_id,
+        1,
+        "concept-review",
+        "",
+        "已教概念账中未见向量基础等基础概念，本批节点直接依赖它们。",
+        "",
+    )
+    .await;
+    insert_finding(
+        &service,
+        &course_id,
+        2,
+        "concept-review",
+        "",
+        "「死锁」在已教账中没出现，本批 intent 以它为内容依赖。",
+        "",
+    )
+    .await;
+
+    let capture = Arc::new(CoachPromptCapture(Mutex::new(Vec::new())));
+    *service.course_completer.write().unwrap() = Some(capture.clone());
+    let (buffer, _logs) = capture_thread_logs();
+    let prompt = captured_coach_prompt(&service, &owner, &course_id, capture.as_ref()).await;
+
+    // 夹具前提：已教概念账里确实有「向量基础」。
+    assert!(
+        prompt.contains("向量基础@"),
+        "夹具前提：已教概念账带「向量基础」：{prompt}"
+    );
+    assert!(
+        !prompt.contains("已教概念账中未见向量基础"),
+        "点名的概念已教：这条缺口不再回灌：{prompt}"
+    );
+    assert!(
+        prompt.contains("- 「死锁」在已教账中没出现，本批 intent 以它为内容依赖"),
+        "没教的缺口照常出行：{prompt}"
+    );
+
+    let captured = captured_log_text(&buffer);
+    let line = captured
+        .lines()
+        .find(|line| line.contains("coach concept gaps assembled"))
+        .unwrap_or_else(|| panic!("on 臂留一行缺口读数：\n{captured}"));
+    // rows = 读到的行数；gaps = 出的行数；resolved = 因已处置丢掉的组数。
+    for field in [
+        format!("course=\"{course_id}\""),
+        "rows=2".to_owned(),
+        "gaps=1".to_owned(),
+        "resolved=1".to_owned(),
     ] {
         assert!(line.contains(&field), "读数行缺 {field:?}：{line}");
     }

@@ -140,6 +140,27 @@ describe('StructureFindingsList render (m1)', () => {
     expect(html).not.toContain('learning.learningGraphFindings');
   });
 
+  // field / source 是评审写的自由文本（无枚举校验）：撞上对象原型成员名
+  // （constructor / toString / __proto__ / valueOf）时不得被当成已知值——照旧
+  // 原样透出机器名，也不得把函数对象当文案塞上屏（`[native code]`）。
+  test('source / field 撞上对象原型成员名：原样透出机器名，不把函数当文案', async () => {
+    const machineNames = ['constructor', 'toString', '__proto__', 'valueOf'];
+    const html = await renderList('zh-CN', [
+      finding({ seq: 0, field: 'constructor', issue: '探针甲' }),
+      finding({ seq: 1, field: 'toString', issue: '探针乙' }),
+      finding({ seq: 2, field: '__proto__', issue: '探针丙' }),
+      finding({ seq: 3, source: 'valueOf', issue: '探针丁' }),
+    ]);
+    for (const machineName of machineNames) {
+      expect(html).toContain(machineName);
+    }
+    // 原型成员被当成已知值时，`t` 会收到函数：文案里出现函数源码或 undefined。
+    expect(html).not.toContain('[native code]');
+    expect(html).not.toContain('undefined');
+    // 前三行仍是正常的评审来源（source 正常，只有 field 是原型名）。
+    expect(html.split('概念评审').length - 1).toBe(3);
+  });
+
   // 评审把 finding 挂在节点意图上（findings[].field 是自由文本，真数据出现过
   // intent）；未处置片段 / 评审问题转留痕 / 术语出处 / 新概念 / 新别名是降级
   // 与归一通道的留痕类别——都该走词典，不把机器名甩给用户。

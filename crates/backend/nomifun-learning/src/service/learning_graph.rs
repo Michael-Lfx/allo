@@ -968,10 +968,13 @@ impl LearningService {
     /// Done，真失败 = Failed；noop/skipped（零工作）、同键忙拒/任务键在途
     /// （Conflict）与用户取消都零行。账本 fail-open，写失败不阻断回合。
     ///
-    /// m2（R-b）：applied 的 Done 行落了之后、水位推进之前，登记一次修补后重
-    /// 挂意图——结构变了挂载就整体失效，重挂作为独立的仅挂载回合跑（触发源
-    /// `repair_followup`，见 [`Self::register_repair_followup_wake`]）。noop
-    /// 结构没变、失败 / 取消没改结构，都不登记。
+    /// m2（R-b）：applied 的结构写盘**之后**立即登记一次修补后重挂意图（ADR-
+    /// 0019：结构已经变了就必须重挂），排在修补审计行、Done 账本行与水位
+    /// 推进之前——这几步写了也可能失败并让本函数以 Err 返回，登记不能跟着
+    /// 一次记账失败一起丢。结构变了挂载就整体失效，重挂作为独立的仅挂载
+    /// 回合跑（触发源 `repair_followup`，见
+    /// [`Self::register_repair_followup_wake`]）。noop 结构没变、失败 / 取消
+    /// 没改结构，都不登记。
     pub async fn run_structure_repair_with_trigger(
         &self,
         user_id: &UserId,
@@ -1314,7 +1317,7 @@ impl LearningService {
         // 在写盘之前先算。
         let mounts_stale = old_hash != new_hash;
         if !noop {
-            // 结构快照原子写（唯一权威）+ 修补审计行。
+            // 结构快照原子写（唯一权威）。
             sqlx::query("UPDATE learning_courses SET structure_json = ?, updated_at = ? WHERE course_id = ?")
                 .bind(&new_structure_raw)
                 .bind(now_ms())
@@ -1322,6 +1325,13 @@ impl LearningService {
                 .execute(&self.pool)
                 .await
                 .map_err(internal)?;
+            // m2（R-b / D1）：结构已改 = 既有挂载整体失效 → 登记一次全量重挂。
+            // 登记紧跟结构写盘（ADR-0019：结构已经变了就必须重挂）：修补审计
+            // 行与 Done 账本行都排在它之后，且写了也可能失败并让本函数以 Err
+            // 返回——登记不能跟着一次记账失败一起丢。失败 / 取消路径在前面
+            // 就 return 了，到不了这里；noop 也不进这个分支。
+            self.register_repair_followup_wake(course_id, user_id).await;
+            // 修补审计行。
             let ops_log: Vec<serde_json::Value> = ops
                 .iter()
                 .map(|op| {
@@ -1370,11 +1380,6 @@ impl LearningService {
                 )),
             )
             .await;
-            // m2（R-b / D1）：结构已改 = 既有挂载整体失效 → 登记一次全量重挂。
-            // 必须排在水位推进**之前**：推进可能失败并让本函数返回 Err，而结构
-            // 已经变了——变了的结构不能没有重挂。失败 / 取消路径在前面就
-            // return 了，到不了这里；noop 也不进这个分支。
-            self.register_repair_followup_wake(course_id, user_id).await;
         }
         // noop 不落审计行（learnhub 同款「无修补动作不留档案」——评估过、
         // 无修补动作是合法结论，但没发生的事不造档案）。
@@ -3351,9 +3356,11 @@ impl LearningService {
         // struct 字面量前（goal/title 随 goal 字段移动）。
         let course_context_words = course_context_terms(&title, &goal).join("、");
         // m3 未处置概念缺口（on 臂；off 臂恒空 = 提示词基线逐字节）：开关在
-        // 装配时读一次，off 臂不读表。
+        // 装配时读一次，off 臂不读表。对照已教概念账去已处置，所以排在已教
+        // 账之后装配。
         let concept_gaps = if crate::coach_findings_input_enabled() {
-            self.coach_concept_gaps(course_id).await
+            self.coach_concept_gaps(course_id, &taught_summary)
+                .await
         } else {
             String::new()
         };
@@ -3378,12 +3385,17 @@ impl LearningService {
 
     /// m3 未处置概念缺口（教练面专属块的正文）：本课评审留痕（source =
     /// concept-review）最近 200 行过纯机械面
-    /// （[`crate::learning_graph::concept_gaps`]：认缺口 → 去重 → 封顶 →
-    /// 渲染行），行间换行连接、不带块头。**旁路**：读失败只 warn 并回空串
-    /// ——缺口节是参考，永远不拖垮生长回合（与唤醒通道同律）。不碰水位：
-    /// 水位的意思是「修补已读」，与教练消费无关。on 臂留一行读数（rows =
-    /// 扫过几行、gaps = 出几行），真机 A/B 靠它确认 on 臂真的渲染了缺口块。
-    async fn coach_concept_gaps(&self, course_id: &LearningCourseId) -> String {
+    /// （[`crate::learning_graph::concept_gaps`]：认缺口 → 去重 → 去已处置 →
+    /// 封顶 → 渲染行），行间换行连接、不带块头。
+    ///
+    /// 块名是「未处置」：`taught_summary`（已教概念账文本）里已经有的概念，
+    /// 点名它的缺口就不再出行——补上了的缺口不该一直重放到它掉出读表窗口。
+    ///
+    /// **旁路**：读失败只 warn 并回空串——缺口节是参考，永远不拖垮生长回合
+    /// （与唤醒通道同律）。不碰水位：水位的意思是「修补已读」，与教练消费
+    /// 无关。on 臂留一行读数（rows = 扫过几行、gaps = 出几行、resolved = 因
+    /// 已处置丢掉几组），真机 A/B 靠它确认 on 臂真的渲染了缺口块。
+    async fn coach_concept_gaps(&self, course_id: &LearningCourseId, taught_summary: &str) -> String {
         let rows: Vec<FindingRow> = match sqlx::query_as(
             "SELECT seq, source, field, issue, advice FROM learning_structure_findings \
              WHERE course_id = ? AND source = 'concept-review' ORDER BY seq DESC LIMIT 200",
@@ -3402,14 +3414,15 @@ impl LearningService {
                 return String::new();
             }
         };
-        let lines = concept_gap_lines(&rows);
+        let gaps = concept_gap_lines(&rows, taught_summary);
         tracing::info!(
             course = course_id.as_str(),
             rows = rows.len(),
-            gaps = lines.len(),
+            gaps = gaps.lines.len(),
+            resolved = gaps.resolved,
             "coach concept gaps assembled"
         );
-        lines.join("\n")
+        gaps.lines.join("\n")
     }
 
     /// 课程内课时标题表（行为摘要渲染卡点用）。
