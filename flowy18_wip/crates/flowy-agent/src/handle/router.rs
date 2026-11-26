@@ -7,10 +7,10 @@ use std::sync::{Arc, Weak};
 
 use flowy_agent_core::{
     AcceptanceQueue, BranchHeartbeat, DisambiguationOption, DispatchRecord,
-    Engine, FactStatus, ObjectVerifyState, PendingCard, PreToolDecision,
-    PreToolHook, ReceiptState, SessionOrigin, SessionRecord, SessionRole,
-    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
-    TrackedObjectKind, TurnState, WorkAccessMode,
+    Engine, ExecutionMetadata, FactStatus, ObjectVerifyState, PendingCard,
+    PreToolDecision, PreToolHook, ReceiptState, SessionOrigin, SessionRecord,
+    SessionRole, SessionWorkspace, StopHandoffManifest, SubmissionOutcome,
+    TrackedObject, TrackedObjectKind, TurnState, WorkAccessMode,
     tools::{ToolDefinition, ToolRegistry},
     types::{CancelToken, ToolCallArgs, ToolExecutionResult, ToolRunContext},
 };
@@ -1029,6 +1029,7 @@ impl Harness {
                             workspace: parent_workspace,
                             origin,
                             session_workspace,
+                            execution: ExecutionMetadata::conversation(),
                             heartbeat: None,
                             role: SessionRole::Worker,
                             root_session_id: Some(router_id.to_owned()),

@@ -95,6 +95,8 @@ fn offline_agent_baseline() {
                 SessionIndex {
                     active: Some("perf-session".into()),
                     sessions: vec![SessionRecord {
+                        execution: flowy_agent_core::ExecutionMetadata::default(
+                        ),
                         id: "perf-session".into(),
                         title: "Offline performance fixture".into(),
                         updated_at: 1,

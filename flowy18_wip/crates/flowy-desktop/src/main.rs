@@ -3,36 +3,6 @@ use std::sync::{Arc, OnceLock};
 
 static LOG_GUARDS: OnceLock<LogGuards> = OnceLock::new();
 
-/// Exclusive lock on the data directory, one per running instance.
-///
-/// Two instances would each write `preferences.json`, each hold their own
-/// session list, and each add a tray icon, so the second one exits instead.
-/// The lock is an advisory file lock rather than a sentinel file: the OS drops
-/// it when the process dies, so a crash never leaves the app unable to start.
-struct InstanceLock {
-    _file: std::fs::File,
-}
-
-impl InstanceLock {
-    fn acquire(data_root: &std::path::Path) -> std::io::Result<Self> {
-        std::fs::create_dir_all(data_root)?;
-        let path = data_root.join("instance.lock");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)?;
-        file.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("{} is locked by another instance", path.display()),
-            ),
-            std::fs::TryLockError::Error(error) => error,
-        })?;
-        Ok(Self { _file: file })
-    }
-}
-
 /// Point pi-rust's temp staging and child shells at the app runtime directory.
 ///
 /// SAFETY: called from `main` before GPUI, tracing, telemetry, or any worker
@@ -60,11 +30,11 @@ fn main() {
     // Held for the whole process. Dropping it releases the lock, and the OS
     // releases it anyway when the process dies, so a crash cannot leave a
     // stale lock behind.
-    let _instance = match InstanceLock::acquire(&data_root) {
+    let bootstrap = match flowy_app::app::OwnedBootstrap::acquire(&data_root) {
         Ok(lock) => lock,
         Err(error) => {
             eprintln!(
-                "{} is already running ({error}).",
+                "{} could not acquire its data directory ({error}).",
                 flowy_app::brand_api::product()
             );
             return;
@@ -180,5 +150,10 @@ fn main() {
         stage = "main::application.run",
         "→ app::run"
     );
-    application.run(flowy_app::app::run);
+    application.run(move |cx| {
+        if let Err(error) = flowy_app::app::run_owned(bootstrap, cx) {
+            tracing::error!(%error, "could not start application host");
+            cx.quit();
+        }
+    });
 }

@@ -6,6 +6,7 @@
 //! pairing, so a restored session can be sent to a model unchanged.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,93 @@ pub enum SessionOrigin {
     },
     #[default]
     Unknown,
+}
+
+/// Stable, host-assigned owner identity. This is an external subject, never a credential.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionOwner {
+    pub authority: String,
+    pub subject: String,
+}
+
+impl fmt::Debug for ExecutionOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExecutionOwner(<redacted>)")
+    }
+}
+
+/// Why the host created a session, independent of its Home/Project origin.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecutionSource {
+    #[default]
+    Unknown,
+    Conversation,
+    Automation {
+        automation_id: String,
+        run_id: String,
+        attempt_id: String,
+    },
+}
+
+/// Durable execution identity. Legacy data stays unknown and unowned.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutionMetadata {
+    pub owner: Option<ExecutionOwner>,
+    pub source: ExecutionSource,
+}
+
+impl ExecutionMetadata {
+    #[must_use]
+    pub const fn conversation() -> Self {
+        Self {
+            owner: None,
+            source: ExecutionSource::Conversation,
+        }
+    }
+
+    /// Check identity shape without resolving account authorization.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        if self.owner.as_ref().is_some_and(|owner| {
+            owner.authority.trim().is_empty() || owner.subject.trim().is_empty()
+        }) {
+            return false;
+        }
+        match &self.source {
+            ExecutionSource::Unknown | ExecutionSource::Conversation => true,
+            ExecutionSource::Automation {
+                automation_id,
+                run_id,
+                attempt_id,
+            } => {
+                self.owner.is_some()
+                    && !automation_id.trim().is_empty()
+                    && !run_id.trim().is_empty()
+                    && !attempt_id.trim().is_empty()
+            }
+        }
+    }
+}
+
+/// Immutable binding checked when a host ensures a detached session exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSpec {
+    pub id: String,
+    pub created_at_ms: u64,
+    pub origin: SessionOrigin,
+    pub workspace: Option<SessionWorkspace>,
+    pub execution: ExecutionMetadata,
+    pub role: SessionRole,
+    pub root_session_id: Option<String>,
+    pub access_mode: WorkAccessMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionCreateDisposition {
+    Created,
+    Existing,
 }
 
 /// Host-assigned workspace for one session, separate from the ambient process
@@ -49,6 +137,35 @@ pub struct DeliveryCommit {
     pub origin: SessionOrigin,
     #[serde(default)]
     pub origin_title_snapshot: String,
+    #[serde(default)]
+    pub execution: ExecutionMetadata,
+}
+
+/// What execution produced, independent of artifact-marker and notification
+/// delivery. A failed marker must never turn a completed model run into a new
+/// execution attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnExecutionOutcome {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+/// Terminal evidence saved in the same atomic history replacement as the
+/// turn's messages. Older history has no evidence and stays unknown.
+///
+/// `artifact_ids` is the complete group requiring the independent artifact
+/// marker; it does not claim that marker has been written. An empty group
+/// requires no artifact commit. The (session, submission) pair is immutable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnCompletionEvidence {
+    pub session_id: String,
+    pub submission_id: String,
+    pub outcome: TurnExecutionOutcome,
+    pub artifact_ids: Vec<String>,
+    pub committed_at_ms: u64,
+    pub execution: ExecutionMetadata,
 }
 
 /// Host callback that makes a prepared delivery group visible in its
@@ -558,6 +675,10 @@ pub struct SessionRecord {
     /// Idempotency ledger mapping `request_id` to its committed worker dispatch.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dispatch_requests: BTreeMap<String, DispatchRecord>,
+    #[serde(default)]
+    pub turn_completions: Vec<TurnCompletionEvidence>,
+    #[serde(default)]
+    pub execution: ExecutionMetadata,
 }
 
 #[expect(
@@ -794,6 +915,7 @@ mod tests {
 
     fn record() -> SessionRecord {
         SessionRecord {
+            execution: crate::session::ExecutionMetadata::default(),
             id: "session-1".into(),
             title: "config".into(),
             titled: true,
@@ -843,7 +965,7 @@ mod tests {
     fn missing_file_is_an_empty_index_not_an_error() {
         let scratch = Scratch::new("missing");
         let index = SessionIndex::load(&scratch.0).unwrap();
-        assert_eq!(index.sessions, Vec::new());
+        assert_eq!(index.sessions.as_slice(), []);
         assert!(index.active.is_none());
     }
 
@@ -885,7 +1007,7 @@ mod tests {
                 .unwrap();
         assert_eq!(record.origin, SessionOrigin::Unknown);
         assert!(record.workspace.is_none());
-        assert_eq!(record.delivery_commits, Vec::new());
+        assert_eq!(record.delivery_commits.as_slice(), []);
         let result: ContentBlock = serde_json::from_str(
             r#"{"type":"tool-result","tool_call_id":"old-call","content":[],"is_error":false}"#,
         ).unwrap();

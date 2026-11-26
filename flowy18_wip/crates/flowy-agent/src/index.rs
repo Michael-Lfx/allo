@@ -35,6 +35,8 @@ pub struct SessionRecord {
     #[serde(default)]
     pub session_workspace: Option<SessionWorkspace>,
     #[serde(default)]
+    pub execution: flowy_agent_core::ExecutionMetadata,
+    #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
     pub archived: bool,
@@ -224,6 +226,7 @@ mod tests {
         SessionIndex {
             active: Some("s-1".into()),
             sessions: vec![SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "s-1".into(),
                 title: "task".into(),
                 updated_at: 1,

@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit, Engine,
-    EngineConfig, EnqueueOutcome, LoopOutcome, ModelRoute, PendingCard,
-    PendingRouterFollowup, PromptTurn, ReceiptState, RequiredDeliverable,
-    RunError, SessionOrigin, SessionRecord, SessionRole, SessionWorkspace,
-    StopHandoffManifest, SubmissionOutcome, TurnObserver, TurnState,
-    WorkAccessMode, complete_text, echo_stream_fn, log_preview,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, CancelDisposition,
+    DeliveryCommit, Engine, EngineConfig, EnqueueOutcome, ExecutionMetadata,
+    LoopOutcome, PendingCard, PendingRouterFollowup, PromptTurn, ReceiptState,
+    RequiredDeliverable, RunError, SessionOrigin, SessionRecord, SessionRole,
+    SessionSpec, SessionWorkspace, StopHandoffManifest, SubmissionOutcome,
+    TurnObserver, TurnState, WorkAccessMode, complete_text, echo_stream_fn,
+    log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -25,14 +26,17 @@ use flowy_agent_core::{
     },
 };
 use flowy_skills::{
-    InstalledSkill, SkillId, cleanup_staging, format_available_skills,
-    format_skill_invocation, load_installed, seed_official,
+    InstalledSkill, cleanup_staging, load_installed, seed_official,
 };
+use tokio::sync::broadcast;
 
 use crate::artifact_store::{
     ArtifactRecord, ArtifactStore, SessionDeletionState,
 };
 use crate::config::LlmConfig;
+use crate::execution_host::{
+    append_skill_listing, model_route, prepare_skill_prompt,
+};
 pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
 use crate::projection::{
@@ -217,6 +221,55 @@ pub struct WorkStatus {
 /// permanently to the graceful fallback title (prevents offline retry loops).
 const MAX_AUTO_TITLE_ATTEMPTS: u8 = 2;
 
+#[derive(Clone, Debug)]
+pub struct AgentSnapshot {
+    pub revision: u64,
+    pub initialized: bool,
+    pub initialization: AgentInitialization,
+    pub sessions: Vec<SessionSummary>,
+    pub active_session_id: Option<String>,
+    pub history: ChatHistory,
+    pub active_workspace: Option<AgentWorkspace>,
+    pub skills: Vec<InstalledSkill>,
+    pub artifacts: Option<Vec<ArtifactRecord>>,
+    pub storage_error_revision: u64,
+}
+
+/// Result of the initial storage load, retained independently of later errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentInitialization {
+    Initializing,
+    Ready,
+    /// Damaged history or an index was preserved separately before recovery.
+    Quarantined,
+    /// Storage could not be completely loaded or recovered.
+    Unavailable,
+}
+
+struct InitializationReport {
+    state: AgentInitialization,
+    unavailable: bool,
+    quarantined: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum AgentUpdateBatch {
+    Snapshot(AgentSnapshot),
+    Updates {
+        version: u64,
+        storage_error_revision: u64,
+        updates: Vec<AgentUpdate>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct VersionedAgentUpdate {
+    version: u64,
+    update: AgentUpdate,
+}
+
+const UPDATE_CHANNEL_CAPACITY: usize = 256;
+
 struct Live {
     projection: ChatProjection,
     title: String,
@@ -237,6 +290,7 @@ struct Live {
     workspace: Option<AgentWorkspace>,
     origin: SessionOrigin,
     session_workspace: Option<SessionWorkspace>,
+    execution: ExecutionMetadata,
     heartbeat: Option<BranchHeartbeat>,
     role: SessionRole,
     root_session_id: Option<String>,
@@ -332,6 +386,7 @@ struct UiState {
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
     initializing: Mutex<bool>,
+    initialization: Mutex<InitializationReport>,
     context_generation: AtomicU64,
     semantic_verify_enabled: AtomicBool,
     updates: Mutex<VecDeque<AgentUpdate>>,
@@ -341,6 +396,11 @@ struct UiState {
     accept_drain: Mutex<()>,
     dispatch: Mutex<()>,
     index_write: Mutex<()>,
+    update_sender: broadcast::Sender<VersionedAgentUpdate>,
+    update_version: AtomicU64,
+    update_publish: Mutex<()>,
+    storage_error_revision: AtomicU64,
+    storage_owner: Option<Arc<dyn Send + Sync>>,
 }
 
 fn env_semantic_verify_enabled() -> bool {
@@ -356,11 +416,16 @@ fn env_semantic_verify_enabled() -> bool {
 }
 
 impl UiState {
-    fn new(root: PathBuf, artifact_store: Option<ArtifactStore>) -> Self {
+    fn new(
+        root: PathBuf,
+        artifact_store: Option<ArtifactStore>,
+        storage_owner: Option<Arc<dyn Send + Sync>>,
+    ) -> Self {
         let store_slot = OnceLock::new();
         if let Some(store) = artifact_store {
             let _ = store_slot.set(store);
         }
+        let (update_sender, _) = broadcast::channel(UPDATE_CHANNEL_CAPACITY);
         Self {
             root,
             live: Mutex::new(HashMap::new()),
@@ -392,6 +457,11 @@ impl UiState {
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
             initializing: Mutex::new(true),
+            initialization: Mutex::new(InitializationReport {
+                state: AgentInitialization::Initializing,
+                unavailable: false,
+                quarantined: false,
+            }),
             context_generation: AtomicU64::new(0),
             semantic_verify_enabled: AtomicBool::new(
                 env_semantic_verify_enabled(),
@@ -403,27 +473,83 @@ impl UiState {
             accept_drain: Mutex::new(()),
             dispatch: Mutex::new(()),
             index_write: Mutex::new(()),
+            update_sender,
+            update_version: AtomicU64::new(0),
+            update_publish: Mutex::new(()),
+            storage_error_revision: AtomicU64::new(0),
+            storage_owner,
         }
     }
 
     fn push_update(&self, update: AgentUpdate) {
-        lock(&self.updates).push_back(update);
+        let mut updates = lock(&self.updates);
+        if updates.len() == UPDATE_CHANNEL_CAPACITY {
+            updates.pop_front();
+        }
+        updates.push_back(update.clone());
+        drop(updates);
+        self.publish_update(update);
     }
 
     fn stream_changed(&self, session: &str) {
+        let update = AgentUpdate::Session {
+            id: session.to_owned(),
+        };
         let mut updates = lock(&self.updates);
-        if !updates.iter().any(|update| matches!(update, AgentUpdate::Session { id } if id == session)) {
-            updates.push_back(AgentUpdate::Session { id: session.to_owned() });
+        if !updates.iter().any(|queued| matches!(queued, AgentUpdate::Session { id } if id == session)) {
+            if updates.len() == UPDATE_CHANNEL_CAPACITY {
+                updates.pop_front();
+            }
+            updates.push_back(update.clone());
         }
+        drop(updates);
+        self.publish_update(update);
+    }
+
+    fn publish_update(&self, update: AgentUpdate) {
+        let _publish = lock(&self.update_publish);
+        let version = self.update_version.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self
+            .update_sender
+            .send(VersionedAgentUpdate { version, update });
     }
 
     fn report_storage_error(&self) {
+        self.record_initialization_failure();
+        self.notify_storage_error();
+    }
+
+    fn record_initialization_failure(&self) {
+        let mut report = lock(&self.initialization);
+        if report.state == AgentInitialization::Initializing {
+            report.unavailable = true;
+        }
+    }
+
+    fn report_quarantined_storage(&self) {
+        lock(&self.initialization).quarantined = true;
+        self.notify_storage_error();
+    }
+
+    fn finish_initialization(&self) {
+        let mut report = lock(&self.initialization);
+        report.state = if report.unavailable {
+            AgentInitialization::Unavailable
+        } else if report.quarantined {
+            AgentInitialization::Quarantined
+        } else {
+            AgentInitialization::Ready
+        };
+    }
+
+    fn notify_storage_error(&self) {
         tracing::error!(
             target: "flowy.storage",
             operation = "report session storage failure",
             root = %self.root.display(),
             "session storage failure reached the UI"
         );
+        self.storage_error_revision.fetch_add(1, Ordering::AcqRel);
         self.push_update(AgentUpdate::StorageError);
     }
 }
@@ -436,7 +562,7 @@ impl UiState {
 struct RuntimeOwner {
     state: Arc<UiState>,
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
-    _runtime: tokio::runtime::Runtime,
+    _runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl Drop for RuntimeOwner {
@@ -444,9 +570,11 @@ impl Drop for RuntimeOwner {
         self.state.shutdown_requested.store(true, Ordering::Release);
         self.state.autonomous_drain.store(false, Ordering::Release);
         self.state.drain_cancel.cancel();
-        let engine = lock(&self.engine).clone();
-        if let Some(engine) = engine {
-            engine.cancel_all_active();
+        if self._runtime.is_some() {
+            let engine = lock(&self.engine).clone();
+            if let Some(engine) = engine {
+                engine.cancel_all_active();
+            }
         }
     }
 }
@@ -475,6 +603,67 @@ pub struct AgentHandle {
     _runtime: Arc<RuntimeOwner>,
 }
 
+#[derive(Debug)]
+pub struct AgentSubscription {
+    handle: AgentHandle,
+    receiver: broadcast::Receiver<VersionedAgentUpdate>,
+    cursor: Option<u64>,
+}
+
+impl AgentSubscription {
+    /// Returns independent updates, or a complete snapshot after subscribe or lag.
+    pub fn poll(&mut self) -> Option<AgentUpdateBatch> {
+        if self.cursor.is_none() {
+            return Some(self.resynchronize());
+        }
+
+        let mut updates = Vec::new();
+        loop {
+            match self.receiver.try_recv() {
+                Ok(event) => {
+                    let cursor = self.cursor.unwrap_or_default();
+                    if event.version <= cursor {
+                        continue;
+                    }
+                    if cursor.checked_add(1) != Some(event.version) {
+                        return Some(self.resynchronize());
+                    }
+                    self.cursor = Some(event.version);
+                    updates.push(event.update);
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    return Some(self.resynchronize());
+                }
+                Err(
+                    broadcast::error::TryRecvError::Empty
+                    | broadcast::error::TryRecvError::Closed,
+                ) => break,
+            }
+        }
+
+        if updates.is_empty() {
+            None
+        } else {
+            Some(AgentUpdateBatch::Updates {
+                version: self.cursor.unwrap_or_default(),
+                storage_error_revision: self
+                    .handle
+                    .inner
+                    .state
+                    .storage_error_revision
+                    .load(Ordering::Acquire),
+                updates,
+            })
+        }
+    }
+
+    fn resynchronize(&mut self) -> AgentUpdateBatch {
+        let snapshot = self.handle.snapshot();
+        self.cursor = Some(snapshot.revision);
+        AgentUpdateBatch::Snapshot(snapshot)
+    }
+}
+
 impl std::fmt::Debug for AgentHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentHandle").finish_non_exhaustive()
@@ -488,6 +677,28 @@ impl Default for AgentHandle {
 }
 
 impl AgentHandle {
+    /// Request cancellation for an explicit session and report its real commit
+    /// boundary. A too-late result leaves finalizing UI state untouched.
+    pub fn request_cancel_typed(
+        &self,
+        session_id: &str,
+    ) -> Result<CancelDisposition, &'static str> {
+        let engine = self.completion_engine()?;
+        let disposition =
+            engine.request_cancel_typed(session_id).map_err(|error| {
+                log_storage_io_error(
+                    "cancel explicit agent turn",
+                    &flowy_agent_core::SessionIndex::path(
+                        &self.inner.state.root,
+                    ),
+                    &error,
+                );
+                self.inner.state.report_storage_error();
+                "notice.storage_error"
+            })?;
+        Ok(disposition)
+    }
+
     #[must_use]
     pub fn new(store_root: PathBuf) -> Self {
         Self::with_config(store_root, LlmConfig::from_env())
@@ -507,26 +718,129 @@ impl AgentHandle {
         store_root: PathBuf,
         config: LlmConfig,
     ) -> Self {
-        let handle = Self::uninitialized(store_root, config);
-        let worker = handle.clone();
+        Self::uninitialized(store_root, config).initialize_background()
+    }
+
+    /// Use an application-owned runtime without creating or shutting it down.
+    ///
+    /// The caller must keep the runtime alive until every agent handle and
+    /// its in-flight work have finished. Storage initialization is synchronous.
+    #[must_use]
+    pub fn with_config_on_runtime(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        let handle =
+            Self::uninitialized_with_runtime(store_root, config, Some(runtime));
+        handle.initialize();
+        handle
+    }
+
+    /// Initialize storage off the UI thread using an application-owned runtime.
+    ///
+    /// Queries remain in their existing loading state until initialization
+    /// completes. The caller must keep the runtime alive for all agent work;
+    /// dropping this handle never shuts down the borrowed runtime.
+    #[must_use]
+    pub fn with_config_background_on_runtime(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self::uninitialized_with_runtime(store_root, config, Some(runtime))
+            .initialize_background()
+    }
+
+    /// Borrow a runtime while retaining its storage owner for all agent work.
+    ///
+    /// The caller owns the runtime. Observers, artifact stores and in-flight
+    /// work retain the supplied storage owner even after the last public
+    /// handle has been dropped, so its exclusive lock outlives their writes.
+    #[must_use]
+    pub fn with_config_on_runtime_guarded(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: tokio::runtime::Handle,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Self {
+        let handle = Self::uninitialized_with_runtime_and_owner(
+            store_root,
+            config,
+            Some(runtime),
+            Some(owner),
+        );
+        handle.initialize();
+        handle
+    }
+
+    /// Initialize storage in the background while retaining its storage owner.
+    ///
+    /// See [`Self::with_config_on_runtime_guarded`] for the owner contract.
+    #[must_use]
+    pub fn with_config_background_on_runtime_guarded(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: tokio::runtime::Handle,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self::uninitialized_with_runtime_and_owner(
+            store_root,
+            config,
+            Some(runtime),
+            Some(owner),
+        )
+        .initialize_background()
+    }
+
+    fn initialize_background(self) -> Self {
+        let worker = self.clone();
         if std::thread::Builder::new()
             .name("flowy-storage-init".into())
             .spawn(move || worker.initialize())
             .is_err()
         {
-            *lock(&handle.inner.state.load_failed) = true;
-            *lock(&handle.inner.state.initializing) = false;
-            handle.inner.state.report_storage_error();
-            handle.inner.state.push_update(AgentUpdate::Initialized);
+            *lock(&self.inner.state.load_failed) = true;
+            self.inner.state.report_storage_error();
+            self.inner.state.finish_initialization();
+            *lock(&self.inner.state.initializing) = false;
+            self.inner.state.push_update(AgentUpdate::Initialized);
         }
-        handle
+        self
     }
 
     pub fn is_initializing(&self) -> bool {
         *lock(&self.inner.state.initializing)
     }
 
+    /// Initial storage result; subsequent execution errors do not change it.
+    pub fn initialization_state(&self) -> AgentInitialization {
+        if self.is_initializing() {
+            return AgentInitialization::Initializing;
+        }
+        lock(&self.inner.state.initialization).state
+    }
+
     fn uninitialized(store_root: PathBuf, config: LlmConfig) -> Self {
+        Self::uninitialized_with_runtime(store_root, config, None)
+    }
+
+    fn uninitialized_with_runtime(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: Option<tokio::runtime::Handle>,
+    ) -> Self {
+        Self::uninitialized_with_runtime_and_owner(
+            store_root, config, runtime, None,
+        )
+    }
+
+    fn uninitialized_with_runtime_and_owner(
+        store_root: PathBuf,
+        config: LlmConfig,
+        runtime: Option<tokio::runtime::Handle>,
+        owner: Option<Arc<dyn Send + Sync>>,
+    ) -> Self {
         tracing::debug!(
             target: "flowy.boot",
             stage = "AgentHandle::with_config",
@@ -535,14 +849,22 @@ impl AgentHandle {
             model = %config.model,
             "enter"
         );
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .thread_name("flowy-agent")
-            .build()
-            .expect("tokio runtime for agent harness");
-        let rt_handle = runtime.handle().clone();
-        let state = Arc::new(UiState::new(store_root, None));
+        let (rt_handle, runtime) = match runtime {
+            Some(handle) => (handle, None),
+            None => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .thread_name("flowy-agent")
+                    .build()
+                    .expect("tokio runtime for agent harness");
+                (runtime.handle().clone(), Some(runtime))
+            }
+        };
+        let state = Arc::new(UiState::new(store_root, None, owner));
+        if state.storage_owner.is_some() {
+            *lock(&state.origin_for_new_sessions) = SessionOrigin::Home;
+        }
         let engine = Arc::new(Mutex::new(None));
         let owner = Arc::new(RuntimeOwner {
             state: Arc::clone(&state),
@@ -564,7 +886,10 @@ impl AgentHandle {
     fn initialize(&self) {
         self.reload_skills();
         let artifact_root = self.inner.state.root.join("artifacts");
-        match ArtifactStore::open(artifact_root.clone()) {
+        match ArtifactStore::open_guarded(
+            artifact_root.clone(),
+            self.inner.state.storage_owner.clone(),
+        ) {
             Ok(store) => {
                 let _ = self.inner.state.artifact_store.set(store);
             }
@@ -574,6 +899,7 @@ impl AgentHandle {
                     &artifact_root,
                     &error,
                 );
+                self.inner.state.record_initialization_failure();
             }
         }
         let config = lock(&self.inner.config).clone();
@@ -601,6 +927,7 @@ impl AgentHandle {
             if let Some(engine) = engine {
                 engine.set_config(engine_config(&config, &cwd));
             }
+            self.inner.state.finish_initialization();
             *initializing = false;
         }
         self.inner.state.push_update(AgentUpdate::Initialized);
@@ -623,6 +950,7 @@ impl AgentHandle {
         let root = &self.inner.state.root;
         cleanup_staging(root);
         if let Err(error) = seed_official(root) {
+            self.inner.state.record_initialization_failure();
             tracing::warn!(
                 target: "flowy.skills",
                 error = %error,
@@ -632,6 +960,7 @@ impl AgentHandle {
         match load_installed(root) {
             Ok(catalog) => {
                 for failure in &catalog.failures {
+                    self.inner.state.record_initialization_failure();
                     tracing::warn!(
                         target: "flowy.skills",
                         error = %failure,
@@ -641,6 +970,7 @@ impl AgentHandle {
                 *lock(&self.inner.skills) = catalog.skills;
             }
             Err(error) => {
+                self.inner.state.record_initialization_failure();
                 tracing::warn!(
                     target: "flowy.skills",
                     error = %error,
@@ -683,7 +1013,7 @@ impl AgentHandle {
                     state.report_storage_error();
                     return Vec::new();
                 }
-                state.report_storage_error();
+                state.report_quarantined_storage();
                 SessionIndex::default()
             }
             Err(error) => {
@@ -722,7 +1052,7 @@ impl AgentHandle {
                     state.report_storage_error();
                     return Vec::new();
                 }
-                state.report_storage_error();
+                state.report_quarantined_storage();
                 match Engine::open(
                     state.root.clone(),
                     engine_config(&config, &tool_cwd),
@@ -809,6 +1139,7 @@ impl AgentHandle {
                         workspace: record.workspace,
                         origin: record.origin,
                         session_workspace: record.session_workspace,
+                        execution: record.execution,
                         heartbeat: None,
                         role: record.role,
                         root_session_id: record.root_session_id,
@@ -817,13 +1148,16 @@ impl AgentHandle {
                 );
             }
             drop(live);
-            let active_workspace = active.as_ref().and_then(|id| {
-                lock(&state.live)
-                    .get(id)
-                    .and_then(|session| session.workspace.clone())
-            });
-            *lock(&state.active) = active;
-            *lock(&state.workspace_for_new_sessions) = active_workspace;
+            let _dispatch = lock(&state.dispatch);
+            if state.context_generation.load(Ordering::Acquire) == 0 {
+                let active_workspace = active.as_ref().and_then(|id| {
+                    lock(&state.live)
+                        .get(id)
+                        .and_then(|session| session.workspace.clone())
+                });
+                *lock(&state.active) = active;
+                *lock(&state.workspace_for_new_sessions) = active_workspace;
+            }
         }
         // If the UI index was lost or quarantined, rebuild the visible sessions
         // from the structured history instead of hiding them.
@@ -831,7 +1165,10 @@ impl AgentHandle {
             let mut commits = Vec::new();
             let mut recovery_ok = !*lock(&state.history_unavailable);
             for session in engine.sessions() {
-                match store.recover_commits(&session.delivery_commits) {
+                let recovered =
+                    observer::validated_delivery_commits(&engine, &session)
+                        .and_then(|commits| store.recover_commits(&commits));
+                match recovered {
                     Ok(()) => {
                         for commit in &session.delivery_commits {
                             confirm_commit_audit(&state.root, store, commit);
@@ -1102,6 +1439,36 @@ impl AgentHandle {
         lock(&self.inner.state.updates).drain(..).collect()
     }
 
+    /// Subscribe independently to changes from this shared agent host.
+    #[must_use]
+    pub fn subscribe(&self) -> AgentSubscription {
+        AgentSubscription {
+            handle: self.clone(),
+            receiver: self.inner.state.update_sender.subscribe(),
+            cursor: None,
+        }
+    }
+
+    fn snapshot(&self) -> AgentSnapshot {
+        let state = &self.inner.state;
+        let revision = state.update_version.load(Ordering::Acquire);
+        let initialization = self.initialization_state();
+        AgentSnapshot {
+            revision,
+            initialized: initialization != AgentInitialization::Initializing,
+            initialization,
+            sessions: self.list_sessions(),
+            active_session_id: self.active_session_id(),
+            history: self.chat_history(),
+            active_workspace: self.active_workspace(),
+            skills: self.skill_catalog(),
+            artifacts: self.artifacts().ok(),
+            storage_error_revision: state
+                .storage_error_revision
+                .load(Ordering::Acquire),
+        }
+    }
+
     pub fn list_sessions(&self) -> Vec<SessionSummary> {
         let live = lock(&self.inner.state.live);
         let mut rows: Vec<SessionSummary> = live
@@ -1160,7 +1527,7 @@ impl AgentHandle {
                 ))
             })
             .ok_or("notice.session_storage_failed")??;
-        ensure_engine_session(&engine, session_id)
+        ensure_engine_session(&engine, session_id, &self.inner.state)
             .and_then(|()| {
                 engine.set_session_title(session_id, cleaned.clone(), true)
             })
@@ -1226,7 +1593,7 @@ impl AgentHandle {
                 Ok(session.pinned)
             })
             .ok_or("notice.session_storage_failed")??;
-        ensure_engine_session(&engine, session_id)
+        ensure_engine_session(&engine, session_id, &self.inner.state)
             .and_then(|()| engine.set_session_pinned(session_id, pinned))
             .map_err(|error| {
                 log_storage_io_error(
@@ -1344,7 +1711,7 @@ impl AgentHandle {
             }
             prev
         };
-        ensure_engine_session(&engine, session_id)
+        ensure_engine_session(&engine, session_id, &self.inner.state)
             .and_then(|()| engine.set_session_archived(session_id, archived))
             .map_err(|error| {
                 log_storage_io_error(
@@ -1793,6 +2160,7 @@ impl AgentHandle {
         &self,
         workspace: Option<AgentWorkspace>,
     ) {
+        let _dispatch = lock(&self.inner.state.dispatch);
         *lock(&self.inner.state.workspace_for_new_sessions) = workspace;
         self.inner
             .state
@@ -1803,6 +2171,7 @@ impl AgentHandle {
     /// Set the explicit origin used by sessions created through the host.
     /// Legacy and restored sessions keep their persisted origin.
     pub fn set_origin_for_new_sessions(&self, origin: SessionOrigin) {
+        let _dispatch = lock(&self.inner.state.dispatch);
         *lock(&self.inner.state.origin_for_new_sessions) = origin;
         self.inner
             .state
@@ -2885,15 +3254,16 @@ impl Harness {
         };
         let engine = lock(&self.engine).clone().ok_or("notice.agent_failed")?;
         engine
-            .create_session_with_role(
-                id.clone(),
-                now,
-                origin.clone(),
-                session_workspace.clone(),
+            .create_if_absent(SessionSpec {
+                id: id.clone(),
+                created_at_ms: now,
+                origin: origin.clone(),
+                workspace: session_workspace.clone(),
+                execution: ExecutionMetadata::conversation(),
                 role,
-                root_session_id.clone(),
+                root_session_id: root_session_id.clone(),
                 access_mode,
-            )
+            })
             .map_err(|_| "notice.session_storage_failed")?;
         lock(&self.state.live).insert(
             id.clone(),
@@ -2913,6 +3283,7 @@ impl Harness {
                 workspace,
                 origin,
                 session_workspace,
+                execution: ExecutionMetadata::conversation(),
                 heartbeat: None,
                 role,
                 root_session_id,
@@ -3062,13 +3433,25 @@ impl Harness {
             }
             None => self.ensure_active_session_locked()?,
         };
-        if let Err(error) = ensure_engine_session(&engine, &id) {
+        self.settle_finishing_fence(&engine, &id);
+        if lock(&state.live)
+            .get(&id)
+            .is_some_and(|session| session.status.is_busy())
+            || engine.is_active(&id)
+            || (pending_claim.is_some() && self.has_busy_session())
+        {
+            return Err("notice.agent_busy");
+        }
+        if let Err(error) = ensure_engine_session(&engine, &id, &self.state) {
             log_storage_io_error(
                 "ensure structured session",
                 &flowy_agent_core::SessionIndex::path(&state.root),
                 &error,
             );
             state.report_storage_error();
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                return Err("notice.storage_error");
+            }
         }
         let core_session = engine.session(&id).ok_or("notice.agent_failed")?;
         let is_resumed = resumed.is_some();
@@ -3993,59 +4376,6 @@ fn compose_semantic_brief(
     out
 }
 
-fn model_route(config: &LlmConfig) -> ModelRoute {
-    ModelRoute {
-        provider: if config.provider.is_empty() {
-            "flowy".into()
-        } else {
-            config.provider.clone()
-        },
-        model: if config.model.is_empty() {
-            "mock".into()
-        } else {
-            config.model.clone()
-        },
-        base_url: config.base_url.clone(),
-        context_window: config.context_window,
-        max_tokens: config.max_tokens,
-    }
-}
-
-fn prepare_skill_prompt(
-    text: &str,
-    skills: &[InstalledSkill],
-) -> Result<(PromptTurn, Vec<SkillId>), &'static str> {
-    let Some(command) = text.strip_prefix("/skill:") else {
-        return Ok((PromptTurn::plain(text), Vec::new()));
-    };
-    let (name, args) = command
-        .split_once(' ')
-        .map_or((command, ""), |(name, args)| (name, args.trim()));
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("notice.skill_not_found");
-    }
-    let mut matches: Vec<&InstalledSkill> = skills
-        .iter()
-        .filter(|skill| {
-            skill.name == name
-                || format!("{}/{}", skill.id.owner_handle, skill.id.slug)
-                    == name
-        })
-        .collect();
-    let skill = match matches.len() {
-        0 => return Err("notice.skill_not_found"),
-        1 => matches.remove(0),
-        _ => return Err("notice.skill_ambiguous"),
-    };
-    let model =
-        format_skill_invocation(skill, (!args.is_empty()).then_some(args));
-    Ok((
-        PromptTurn::with_display(model, text),
-        vec![skill.id.clone()],
-    ))
-}
-
 const BASE_BEHAVIOR_PROMPT: &str = "Always respond in the same language as the user's latest message unless explicitly asked otherwise.";
 
 /// Returns `true` when `dir` contains at least one user-visible file or folder
@@ -4076,16 +4406,6 @@ fn workspace_has_user_files(dir: &Path, current_submission: &str) -> bool {
         return true;
     }
     false
-}
-
-fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
-    let listing = format_available_skills(skills);
-    match (base.trim().is_empty(), listing.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => base.to_owned(),
-        (true, false) => listing,
-        (false, false) => format!("{base}\n\n{listing}"),
-    }
 }
 
 fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {

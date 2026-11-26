@@ -259,6 +259,9 @@ pub struct StudioPanel {
     project_store_failed: bool,
     pub document: DocumentSession,
     pub agent: AgentHandle,
+    subscription: flowy_agent::AgentSubscription,
+    initial_context_generation: Option<u64>,
+    last_storage_error_revision: u64,
     pub credits: crate::CreditsViewState,
     pub(crate) popover: ActivePopover,
     pub(crate) credits_close: Option<Task<()>>,
@@ -340,7 +343,11 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        Self::new_with_mode(config, ui, false, window, cx)
+        let agent = AgentHandle::with_config(
+            config.store_root.clone(),
+            config.llm.clone(),
+        );
+        Self::new_using_agent(config, ui, agent, true, window, cx)
     }
 
     pub fn new_background(
@@ -349,13 +356,30 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        Self::new_with_mode(config, ui, true, window, cx)
+        let agent = AgentHandle::with_config_background(
+            config.store_root.clone(),
+            config.llm.clone(),
+        );
+        agent.set_autonomous_drain(true);
+        Self::new_using_agent(config, ui, agent, true, window, cx)
     }
 
-    fn new_with_mode(
+    /// Construct another window over an existing shared `AgentHandle`.
+    pub fn new_with_agent(
         config: StudioConfig,
         ui: UiContext,
-        background: bool,
+        agent: AgentHandle,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        Self::new_using_agent(config, ui, agent, false, window, cx)
+    }
+
+    fn new_using_agent(
+        config: StudioConfig,
+        ui: UiContext,
+        agent: AgentHandle,
+        configure_initial_context: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
@@ -375,7 +399,7 @@ impl StudioPanel {
             model_info_version,
             model_info_open,
             store_root,
-            llm,
+            ..
         } = config;
         // The placeholder has to be set through the generic setter: the
         // builder form only exists on the single-line state. Without it the
@@ -398,23 +422,18 @@ impl StudioPanel {
                 }
             },
         );
-        tracing::debug!(
-            target: "flowy.boot",
-            stage = "StudioPanel::new",
-            "→ AgentHandle::with_config"
-        );
-        let agent = if background {
-            let handle =
-                AgentHandle::with_config_background(store_root.clone(), llm);
-            handle.set_autonomous_drain(true);
-            handle
-        } else {
-            AgentHandle::with_config(store_root.clone(), llm)
-        };
-        if !agent.is_initializing() && agent.active_session_id().is_none() {
+        let subscription = agent.subscribe();
+        let initializing = agent.is_initializing();
+        if configure_initial_context
+            && !initializing
+            && agent.active_session_id().is_none()
+        {
             agent.set_workspace_for_new_sessions(None);
             agent.set_origin_for_new_sessions(SessionOrigin::Home);
         }
+        let initial_context_generation = (configure_initial_context
+            && initializing)
+            .then(|| agent.context_generation());
         // Startup always lands on a fresh task. The previous conversation stays
         // in the sidebar and is reopened on purpose, not by launching.
         let surface = StudioSurface::Home;
@@ -612,6 +631,9 @@ impl StudioPanel {
             project_store_failed,
             document: DocumentSession::new(product),
             agent,
+            subscription,
+            initial_context_generation,
+            last_storage_error_revision: 0,
             credits: crate::CreditsViewState::Unavailable,
             popover: if model_info_open {
                 ActivePopover::ModelInfo
@@ -676,9 +698,8 @@ impl StudioPanel {
                     .timer(Duration::from_millis(33))
                     .await;
                 let ok = weak.update(cx, |panel, cx| {
-                    let updates = panel.agent.drain_updates();
-                    if !updates.is_empty() {
-                        panel.process_agent_updates(updates, cx);
+                    if let Some(batch) = panel.subscription.poll() {
+                        panel.process_agent_batch(batch, cx);
                     }
                     let elapsed = panel.agent.working_elapsed_secs();
                     if panel.last_elapsed != elapsed {
@@ -710,6 +731,88 @@ impl StudioPanel {
         }));
     }
 
+    fn process_agent_batch(
+        &mut self,
+        batch: flowy_agent::AgentUpdateBatch,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match batch {
+            flowy_agent::AgentUpdateBatch::Snapshot(snapshot) => {
+                self.process_agent_snapshot(snapshot, cx);
+            }
+            flowy_agent::AgentUpdateBatch::Updates {
+                storage_error_revision,
+                updates,
+                ..
+            } => {
+                let new_storage_error = storage_error_revision
+                    > self.last_storage_error_revision
+                    && !updates.iter().any(|update| {
+                        matches!(update, flowy_agent::AgentUpdate::StorageError)
+                    });
+                self.last_storage_error_revision = storage_error_revision;
+                self.process_agent_updates(updates, cx);
+                if new_storage_error {
+                    self.emit_notice(Some("notice.session_storage_failed"), cx);
+                }
+            }
+        }
+    }
+
+    fn process_agent_snapshot(
+        &mut self,
+        snapshot: flowy_agent::AgentSnapshot,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let previous_storage_error_revision = self.last_storage_error_revision;
+        self.last_storage_error_revision = snapshot.storage_error_revision;
+        if snapshot.initialized {
+            self.initialized = true;
+            self.active_project_id = snapshot
+                .active_workspace
+                .as_ref()
+                .map(|workspace| workspace.project_id.clone());
+            if self.session_opened_by_user
+                && matches!(
+                    self.surface,
+                    StudioSurface::Home | StudioSurface::Chat
+                )
+            {
+                self.surface = if snapshot.history.rows.is_empty() {
+                    StudioSurface::Home
+                } else {
+                    StudioSurface::Chat
+                };
+            } else if matches!(self.surface, StudioSurface::Chat)
+                && snapshot.history.rows.is_empty()
+            {
+                self.surface = StudioSurface::Home;
+            }
+            if self.initial_context_generation.take().is_some_and(
+                |generation| generation == self.agent.context_generation(),
+            ) && snapshot.active_session_id.is_none()
+            {
+                self.agent.set_workspace_for_new_sessions(None);
+                self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
+            }
+            if self.notice == Some("library.loading") {
+                self.emit_notice(None, cx);
+            }
+            self.refresh_pending_receipts(cx);
+            cx.emit(StudioEvent::SessionsChanged);
+            cx.emit(StudioEvent::ArtifactsChanged);
+            cx.emit(StudioEvent::SkillsChanged);
+        }
+        if snapshot.storage_error_revision > previous_storage_error_revision {
+            self.emit_notice(Some("notice.session_storage_failed"), cx);
+        }
+        self.refresh_chat_from(
+            snapshot.active_session_id,
+            snapshot.history,
+            cx,
+        );
+    }
+
     pub(crate) fn process_agent_updates(
         &mut self,
         updates: Vec<flowy_agent::AgentUpdate>,
@@ -718,20 +821,25 @@ impl StudioPanel {
         if updates.is_empty() {
             return;
         }
+        self.active_project_id = self
+            .agent
+            .active_workspace()
+            .map(|workspace| workspace.project_id);
         let initialized = updates.iter().any(|update| {
             matches!(update, flowy_agent::AgentUpdate::Initialized)
         });
         if initialized {
             self.initialized = true;
-            self.active_project_id = self
-                .agent
-                .active_workspace()
-                .map(|workspace| workspace.project_id);
             // Startup always lands on Home: an existing history must not pull
             // the app back into the last thread. A session the user opened in
             // this run may restore into Chat, and an emptied conversation
             // steps back down to Home.
-            if self.session_opened_by_user {
+            if self.session_opened_by_user
+                && matches!(
+                    self.surface,
+                    StudioSurface::Home | StudioSurface::Chat
+                )
+            {
                 if self.agent.has_messages() {
                     self.surface = StudioSurface::Chat;
                 } else {
@@ -742,7 +850,10 @@ impl StudioPanel {
             {
                 self.surface = StudioSurface::Home;
             }
-            if self.agent.active_session_id().is_none() {
+            if self.initial_context_generation.take().is_some_and(
+                |generation| generation == self.agent.context_generation(),
+            ) && self.agent.active_session_id().is_none()
+            {
                 self.agent.set_workspace_for_new_sessions(None);
                 self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
             }
@@ -891,6 +1002,15 @@ impl StudioPanel {
     pub(crate) fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.agent.active_session_id();
         let history = self.agent.chat_history();
+        self.refresh_chat_from(session, history, cx);
+    }
+
+    fn refresh_chat_from(
+        &mut self,
+        session: Option<String>,
+        history: flowy_agent::ChatHistory,
+        cx: &mut Context<'_, Self>,
+    ) {
         let status = history.status.clone();
         let suppress_trailing_stopped = session
             .as_deref()
@@ -1311,6 +1431,34 @@ impl StudioPanel {
         } else {
             self.reset_session(cx);
         }
+    }
+
+    /// Creates an empty session in the workspace `open_project` just prepared.
+    pub fn create_task(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        self.active_project_id = self
+            .agent
+            .active_workspace()
+            .map(|workspace| workspace.project_id);
+        self.agent.set_origin_for_new_sessions(
+            match self.active_project_id.as_ref() {
+                Some(project_id) => SessionOrigin::Project {
+                    project_id: Some(project_id.clone()),
+                },
+                None => SessionOrigin::Home,
+            },
+        );
+        self.agent.create_session()?;
+        self.invalidate_submission(cx);
+        self.clear_right_sheet();
+        self.surface = StudioSurface::Home;
+        self.refresh_chat(cx);
+        self.set_prompt_text("", cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
     }
 
     /// Marks the cloud route ready and refreshes receipts/board state.
@@ -2857,6 +3005,7 @@ mod tests {
             )
         });
         let agent = cx.read_entity(&panel, |panel, _| panel.agent.clone());
+        let mut observer = agent.subscribe();
         // The loader is a real worker thread (SQLite + official skill seeding),
         // so yielding the test thread lets it finish without advancing the GPUI
         // timer pump or fabricating events. Allow generous wall-clock headroom
@@ -2864,12 +3013,12 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut updates = Vec::new();
         loop {
-            updates.extend(agent.drain_updates());
-            if !agent.is_initializing()
-                && updates.iter().any(|update| {
-                    matches!(update, flowy_agent::AgentUpdate::Initialized)
-                })
-            {
+            panel.update(cx, |panel, cx| {
+                if let Some(batch) = panel.subscription.poll() {
+                    panel.process_agent_batch(batch, cx);
+                }
+            });
+            if !agent.is_initializing() {
                 break;
             }
             assert!(
@@ -2879,14 +3028,18 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(updates.iter().any(|update| matches!(
-            update,
-            flowy_agent::AgentUpdate::Initialized
-        )));
+        assert!(matches!(
+            observer.poll(),
+            Some(flowy_agent::AgentUpdateBatch::Snapshot(
+                flowy_agent::AgentSnapshot {
+                    initialized: true,
+                    ..
+                }
+            ))
+        ));
         panel.update(cx, |panel, cx| {
             panel.surface = StudioSurface::Home;
             panel.fill_prompt("keep this draft", cx);
-            panel.process_agent_updates(updates, cx);
             assert_eq!(panel.notice, None);
             // Launching must not dive back into the last conversation just
             // because it still has history; the user asked for Home first.
@@ -3289,8 +3442,9 @@ mod tests {
         cx.run_until_parked();
         cx.update(|cx| {
             panel.update(cx, |panel, cx| {
-                let updates = panel.agent.drain_updates();
-                panel.process_agent_updates(updates, cx);
+                if let Some(batch) = panel.subscription.poll() {
+                    panel.process_agent_batch(batch, cx);
+                }
                 assert_eq!(panel.surface, StudioSurface::Automation);
                 panel.process_agent_updates(
                     vec![flowy_agent::AgentUpdate::StorageError],
@@ -3306,6 +3460,166 @@ mod tests {
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }
+    #[gpui::test]
+    fn resynchronized_snapshot_preserves_project_context(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "snapshot-project");
+        let folder = root.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        panel.update(cx, |panel, cx| {
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+            let project = panel.create_project("Project", &folder, cx).unwrap();
+            panel.fill_prompt("project draft", cx);
+            let workspace = panel.agent.active_workspace();
+            let generation = panel.agent.context_generation();
+
+            panel.subscription = panel.agent.subscribe();
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+
+            assert_eq!(panel.agent.active_workspace(), workspace);
+            assert_eq!(panel.agent.context_generation(), generation);
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(project.id.as_str())
+            );
+            assert_eq!(visible_prompt(panel, cx), "project draft");
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn initialized_snapshot_preserves_navigation_before_first_pump(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "initial-snapshot-navigation");
+        let folder = root.join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        panel.update(cx, |panel, cx| {
+            // Model a background constructor whose worker became ready
+            // before the first pump, while initial context setup is pending.
+            panel.initial_context_generation =
+                Some(panel.agent.context_generation());
+            panel.create_project("Project", &folder, cx).unwrap();
+            let workspace = panel.agent.active_workspace();
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+            assert_eq!(panel.agent.active_workspace(), workspace);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn resynchronized_snapshot_preserves_selected_surface(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "snapshot-surface");
+        panel.update(cx, |panel, cx| {
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+            let session = panel.agent.create_home_session().unwrap();
+            panel.open_session(&session, cx);
+            for surface in [
+                StudioSurface::Automation,
+                StudioSurface::Placeholder {
+                    title_key: "auto.schedule_title",
+                    detail_key: "auto.schedule_body",
+                },
+            ] {
+                panel.set_surface(surface, cx);
+                panel.subscription = panel.agent.subscribe();
+                let batch = panel.subscription.poll().unwrap();
+                panel.process_agent_batch(batch, cx);
+                assert_eq!(panel.surface, surface);
+            }
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn create_task_uses_shared_context_before_next_poll(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "shared-task-context");
+        let workspace = AgentWorkspace {
+            project_id: "shared-project".into(),
+            root: root.join("project"),
+        };
+        std::fs::create_dir_all(&workspace.root).unwrap();
+        panel.update(cx, |panel, cx| {
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+            // Another window can change the shared context before this
+            // panel's next pump. Creating a task must use that context.
+            let agent = panel.agent.clone();
+            agent.set_workspace_for_new_sessions(Some(workspace.clone()));
+            agent.set_origin_for_new_sessions(SessionOrigin::Project {
+                project_id: Some(workspace.project_id.clone()),
+            });
+            agent.clear_active().unwrap();
+            assert_eq!(panel.active_project_id, None);
+            panel.create_task(cx).unwrap();
+            let index: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join("sessions/index.json")).unwrap(),
+            )
+            .unwrap();
+            let record = &index["sessions"][0];
+            assert_eq!(record["origin"]["kind"], "project");
+            assert_eq!(record["origin"]["project_id"], workspace.project_id);
+            assert_eq!(
+                serde_json::from_value::<AgentWorkspace>(
+                    record["workspace"].clone()
+                )
+                .unwrap(),
+                workspace,
+            );
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(workspace.project_id.as_str())
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn storage_error_revision_is_reported_without_its_event(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, root) = submission_panel(cx, "snapshot-storage-error");
+        panel.update(cx, |panel, cx| {
+            let batch = panel.subscription.poll().unwrap();
+            panel.process_agent_batch(batch, cx);
+            panel.process_agent_batch(
+                flowy_agent::AgentUpdateBatch::Updates {
+                    version: 1,
+                    storage_error_revision: 1,
+                    updates: vec![flowy_agent::AgentUpdate::Sessions],
+                },
+                cx,
+            );
+            panel.subscription = panel.agent.subscribe();
+            let Some(flowy_agent::AgentUpdateBatch::Snapshot(mut snapshot)) =
+                panel.subscription.poll()
+            else {
+                panic!("reconnected subscriber receives a snapshot");
+            };
+            snapshot.storage_error_revision = 1;
+            panel.process_agent_batch(
+                flowy_agent::AgentUpdateBatch::Snapshot(snapshot),
+                cx,
+            );
+            assert_eq!(panel.notice, Some("notice.session_storage_failed"));
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[gpui::test]
     fn theme_changes_preserve_draft_and_do_not_leak_between_panels(
         cx: &TestAppContext,
@@ -3336,14 +3650,78 @@ mod tests {
                 ..LlmConfig::default()
             },
         };
+        let agent = flowy_agent::AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let project = AgentWorkspace {
+            project_id: "shared-project".into(),
+            root: root.join("project"),
+        };
+        std::fs::create_dir_all(&project.root).unwrap();
+        agent.set_workspace_for_new_sessions(Some(project.clone()));
         let first = open_panel(cx, {
             let config = panel_config(&root);
-            move |window, cx| StudioPanel::new(config, first_ui, window, cx)
+            let agent = agent.clone();
+            move |window, cx| {
+                StudioPanel::new_with_agent(config, first_ui, agent, window, cx)
+            }
         });
         let second = open_panel(cx, {
             let config = panel_config(&root);
-            move |window, cx| StudioPanel::new(config, second_ui, window, cx)
+            let agent = agent.clone();
+            move |window, cx| {
+                StudioPanel::new_with_agent(
+                    config, second_ui, agent, window, cx,
+                )
+            }
         });
+        for panel in [&first, &second] {
+            cx.update(|cx| {
+                panel.update(cx, |panel, cx| {
+                    let batch = panel.subscription.poll().unwrap();
+                    assert!(matches!(
+                        batch,
+                        flowy_agent::AgentUpdateBatch::Snapshot(_)
+                    ));
+                    panel.process_agent_batch(batch, cx);
+                    assert_eq!(
+                        panel.agent.active_workspace(),
+                        Some(project.clone())
+                    );
+                });
+            });
+        }
+        let selected = agent.create_home_session().unwrap();
+        for panel in [&first, &second] {
+            cx.update(|cx| {
+                panel.update(cx, |panel, cx| {
+                    let batch = panel.subscription.poll().unwrap();
+                    let flowy_agent::AgentUpdateBatch::Updates {
+                        ref updates,
+                        ..
+                    } = batch
+                    else {
+                        panic!(
+                            "each injected panel receives the shared update"
+                        );
+                    };
+                    assert!(updates.iter().any(|update| matches!(
+                        update,
+                        flowy_agent::AgentUpdate::Sessions
+                    )));
+                    assert_eq!(
+                        panel.agent.active_session_id().as_deref(),
+                        Some(selected.as_str())
+                    );
+                    panel.process_agent_batch(batch, cx);
+                    assert_eq!(panel.active_project_id, None);
+                });
+            });
+        }
         cx.update(|cx| {
             first.update(cx, |panel, cx| {
                 panel.fill_prompt("preserve draft", cx);

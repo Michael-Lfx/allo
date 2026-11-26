@@ -1,5 +1,6 @@
 #![allow(clippy::derive_partial_eq_without_eq)]
 
+mod app_host;
 mod appearance;
 mod artifact_cleanup;
 mod artifact_preview;
@@ -25,6 +26,7 @@ mod titlebar;
 use crate::i18n::{I18n, file_stamps};
 use crate::prefs::Preferences;
 use crate::session::SessionStore;
+pub use app_host::{AppHost, OwnedBootstrap};
 use flowy_auth::{
     AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
     normalize_otp,
@@ -133,6 +135,7 @@ enum PendingText {
 }
 
 pub struct FlowyApp {
+    host: AppHost,
     active_dialog: state::ActiveDialog,
     pub ui: flowy_ui::UiContext,
     pub theme: flowy_ui::ResolvedTheme,
@@ -274,6 +277,10 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let app_window_id = window.window_handle().window_id();
+        let host = AppHost::for_root(store.root(), cx).expect(
+            "acquire application store ownership before opening a window",
+        );
+        let model_events = AppHost::model_events(cx);
         tracing::debug!(
             target: "flowy.boot",
             stage = "FlowyApp::new",
@@ -364,6 +371,7 @@ impl FlowyApp {
             // to environment/BYOK configuration here.
             let llm = Self::disconnected_config();
             let ui = ui.clone();
+            let agent = host.agent();
             cx.new(move |cx| {
                 let config = flowy_studio::StudioConfig {
                     product,
@@ -375,13 +383,7 @@ impl FlowyApp {
                     store_root,
                     llm,
                 };
-                if cfg!(test) {
-                    // The deterministic GPUI harness uses the synchronous
-                    // constructor; production restores storage in the background.
-                    StudioPanel::new(config, ui, window, cx)
-                } else {
-                    StudioPanel::new_background(config, ui, window, cx)
-                }
+                StudioPanel::new_with_agent(config, ui, agent, window, cx)
             })
         };
         tracing::debug!(
@@ -407,6 +409,16 @@ impl FlowyApp {
                 agent
                     .prepare_shutdown_with_timeout(Duration::from_millis(1200));
                 async {}
+            }),
+            cx.observe(&model_events, |app, _, cx| {
+                if app.host.shared_model().is_none() {
+                    app.studio.update(cx, |panel, cx| {
+                        panel.cloud_ready = false;
+                        cx.notify();
+                    });
+                } else {
+                    app.adopt_shared_model(cx);
+                }
             }),
             cx.subscribe(&library, |app, _, event: &LibraryEvent, cx| {
                 app.library_event(event, cx);
@@ -562,6 +574,7 @@ impl FlowyApp {
             studio.read(cx).active_project_id.iter().cloned().collect();
         let initial_installed_skills = studio.read(cx).skill_catalog();
         let mut app = Self {
+            host,
             active_dialog: state::ActiveDialog::None,
             ui,
             theme,
@@ -700,7 +713,9 @@ impl FlowyApp {
             stage = "FlowyApp::new",
             "→ refresh_models / refresh_credits"
         );
-        app.refresh_models(cx);
+        if !app.adopt_shared_model(cx) {
+            app.refresh_models(cx);
+        }
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
         app.load_library(cx);
@@ -913,6 +928,13 @@ impl FlowyApp {
                     panel.notify_cloud_ready(cx);
                 });
                 self.publish_tier_state(cx);
+                self.host.publish_model(Some(app_host::SharedCloudModel {
+                    account: self.model_account().unwrap_or_default(),
+                    tier,
+                    catalog: self.studio.read(cx).catalog.clone(),
+                    effective_tier: self.effective_tier,
+                }));
+                AppHost::notify_model(cx);
             }
             Err(key) => {
                 self.applied_tier = None;
@@ -931,6 +953,52 @@ impl FlowyApp {
             self.prefs.model = flowy_agent::Model::Lite;
         }
         self.select_tier(self.prefs.model, cx);
+    }
+
+    fn model_account(&self) -> Option<String> {
+        let user_id = self.auth.session.as_ref()?.user_id?;
+        Some(format!(
+            "{}:{user_id}",
+            AuthClient::from_env().config().effective_base_url()
+        ))
+    }
+
+    /// Opening another window displays the host's current route instead of
+    /// configuring the shared agent from that window's startup preferences.
+    fn adopt_shared_model(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let Some(selection) = self.host.shared_model() else {
+            return false;
+        };
+        if self.model_account().as_deref() != Some(selection.account.as_str()) {
+            return false;
+        }
+        self.prefs.model = selection.tier;
+        self.prefs.model_id =
+            selection.catalog.selected.clone().unwrap_or_default();
+        self.prefs.model_account = selection.account;
+        self.effective_tier = selection.effective_tier;
+        self.prefs.plan = Self::plan_for_effective_tier(self.effective_tier);
+        self.applied_tier = Some(selection.tier);
+        self.studio.update(cx, |panel, cx| {
+            panel.catalog = selection.catalog;
+            panel.cloud_ready = true;
+            panel.catalog_loading = false;
+            cx.notify();
+        });
+        self.publish_tier_state(cx);
+        true
+    }
+
+    fn accept_model_refresh(
+        &mut self,
+        revision: u64,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.host.model_revision() == revision {
+            return true;
+        }
+        self.adopt_shared_model(cx);
+        false
     }
 
     fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
@@ -981,6 +1049,7 @@ impl FlowyApp {
         }
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         let generation = self.catalog_generation;
+        let model_revision = self.host.model_revision();
         let token = session.access_token;
         let outcome = Arc::new(Mutex::new(None));
         let writer = Arc::clone(&outcome);
@@ -1010,6 +1079,9 @@ impl FlowyApp {
                     app.studio.update(cx, |panel, _| {
                         panel.catalog_loading = false;
                     });
+                    if !app.accept_model_refresh(model_revision, cx) {
+                        return;
+                    }
                     match result {
                         Ok(result) => {
                             // `effectiveModelTier` is the server's authoritative
@@ -1477,6 +1549,8 @@ impl FlowyApp {
     }
 
     pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
+        self.host.publish_model(None);
+        AppHost::notify_model(cx);
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_task = None;
         self.catalog_loading = false;
@@ -2312,6 +2386,26 @@ fn product_mark(size: f32) -> gpui::Img {
 }
 
 pub fn run(cx: &mut App) {
+    let result = OwnedBootstrap::acquire(default_store_root())
+        .and_then(|bootstrap| run_owned(bootstrap, cx));
+    if let Err(error) = result {
+        tracing::error!(%error, "could not start application host");
+        cx.quit();
+    }
+}
+
+/// Desktop passes its early ownership token; library callers use [`run`].
+pub fn run_owned(
+    bootstrap: OwnedBootstrap,
+    cx: &mut App,
+) -> std::io::Result<()> {
+    if cx.try_global::<AppHost>().is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "application host already installed",
+        ));
+    }
+    cx.set_global(AppHost::start(bootstrap)?);
     tracing::debug!(
         target: "flowy.boot",
         stage = "app::run",
@@ -2399,9 +2493,17 @@ pub fn run(cx: &mut App) {
         stage = "app::run",
         "done (window open + activated)"
     );
+    Ok(())
 }
 
 pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
+    let host = if let Some(host) = cx.try_global::<AppHost>() {
+        host.clone()
+    } else {
+        AppHost::for_root(&default_store_root(), cx).expect(
+            "acquire application store ownership before opening a window",
+        )
+    };
     tracing::debug!(
         target: "flowy.boot",
         stage = "open_main_window",
@@ -2418,7 +2520,7 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         window_min_size: Some(size(px(960.), px(640.))),
         ..WindowOptions::default()
     };
-    let store = SessionStore::new(crate::session::default_root());
+    let store = SessionStore::new(host.root().to_path_buf());
     tracing::debug!(
         target: "flowy.boot",
         stage = "open_main_window::SessionStore::new",
@@ -2702,16 +2804,16 @@ mod tests {
             assert_eq!(app.nav_back.last(), Some(&Section::Skills));
         });
         click(cx, &personalization);
-        cx.update_entity(&app, |app, cx| app.navigate_back(cx));
+        cx.update_entity(&app, super::FlowyApp::navigate_back);
         cx.read_entity(&app, |app, _| {
-            assert_eq!(app.section, Section::MySkills)
+            assert_eq!(app.section, Section::MySkills);
         });
-        cx.update_entity(&app, |app, cx| app.navigate_back(cx));
+        cx.update_entity(&app, super::FlowyApp::navigate_back);
         cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
-        cx.update_entity(&app, |app, cx| app.navigate_forward(cx));
+        cx.update_entity(&app, super::FlowyApp::navigate_forward);
         draw(cx);
         cx.read_entity(&app, |app, _| {
-            assert_eq!(app.section, Section::MySkills)
+            assert_eq!(app.section, Section::MySkills);
         });
         click(cx, &explore);
         cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
@@ -2910,6 +3012,13 @@ mod tests {
                 "new project button hides when the pointer leaves the heading: dark={dark}"
             );
             drop(app);
+            // Each theme iteration uses a separate data root/application host.
+            // Removing a view alone intentionally keeps the host global alive.
+            cx.update(|window, cx| {
+                window.remove_window();
+                drop(cx.remove_global::<AppHost>());
+            });
+            cx.run_until_parked();
             let _ = std::fs::remove_dir_all(root);
         }
     }

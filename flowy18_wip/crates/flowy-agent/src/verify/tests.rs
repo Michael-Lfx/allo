@@ -31,6 +31,7 @@ fn write_zip(path: &Path, entries: &[(&str, &str)]) {
 
 fn tool_context(root: &Path) -> ToolRunContext {
     ToolRunContext {
+        execution: Default::default(),
         signal: flowy_agent_core::CancelToken::new(),
         agent_id: Some("s-verify".to_owned()),
         cwd: Some(root.display().to_string()),

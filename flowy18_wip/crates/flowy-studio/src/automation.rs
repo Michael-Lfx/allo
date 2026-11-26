@@ -37,7 +37,7 @@ impl LaunchMode {
     }
 }
 
-pub(crate) struct AutomationDraft {
+pub struct AutomationDraft {
     prompt: Entity<TextareaState>,
     placeholder: SharedString,
     placeholder_color: Option<Rgba>,
@@ -296,7 +296,7 @@ impl StudioPanel {
 
     fn calendar_preview(&self) -> impl IntoElement {
         let colors = self.theme.control_colors(ui::ControlVariant::Primary);
-        self.automation_diagram()
+        Self::automation_diagram()
             .child(
                 div()
                     .rounded_lg()
@@ -342,13 +342,13 @@ impl StudioPanel {
     }
 
     fn trigger_preview(&self) -> impl IntoElement {
-        self.automation_diagram()
+        Self::automation_diagram()
             .child(self.diagram_node(icons::mail(), "auto.mail_saved"))
             .child(self.diagram_connector())
             .child(self.diagram_node(icons::square_pen(), "auto.mail_task"))
     }
 
-    fn automation_diagram(&self) -> gpui::Div {
+    fn automation_diagram() -> gpui::Div {
         div().w_full().max_w(px(312.)).mx_auto().flex().flex_col()
     }
 

@@ -18,15 +18,17 @@ use crate::loop_runner::{
 };
 use crate::run_fence::{PublishToken, RunFence, RunTicket};
 use crate::session::{
-    DeliveryCommit, DeliveryCommitter, DispatchRecord, ObjectVerifyState,
-    PendingCard, PendingRouterFollowup, SessionIndex, SessionOrigin,
-    SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TurnState, WorkAccessMode, WorkContract,
+    DeliveryCommit, DeliveryCommitter, DispatchRecord, ExecutionMetadata,
+    ObjectVerifyState, PendingCard, PendingRouterFollowup,
+    SessionCreateDisposition, SessionIndex, SessionOrigin, SessionRecord,
+    SessionRole, SessionSpec, SessionWorkspace, StopHandoffManifest,
+    SubmissionOutcome, TurnCompletionEvidence, TurnExecutionOutcome, TurnState,
+    WorkAccessMode, WorkContract,
 };
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
-    ArtifactReceipt, CancelToken, ContentBlock, Message, MessageSource,
-    PromptTurn, Role, TodoSink, ToolRunContext,
+    ArtifactReceipt, ContentBlock, Message, MessageSource, PromptTurn, Role,
+    TodoSink, ToolRunContext,
 };
 
 /// UI-facing turn events. All methods have no-op defaults so a caller may
@@ -115,6 +117,7 @@ pub enum EnqueueOutcome {
 #[derive(Debug)]
 pub enum RunError {
     Busy,
+    DuplicateSubmission,
     NotFound(String),
     NoCredential,
     Storage(std::io::Error),
@@ -125,6 +128,9 @@ impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy => write!(f, "session already has an active run"),
+            Self::DuplicateSubmission => {
+                write!(f, "submission is already recorded in this session")
+            }
             Self::NotFound(id) => write!(f, "session {id} not found"),
             Self::NoCredential => {
                 write!(f, "no account credential for this run")
@@ -135,6 +141,16 @@ impl std::fmt::Display for RunError {
             Self::Loop(message) => write!(f, "{message}"),
         }
     }
+}
+
+/// Cancellation describes the request disposition, not proof that a tool or
+/// provider has stopped. Terminal evidence is published only by the run future.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelDisposition {
+    Accepted,
+    TooLate,
+    NotRunning,
+    NotFound,
 }
 
 struct Inner {
@@ -150,7 +166,9 @@ struct PreparedTurn {
     history: Vec<Message>,
     config: EngineConfig,
     submission_id: Option<String>,
+    completion_id: String,
     origin: SessionOrigin,
+    execution: ExecutionMetadata,
     output_root: Option<PathBuf>,
 }
 
@@ -159,6 +177,23 @@ pub struct Engine {
     root: PathBuf,
     inner: Mutex<Inner>,
     observer: Arc<dyn TurnObserver>,
+}
+
+/// Hold the session against replacement and deletion while replaying the
+/// second commit barrier. Dropping the retry future releases only this gate,
+/// never the durable completion or its artifact group.
+struct DeliveryRetryGuard<'a> {
+    engine: &'a Engine,
+    session: String,
+    ticket: RunTicket,
+}
+
+impl Drop for DeliveryRetryGuard<'_> {
+    fn drop(&mut self) {
+        let mut inner = self.engine.inner.lock().unwrap();
+        self.ticket.finish();
+        inner.finalizing.remove(&self.session);
+    }
 }
 
 impl std::fmt::Debug for Engine {
@@ -246,6 +281,128 @@ impl Engine {
         f(&guard.index.sessions)
     }
 
+    /// Query durable per-submission evidence, including turns with no files.
+    /// A legacy terminal session without evidence is deliberately not inferred
+    /// to have completed the requested submission.
+    #[must_use]
+    pub fn completion_evidence(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Option<TurnCompletionEvidence> {
+        let inner = self.inner.lock().unwrap();
+        let record = inner.index.get(session_id)?;
+        let evidence = record
+            .turn_completions
+            .iter()
+            .find(|evidence| {
+                evidence.submission_id == submission_id
+                    && valid_completion(record, evidence)
+            })
+            .cloned();
+        drop(inner);
+        evidence
+    }
+
+    /// Resolve only the group already recorded by durable history.
+    #[must_use]
+    pub fn delivery_commit_for_submission(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Option<DeliveryCommit> {
+        let inner = self.inner.lock().unwrap();
+        let record = inner.index.get(session_id)?;
+        let commit = record
+            .delivery_commits
+            .iter()
+            .find(|commit| {
+                commit.submission_id == submission_id
+                    && valid_saved_commit(record, commit)
+            })
+            .cloned();
+        drop(inner);
+        commit
+    }
+
+    /// Retry exactly one persisted artifact group without starting a model or
+    /// requiring a UI projection. The callback runs outside the history lock.
+    pub fn retry_delivery_commit_with(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        retry: impl FnOnce(&DeliveryCommit) -> std::io::Result<()>,
+    ) -> Result<DeliveryCommit, RunError> {
+        let (commit, _guard) =
+            self.reserve_delivery_retry(session_id, submission_id)?;
+        retry(&commit).map_err(RunError::Storage)?;
+        Ok(commit)
+    }
+
+    /// Asynchronous counterpart for an injected artifact committer. The
+    /// session remains non-cancellable until this same group has settled.
+    pub async fn retry_delivery_commit(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        committer: Arc<dyn DeliveryCommitter>,
+    ) -> Result<DeliveryCommit, RunError> {
+        let (commit, _guard) =
+            self.reserve_delivery_retry(session_id, submission_id)?;
+        committer
+            .commit(&commit)
+            .await
+            .map_err(|error| RunError::Storage(std::io::Error::other(error)))?;
+        Ok(commit)
+    }
+
+    fn reserve_delivery_retry(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<(DeliveryCommit, DeliveryRetryGuard<'_>), RunError> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner
+            .index
+            .get(session_id)
+            .ok_or_else(|| RunError::NotFound(session_id.to_owned()))?;
+        let matches: Vec<_> = record
+            .delivery_commits
+            .iter()
+            .filter(|commit| commit.submission_id == submission_id)
+            .collect();
+        let Some(commit) = matches.first() else {
+            return Err(RunError::NotFound(submission_id.to_owned()));
+        };
+        if !valid_saved_commit(record, commit) {
+            return Err(RunError::Storage(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stored artifact commit binding is invalid",
+            )));
+        }
+        let commit = (*commit).clone();
+        if inner.finalizing.contains(session_id) {
+            return Err(RunError::Busy);
+        }
+        let fence = Arc::clone(
+            inner
+                .fences
+                .entry(session_id.to_owned())
+                .or_insert_with(|| Arc::new(RunFence::new())),
+        );
+        let ticket = fence.try_begin().ok_or(RunError::Busy)?;
+        inner.finalizing.insert(session_id.to_owned());
+        drop(inner);
+        Ok((
+            commit,
+            DeliveryRetryGuard {
+                engine: self,
+                session: session_id.to_owned(),
+                ticket,
+            },
+        ))
+    }
+
     #[must_use]
     pub fn active(&self) -> Option<String> {
         self.inner.lock().unwrap().index.active.clone()
@@ -325,6 +482,7 @@ impl Engine {
             updated_at: now,
             origin,
             workspace,
+            execution: ExecutionMetadata::conversation(),
             role,
             root_session_id,
             access_mode,
@@ -572,6 +730,63 @@ impl Engine {
         }
         drop(inner);
         Ok(true)
+    }
+    /// Create once, or verify the exact durable binding without rewriting it.
+    /// The UI active session and an existing session's messages are untouched.
+    pub fn create_if_absent(
+        &self,
+        spec: SessionSpec,
+    ) -> std::io::Result<SessionCreateDisposition> {
+        if spec.id.trim().is_empty() || !spec.execution.is_valid() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session execution identity is invalid",
+            ));
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(record) = inner.index.get(&spec.id) {
+            if record.origin == spec.origin
+                && record.workspace == spec.workspace
+                && record.execution == spec.execution
+                && record.role == spec.role
+                && record.root_session_id == spec.root_session_id
+                && record.access_mode == spec.access_mode
+            {
+                return Ok(SessionCreateDisposition::Existing);
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "session ID is already bound to different immutable metadata",
+            ));
+        }
+        // Insert/remove at the same position so a failed save restores the exact
+        // in-memory index without cloning every existing message history.
+        let position = inner
+            .index
+            .sessions
+            .iter()
+            .position(|record| record.updated_at < spec.created_at_ms)
+            .unwrap_or(inner.index.sessions.len());
+        inner.index.sessions.insert(
+            position,
+            SessionRecord {
+                id: spec.id,
+                updated_at: spec.created_at_ms,
+                origin: spec.origin,
+                workspace: spec.workspace,
+                execution: spec.execution,
+                role: spec.role,
+                root_session_id: spec.root_session_id,
+                access_mode: spec.access_mode,
+                ..SessionRecord::default()
+            },
+        );
+        if let Err(error) = inner.index.save(&self.root) {
+            inner.index.sessions.remove(position);
+            drop(inner);
+            return Err(error);
+        }
+        Ok(SessionCreateDisposition::Created)
     }
 
     /// Persist origin/workspace metadata on an existing session.
@@ -877,14 +1092,20 @@ impl Engine {
         Ok(())
     }
 
-    /// Persist one host-derived delivery commit. Repeated calls with the same
-    /// commit are idempotent; a different commit for the same submission
-    /// replaces the previous receipt set.
+    /// Persist a host-derived group, including the existing conversation-write
+    /// importer. Replays preserve the original group; a conflicting group can
+    /// never replace a submission's already durable evidence.
     pub fn record_delivery_commit(
         &self,
         commit: &DeliveryCommit,
     ) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
+        if inner.finalizing.contains(&commit.session_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "delivery is being finalized",
+            ));
+        }
         let previous = inner
             .index
             .get(&commit.session_id)
@@ -894,30 +1115,68 @@ impl Engine {
                     format!("session {} not found", commit.session_id),
                 )
             })?
-            .delivery_commits
             .clone();
+        if commit.execution != previous.execution
+            || commit.origin != previous.origin
+            || !commit.completed_successfully
+            || !commit.execution.is_valid()
+            || commit.submission_id.trim().is_empty()
+            || commit.artifact_ids.is_empty()
+            || commit.artifact_ids.iter().any(|id| id.trim().is_empty())
+            || commit.artifact_ids.iter().collect::<HashSet<_>>().len()
+                != commit.artifact_ids.len()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "delivery commit does not match its session",
+            ));
+        }
+        if let Some(existing) = previous
+            .delivery_commits
+            .iter()
+            .find(|existing| existing.submission_id == commit.submission_id)
+        {
+            return if existing.artifact_ids == commit.artifact_ids
+                && existing.execution == commit.execution
+                && existing.origin == commit.origin
+                && valid_saved_commit(&previous, existing)
+            {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "submission already has a different delivery group",
+                ))
+            };
+        }
         let saved = {
             let record = inner
                 .index
                 .get_mut(&commit.session_id)
                 .expect("session still exists under the engine lock");
-            if record
-                .delivery_commits
-                .iter()
-                .any(|existing| existing == commit)
+            if let Some(evidence) = record
+                .turn_completions
+                .iter_mut()
+                .find(|evidence| evidence.submission_id == commit.submission_id)
             {
-                return Ok(());
+                if evidence.session_id != commit.session_id
+                    || evidence.outcome != TurnExecutionOutcome::Completed
+                    || evidence.execution != commit.execution
+                    || (!evidence.artifact_ids.is_empty()
+                        && evidence.artifact_ids != commit.artifact_ids)
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "delivery group conflicts with terminal evidence",
+                    ));
+                }
+                evidence.artifact_ids.clone_from(&commit.artifact_ids);
             }
-            record.delivery_commits.retain(|existing| {
-                existing.submission_id != commit.submission_id
-            });
             record.delivery_commits.push(commit.clone());
             inner.index.save(&self.root)
         };
         if let Err(error) = saved {
-            if let Some(record) = inner.index.get_mut(&commit.session_id) {
-                record.delivery_commits = previous;
-            }
+            inner.index.upsert(previous);
             return Err(error);
         }
         drop(inner);
@@ -1011,12 +1270,33 @@ impl Engine {
     /// is completing its independent store marker; callers must keep the
     /// saving state visible until the terminal notification arrives.
     pub fn request_cancel(&self, id: &str) -> std::io::Result<bool> {
+        self.request_cancel_typed(id)
+            .map(|disposition| disposition != CancelDisposition::TooLate)
+    }
+
+    /// Request a cooperative stop. `Accepted` is not a completion proof: a
+    /// prepared or running future must still unwind before recording Stopped.
+    pub fn request_cancel_typed(
+        &self,
+        id: &str,
+    ) -> std::io::Result<CancelDisposition> {
         let mut inner = self.inner.lock().unwrap();
         if inner.finalizing.contains(id) {
-            return Ok(false);
+            return Ok(CancelDisposition::TooLate);
         }
+        if inner.index.get(id).is_none() {
+            return Ok(CancelDisposition::NotFound);
+        }
+        let previous = inner.index.get(id).cloned();
         let fence_active =
             inner.fences.get(id).is_some_and(|fence| fence.is_active());
+        if !fence_active
+            && !previous
+                .as_ref()
+                .is_some_and(|record| record.status.is_busy())
+        {
+            return Ok(CancelDisposition::NotRunning);
+        }
         if let Some(fence) = inner.fences.get(id) {
             fence.cancel_active();
         }
@@ -1065,7 +1345,15 @@ impl Engine {
                     .or_insert(SubmissionOutcome::Aborted);
             }
         }
-        inner.index.save(&self.root).map(|()| true)
+        if let Err(error) = inner.index.save(&self.root) {
+            if let Some(previous) = previous {
+                inner.index.upsert(previous);
+            }
+            drop(inner);
+            return Err(error);
+        }
+        drop(inner);
+        Ok(CancelDisposition::Accepted)
     }
 
     fn settle_cancelled_run(
@@ -1255,6 +1543,24 @@ impl Engine {
             if inner.index.get(session_id).is_none() {
                 return Err(RunError::NotFound(session_id.to_owned()));
             }
+            let submission_id =
+                submission.map(|id| format!("submission-{id:032x}"));
+            if submission_id.as_ref().is_some_and(|submission_id| {
+                let record =
+                    inner.index.get(session_id).expect("record exists");
+                record.messages.iter().any(|message| {
+                    message.role == Role::User && message.id == *submission_id
+                }) || record
+                    .turn_completions
+                    .iter()
+                    .any(|evidence| evidence.submission_id == *submission_id)
+                    || record
+                        .delivery_commits
+                        .iter()
+                        .any(|commit| commit.submission_id == *submission_id)
+            }) {
+                return Err(RunError::DuplicateSubmission);
+            }
             let fence = Arc::clone(
                 inner
                     .fences
@@ -1269,8 +1575,10 @@ impl Engine {
                 inner.index.get_mut(session_id).expect("record exists");
             let history = record.messages.clone();
             let origin = record.origin.clone();
-            let submission_id =
-                submission.map(|id| format!("submission-{id:032x}"));
+            let execution = record.execution.clone();
+            let completion_id = submission_id
+                .clone()
+                .unwrap_or_else(|| format!("u-{now}-{}", ticket.generation()));
             let output_root = record.workspace.as_ref().and_then(|workspace| {
                 submission_id.as_ref().map(|submission| {
                     workspace.root.join("outputs").join(submission)
@@ -1297,10 +1605,7 @@ impl Engine {
                     .retain(|item| item.submission_id != sub_id);
             }
             record.messages.push(Message {
-                id: submission.map_or_else(
-                    || format!("u-{now}"),
-                    |id| format!("submission-{id:032x}"),
-                ),
+                id: completion_id.clone(),
                 role: Role::User,
                 content: vec![crate::types::ContentBlock::text(&prompt.model)],
                 source: prompt.source.clone(),
@@ -1331,7 +1636,9 @@ impl Engine {
                 history,
                 config,
                 submission_id,
+                completion_id,
                 origin,
+                execution,
                 output_root,
             };
             drop(inner);
@@ -1355,17 +1662,26 @@ impl Engine {
             history,
             config,
             submission_id,
+            completion_id,
             origin,
+            execution,
             output_root,
         } = prepared;
         let cancel_trace = Arc::new(Mutex::new(CancelTrace::default()));
         if !ticket.is_current() {
+            let proof = self.persist_stopped_completion(
+                &mut self.inner.lock().unwrap(),
+                session_id,
+                &completion_id,
+                &execution,
+            );
             self.settle_cancelled_run(
                 session_id,
                 prompt,
                 &cancel_trace,
                 &ticket,
             );
+            proof?;
             return Ok(LoopOutcome::Aborted);
         }
         let stream = stream.unwrap_or_else(|| {
@@ -1376,15 +1692,19 @@ impl Engine {
         });
         let delivery_committer = config.delivery_committer.clone();
         let artifact_receipts = Arc::new(Mutex::new(Vec::new()));
-        let tools = build_tools(
-            &config,
-            session_id,
-            ticket.signal().clone(),
-            submission_id.clone(),
-            origin,
+        let tool_context = ToolRunContext {
+            signal: ticket.signal().clone(),
+            agent_id: Some(session_id.to_owned()),
+            cwd: config.cwd.clone(),
+            todos: config.todos.clone(),
+            submission_id: submission_id.clone(),
+            session_origin: origin,
+            execution: execution.clone(),
             output_root,
-            Arc::clone(&artifact_receipts),
-        );
+            artifact_delivery_available: config.delivery_committer.is_some(),
+        };
+        let tools =
+            build_tools(&config, tool_context, Arc::clone(&artifact_receipts));
         tracing::debug!(
             target: "flowy.prompt",
             stage = "Engine::run_prepared",
@@ -1416,18 +1736,25 @@ impl Engine {
             let mut inner = self.inner.lock().unwrap();
             if !ticket.is_current() {
                 drop(inner);
+                let proof = self.persist_stopped_completion(
+                    &mut self.inner.lock().unwrap(),
+                    session_id,
+                    &completion_id,
+                    &execution,
+                );
                 self.settle_cancelled_run(
                     session_id,
                     prompt,
                     &cancel_trace,
                     &ticket,
                 );
+                proof?;
                 return Ok(LoopOutcome::Aborted);
             }
             let Some(record) = inner.index.get_mut(session_id) else {
                 return Ok(LoopOutcome::Aborted);
             };
-            let mut before = record.clone();
+            let before = record.clone();
             record.updated_at = now_ms();
             let result = match result {
                 Ok(mut result) => {
@@ -1579,12 +1906,28 @@ impl Engine {
                     Err(RunError::Loop(message))
                 }
             };
+            if !matches!(&result, Ok((LoopOutcome::WaitingForUser, _, _))) {
+                let (outcome, artifact_ids) = match &result {
+                    Ok((outcome, commit, _)) => (
+                        execution_outcome(*outcome),
+                        commit.as_ref().map_or_else(Vec::new, |commit| {
+                            commit.artifact_ids.clone()
+                        }),
+                    ),
+                    Err(_) => (TurnExecutionOutcome::Failed, Vec::new()),
+                };
+                record.turn_completions.push(TurnCompletionEvidence {
+                    session_id: session_id.to_owned(),
+                    submission_id: completion_id.clone(),
+                    outcome,
+                    artifact_ids,
+                    committed_at_ms: record.updated_at,
+                    execution: execution.clone(),
+                });
+            }
             if let Err(error) = inner.index.save(&self.root) {
                 // A later successful save must never resurrect this turn's
                 // uncommitted receipts or its DeliveryCommit.
-                before.status = TurnState::Error {
-                    message: "could not save turn history".to_owned(),
-                };
                 inner.index.upsert(before);
                 let armed = ticket.is_current();
                 if armed {
@@ -1737,6 +2080,141 @@ impl Engine {
             return Ok(LoopOutcome::Aborted);
         }
         outcome
+    }
+
+    fn persist_stopped_completion(
+        &self,
+        inner: &mut Inner,
+        session_id: &str,
+        submission_id: &str,
+        execution: &ExecutionMetadata,
+    ) -> Result<(), RunError> {
+        let active = inner
+            .fences
+            .get(session_id)
+            .is_some_and(|fence| fence.is_active());
+        let Some(record) = inner.index.get_mut(session_id) else {
+            // Deletion must not be undone when an old cancelled future exits.
+            return Ok(());
+        };
+        if record
+            .turn_completions
+            .iter()
+            .any(|evidence| evidence.submission_id == submission_id)
+        {
+            return Ok(());
+        }
+        if record.execution != *execution
+            || !record.messages.iter().any(|message| {
+                message.role == Role::User && message.id == submission_id
+            })
+        {
+            return Err(RunError::Storage(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stopped submission no longer matches its session",
+            )));
+        }
+        let previous = record.clone();
+        record.turn_completions.push(TurnCompletionEvidence {
+            session_id: session_id.to_owned(),
+            submission_id: submission_id.to_owned(),
+            outcome: TurnExecutionOutcome::Stopped,
+            artifact_ids: Vec::new(),
+            committed_at_ms: now_ms(),
+            execution: execution.clone(),
+        });
+        if !active && record.status.is_busy() {
+            record.status = TurnState::Stopped;
+        }
+        if let Err(error) = inner.index.save(&self.root) {
+            inner.index.upsert(previous);
+            self.observer.storage_error(session_id);
+            return Err(RunError::Storage(error));
+        }
+        Ok(())
+    }
+}
+
+fn valid_artifact_ids(ids: &[String]) -> bool {
+    ids.iter().all(|id| !id.trim().is_empty())
+        && ids.iter().collect::<HashSet<_>>().len() == ids.len()
+}
+
+fn valid_completion(
+    record: &SessionRecord,
+    evidence: &TurnCompletionEvidence,
+) -> bool {
+    !record.id.trim().is_empty()
+        && evidence.session_id == record.id
+        && !evidence.submission_id.trim().is_empty()
+        && evidence.execution == record.execution
+        && evidence.execution.is_valid()
+        && record.messages.iter().any(|message| {
+            message.role == Role::User && message.id == evidence.submission_id
+        })
+        && record
+            .turn_completions
+            .iter()
+            .filter(|candidate| {
+                candidate.submission_id == evidence.submission_id
+            })
+            .count()
+            == 1
+        && valid_artifact_ids(&evidence.artifact_ids)
+        && if evidence.artifact_ids.is_empty() {
+            !record
+                .delivery_commits
+                .iter()
+                .any(|commit| commit.submission_id == evidence.submission_id)
+        } else {
+            evidence.outcome == TurnExecutionOutcome::Completed
+                && record.delivery_commits.iter().any(|commit| {
+                    commit.submission_id == evidence.submission_id
+                        && valid_saved_commit(record, commit)
+                })
+        }
+}
+
+fn valid_saved_commit(record: &SessionRecord, commit: &DeliveryCommit) -> bool {
+    let proofs: Vec<_> = record
+        .turn_completions
+        .iter()
+        .filter(|evidence| evidence.submission_id == commit.submission_id)
+        .collect();
+    !record.id.trim().is_empty()
+        && commit.session_id == record.id
+        && !commit.submission_id.trim().is_empty()
+        && commit.completed_successfully
+        && !commit.artifact_ids.is_empty()
+        && valid_artifact_ids(&commit.artifact_ids)
+        && commit.execution == record.execution
+        && commit.origin == record.origin
+        && commit.execution.is_valid()
+        && record
+            .delivery_commits
+            .iter()
+            .filter(|candidate| candidate.submission_id == commit.submission_id)
+            .count()
+            == 1
+        && (proofs.is_empty()
+            || (proofs.len() == 1
+                && proofs[0].session_id == record.id
+                && proofs[0].execution == commit.execution
+                && proofs[0].outcome == TurnExecutionOutcome::Completed
+                && proofs[0].artifact_ids == commit.artifact_ids
+                && record.messages.iter().any(|message| {
+                    message.role == Role::User
+                        && message.id == commit.submission_id
+                })))
+}
+
+const fn execution_outcome(outcome: LoopOutcome) -> TurnExecutionOutcome {
+    match outcome {
+        LoopOutcome::Completed => TurnExecutionOutcome::Completed,
+        LoopOutcome::Failed | LoopOutcome::WaitingForUser => {
+            TurnExecutionOutcome::Failed
+        }
+        LoopOutcome::Aborted => TurnExecutionOutcome::Stopped,
     }
 }
 
@@ -1905,28 +2383,15 @@ fn delivery_commit(
         committed_at_ms: now_ms(),
         origin: record.origin.clone(),
         origin_title_snapshot: record.title.clone(),
+        execution: record.execution.clone(),
     })
 }
 
 fn build_tools(
     config: &EngineConfig,
-    session_id: &str,
-    signal: CancelToken,
-    submission_id: Option<String>,
-    session_origin: SessionOrigin,
-    output_root: Option<PathBuf>,
+    run_ctx: ToolRunContext,
     artifact_receipts: Arc<Mutex<Vec<ArtifactReceipt>>>,
 ) -> Vec<Arc<dyn rpi_agent::AgentTool>> {
-    let run_ctx = ToolRunContext {
-        signal,
-        agent_id: Some(session_id.to_owned()),
-        cwd: config.cwd.clone(),
-        todos: config.todos.clone(),
-        submission_id,
-        session_origin,
-        output_root,
-        artifact_delivery_available: config.delivery_committer.is_some(),
-    };
     config
         .registry
         .list()
@@ -2281,11 +2746,14 @@ impl AgentEmitter for EngineEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, EngineConfig, EngineEmitter, RunError, TurnObserver};
+    use super::{
+        CancelDisposition, Engine, EngineConfig, EngineEmitter, RunError,
+        TurnObserver,
+    };
     use crate::loop_runner::{LoopOutcome, ModelRoute};
     use crate::session::{
         DeliveryCommit, DeliveryCommitter, SessionIndex, SessionOrigin,
-        SessionWorkspace, TurnState,
+        SessionWorkspace, TurnExecutionOutcome, TurnState,
     };
     use crate::tools::{ToolDefinition, ToolRegistry};
     use crate::types::{ArtifactReceipt, ContentBlock, ToolExecutionResult};
@@ -2296,6 +2764,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    // serde_json supplies additional String equality impls, so bare [] cannot
+    // infer the item type in these empty artifact-list assertions.
+    const EMPTY_ARTIFACT_IDS: [String; 0] = [];
 
     struct Scratch(PathBuf);
 
@@ -2678,8 +3150,8 @@ mod tests {
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
         assert_eq!(
-            engine.session("home").unwrap().delivery_commits,
-            Vec::new()
+            engine.session("home").unwrap().delivery_commits.as_slice(),
+            []
         );
     }
 
@@ -2722,9 +3194,14 @@ mod tests {
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
         assert_eq!(
-            engine.session("home").unwrap().delivery_commits,
-            Vec::new()
+            engine.session("home").unwrap().delivery_commits.as_slice(),
+            []
         );
+        let proof = engine
+            .completion_evidence("home", &format!("submission-{:032x}", 7))
+            .unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Failed);
+        assert_eq!(proof.artifact_ids.as_slice(), EMPTY_ARTIFACT_IDS);
     }
 
     #[tokio::test]
@@ -2769,6 +3246,34 @@ mod tests {
         assert_eq!(*observer.finished.lock().unwrap(), [LoopOutcome::Failed]);
         // A restart can retry exactly this complete durable group.
         assert_eq!(engine.session("home").unwrap().delivery_commits.len(), 1);
+        let submission = format!("submission-{:032x}", 7);
+        let proof = engine.completion_evidence("home", &submission).unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Completed);
+        assert_eq!(proof.artifact_ids, ["artifact-one", "artifact-two"]);
+        let before = engine.session("home").unwrap();
+        drop(engine);
+        let reopened = Engine::open(
+            scratch.0.clone(),
+            config(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap();
+        let successful = Arc::new(CommitRecorder {
+            root: scratch.0.clone(),
+            commits: Mutex::new(Vec::new()),
+            fail: false,
+        });
+        let restored_commit = reopened
+            .retry_delivery_commit("home", &submission, successful.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored_commit, before.delivery_commits[0]);
+        assert_eq!(successful.commits.lock().unwrap().len(), 1);
+        assert_eq!(reopened.session("home").unwrap(), before);
+        assert_eq!(
+            reopened.completion_evidence("home", &submission),
+            Some(proof)
+        );
     }
 
     #[tokio::test]
@@ -2809,6 +3314,10 @@ mod tests {
         committer.entered.notified().await;
         assert_eq!(*observer.saving_files.lock().unwrap(), 1);
         assert!(!engine.request_cancel("home").unwrap());
+        assert_eq!(
+            engine.request_cancel_typed("home").unwrap(),
+            CancelDisposition::TooLate
+        );
         assert_eq!(
             engine.session("home").unwrap().status,
             TurnState::Completed
@@ -2875,12 +3384,19 @@ mod tests {
         assert_eq!(task.await.unwrap().unwrap(), LoopOutcome::Aborted);
         assert_eq!(engine.session("home").unwrap().status, TurnState::Stopped);
         assert_eq!(
-            engine.session("home").unwrap().delivery_commits,
-            Vec::new()
+            engine.session("home").unwrap().delivery_commits.as_slice(),
+            []
         );
         assert!(committer.commits.lock().unwrap().is_empty());
         assert!(observer.deliveries.lock().unwrap().is_empty());
         assert_eq!(*observer.saving_files.lock().unwrap(), 0);
+        assert_eq!(
+            engine
+                .completion_evidence("home", &format!("submission-{:032x}", 7),)
+                .unwrap()
+                .outcome,
+            TurnExecutionOutcome::Stopped
+        );
     }
 
     fn text_stream(text: &'static str) -> StreamFn {
@@ -3100,6 +3616,7 @@ mod tests {
         engine.create_session("s1".into(), 1).unwrap();
         let mut record = engine.session("s1").unwrap();
         record.delivery_commits.push(DeliveryCommit {
+            execution: crate::session::ExecutionMetadata::default(),
             session_id: "s1".into(),
             submission_id: "submission-1".into(),
             artifact_ids: vec!["artifact-1".into()],
@@ -3253,6 +3770,7 @@ mod tests {
                 None,
             )
             .unwrap();
+        let old_submission = old.completion_id.clone();
         let emitter = EngineEmitter {
             session: "s1".into(),
             observer: recorder.clone(),
@@ -3303,12 +3821,27 @@ mod tests {
                 None,
             )
             .unwrap();
+        let replacement_submission = replacement.completion_id.clone();
         late.await;
         engine
             .run_prepared("s1", "new", replacement, Some(text_stream("fresh")))
             .await
             .unwrap();
         assert_eq!(*recorder.text.lock().unwrap(), "fresh");
+        assert_eq!(
+            engine
+                .completion_evidence("s1", &old_submission)
+                .unwrap()
+                .outcome,
+            TurnExecutionOutcome::Stopped
+        );
+        assert_eq!(
+            engine
+                .completion_evidence("s1", &replacement_submission)
+                .unwrap()
+                .outcome,
+            TurnExecutionOutcome::Completed
+        );
     }
 
     #[tokio::test]
@@ -3382,6 +3915,7 @@ mod tests {
                 .unwrap(),
             LoopOutcome::Completed
         );
+        assert_eq!(engine.session("s1").unwrap().status, TurnState::Completed);
     }
 
     #[tokio::test]
@@ -3867,5 +4401,446 @@ mod tests {
         assert_eq!(after_failed_take.pending_cards, vec![card]);
         assert_eq!(after_failed_take.status, TurnState::WaitingForUser);
         let _ = std::fs::remove_dir(&history_path);
+    }
+    #[tokio::test]
+    async fn no_artifact_completion_is_durable_and_submission_is_single_use() {
+        let scratch = Scratch::new("completion-no-artifacts");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let submission = format!("submission-{:032x}", 401);
+        assert_eq!(
+            engine
+                .start_with_config(
+                    "s1".into(),
+                    "one turn".into(),
+                    config(),
+                    Some(text_stream("done")),
+                    Some(401),
+                )
+                .unwrap()
+                .await
+                .unwrap(),
+            LoopOutcome::Completed
+        );
+        let proof = engine.completion_evidence("s1", &submission).unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Completed);
+        assert_eq!(proof.artifact_ids.as_slice(), EMPTY_ARTIFACT_IDS);
+        let record = engine.session("s1").unwrap();
+        assert_eq!(record.messages.len(), 2);
+        let persisted = SessionIndex::load(&scratch.0).unwrap();
+        assert_eq!(persisted.get("s1").unwrap().turn_completions, [proof]);
+        let bytes = std::fs::read(SessionIndex::path(&scratch.0)).unwrap();
+        assert!(matches!(
+            engine.start_with_config(
+                "s1".into(),
+                "different replay".into(),
+                config(),
+                Some(text_stream("must not run")),
+                Some(401),
+            ),
+            Err(RunError::DuplicateSubmission)
+        ));
+        assert_eq!(
+            engine.request_cancel_typed("s1").unwrap(),
+            CancelDisposition::NotRunning
+        );
+        assert!(engine.request_cancel("s1").unwrap());
+        assert_eq!(engine.session("s1").unwrap(), record);
+        assert_eq!(
+            std::fs::read(SessionIndex::path(&scratch.0)).unwrap(),
+            bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_evidence_waits_for_the_reserved_future_to_unwind() {
+        let scratch = Scratch::new("completion-stop-before-poll");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        assert_eq!(
+            engine.request_cancel_typed("missing").unwrap(),
+            CancelDisposition::NotFound
+        );
+        let run = engine
+            .start_with_config(
+                "s1".into(),
+                "stop this".into(),
+                config(),
+                Some(text_stream("must not run")),
+                Some(402),
+            )
+            .unwrap();
+        let submission = format!("submission-{:032x}", 402);
+        assert_eq!(
+            engine.request_cancel_typed("s1").unwrap(),
+            CancelDisposition::Accepted
+        );
+        assert!(engine.completion_evidence("s1", &submission).is_none());
+        assert_eq!(run.await.unwrap(), LoopOutcome::Aborted);
+        let proof = engine.completion_evidence("s1", &submission).unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Stopped);
+        assert_eq!(proof.artifact_ids.as_slice(), EMPTY_ARTIFACT_IDS);
+        let loaded = SessionIndex::load(&scratch.0).unwrap();
+        let record = loaded.get("s1").unwrap();
+        assert_eq!(record.messages.len(), 1);
+        assert_eq!(record.status, TurnState::Stopped);
+        assert_eq!(record.turn_completions, [proof]);
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_save_rolls_back_evidence_and_messages() {
+        let scratch = Scratch::new("completion-atomic-save");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let run = engine
+            .start_with_config(
+                "s1".into(),
+                "write failure".into(),
+                config(),
+                Some(text_stream("uncommitted result")),
+                Some(403),
+            )
+            .unwrap();
+        let before = engine.session("s1").unwrap();
+        let path = SessionIndex::path(&scratch.0);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(run.await, Err(RunError::Storage(_))));
+        assert_eq!(engine.session("s1").unwrap(), before);
+        assert!(
+            engine
+                .completion_evidence("s1", &format!("submission-{:032x}", 403))
+                .is_none()
+        );
+        std::fs::remove_dir(&path).unwrap();
+        engine
+            .set_session_title("s1", "save later".into(), true)
+            .unwrap();
+        let loaded = SessionIndex::load(&scratch.0).unwrap();
+        let record = loaded.get("s1").unwrap();
+        assert_eq!(record.turn_completions.as_slice(), []);
+        assert_eq!(record.messages, before.messages);
+        assert_eq!(record.status, TurnState::Running);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_failed_save_notification_keeps_the_completion_uncommitted()
+     {
+        struct StorageGate {
+            entered: std::sync::mpsc::Sender<()>,
+            released: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl TurnObserver for StorageGate {
+            fn storage_error(&self, _session: &str) {
+                self.entered.send(()).unwrap();
+                self.released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+            }
+        }
+        let scratch = Scratch::new("completion-failed-save-cancel");
+        let (entered, entering) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(StorageGate {
+                    entered,
+                    released: Mutex::new(released),
+                }),
+            )
+            .unwrap(),
+        );
+        engine
+            .create_session_with_metadata(
+                "s1".into(),
+                1,
+                SessionOrigin::Home,
+                Some(SessionWorkspace {
+                    root: scratch.0.join("workspace"),
+                }),
+            )
+            .unwrap();
+        let run = engine
+            .start_with_config(
+                "s1".into(),
+                "race the failed commit".into(),
+                config(),
+                Some(text_stream("uncommitted result")),
+                Some(407),
+            )
+            .unwrap();
+        let path = SessionIndex::path(&scratch.0);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let canceller = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                entering
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+                std::fs::remove_dir(&path).unwrap();
+                let disposition = engine.request_cancel_typed("s1").unwrap();
+                release.send(()).unwrap();
+                disposition
+            })
+        };
+        assert!(matches!(run.await, Err(RunError::Storage(_))));
+        assert_eq!(canceller.join().unwrap(), CancelDisposition::TooLate);
+        assert!(
+            engine
+                .completion_evidence("s1", &format!("submission-{:032x}", 407))
+                .is_none()
+        );
+        assert_eq!(
+            engine
+                .start_with_config(
+                    "s1".into(),
+                    "replacement delivery".into(),
+                    config(),
+                    Some(text_stream("replacement")),
+                    Some(408),
+                )
+                .unwrap()
+                .await
+                .unwrap(),
+            LoopOutcome::Completed
+        );
+        let proof = engine
+            .completion_evidence("s1", &format!("submission-{:032x}", 408))
+            .unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Completed);
+        let loaded = SessionIndex::load(&scratch.0).unwrap();
+        assert!(loaded.get("s1").unwrap().turn_completions.contains(&proof));
+        assert_eq!(loaded.get("s1").unwrap().status, TurnState::Completed);
+    }
+
+    #[tokio::test]
+    async fn loop_start_failure_has_durable_failed_completion() {
+        let scratch = Scratch::new("completion-loop-failure");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine.create_session("s1".into(), 1).unwrap();
+        let mut record = engine.session("s1").unwrap();
+        record.messages.push(crate::Message {
+            id: "invalid-system-message".into(),
+            role: crate::Role::System,
+            content: vec![ContentBlock::text("not a history message")],
+            source: crate::MessageSource::User,
+            display_text: None,
+        });
+        engine.insert_session(record).unwrap();
+        let result = engine
+            .start_with_config(
+                "s1".into(),
+                "fail conversion".into(),
+                config(),
+                Some(text_stream("must not run")),
+                Some(404),
+            )
+            .unwrap()
+            .await;
+        assert!(matches!(result, Err(RunError::Loop(_))));
+        let proof = engine
+            .completion_evidence("s1", &format!("submission-{:032x}", 404))
+            .unwrap();
+        assert_eq!(proof.outcome, TurnExecutionOutcome::Failed);
+        assert_eq!(proof.artifact_ids.as_slice(), EMPTY_ARTIFACT_IDS);
+    }
+
+    #[tokio::test]
+    async fn exact_group_retry_is_protected_and_conflicting_evidence_is_denied()
+    {
+        let scratch = Scratch::new("completion-retry-guard");
+        let committer = Arc::new(CommitRecorder {
+            root: scratch.0.clone(),
+            commits: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        let cfg = delivery_config(committer, true);
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                cfg.clone(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine
+            .create_session_with_metadata(
+                "home".into(),
+                1,
+                SessionOrigin::Home,
+                Some(SessionWorkspace {
+                    root: scratch.0.join("workspace"),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            engine
+                .start_with_config(
+                    "home".into(),
+                    "deliver".into(),
+                    cfg,
+                    Some(delivery_stream(StopReason::Stop)),
+                    Some(405),
+                )
+                .unwrap()
+                .await,
+            Err(RunError::Storage(_))
+        ));
+        let submission = format!("submission-{:032x}", 405);
+        let before = engine.session("home").unwrap();
+        let result =
+            engine.retry_delivery_commit_with("home", &submission, |commit| {
+                assert_eq!(commit, &before.delivery_commits[0]);
+                assert_eq!(
+                    engine.request_cancel_typed("home").unwrap(),
+                    CancelDisposition::TooLate
+                );
+                assert_eq!(
+                    engine.remove_session("home").unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                assert!(matches!(
+                    engine.start_with_config(
+                        "home".into(),
+                        "another turn".into(),
+                        config(),
+                        Some(text_stream("must not run")),
+                        Some(406),
+                    ),
+                    Err(RunError::Busy)
+                ));
+                Err(std::io::Error::other("marker still unavailable"))
+            });
+        assert!(matches!(result, Err(RunError::Storage(_))));
+        assert_eq!(engine.session("home").unwrap(), before);
+        engine
+            .retry_delivery_commit_with("home", &submission, |_| Ok(()))
+            .unwrap();
+        let mut corrupt = before.clone();
+        corrupt.turn_completions[0].artifact_ids = vec!["other-group".into()];
+        engine.insert_session(corrupt.clone()).unwrap();
+        assert!(
+            engine
+                .record_delivery_commit(&before.delivery_commits[0])
+                .is_err()
+        );
+        assert_eq!(engine.session("home").unwrap(), corrupt);
+        assert!(engine.completion_evidence("home", &submission).is_none());
+        assert!(
+            engine
+                .delivery_commit_for_submission("home", &submission)
+                .is_none()
+        );
+        let invoked = AtomicUsize::new(0);
+        assert!(matches!(
+            engine.retry_delivery_commit_with("home", &submission, |_| {
+                invoked.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            Err(RunError::Storage(_))
+        ));
+        assert_eq!(invoked.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn automation_execution_identity_reaches_each_tool_context() {
+        let scratch = Scratch::new("automation-context");
+        let expected = crate::ExecutionMetadata {
+            owner: Some(crate::ExecutionOwner {
+                authority: "test-authority".into(),
+                subject: "subject-42".into(),
+            }),
+            source: crate::ExecutionSource::Automation {
+                automation_id: "automation-1".into(),
+                run_id: "run-1".into(),
+                attempt_id: "attempt-1".into(),
+            },
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        let cfg = config();
+        cfg.registry.register(Arc::new(ToolDefinition::new(
+            "publish_file",
+            "record host context",
+            serde_json::json!({"type":"object","properties":{}}),
+            move |_, ctx| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    sink.lock().unwrap().push(ctx.execution);
+                    ToolExecutionResult::success_text(
+                        "recorded",
+                        serde_json::json!({}),
+                    )
+                })
+            },
+        )));
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                cfg.clone(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        engine
+            .create_if_absent(crate::SessionSpec {
+                id: "automation-session".into(),
+                created_at_ms: 1,
+                origin: SessionOrigin::Home,
+                workspace: Some(SessionWorkspace {
+                    root: scratch.0.join("workspace"),
+                }),
+                execution: expected.clone(),
+                role: SessionRole::Standard,
+                root_session_id: None,
+                access_mode: WorkAccessMode::ReadWrite,
+            })
+            .unwrap();
+        let result = engine
+            .start_with_config(
+                "automation-session".into(),
+                "record identity".into(),
+                cfg,
+                Some(delivery_stream(StopReason::Stop)),
+                Some(37),
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(result, LoopOutcome::Completed);
+        assert_eq!(*captured.lock().unwrap(), [expected.clone(), expected]);
     }
 }

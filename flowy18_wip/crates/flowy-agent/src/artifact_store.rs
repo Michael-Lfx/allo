@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use flowy_agent_core::{
-    ArtifactReceipt, DeliveryCommit, DeliveryCommitter, SessionOrigin,
+    ArtifactReceipt, DeliveryCommit, DeliveryCommitter, ExecutionMetadata,
+    SessionOrigin,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -63,6 +64,8 @@ pub struct ArtifactManifest {
     pub origin_title_snapshot: String,
     pub payload_relative_path: String,
     pub publication_state: PublicationState,
+    #[serde(default)]
+    pub execution: ExecutionMetadata,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +117,7 @@ pub struct PrepareArtifact {
     pub delivery_key: String,
     pub display_name: Option<String>,
     pub origin: SessionOrigin,
+    pub execution: ExecutionMetadata,
 }
 
 #[derive(Clone)]
@@ -125,6 +129,8 @@ struct StoreInner {
     root: PathBuf,
     serial: Mutex<()>,
     cleanup_diagnostics: Mutex<Vec<String>>,
+    // Raw store clones and delivery committers may outlive the agent handle.
+    _storage_owner: Option<Arc<dyn Send + Sync>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -156,6 +162,13 @@ impl std::fmt::Debug for ArtifactStore {
 
 impl ArtifactStore {
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
+        Self::open_guarded(root, None)
+    }
+
+    pub(crate) fn open_guarded(
+        root: impl Into<PathBuf>,
+        storage_owner: Option<Arc<dyn Send + Sync>>,
+    ) -> io::Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root)?;
         reject_link(&root)?;
@@ -177,6 +190,7 @@ impl ArtifactStore {
                 root,
                 serial: Mutex::new(()),
                 cleanup_diagnostics: Mutex::new(Vec::new()),
+                _storage_owner: storage_owner,
             }),
         };
         if let Err(error) = store.retry_pending_deletions() {
@@ -1060,6 +1074,9 @@ impl ArtifactStore {
     ) -> io::Result<ArtifactReceipt> {
         validate_identifier(&request.session_id)?;
         validate_identifier(&request.submission_id)?;
+        if !request.execution.is_valid() {
+            return Err(invalid("artifact execution identity is invalid"));
+        }
         if request.tool_call_id.is_empty()
             || request.tool_call_id.len() > 1024
             || request.tool_call_id.chars().any(char::is_control)
@@ -1142,6 +1159,7 @@ impl ArtifactStore {
                 );
                 manifest.receipt.session_id == request.session_id
                     && manifest.origin == request.origin
+                    && manifest.execution == request.execution
                     && manifest.source_relative_path == source_relative_path
                     && manifest.receipt.sha256 == snapshot.digest
                     && manifest.receipt.size_bytes == snapshot.size
@@ -1170,6 +1188,11 @@ impl ArtifactStore {
                 && manifest.receipt.submission_id == request.submission_id
                 && manifest.receipt.delivery_key == request.delivery_key
         }) {
+            if existing.execution != request.execution {
+                return Err(invalid(
+                    "delivery key has different execution metadata",
+                ));
+            }
             if existing.receipt.sha256 != snapshot.digest
                 || existing.receipt.size_bytes != snapshot.size
             {
@@ -1301,6 +1324,7 @@ impl ArtifactStore {
             origin_title_snapshot: String::new(),
             payload_relative_path: format!("items/{artifact_id}/payload"),
             publication_state: PublicationState::Prepared,
+            execution: request.execution,
         };
         let bytes = serde_json::to_vec(&manifest).map_err(io::Error::other)?;
         if bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -1711,6 +1735,9 @@ impl ArtifactStore {
     fn commit_delivery(&self, commit: &DeliveryCommit) -> io::Result<()> {
         validate_identifier(&commit.session_id)?;
         validate_identifier(&commit.submission_id)?;
+        if !commit.execution.is_valid() {
+            return Err(invalid("delivery execution identity is invalid"));
+        }
         if !commit.completed_successfully {
             return Err(invalid("cannot commit an unsuccessful delivery"));
         }
@@ -1741,6 +1768,7 @@ impl ArtifactStore {
                 && marker.commit.submission_id == commit.submission_id
                 && marker.commit.artifact_ids == commit.artifact_ids
                 && marker.commit.completed_successfully
+                && marker.commit.execution == commit.execution
             {
                 self.refresh_delivery_title_locked(commit)?;
                 if marker.commit.origin_title_snapshot
@@ -1781,6 +1809,7 @@ impl ArtifactStore {
         }
         if candidates.values().any(|manifest| {
             manifest.origin != commit.origin
+                || manifest.execution != commit.execution
                 || !origin_may_own_artifacts(&manifest.origin)
                 || matches!(
                     manifest.publication_state,
@@ -1974,6 +2003,7 @@ impl ArtifactStore {
         let marker: DeliveryMarker =
             read_limited_json(path, MAX_MANIFEST_BYTES)?;
         if marker.schema_version != 1
+            || !marker.commit.execution.is_valid()
             || !marker.commit.completed_successfully
             || !origin_may_own_artifacts(&marker.commit.origin)
             || marker.commit.artifact_ids.is_empty()
@@ -2572,6 +2602,9 @@ fn read_manifest(path: &Path) -> io::Result<ArtifactManifest> {
     if manifest.schema_version != 1 {
         return Err(invalid("unsupported artifact manifest version"));
     }
+    if !manifest.execution.is_valid() {
+        return Err(invalid("artifact execution identity is invalid"));
+    }
     Ok(manifest)
 }
 
@@ -2708,7 +2741,7 @@ mod tests {
     use super::{
         ArtifactStore, PREPARED_RETENTION_MS, PrepareArtifact, PublicationState,
     };
-    use flowy_agent_core::{DeliveryCommit, SessionOrigin};
+    use flowy_agent_core::{DeliveryCommit, ExecutionMetadata, SessionOrigin};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2734,6 +2767,7 @@ mod tests {
 
     fn request(root: &Path, relative_path: &str, key: &str) -> PrepareArtifact {
         PrepareArtifact {
+            execution: flowy_agent_core::ExecutionMetadata::default(),
             source_root: root.join("workspace"),
             relative_path: relative_path.into(),
             source_relative_path: relative_path.into(),
@@ -2752,6 +2786,7 @@ mod tests {
     }
     fn commit(receipt: &flowy_agent_core::ArtifactReceipt) -> DeliveryCommit {
         DeliveryCommit {
+            execution: flowy_agent_core::ExecutionMetadata::default(),
             session_id: receipt.session_id.clone(),
             submission_id: receipt.submission_id.clone(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -2785,6 +2820,7 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(manifest.source_relative_path, "");
+        assert_eq!(manifest.execution, ExecutionMetadata::default());
         assert!(!manifest.conversation_import);
         assert!(!manifest.superseded);
     }

@@ -4,9 +4,554 @@ use super::observer::*;
 use super::*;
 
 #[cfg(test)]
+#[path = "../completion_tests.rs"]
+mod completion_tests;
+
+#[cfg(test)]
 mod background_init_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn isolated_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-initialization-{tag}-{}-{}",
+            std::process::id(),
+            next_stamp(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn initialization_report_is_ready_and_does_not_follow_runtime_errors() {
+        let root = isolated_root("ready");
+        let handle = AgentHandle::uninitialized(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        assert_eq!(
+            handle.initialization_state(),
+            AgentInitialization::Initializing
+        );
+        assert!(!handle.snapshot().initialized);
+        handle.initialize();
+        assert_eq!(handle.initialization_state(), AgentInitialization::Ready);
+        handle.inner.state.report_storage_error();
+        let Some(AgentUpdateBatch::Snapshot(snapshot)) =
+            handle.subscribe().poll()
+        else {
+            panic!("new subscriber must receive initialization report");
+        };
+        assert!(snapshot.initialized);
+        assert_eq!(snapshot.initialization, AgentInitialization::Ready);
+        assert!(snapshot.storage_error_revision > 0);
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn guarded_initialization_preserves_navigation_before_history_restore() {
+        let root = isolated_root("initial-navigation");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let config = LlmConfig {
+            api_key: None,
+            ..LlmConfig::default()
+        };
+        let owner = Arc::new(());
+        let previous = AgentHandle::with_config_on_runtime_guarded(
+            root.clone(),
+            config.clone(),
+            runtime.handle().clone(),
+            owner.clone(),
+        );
+        let old_workspace = AgentWorkspace {
+            project_id: "previous-project".into(),
+            root: root.join("previous-project"),
+        };
+        std::fs::create_dir_all(&old_workspace.root).unwrap();
+        previous.set_workspace_for_new_sessions(Some(old_workspace.clone()));
+        previous.set_origin_for_new_sessions(SessionOrigin::Project {
+            project_id: Some(old_workspace.project_id),
+        });
+        let previous_id = previous.create_session().unwrap();
+        drop(previous);
+
+        let handle = AgentHandle::uninitialized_with_runtime_and_owner(
+            root.clone(),
+            config,
+            Some(runtime.handle().clone()),
+            Some(owner),
+        );
+        assert_eq!(handle.context_generation(), 0);
+        assert_eq!(
+            *lock(&handle.inner.state.origin_for_new_sessions),
+            SessionOrigin::Home
+        );
+        let new_workspace = AgentWorkspace {
+            project_id: "new-project".into(),
+            root: root.join("new-project"),
+        };
+        std::fs::create_dir_all(&new_workspace.root).unwrap();
+        // Deterministically model a project click before the storage worker
+        // restores the previously selected session. No timing sleep is needed.
+        assert_eq!(handle.clear_active(), Err("library.loading"));
+        handle.set_workspace_for_new_sessions(Some(new_workspace.clone()));
+        let new_origin = SessionOrigin::Project {
+            project_id: Some(new_workspace.project_id.clone()),
+        };
+        handle.set_origin_for_new_sessions(new_origin.clone());
+        let navigation_revision = handle.context_generation();
+        handle.initialize();
+        assert_eq!(handle.initialization_state(), AgentInitialization::Ready);
+        assert_eq!(handle.context_generation(), navigation_revision);
+        assert_eq!(handle.active_session_id(), None);
+        assert_eq!(handle.active_workspace(), Some(new_workspace.clone()));
+        assert_eq!(
+            *lock(&handle.inner.state.origin_for_new_sessions),
+            new_origin
+        );
+        assert!(
+            handle
+                .list_sessions()
+                .iter()
+                .any(|session| session.id == previous_id)
+        );
+        let created = handle.create_session().unwrap();
+        let engine = lock(&handle.inner.engine).clone().unwrap();
+        let record = engine.session(&created).unwrap();
+        assert_eq!(record.origin, new_origin);
+        assert_eq!(
+            record.workspace,
+            Some(SessionWorkspace {
+                root: new_workspace.root
+            })
+        );
+        drop(engine);
+        drop(handle);
+
+        // With no new navigation, the next startup still restores ordinary
+        // persisted selection and its workspace exactly as before.
+        let reopened = AgentHandle::with_config_on_runtime_guarded(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+            runtime.handle().clone(),
+            Arc::new(()),
+        );
+        assert_eq!(reopened.context_generation(), 0);
+        assert_eq!(reopened.active_session_id(), Some(created));
+        assert_eq!(
+            reopened.active_workspace().unwrap().project_id,
+            "new-project"
+        );
+        drop(reopened);
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initialization_report_distinguishes_quarantined_index_and_history() {
+        for corrupt_history in [false, true] {
+            let root = isolated_root("quarantined");
+            let path = if corrupt_history {
+                flowy_agent_core::SessionIndex::path(&root)
+            } else {
+                SessionIndex::path(&root)
+            };
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"{broken").unwrap();
+            let handle = AgentHandle::with_config(
+                root.clone(),
+                LlmConfig {
+                    api_key: None,
+                    ..LlmConfig::default()
+                },
+            );
+            assert_eq!(
+                handle.initialization_state(),
+                AgentInitialization::Quarantined
+            );
+            assert!(handle.create_home_session().is_ok());
+            let prefix = if corrupt_history {
+                "history.corrupt-"
+            } else {
+                "index.corrupt-"
+            };
+            let backup = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry.file_name().to_string_lossy().starts_with(prefix)
+                })
+                .expect("original damaged bytes must be preserved");
+            assert_eq!(std::fs::read(backup.path()).unwrap(), b"{broken");
+            drop(handle);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn initialization_report_marks_sessions_and_artifact_io_failures_unavailable()
+     {
+        for blocked_directory in ["sessions", "artifacts"] {
+            let root = isolated_root("unavailable");
+            std::fs::write(root.join(blocked_directory), b"not a directory")
+                .unwrap();
+            let handle = AgentHandle::with_config(
+                root.clone(),
+                LlmConfig {
+                    api_key: None,
+                    ..LlmConfig::default()
+                },
+            );
+            assert!(!handle.is_initializing());
+            assert_eq!(
+                handle.initialization_state(),
+                AgentInitialization::Unavailable
+            );
+            let Some(AgentUpdateBatch::Snapshot(snapshot)) =
+                handle.subscribe().poll()
+            else {
+                panic!("failed initialization must still publish a snapshot");
+            };
+            assert!(snapshot.initialized);
+            assert_eq!(
+                snapshot.initialization,
+                AgentInitialization::Unavailable
+            );
+            drop(handle);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn guarded_owner_survives_public_handles_until_execution_finishes() {
+        let root = isolated_root("execution-owner");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let owner = Arc::new(());
+        let observed_owner = Arc::downgrade(&owner);
+        let handle = AgentHandle::with_config_on_runtime_guarded(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+            runtime.handle().clone(),
+            owner,
+        );
+        handle.create_home_session().unwrap();
+        handle.send("owner stays until this turn finishes").unwrap();
+        // The current-thread runtime has not polled the turn yet. Its future
+        // and Engine observer must retain ownership after this last handle.
+        drop(handle);
+        assert!(observed_owner.upgrade().is_some());
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while observed_owner.upgrade().is_some() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("completed work must release the storage owner");
+        });
+        let history = flowy_agent_core::SessionIndex::load(&root).unwrap();
+        assert_eq!(history.sessions.len(), 1);
+        assert_eq!(history.sessions[0].status, TurnState::Completed);
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn artifact_store_clone_keeps_guarded_owner_after_agent_is_dropped() {
+        let root = isolated_root("artifact-owner");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let owner = Arc::new(());
+        let observed_owner = Arc::downgrade(&owner);
+        let handle = AgentHandle::with_config_on_runtime_guarded(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+            runtime.handle().clone(),
+            owner,
+        );
+        let store = handle.artifact_store().unwrap();
+        drop(handle);
+        assert!(observed_owner.upgrade().is_some());
+        assert_eq!(store.list().unwrap().as_slice(), []);
+        let other_store = store.clone();
+        drop(store);
+        assert!(observed_owner.upgrade().is_some());
+        drop(other_store);
+        assert!(observed_owner.upgrade().is_none());
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn guarded_background_initialization_retains_owner_and_reports_failure() {
+        let root = isolated_root("background-owner");
+        std::fs::write(root.join("sessions"), b"not a directory").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let owner = Arc::new(());
+        let observed_owner = Arc::downgrade(&owner);
+        let handle = AgentHandle::with_config_background_on_runtime_guarded(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+            runtime.handle().clone(),
+            owner,
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while handle.is_initializing() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!handle.is_initializing());
+        assert_eq!(
+            handle.initialization_state(),
+            AgentInitialization::Unavailable
+        );
+        let mut subscription = handle.subscribe();
+        drop(handle);
+        assert!(observed_owner.upgrade().is_some());
+        let Some(AgentUpdateBatch::Snapshot(snapshot)) = subscription.poll()
+        else {
+            panic!("failed background load must remain observable");
+        };
+        assert_eq!(snapshot.initialization, AgentInitialization::Unavailable);
+        drop(subscription);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while observed_owner.upgrade().is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(observed_owner.upgrade().is_none());
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_agent_subscriptions_receive_independent_updates_and_snapshots() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-subscriptions-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let mut first = handle.subscribe();
+        let mut second = handle.subscribe();
+        for subscription in [&mut first, &mut second] {
+            let Some(AgentUpdateBatch::Snapshot(snapshot)) =
+                subscription.poll()
+            else {
+                panic!("new subscription must begin with a snapshot");
+            };
+            assert!(snapshot.initialized);
+            assert!(snapshot.artifacts.is_some());
+        }
+
+        let session_id = handle.create_home_session().unwrap();
+        let first_updates = match first.poll().unwrap() {
+            AgentUpdateBatch::Updates { updates, .. } => updates,
+            AgentUpdateBatch::Snapshot(_) => {
+                panic!("a current subscriber should receive the update")
+            }
+        };
+        let second_updates = match second.poll().unwrap() {
+            AgentUpdateBatch::Updates { updates, .. } => updates,
+            AgentUpdateBatch::Snapshot(_) => {
+                panic!("a current subscriber should receive the update")
+            }
+        };
+        for updates in [first_updates, second_updates] {
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Sessions))
+            );
+        }
+        assert_eq!(
+            handle.active_session_id().as_deref(),
+            Some(session_id.as_str())
+        );
+
+        let mut late = handle.subscribe();
+        let Some(AgentUpdateBatch::Snapshot(snapshot)) = late.poll() else {
+            panic!("late subscription must receive a full snapshot");
+        };
+        assert_eq!(
+            snapshot.active_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+        assert_eq!(snapshot.sessions[0].id, session_id);
+        assert_eq!(snapshot.history.rows.len(), 0);
+
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_subscriptions_receive_initialization_stream_and_catalog_updates() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-subscription-init-{}", next_stamp()));
+        let handle = AgentHandle::uninitialized(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let mut first = handle.subscribe();
+        let mut second = handle.subscribe();
+        for subscription in [&mut first, &mut second] {
+            let Some(AgentUpdateBatch::Snapshot(snapshot)) =
+                subscription.poll()
+            else {
+                panic!("subscription begins with loading snapshot");
+            };
+            assert!(!snapshot.initialized);
+        }
+        handle.initialize();
+        let session = handle.create_home_session().unwrap();
+        handle.inner.state.stream_changed(&session);
+        // The legacy drain must not consume either independent receiver.
+        assert_ne!(handle.drain_updates().len(), 0);
+        for subscription in [&mut first, &mut second] {
+            let Some(AgentUpdateBatch::Updates { updates, .. }) =
+                subscription.poll()
+            else {
+                panic!(
+                    "each receiver observes initialization and stream hints"
+                );
+            };
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Initialized))
+            );
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Sessions))
+            );
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Skills))
+            );
+            assert!(
+                updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Artifacts))
+            );
+            assert!(updates.iter().any(|update| matches!(update, AgentUpdate::Session { id } if id == &session)));
+            assert!(subscription.poll().is_none());
+        }
+        drop(first);
+        handle.inner.state.push_update(AgentUpdate::Artifacts);
+        assert!(matches!(
+            second.poll(),
+            Some(AgentUpdateBatch::Updates { .. })
+        ));
+        drop(second);
+        let mut reconnected = handle.subscribe();
+        let Some(AgentUpdateBatch::Snapshot(snapshot)) = reconnected.poll()
+        else {
+            panic!("reconnected subscriber receives current state");
+        };
+        assert!(snapshot.initialized);
+        assert_eq!(
+            snapshot.active_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        drop(reconnected);
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn slow_agent_subscription_recovers_from_bounded_channel_lag() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-slow-subscription-{}", next_stamp()));
+        let handle = AgentHandle::with_config(
+            root.clone(),
+            LlmConfig {
+                api_key: None,
+                ..LlmConfig::default()
+            },
+        );
+        let mut subscription = handle.subscribe();
+        assert!(matches!(
+            subscription.poll(),
+            Some(AgentUpdateBatch::Snapshot(_))
+        ));
+        let mut fast = handle.subscribe();
+        assert!(matches!(fast.poll(), Some(AgentUpdateBatch::Snapshot(_))));
+        handle.inner.state.report_storage_error();
+        for index in 0..(UPDATE_CHANNEL_CAPACITY + 32) {
+            handle.inner.state.push_update(AgentUpdate::Session {
+                id: format!("session-{index}"),
+            });
+            let Some(AgentUpdateBatch::Updates { updates, .. }) = fast.poll()
+            else {
+                panic!("slow receiver must not lag a current receiver");
+            };
+            assert!(updates.iter().any(|update| matches!(update, AgentUpdate::Session { id } if id == &format!("session-{index}"))));
+        }
+        let Some(AgentUpdateBatch::Snapshot(snapshot)) = subscription.poll()
+        else {
+            panic!("lagged subscriber must be restored from a snapshot");
+        };
+        assert!(snapshot.initialized);
+        assert_eq!(snapshot.storage_error_revision, 1);
+        assert_eq!(
+            lock(&handle.inner.state.updates).len(),
+            UPDATE_CHANNEL_CAPACITY
+        );
+        assert_eq!(
+            snapshot.revision,
+            handle.inner.state.update_version.load(Ordering::Acquire)
+        );
+        assert!(subscription.poll().is_none());
+        // An explicit version gap must also trigger recovery without overflow.
+        subscription.cursor = Some(snapshot.revision - 1);
+        handle.inner.state.push_update(AgentUpdate::Artifacts);
+        assert!(matches!(
+            subscription.poll(),
+            Some(AgentUpdateBatch::Snapshot(_))
+        ));
+        assert!(matches!(
+            fast.poll(),
+            Some(AgentUpdateBatch::Updates { .. })
+        ));
+
+        drop(fast);
+        drop(subscription);
+        drop(handle);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn accepting_with_no_live_session_creates_none_and_leaves_no_hint() {
@@ -265,6 +810,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
+                execution: Default::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -279,6 +825,7 @@ mod background_init_tests {
             .unwrap();
         let mut record = engine.session("home").unwrap();
         record.delivery_commits.push(DeliveryCommit {
+            execution: Default::default(),
             session_id: "home".into(),
             submission_id: "submission-1".into(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -294,6 +841,7 @@ mod background_init_tests {
         lock(&state.live).insert(
             "home".into(),
             Live {
+                execution: Default::default(),
                 projection: ChatProjection::from_lines(vec![
                     ChatLine::Status {
                         text: "chat.status_delivery_failed".into(),
@@ -362,7 +910,7 @@ mod background_init_tests {
             .join(format!("flowy-session-delete-recovery-{}", next_stamp()));
         let config = LlmConfig::default();
         let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
-            state: Arc::new(UiState::new(root.clone(), None)),
+            state: Arc::new(UiState::new(root.clone(), None, None)),
         });
         let engine =
             Engine::open(root.clone(), engine_config(&config, &root), observer)
@@ -388,6 +936,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
+                execution: Default::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -401,6 +950,7 @@ mod background_init_tests {
             })
             .unwrap();
         let delivery = DeliveryCommit {
+            execution: Default::default(),
             session_id: "home".into(),
             submission_id: "submission-1".into(),
             artifact_ids: vec![receipt.artifact_id.clone()],
@@ -423,6 +973,7 @@ mod background_init_tests {
         crate::index::SessionIndex {
             active: Some("home".into()),
             sessions: vec![IndexRecord {
+                execution: Default::default(),
                 id: "home".into(),
                 title: "stale".into(),
                 updated_at: 1,
@@ -472,7 +1023,7 @@ mod background_init_tests {
         let root = std::env::temp_dir()
             .join(format!("flowy-session-delete-legacy-{}", next_stamp()));
         let config = LlmConfig::default();
-        let state = Arc::new(UiState::new(root.clone(), None));
+        let state = Arc::new(UiState::new(root.clone(), None, None));
         let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
             state: Arc::clone(&state),
         });
@@ -490,6 +1041,7 @@ mod background_init_tests {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
+                execution: Default::default(),
                 source_root: output,
                 relative_path: "report.md".into(),
                 source_relative_path: "report.md".into(),
@@ -504,6 +1056,7 @@ mod background_init_tests {
             .unwrap();
         store
             .recover_commits(std::slice::from_ref(&DeliveryCommit {
+                execution: Default::default(),
                 session_id: "legacy".into(),
                 submission_id: "submission-legacy".into(),
                 artifact_ids: vec![receipt.artifact_id.clone()],
@@ -625,6 +1178,7 @@ mod background_init_tests {
         let output_root = workspace.join("outputs").join(&submission_id);
         std::fs::create_dir_all(&output_root).unwrap();
         let context = flowy_agent_core::ToolRunContext {
+            execution: Default::default(),
             signal: CancelToken::new(),
             agent_id: Some("s-home".into()),
             cwd: Some(workspace.display().to_string()),
@@ -1259,6 +1813,7 @@ mod guard_tests {
             None,
         );
         let context = flowy_agent_core::ToolRunContext {
+            execution: Default::default(),
             signal: CancelToken::new(),
             agent_id: Some("s-l3".to_owned()),
             cwd: Some(root.display().to_string()),

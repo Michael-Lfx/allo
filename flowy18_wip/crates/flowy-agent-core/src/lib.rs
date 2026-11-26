@@ -17,7 +17,8 @@ pub use acceptance::{
     AcceptanceQueue, AcceptedMessage, DraftTarget, Lease, ReceiptState,
 };
 pub use engine::{
-    Engine, EngineConfig, EnqueueOutcome, RunError, TurnObserver,
+    CancelDisposition, Engine, EngineConfig, EnqueueOutcome, RunError,
+    TurnObserver,
 };
 pub use loop_runner::{
     LoopOutcome, ModelRoute, PreToolDecision, PreToolHook, StructuredRequest,
@@ -27,15 +28,20 @@ pub use loop_runner::{
 pub use run_fence::{PublishToken, RunFence, RunTicket};
 pub use session::{
     BranchHeartbeat, DeliveryCommit, DeliveryCommitter, DisambiguationOption,
-    DispatchRecord, FactEntry, FactStatus, ObjectVerifyState, PendingCard,
-    PendingRouterFollowup, RequiredDeliverable, SessionIndex, SessionOrigin,
-    SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TrackedObject, TrackedObjectKind, TurnState,
+    DispatchRecord, ExecutionMetadata, ExecutionOwner, ExecutionSource,
+    FactEntry, FactStatus, ObjectVerifyState, PendingCard,
+    PendingRouterFollowup, RequiredDeliverable, SessionCreateDisposition,
+    SessionIndex, SessionOrigin, SessionRecord, SessionRole, SessionSpec,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
+    TrackedObjectKind, TurnCompletionEvidence, TurnExecutionOutcome, TurnState,
     WorkAccessMode, WorkContract,
 };
 pub use transport::{
     echo_stream_fn, openai_stream_fn, openai_structured_stream_fn,
 };
+
+#[cfg(test)]
+mod execution_metadata_tests;
 
 pub use types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageId,

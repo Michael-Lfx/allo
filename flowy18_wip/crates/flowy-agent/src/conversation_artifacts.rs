@@ -299,6 +299,7 @@ pub fn prepare_conversation_artifacts_gated(
             delivery_key: identity.clone(),
             display_name: None,
             origin: session.origin.clone(),
+            execution: session.execution.clone(),
         };
         let receipt = if let Some(gate) = gate {
             let file_hash = match crate::delivery::read_regular_file_bounded(
@@ -409,6 +410,7 @@ pub fn prepare_conversation_artifacts_gated(
             completed_successfully: true,
             committed_at_ms: now_ms(),
             origin: session.origin.clone(),
+            execution: session.execution.clone(),
             origin_title_snapshot: session.title.clone(),
         });
     }
@@ -764,6 +766,7 @@ mod tests {
         let store = ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 source_root: output,
                 relative_path: "notes.md".into(),
                 source_relative_path: "outputs/submission-published/notes.md"
@@ -779,6 +782,7 @@ mod tests {
             .unwrap();
         store
             .commit_prepared(&DeliveryCommit {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 session_id: receipt.session_id.clone(),
                 submission_id: receipt.submission_id.clone(),
                 artifact_ids: vec![receipt.artifact_id.clone()],
@@ -1141,5 +1145,45 @@ mod tests {
             commits_tagged.is_empty(),
             "rev=1 turn artifact must stay blocked when contract evolved to rev=2"
         );
+    }
+
+    #[test]
+    fn conversation_import_preserves_automation_execution_identity() {
+        let scratch = Scratch::new("automation-identity");
+        let workspace = scratch.0.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("result.md"), b"automation result").unwrap();
+        let mut record = session(
+            "automation-session",
+            &workspace,
+            SessionOrigin::Home,
+            vec![
+                call_message("write-1", "write_file", "result.md"),
+                result_message("write-1", "write_file", false),
+            ],
+        );
+        record.execution = flowy_agent_core::ExecutionMetadata {
+            owner: Some(flowy_agent_core::ExecutionOwner {
+                authority: "test-authority".into(),
+                subject: "42".into(),
+            }),
+            source: flowy_agent_core::ExecutionSource::Automation {
+                automation_id: "automation-1".into(),
+                run_id: "run-1".into(),
+                attempt_id: "attempt-1".into(),
+            },
+        };
+        let store = ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
+        let writes = parse_successful_writes(&record.messages);
+        let commits = prepare_conversation_artifacts(&store, &record, &writes);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].execution, record.execution);
+        store.commit_prepared(&commits[0]).unwrap();
+        drop(store);
+        let reopened =
+            ArtifactStore::open(scratch.0.join("artifacts")).unwrap();
+        let artifacts = reopened.list().unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].manifest.execution, record.execution);
     }
 }

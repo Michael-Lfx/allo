@@ -8,6 +8,8 @@ use super::{
     persist_index, reconcile_partial_work_after_override,
 };
 use crate::artifact_store::PublicationState;
+use flowy_agent_core::{Engine, RunError, TurnCompletionEvidence};
+use std::sync::Arc;
 
 impl AgentHandle {
     /// The host-side artifact catalog API. A missing store means startup
@@ -307,6 +309,92 @@ impl AgentHandle {
         Ok(())
     }
 
+    /// Read durable execution evidence for one exact submission. This does not
+    /// claim that an independent artifact marker has committed: nonempty
+    /// artifact IDs still require the saved delivery group to be reconciled.
+    /// No active session or window projection is consulted.
+    pub fn completion_evidence(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<Option<TurnCompletionEvidence>, &'static str> {
+        Ok(self
+            .completion_engine()?
+            .completion_evidence(session_id, submission_id))
+    }
+
+    /// Look up the full saved group by its stable session/submission reference.
+    /// Caller-supplied replacement artifact lists are never accepted.
+    pub fn delivery_commit_for_submission(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<Option<DeliveryCommit>, &'static str> {
+        Ok(self
+            .completion_engine()?
+            .delivery_commit_for_submission(session_id, submission_id))
+    }
+
+    pub(super) fn completion_engine(
+        &self,
+    ) -> Result<Arc<Engine>, &'static str> {
+        if self.is_initializing() {
+            return Err("library.loading");
+        }
+        if *lock(&self.inner.state.load_failed)
+            || *lock(&self.inner.state.history_unavailable)
+        {
+            return Err("notice.storage_error");
+        }
+        lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")
+    }
+
+    /// Retry only the saved artifact group. A successful return proves that
+    /// group's marker committed; it neither runs a model nor changes active.
+    /// This also works when this session has no live UI projection.
+    pub fn retry_delivery_commit(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<DeliveryCommit, &'static str> {
+        let _dispatch = lock(&self.inner.state.dispatch);
+        let engine = self.completion_engine()?;
+        self.retry_delivery_commit_locked(&engine, session_id, submission_id)
+    }
+
+    fn retry_delivery_commit_locked(
+        &self,
+        engine: &Engine,
+        session_id: &str,
+        submission_id: &str,
+    ) -> Result<DeliveryCommit, &'static str> {
+        let store = self.artifact_store()?;
+        let commit = engine
+            .retry_delivery_commit_with(session_id, submission_id, |commit| {
+                store.recover_commits(std::slice::from_ref(commit))
+            })
+            .map_err(|error| {
+                if matches!(error, RunError::Busy) {
+                    return "notice.agent_busy";
+                }
+                if let RunError::Storage(error) = &error {
+                    log_storage_io_error(
+                        "retry delivered artifact group",
+                        &self.inner.state.root.join("artifacts"),
+                        error,
+                    );
+                }
+                "chat.status_delivery_failed"
+            })?;
+        confirm_commit_audit(&self.inner.state.root, &store, &commit);
+        apply_delivery_commit_to_live(&self.inner.state, &commit);
+        self.inner.state.stream_changed(session_id);
+        self.inner.state.push_update(AgentUpdate::Artifacts);
+        Ok(commit)
+    }
+
     /// Retry the independent artifact-store marker for a durable delivery
     /// commit after the turn itself has already completed. The turn is never
     /// re-run and no new submission or artifact ID is created.
@@ -339,15 +427,16 @@ impl AgentHandle {
             return Err("chat.status_delivery_failed");
         }
         let store = self.artifact_store()?;
+        let commits =
+            super::observer::validated_delivery_commits(&engine, &record)
+                .map_err(|_| "chat.status_delivery_failed")?;
         if let Some(session) = lock(&self.inner.state.live).get_mut(session_id)
         {
             session.status = TurnStatus::SavingFiles;
             session.turn_started_at = Some(now_ms());
         }
         self.inner.state.stream_changed(session_id);
-        let outcome = if let Err(error) =
-            store.recover_commits(&record.delivery_commits)
-        {
+        let outcome = if let Err(error) = store.recover_commits(&commits) {
             log_storage_io_error(
                 "retry delivered artifacts",
                 &self.inner.state.root.join("artifacts"),
@@ -362,7 +451,7 @@ impl AgentHandle {
             self.inner.state.stream_changed(session_id);
             Err("chat.status_delivery_failed")
         } else {
-            for commit in &record.delivery_commits {
+            for commit in &commits {
                 confirm_commit_audit(&self.inner.state.root, &store, commit);
                 apply_delivery_commit_to_live(&self.inner.state, commit);
             }
@@ -642,6 +731,9 @@ impl AgentHandle {
             delivery_key,
             display_name: None,
             origin: SessionOrigin::Home,
+            execution: engine
+                .session(session_id)
+                .map_or_else(Default::default, |record| record.execution),
         };
         let result = gate
             .stage_override_for_report_with_revision(
@@ -723,6 +815,9 @@ impl AgentHandle {
             completed_successfully: true,
             committed_at_ms: now,
             origin: SessionOrigin::Home,
+            execution: engine
+                .session(session_id)
+                .map_or_else(Default::default, |record| record.execution),
             origin_title_snapshot,
         };
         if engine.record_delivery_commit(&commit).is_err() {

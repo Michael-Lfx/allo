@@ -371,6 +371,8 @@ pub struct ToolRunContext {
     /// Stable identifier created and persisted by the host before the turn.
     pub submission_id: Option<String>,
     pub session_origin: crate::session::SessionOrigin,
+    /// Immutable host identity copied from the session, never from tool arguments.
+    pub execution: crate::session::ExecutionMetadata,
     /// Dedicated output directory for this submission, if the host assigned
     /// one. It is never inferred from the session's general working directory.
     pub output_root: Option<std::path::PathBuf>,
@@ -387,6 +389,7 @@ impl std::fmt::Debug for ToolRunContext {
             .field("has_todo_sink", &self.todos.is_some())
             .field("submission_id", &self.submission_id)
             .field("session_origin", &self.session_origin)
+            .field("execution", &self.execution)
             .field("output_root", &self.output_root)
             .field(
                 "artifact_delivery_available",

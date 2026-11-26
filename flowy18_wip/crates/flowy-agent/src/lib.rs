@@ -11,6 +11,7 @@ mod catalog;
 mod config;
 mod conversation_artifacts;
 pub mod delivery;
+mod execution_host;
 mod flex;
 mod handle;
 mod index;
@@ -33,12 +34,14 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use flowy_agent_core::{
-    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit,
-    DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
-    PendingCard, PendingRouterFollowup, ReceiptState, RequiredDeliverable,
-    SessionOrigin, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TrackedObject, TrackedObjectKind, WorkAccessMode,
-    WorkContract,
+    AcceptanceQueue, AcceptedMessage, BranchHeartbeat, CancelDisposition,
+    DeliveryCommit, DisambiguationOption, ExecutionMetadata, ExecutionOwner,
+    ExecutionSource, FactEntry, FactStatus, ObjectVerifyState, PendingCard,
+    PendingRouterFollowup, ReceiptState, RequiredDeliverable,
+    SessionCreateDisposition, SessionOrigin, SessionRole, SessionSpec,
+    SessionWorkspace, StopHandoffManifest, SubmissionOutcome, TrackedObject,
+    TrackedObjectKind, TurnCompletionEvidence, TurnExecutionOutcome,
+    WorkAccessMode, WorkContract,
     tools::{
         SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
         SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,
@@ -48,10 +51,11 @@ pub use flowy_agent_core::{
 };
 pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
-    AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
-    CardAction, CardActionOutcome, CardSelection, ChildWorkSummary,
-    DispatchWorkResult, RoutedPendingCard, SessionSearchHit, SessionSummary,
-    StopWorkResult, TaskTarget, WorkStatus,
+    AcceptedRun, AgentHandle, AgentInitialization, AgentSnapshot,
+    AgentSubscription, AgentUpdate, AgentUpdateBatch, AgentWorkspace,
+    CancelOutcome, CardAction, CardActionOutcome, CardSelection,
+    ChildWorkSummary, DispatchWorkResult, RoutedPendingCard, SessionSearchHit,
+    SessionSummary, StopWorkResult, TaskTarget, WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -75,6 +79,9 @@ mod perf_tests;
 
 #[cfg(test)]
 mod artifact_integration_tests;
+
+#[cfg(test)]
+mod execution_metadata_tests;
 
 #[cfg(test)]
 mod tests {
@@ -356,6 +363,7 @@ mod tests {
         crate::index::SessionIndex {
             active: Some("restored-session".into()),
             sessions: vec![crate::index::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "restored-session".into(),
                 title: "Existing".into(),
                 updated_at: 1,
@@ -408,6 +416,7 @@ mod tests {
         crate::index::SessionIndex {
             active: Some("rich-session".into()),
             sessions: vec![crate::index::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "rich-session".into(),
                 title: "Rich history".into(),
                 updated_at: 1,
@@ -458,6 +467,7 @@ mod tests {
         let mut index = crate::index::SessionIndex {
             active: Some(id.into()),
             sessions: vec![crate::index::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: id.into(),
                 title: "Existing".into(),
                 updated_at: 1,
@@ -558,6 +568,7 @@ mod tests {
         let index = crate::index::SessionIndex {
             active: Some("interrupted-session".into()),
             sessions: vec![crate::index::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "interrupted-session".into(),
                 title: "Existing task".into(),
                 updated_at: 1,
@@ -650,6 +661,7 @@ mod tests {
         let history = flowy_agent_core::SessionIndex {
             active: None,
             sessions: vec![flowy_agent_core::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "history-only".into(),
                 title: "From history".into(),
                 titled: true,
@@ -742,6 +754,7 @@ mod tests {
         crate::index::SessionIndex {
             active: Some("history-session".into()),
             sessions: vec![crate::index::SessionRecord {
+                execution: flowy_agent_core::ExecutionMetadata::default(),
                 id: "history-session".into(),
                 title: "Existing".into(),
                 updated_at: 1,

@@ -1266,6 +1266,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
             let expected = crate::delivery::hash_bytes(checked);
             let receipt =
                 store.prepare(crate::artifact_store::PrepareArtifact {
+                    execution: Default::default(),
                     source_root: output_dir.clone(),
                     relative_path: "sales.csv".into(),
                     source_relative_path: format!("outputs/{sub_id}/sales.csv"),
@@ -1317,6 +1318,7 @@ fn forced_breakpoint_3_history_commit_without_marker_recovers_marker_and_audit_w
             },
         ],
         delivery_commits: vec![DeliveryCommit {
+            execution: Default::default(),
             session_id: session_id.clone(),
             submission_id: sub_id.clone(),
             artifact_ids: vec![receipt.artifact_id.clone()],

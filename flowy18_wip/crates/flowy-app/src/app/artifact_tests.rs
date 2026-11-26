@@ -5,7 +5,8 @@
 use super::{FlowyApp, Screen, Section, state::ActiveDialog};
 use crate::session::SessionStore;
 use flowy_agent::{
-    ArtifactStore, DeliveryCommit, PrepareArtifact, SessionOrigin,
+    ArtifactStore, DeliveryCommit, ExecutionMetadata, PrepareArtifact,
+    SessionOrigin,
 };
 use flowy_studio::library::LibraryEvent;
 use gpui::{Entity, TestAppContext};
@@ -50,6 +51,7 @@ impl Fixture {
         let store = ArtifactStore::open(root.join("artifacts")).unwrap();
         let receipt = store
             .prepare(PrepareArtifact {
+                execution: ExecutionMetadata::default(),
                 source_root: output,
                 relative_path: "report.csv".into(),
                 source_relative_path: "report.csv".into(),
@@ -66,6 +68,7 @@ impl Fixture {
         // receipt, manifests and independent marker use production Store code.
         store
             .recover_commits(&[DeliveryCommit {
+                execution: ExecutionMetadata::default(),
                 session_id: receipt.session_id.clone(),
                 submission_id: receipt.submission_id.clone(),
                 artifact_ids: vec![receipt.artifact_id.clone()],

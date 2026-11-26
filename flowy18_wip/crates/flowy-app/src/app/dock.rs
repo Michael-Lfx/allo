@@ -974,7 +974,7 @@ impl FlowyApp {
     /// the project's edit button, the rightmost action.
     fn conversation_row_actions(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
         session_id: &str,
     ) -> impl IntoElement {

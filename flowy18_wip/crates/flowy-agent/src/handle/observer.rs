@@ -11,6 +11,7 @@ use super::{
     VerificationIssue, complete_text, lock, log_storage_io_error, model_route,
     now_ms, title, tool_target,
 };
+use flowy_agent_core::{RunError, SessionSpec};
 
 /// Maximum Unicode scalar characters kept in a sidebar session preview.
 pub(super) const PREVIEW_MAX_CHARS: usize = 56;
@@ -753,6 +754,15 @@ pub(super) fn backfill_conversation_artifacts(
         if !crate::conversation_artifacts::session_supports_import(&session) {
             continue;
         }
+        if let Err(error) = validated_delivery_commits(engine, &session) {
+            log_storage_io_error(
+                "validate history before artifact backfill",
+                &flowy_agent_core::SessionIndex::path(&state.root),
+                &error,
+            );
+            state.report_storage_error();
+            continue;
+        }
         match store.source_deleted(&session.id) {
             Ok(true) => continue,
             Ok(false) => {}
@@ -897,7 +907,17 @@ pub(super) fn persist_conversation_commits(
                 revision,
             );
         }
-        if let Err(error) = store.commit_prepared(&commit) {
+        let finalized = engine
+            .retry_delivery_commit_with(
+                &commit.session_id,
+                &commit.submission_id,
+                |saved| store.commit_prepared(saved),
+            )
+            .map_err(|error| match error {
+                RunError::Storage(error) => error,
+                other => std::io::Error::other(other.to_string()),
+            });
+        if let Err(error) = finalized {
             log_storage_io_error(
                 "commit conversation artifact",
                 &state.root.join("artifacts"),
@@ -940,10 +960,12 @@ pub(super) fn confirm_commit_audit(
 
 pub(super) fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
     if let Some(store) = state.artifact_store.get() {
-        let commits = engine
-            .session(id)
-            .map_or_default(|record| record.delivery_commits);
-        if let Err(error) = store.recover_commits(&commits) {
+        let Some(record) = engine.session(id) else {
+            return;
+        };
+        let recovered = validated_delivery_commits(engine, &record)
+            .and_then(|commits| store.recover_commits(&commits));
+        if let Err(error) = recovered {
             log_storage_io_error(
                 "update artifact source title",
                 &state.root.join("artifacts"),
@@ -952,6 +974,33 @@ pub(super) fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
             state.report_storage_error();
         }
     }
+}
+
+/// Raw history is never sufficient authority to publish a prepared group.
+/// Resolve the entire session before recovering any group so a conflicting
+/// proof cannot be bypassed by startup, title refresh, or import backfill.
+pub(super) fn validated_delivery_commits(
+    engine: &Engine,
+    record: &SessionRecord,
+) -> std::io::Result<Vec<DeliveryCommit>> {
+    for evidence in &record.turn_completions {
+        if engine
+            .completion_evidence(&record.id, &evidence.submission_id)
+            .is_none()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "durable completion evidence has an invalid or missing artifact group",
+            ));
+        }
+    }
+    record.delivery_commits.iter().map(|commit| {
+        engine.delivery_commit_for_submission(&record.id, &commit.submission_id)
+            .ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "saved artifact group conflicts with durable completion evidence",
+            ))
+    }).collect()
 }
 
 pub(super) fn persist_index(state: &UiState) -> Result<(), &'static str> {
@@ -986,6 +1035,7 @@ fn persist_index_with_status(
             role: session.role,
             root_session_id: session.root_session_id.clone(),
             access_mode: session.access_mode,
+            execution: session.execution.clone(),
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -1010,13 +1060,33 @@ pub(super) fn finish_interrupted_lines(lines: &mut [ChatLine]) {
 pub(super) fn ensure_engine_session(
     engine: &Engine,
     id: &str,
+    state: &UiState,
 ) -> std::io::Result<()> {
-    if engine.session(id).is_none() {
-        engine.insert_session(SessionRecord {
-            id: id.to_owned(),
-            ..SessionRecord::default()
-        })?;
+    if engine.session(id).is_some() {
+        return Ok(());
     }
+    let live = lock(&state.live);
+    let session = live.get(id).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "session not found")
+    })?;
+    if !session.execution.is_valid() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "session execution identity is invalid",
+        ));
+    }
+    let spec = SessionSpec {
+        id: id.to_owned(),
+        created_at_ms: session.updated_at,
+        origin: session.origin.clone(),
+        workspace: session.session_workspace.clone(),
+        execution: session.execution.clone(),
+        role: session.role,
+        root_session_id: session.root_session_id.clone(),
+        access_mode: session.access_mode,
+    };
+    drop(live);
+    engine.create_if_absent(spec)?;
     Ok(())
 }
 
@@ -1065,6 +1135,7 @@ pub(super) fn import_engine_sessions(
             .any(|id| !committed.contains(id));
         if let Some(existing) = live.get_mut(&record.id) {
             existing.origin = record.origin.clone();
+            existing.execution.clone_from(&record.execution);
             existing.session_workspace.clone_from(&record.workspace);
             existing.pinned = record.pinned;
             existing.archived = record.archived;
@@ -1184,6 +1255,7 @@ pub(super) fn import_engine_sessions(
                 },
                 origin: record.origin,
                 session_workspace: record.workspace,
+                execution: record.execution,
                 heartbeat: None,
                 role: record.role,
                 root_session_id: record.root_session_id,
@@ -1702,6 +1774,10 @@ pub(super) fn hydrate_engine(
         if known.contains(id) {
             continue;
         }
+        if !session.execution.is_valid() {
+            state.report_storage_error();
+            continue;
+        }
         if engine
             .insert_session(SessionRecord {
                 id: id.clone(),
@@ -1722,6 +1798,7 @@ pub(super) fn hydrate_engine(
                 role: session.role,
                 root_session_id: session.root_session_id.clone(),
                 access_mode: session.access_mode,
+                execution: session.execution.clone(),
                 ..SessionRecord::default()
             })
             .is_err()

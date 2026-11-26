@@ -309,7 +309,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(|app, _event, _window, cx| {
-                                app.check_skill_updates(cx)
+                                app.check_skill_updates(cx);
                             }),
                         ),
                     )
@@ -480,7 +480,7 @@ impl FlowyApp {
                         .render(
                             &self.theme,
                             cx.listener(move |app, _event, _window, cx| {
-                                app.toggle_saved_skill(remove.clone(), cx)
+                                app.toggle_saved_skill(remove.clone(), cx);
                             }),
                         ),
                     ),
@@ -576,7 +576,7 @@ impl FlowyApp {
                         cx.listener(move |app, _event, _window, cx| {
                             app.install_shelf_skill(
                                 &owner, &slug, &version, &key, cx,
-                            )
+                            );
                         }),
                     ),
             )
@@ -755,7 +755,7 @@ fn matches_query(query: &str, fields: &[&str]) -> bool {
             .any(|field| field.to_lowercase().contains(query))
 }
 
-fn origin_key(skill: &InstalledSkill) -> &'static str {
+const fn origin_key(skill: &InstalledSkill) -> &'static str {
     match skill.origin {
         flowy_skills::InstallOrigin::Official => "skills.built_in",
         flowy_skills::InstallOrigin::Community => "skills.community",

@@ -2215,6 +2215,7 @@ mod tests {
                 registry,
                 def,
                 crate::types::ToolRunContext {
+                    execution: Default::default(),
                     signal: CancelToken::new(),
                     agent_id: None,
                     cwd: None,

@@ -275,6 +275,7 @@ mod tests {
 
     fn ctx() -> ToolRunContext {
         ToolRunContext {
+            execution: crate::session::ExecutionMetadata::default(),
             signal: crate::types::CancelToken::new(),
             agent_id: Some("agent".into()),
             cwd: None,
