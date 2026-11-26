@@ -93,15 +93,18 @@ part_of: map.md
   「到点时刻」并发出 `TickPermit`，回合结束才凭凭证记「完成时刻」——循环体里再没有
   一处能顺手改写节拍。
 - **R-b 修补后重挂**：独立意图 `RepairFollowupWake` + 独立登记表，共用 sb2 的
-  `Notify` 与调度器的同一唤醒分支；登记点在 `applied` 的 Done 账本行之后、水位推进
-  之前（水位写失败也不能让改过的结构没有重挂）。执行前四道复核，各有 info 日志：
+  `Notify` 与调度器的同一唤醒分支；登记点紧跟结构写盘成功之后（修补审计行、
+  Done 账本行与水位推进都在它之后——那几步写了也可能失败并让回合以 Err 返回，
+  登记不能跟着一次记账失败一起丢）。执行前四道复核，各有 info 日志：
   自动维护运行期关 / 不在维护面 / **从未挂载**（无挂载行）/ 已 fresh 且无待挂。
   不设待挂阈值、不去抖。
 - **R-c**：修补输入契约未动。
 - **R-e 读数**：`applied` 的 Done 行 basis 追加 `ops={n} stale={0|1}`；每个 Ok
   出口一行 `structure repair round finished`（`trigger / status / ops / old_hash /
   new_hash / mounts_stale`）；重挂任务体留 finished / failed / panicked 与
-  not-started（带 reason）日志。
+  not-started（带 reason）日志；**每个到期 tick 都留一行**
+  `learning auto maintenance tick`（`scanned / idle / worked`）——空转也留，否则
+  「定时臂到底到没到点」在全库空转时无从判断。
 - 触发源 `repair_followup`：Rust 枚举 + 前端 `systemActions.ts` 映射 + zh/en
   「修补后重挂」+ 新增 `systemActionsLocales.test.ts`（此前 `ui/` 里没有系统动作
   键的双语断言）。
@@ -112,7 +115,7 @@ part_of: map.md
 | --- | --- | --- | --- |
 | 1 | R-b「登记一次仅挂载唤醒（复用 sb2 通道）」 | 复用通道**设施**（同一个 `Notify` + 调度器同一唤醒分支），但给修补后重挂独立意图、独立登记表、独立准入，不受 stale / 待挂阈值 / 去抖三道闸约束 | sb2 的准入**第一道就拒挂载失效**（`growth_wake.rs` 的 `growth_wake_verdict`，ADR-0018 决定 4，三条测试钉着）；修补 `applied` 后挂载必然失效——原样复用等于空操作 |
 | 2 | 已核验事实「或靠下一次生长唤醒」 | 不成立 | 修补后的生长唤醒同样被判 stale 拒绝 |
-| 3 | 自动重挂的范围 | 从未挂载（无挂载行）不重挂 | ADR-0018「首次对齐走手动」的边界保留 |
+| 3 | 自动重挂的范围 | 修补后重挂这条意图不给从未挂载的课程启动（无挂载行 → 不启动） | ADR-0018「首次对齐走手动」的边界保留——**仅限这条意图**：定时臂自己的首次到期回合对从未挂载且已有结构的课程仍会做全量首挂（k02 原设计，无节点数阈值），此前因 W1 从未发生过，现在会真实发生（见边界一节的修订） |
 | 4 | R-e「落动作簿与日志（现有通道，不新建）」 | op 条数与 hash 此前不在账本 / 结果日志里：给 Done 行 basis 追加读数 + 新增结果级 info 行 | 现有通道里没有这些读数可读 |
 | 5 | R-a 未分类的三条早退 | 运行期关 → 不推进；属主解析失败 / id 非法 → 算尝试过（推进） | 「到期并尝试过就推进，不论结果」；关了很久再打开，下一个 tick 就跑 |
 | 6 | 票面外追加 | 结构图页签的结构视图监听修补 / 挂载**终态帧**重取（B7） | 定时臂复活后，后台回合会让页签停在修补前的图与过期的「待重新检查」横幅上 |
@@ -220,13 +223,22 @@ part_of: map.md
 
 ### 边界
 
-- **空转的定时 tick 零留痕**：日志只在有课干活时打一行。定时臂是否到点在「全库
-  空转」时不可观测（D 的第一段即此）——评审修复批候选：到点即打一行
-  `scanned / idle / worked`。
-- B7（结构视图跟随后台终态帧）没有专项单测（不在预先约定的缝上；m1 的工作区测试
-  不模拟 WS 帧）——真机页面观察（E）补上。
-- app-server 侧的日志行（重挂 finished / failed / panicked、调度器 panic 行）未被
-  测试断言；service 侧结果行与未启动原因有断言。
+- **定时臂对「从未挂载」的课程会做首挂**：`maintenance_needs` 把「没有挂载行」读作
+  stale，所以定时臂的首次到期回合会给一门有结构、从未挂载过的课程做全量首挂（k02
+  原设计，待挂集不设阈值）。ADR-0018「首次对齐走手动」只被 ADR-0019 的修补后重挂
+  意图遵守；定时臂这一路未改。此前因 W1 定时臂从不运行而不可见，现在会真实发生。
+- **空转的定时 tick 现已留痕**（评审修复批）：每个到期 tick 都打一行
+  `learning auto maintenance tick scanned / idle / worked`，空转也打。真机那次
+  「跨 6 小时间隔却查不到任何痕迹」的观测缺口由此关掉（D 的第一段是修复前的形态）。
+- **修补登记的时序已前移**（评审修复批）：登记点从「Done 账本行之后」移到「结构
+  写盘成功之后」。审计行插入失败时回合以 Err 返回、结构已变，旧位置会漏掉重挂；
+  由测试（`applied_repair_still_registers_the_remount_when_the_audit_row_write_fails`）
+  钉住。
+- B7（结构视图跟随后台终态帧）在评审修复批里补了专项测试（捕获
+  `learning.courseGeneration` 的订阅者、逐帧断言重取次数）；修复前只有真机页面观察
+  （E）。
+- app-server 侧的日志行（重挂 finished / failed / panicked）未被测试断言；调度器
+  的 panic 行由「设置读取同步 panic 不杀循环」与新日志措辞覆盖。
 - `start_learning_auto_maintenance` 本身（环境闸、每进程一枚、spawn）仍无直接测试。
 - 新标签「修补后重挂」未做双主题目验。
 - dev 库里有 24 个 `learning_growth_batches` 行引用已不存在的课时（历史批次孤儿，
