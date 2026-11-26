@@ -1001,6 +1001,18 @@ pub(super) fn push_reconciled_receipt_updates(
     events: Vec<(String, ReceiptState)>,
 ) {
     for (id, receipt_state) in events {
+        if matches!(
+            receipt_state,
+            ReceiptState::Completed
+                | ReceiptState::Cancelled
+                | ReceiptState::Quarantined
+                | ReceiptState::Dead
+        ) {
+            let claim = lock(&state.active_claims).remove(&id);
+            if let Some(claim) = claim {
+                claim.heartbeat_cancel.cancel();
+            }
+        }
         if receipt_state == ReceiptState::Quarantined {
             let mut seen = lock(&state.notified_quarantined);
             if !seen.insert(id.clone()) {

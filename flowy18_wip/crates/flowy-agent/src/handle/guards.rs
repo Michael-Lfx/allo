@@ -1,6 +1,7 @@
 //! Workspace tool registry, path confinement, skill scoping, and shell guard hooks.
 
 use std::collections::HashSet;
+use std::path::Component;
 use std::sync::Mutex;
 
 use flowy_agent_core::tools::{ShellPolicyDecision, evaluate_shell_command};
@@ -350,31 +351,52 @@ pub fn confined_to(root: &Path, raw: &str) -> bool {
     within(&resolved_root, &candidate)
 }
 
+fn has_lexical_navigation(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, Component::CurDir | Component::ParentDir)
+    })
+}
+
 pub(super) fn resolve_deepest_ancestor(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
+    if !has_lexical_navigation(path)
+        && let Ok(canonical) = std::fs::canonicalize(path)
+    {
         return canonical;
     }
     // Walk up to the deepest existing ancestor and canonicalize it before
     // re-appending remaining lexical components, closing symlink/junction
     // escapes through multi-level non-existent subdirectories while staying
     // consistent when `root` itself is a synthetic (not-yet-created) path.
+    //
+    // Canonicalizing an ancestor that still contains `.` or `..` is unsafe on
+    // Windows: it can resolve the same directory to an 8.3 short path instead
+    // of the long spelling. Walk past navigation components first, then fold
+    // the suffix lexically after the canonical prefix is known.
     let mut ancestor = path;
     let mut suffix: Vec<std::ffi::OsString> = Vec::new();
     loop {
-        if let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor) {
+        if !has_lexical_navigation(ancestor)
+            && let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor)
+        {
             let mut resolved = canonical_ancestor;
             for part in suffix.into_iter().rev() {
                 resolved.push(part);
             }
             return resolved;
         }
-        let Some(name) = ancestor.file_name() else {
+        let Some(component) = ancestor.components().next_back() else {
             return path.to_path_buf();
         };
-        suffix.push(name.to_os_string());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            return path.to_path_buf();
+        }
+        suffix.push(component.as_os_str().to_os_string());
         let Some(parent) = ancestor.parent() else {
             return path.to_path_buf();
         };
+        if parent == ancestor {
+            return path.to_path_buf();
+        }
         ancestor = parent;
     }
 }
