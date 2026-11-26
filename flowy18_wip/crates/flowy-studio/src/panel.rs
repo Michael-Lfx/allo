@@ -1639,6 +1639,20 @@ impl StudioPanel {
         Ok(())
     }
 
+    fn draft_workspace(&self) -> Option<AgentWorkspace> {
+        if let Some(pid) = self.active_project_id.as_deref() {
+            self.projects
+                .iter()
+                .find(|p| p.id == pid)
+                .map(|p| AgentWorkspace {
+                    project_id: p.id.clone(),
+                    root: p.root.clone(),
+                })
+        } else {
+            self.agent.active_workspace()
+        }
+    }
+
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
         if self.submission_pending {
             return;
@@ -1697,15 +1711,36 @@ impl StudioPanel {
             || ((!self.cloud_ready || model.is_none())
                 && self.agent.requires_cloud_ready());
         // Legacy Standard sessions defer whenever running or awaiting cloud
-        // startup; fresh drafts defer only during cold-start catalog load;
-        // existing Router sessions never fall back into `accept_deferred`.
+        // startup; fresh drafts defer whenever awaiting cloud startup; existing
+        // Router sessions defer only during cold-start catalog load (warm busy
+        // Routers continue through `pending_router_followups`).
         let should_defer = if is_legacy_standard {
             running || waiting_for_cloud
         } else {
-            waiting_for_cloud && active_session.is_none()
+            waiting_for_cloud
+                && (active_session.is_none() || self.catalog_loading)
         };
         if should_defer {
-            match self.agent.accept_deferred(&text) {
+            let draft_workspace = self.draft_workspace();
+            let accepted = if is_legacy_standard {
+                self.agent.accept_deferred(&text)
+            } else if let Some(router_id) = active_session.as_deref() {
+                self.agent.accept_deferred_router(router_id, &text)
+            } else {
+                let draft_origin = match &draft_workspace {
+                    Some(ws) => flowy_agent::SessionOrigin::Project {
+                        project_id: Some(ws.project_id.clone()),
+                    },
+                    None => flowy_agent::SessionOrigin::Home,
+                };
+                self.agent.accept_deferred_draft(
+                    &text,
+                    draft_origin,
+                    draft_workspace,
+                    flowy_agent::SessionRole::Router,
+                )
+            };
+            match accepted {
                 Ok(receipt) => {
                     tracing::debug!(
                         target: "flowy.prompt",
@@ -1728,18 +1763,13 @@ impl StudioPanel {
             return;
         }
         if !self.cloud_ready || model.is_none() {
-            let key = if !is_legacy_standard && self.catalog_loading {
-                "library.loading"
-            } else {
-                "notice.agent_failed"
-            };
             tracing::debug!(
                 target: "flowy.prompt",
                 stage = "StudioPanel::send_prompt",
                 reason = "cloud_or_model",
                 "reject"
             );
-            self.emit_notice(Some(key), cx);
+            self.emit_notice(Some("notice.agent_failed"), cx);
             return;
         }
         let id = *self.submission.get_or_insert_with(new_submission_id);
@@ -1754,17 +1784,7 @@ impl StudioPanel {
         let agent = self.agent.clone();
         let expected_generation = agent.context_generation();
         let expected_active = active_session;
-        let expected_workspace =
-            if let Some(pid) = self.active_project_id.as_deref() {
-                self.projects.iter().find(|p| p.id == pid).map(|p| {
-                    AgentWorkspace {
-                        project_id: p.id.clone(),
-                        root: p.root.clone(),
-                    }
-                })
-            } else {
-                agent.active_workspace()
-            };
+        let expected_workspace = self.draft_workspace();
         let submitted_text = text.clone();
         let expected = expected_active.clone();
         let worker_stop = stop.clone();
@@ -4087,6 +4107,244 @@ mod tests {
             panel.stop_session_turn(&router_id, cx);
         });
         cx.run_until_parked();
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn cold_start_project_a_draft_switch_to_b_creates_single_project_a_router_and_preserves_b_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-cold-proj-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj_a_dir = root.join("proj-a");
+        let proj_b_dir = root.join("proj-b");
+        std::fs::create_dir_all(&proj_a_dir).unwrap();
+        std::fs::create_dir_all(&proj_b_dir).unwrap();
+
+        let panel = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: "flowy".into(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        let proj_a_id = Rc::new(RefCell::new(String::new()));
+        let proj_b_id = Rc::new(RefCell::new(String::new()));
+        panel.update(cx, |panel, cx| {
+            while panel.agent.is_initializing() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panel
+                .create_project("Alpha", &proj_a_dir, cx)
+                .expect("create project A");
+            *proj_a_id.borrow_mut() =
+                panel.active_project_id.clone().expect("A active");
+            panel
+                .create_project("Beta", &proj_b_dir, cx)
+                .expect("create project B");
+            *proj_b_id.borrow_mut() =
+                panel.active_project_id.clone().expect("B active");
+
+            panel
+                .open_project(&proj_a_id.borrow(), cx)
+                .expect("open project A draft");
+            panel.catalog_loading = true;
+            panel.cloud_ready = false;
+            panel.initialized = true;
+            panel.fill_prompt("first cold task for project A", cx);
+            panel.send_prompt(cx);
+            assert_eq!(panel.notice, None);
+            assert_eq!(visible_prompt(panel, cx), "");
+            assert_eq!(panel.pending_receipts.len(), 1);
+            let pending = panel.agent.pending_acceptances();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(
+                pending[0].target_role,
+                Some(flowy_agent::SessionRole::Router)
+            );
+            assert_eq!(
+                pending[0].target_origin,
+                Some(flowy_agent::SessionOrigin::Project {
+                    project_id: Some(proj_a_id.borrow().clone()),
+                })
+            );
+
+            // Switch to Project B draft before catalog finishes loading.
+            panel
+                .open_project(&proj_b_id.borrow(), cx)
+                .expect("open project B draft");
+            panel.fill_prompt("keep project B draft", cx);
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(proj_b_id.borrow().as_str())
+            );
+
+            // Model catalog finishes loading with local echo runner enabled:
+            // drain the queued Project A receipt without hijacking Project B.
+            panel.agent.apply_config(LlmConfig::default()).unwrap();
+            panel.catalog_loading = false;
+            panel.cloud_ready = true;
+            panel.notify_cloud_ready(cx);
+            panel.refresh_pending_receipts(cx);
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(3);
+            while panel.agent.has_active_claim()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                panel.refresh_pending_receipts(cx);
+            }
+            let sessions = panel.agent.list_sessions();
+            assert_eq!(
+                sessions.len(),
+                1,
+                "cold-start Project A drain must create strictly one Router session"
+            );
+            assert_eq!(
+                panel.agent.session_role(&sessions[0].id),
+                flowy_agent::SessionRole::Router
+            );
+            assert_eq!(
+                sessions[0].project_id.as_deref(),
+                Some(proj_a_id.borrow().as_str())
+            );
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(proj_b_id.borrow().as_str()),
+                "Project B selection must stay intact"
+            );
+            assert_eq!(
+                panel.agent.active_session_id(),
+                None,
+                "background drain must not steal Project B draft focus"
+            );
+            assert_eq!(visible_prompt(panel, cx), "keep project B draft");
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn cold_start_existing_router_queues_instead_of_rejecting_library_loading(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-cold-router-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj_a_dir = root.join("proj-a");
+        std::fs::create_dir_all(&proj_a_dir).unwrap();
+        let panel = open_panel(cx, |window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: "flowy".into(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+        let router_id = Rc::new(RefCell::new(String::new()));
+        panel.update(cx, |panel, cx| {
+            while panel.agent.is_initializing() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let rid = panel
+                .agent
+                .create_router_project_session(flowy_agent::AgentWorkspace {
+                    project_id: "proj-a".into(),
+                    root: proj_a_dir.clone(),
+                })
+                .expect("create router");
+            *router_id.borrow_mut() = rid.clone();
+            panel.open_session(&rid, cx);
+            panel.catalog_loading = true;
+            panel.cloud_ready = false;
+            panel.initialized = true;
+
+            panel.fill_prompt("existing router message while catalog loads", cx);
+            panel.send_prompt(cx);
+            assert_eq!(
+                panel.notice, None,
+                "existing Router must accept durably instead of rejecting library.loading"
+            );
+            assert_eq!(visible_prompt(panel, cx), "");
+            let pending = panel.agent.pending_acceptances();
+            assert_eq!(pending.len(), 1);
+            assert!(pending[0].strict_target);
+            assert_eq!(pending[0].target_session_id.as_deref(), Some(rid.as_str()));
+
+            panel.agent.apply_config(LlmConfig::default()).unwrap();
+            panel.catalog_loading = false;
+            panel.cloud_ready = true;
+            panel.notify_cloud_ready(cx);
+            panel.refresh_pending_receipts(cx);
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while panel.agent.has_active_claim()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                panel.refresh_pending_receipts(cx);
+            }
+            assert_eq!(panel.agent.list_sessions().len(), 1);
+            let lines = panel.agent.session_lines(&router_id.borrow());
+            assert!(lines.iter().any(|l| matches!(
+                l,
+                flowy_agent::ChatLine::User { text }
+                    if text == "existing router message while catalog loads"
+            )));
+        });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }

@@ -13,7 +13,9 @@ pub mod tools;
 pub mod transport;
 pub mod types;
 
-pub use acceptance::{AcceptanceQueue, AcceptedMessage, Lease, ReceiptState};
+pub use acceptance::{
+    AcceptanceQueue, AcceptedMessage, DraftTarget, Lease, ReceiptState,
+};
 pub use engine::{
     Engine, EngineConfig, EnqueueOutcome, RunError, TurnObserver,
 };

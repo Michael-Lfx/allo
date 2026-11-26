@@ -3483,4 +3483,43 @@ mod tests {
             .expect("explicit override settles deliverable once");
         assert_eq!(overridden.len(), 1);
     }
+
+    #[test]
+    fn collect_latest_deliverables_isolates_latest_turn_from_earlier_anchored_cards()
+     {
+        let lines = vec![
+            ChatLine::User {
+                text: "deliver alpha".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-a".into(),
+                artifact_path: r"C:\Work\alpha.pptx".into(),
+                artifact_hash: "ha".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some("w-1".into()),
+            },
+            ChatLine::User {
+                text: "deliver beta".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-b".into(),
+                artifact_path: r"C:\Work\beta.pptx".into(),
+                artifact_hash: "hb".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: Some("w-2".into()),
+            },
+        ];
+        let entries = collect_latest_deliverables(&lines)
+            .expect("latest turn with deliverables surfaces only beta");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, r"C:\Work\beta.pptx");
+    }
 }

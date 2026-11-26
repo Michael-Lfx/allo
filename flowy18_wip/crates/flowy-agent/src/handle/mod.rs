@@ -2129,10 +2129,23 @@ impl AgentHandle {
         }
 
         let live = lock(&self.inner.state.live);
+        let user_positions: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                matches!(line, ChatLine::User { .. }).then_some(idx)
+            })
+            .collect();
+        let work_turns =
+            Self::collect_work_dispatch_turns(rows, &user_positions);
+        let mut turn_inserts: Vec<Vec<ChatLine>> =
+            vec![Vec::new(); user_positions.len()];
+        let mut tail_inserts: Vec<ChatLine> = Vec::new();
         for child_id in &child_ids {
             let Some(child_live) = live.get(child_id) else {
                 continue;
             };
+            let target_turn = work_turns.get(child_id).copied();
             for line in &child_live.projection.lines {
                 match line {
                     ChatLine::Verification {
@@ -2162,22 +2175,56 @@ impl AgentHandle {
                         if let Some(&existing_idx) = seen_reports.get(&key) {
                             rows[existing_idx] = card;
                         } else {
-                            seen_reports.insert(key, rows.len());
-                            rows.push(card);
+                            seen_reports.insert(key, usize::MAX);
+                            match target_turn {
+                                Some(turn) => turn_inserts[turn].push(card),
+                                None => tail_inserts.push(card),
+                            }
                         }
                     }
                     ChatLine::Artifact { artifact_id }
                         if seen_artifacts.insert(artifact_id.clone()) =>
                     {
-                        rows.push(ChatLine::Artifact {
+                        let card = ChatLine::Artifact {
                             artifact_id: artifact_id.clone(),
-                        });
+                        };
+                        match target_turn {
+                            Some(turn) => turn_inserts[turn].push(card),
+                            None => tail_inserts.push(card),
+                        }
                     }
                     _ => {}
                 }
             }
         }
         drop(live);
+        if turn_inserts.iter().any(|bucket| !bucket.is_empty()) {
+            let extra: usize = turn_inserts.iter().map(Vec::len).sum::<usize>()
+                + tail_inserts.len();
+            let existing = std::mem::take(rows);
+            let mut out = Vec::with_capacity(existing.len() + extra);
+            let mut iter = existing.into_iter();
+            let mut emitted = 0_usize;
+            for (turn_idx, _) in user_positions.iter().enumerate() {
+                let end = user_positions
+                    .get(turn_idx + 1)
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                while emitted < end {
+                    let Some(row) = iter.next() else {
+                        break;
+                    };
+                    out.push(row);
+                    emitted += 1;
+                }
+                out.append(&mut turn_inserts[turn_idx]);
+            }
+            out.extend(iter);
+            out.extend(tail_inserts);
+            *rows = out;
+        } else {
+            rows.extend(tail_inserts);
+        }
     }
 
     pub fn turn_status(&self) -> TurnStatus {
@@ -2189,6 +2236,58 @@ impl AgentHandle {
                     .map(|session| session.status.clone())
             })
             .unwrap_or_default()
+    }
+
+    /// Map each dispatched/revised `work_id` to the index in `user_positions`
+    /// of the latest Router user turn that produced a successful
+    /// `DispatchWorkResult`.
+    fn collect_work_dispatch_turns(
+        rows: &[ChatLine],
+        user_positions: &[usize],
+    ) -> HashMap<String, usize> {
+        let mut work_turns = HashMap::new();
+        if user_positions.is_empty() {
+            return work_turns;
+        }
+        let mut current_turn: Option<usize> = None;
+        let mut user_cursor = 0_usize;
+        let mut last_tool_name: Option<&str> = None;
+        for (idx, line) in rows.iter().enumerate() {
+            while user_cursor < user_positions.len()
+                && user_positions[user_cursor] <= idx
+            {
+                current_turn = Some(user_cursor);
+                user_cursor += 1;
+            }
+            match line {
+                ChatLine::ToolCall { name, .. } => {
+                    last_tool_name = Some(name.as_str());
+                }
+                ChatLine::ToolResult {
+                    text,
+                    is_error: false,
+                } => {
+                    let prev_tool = last_tool_name.take();
+                    if let Some(turn) = current_turn
+                        && let Ok(val) =
+                            serde_json::from_str::<serde_json::Value>(text)
+                        && let Some(work_id) = val
+                            .get("work_id")
+                            .and_then(serde_json::Value::as_str)
+                        && !work_id.is_empty()
+                        && (val.get("receipt_id").is_some()
+                            || matches!(prev_tool, Some("dispatch_work")))
+                    {
+                        work_turns.insert(work_id.to_owned(), turn);
+                    }
+                }
+                ChatLine::ToolResult { is_error: true, .. } => {
+                    last_tool_name = None;
+                }
+                _ => {}
+            }
+        }
+        work_turns
     }
 
     pub fn working_elapsed_secs(&self) -> Option<u64> {
@@ -2681,10 +2780,20 @@ impl Harness {
 
     /// Create a new durable Home session in the background without ever
     /// mutating the UI's active selection or `context_generation`.
-    pub(super) fn create_background_home_session(
+    pub(super) fn create_background_session_with_role(
         &self,
+        origin: SessionOrigin,
+        workspace: Option<AgentWorkspace>,
+        role: SessionRole,
     ) -> Result<String, &'static str> {
-        self.create_session_inner(SessionOrigin::Home, None, false)
+        self.create_session_with_role_inner(
+            origin,
+            workspace,
+            false,
+            role,
+            None,
+            WorkAccessMode::ReadWrite,
+        )
     }
 
     fn create_session_inner(
