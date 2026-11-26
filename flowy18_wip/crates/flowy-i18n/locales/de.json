@@ -902,7 +902,7 @@
   "chat.archived_badge": "Archiviert",
   "search.placeholder": "Sitzungen, Bibliothek, Projekte oder Skills durchsuchen…",
   "search.empty": "Keine Treffer gefunden",
-  "search.footer_hint": "↑↓ Auswählen · Enter Öffnen · Esc Schließen",
+  "search.footer_hint": "↑↓ Navigieren · Tab Bereich · Enter Öffnen · Esc Schließen",
   "search.group_recent": "Letzte Sitzungen",
   "search.group_actions": "Schnellzugriff",
   "search.group_sessions": "Sitzungen",
@@ -918,5 +918,10 @@
   "time.just_now": "Gerade eben",
   "time.mins_ago": "vor {n} Min.",
   "time.hours_ago": "vor {n} Std.",
-  "time.days_ago": "vor {n} T."
+  "time.days_ago": "vor {n} T.",
+  "board.day_summary": "{date} · {active} aktiv · {done} fertig",
+  "board.clear_day_filter": "Datumsfilter löschen",
+  "search.scope_all": "Alle",
+  "chat.archived_toast": "„{title}“ archiviert",
+  "chat.undo": "Rückgängig"
 }

@@ -902,7 +902,7 @@
   "chat.archived_badge": "보관됨",
   "search.placeholder": "대화, 자료실 파일, 프로젝트 또는 스킬 검색…",
   "search.empty": "일치하는 결과가 없습니다",
-  "search.footer_hint": "↑↓ 선택 · Enter 열기 · Esc 닫기",
+  "search.footer_hint": "↑↓ 이동 · Tab 범위 · Enter 열기 · Esc 닫기",
   "search.group_recent": "최근 대화",
   "search.group_actions": "빠른 이동",
   "search.group_sessions": "대화",
@@ -918,5 +918,10 @@
   "time.just_now": "방금 전",
   "time.mins_ago": "{n}분 전",
   "time.hours_ago": "{n}시간 전",
-  "time.days_ago": "{n}일 전"
+  "time.days_ago": "{n}일 전",
+  "board.day_summary": "{date} · 진행 {active} · 완료 {done}",
+  "board.clear_day_filter": "날짜 필터 지우기",
+  "search.scope_all": "전체",
+  "chat.archived_toast": "\"{title}\" 보관됨",
+  "chat.undo": "실행 취소"
 }

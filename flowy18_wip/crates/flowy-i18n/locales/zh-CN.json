@@ -902,7 +902,7 @@
   "chat.archived_badge": "已归档",
   "search.placeholder": "搜索会话、资料库文件、项目或技能…",
   "search.empty": "没有找到匹配结果",
-  "search.footer_hint": "↑↓ 选择 · Enter 打开 · Esc 关闭",
+  "search.footer_hint": "↑↓ 选择 · Tab 分类 · Enter 打开 · Esc 关闭",
   "search.group_recent": "最近会话",
   "search.group_actions": "快捷入口",
   "search.group_sessions": "会话",
@@ -918,5 +918,10 @@
   "time.just_now": "刚刚",
   "time.mins_ago": "{n} 分钟前",
   "time.hours_ago": "{n} 小时前",
-  "time.days_ago": "{n} 天前"
+  "time.days_ago": "{n} 天前",
+  "board.day_summary": "{date} · {active} 运行 · {done} 完成",
+  "board.clear_day_filter": "清除日期筛选",
+  "search.scope_all": "全部",
+  "chat.archived_toast": "已归档「{title}」",
+  "chat.undo": "撤销"
 }

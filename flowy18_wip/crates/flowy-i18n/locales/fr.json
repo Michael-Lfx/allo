@@ -902,7 +902,7 @@
   "chat.archived_badge": "Archivé",
   "search.placeholder": "Rechercher sessions, bibliothèque, projets ou compétences…",
   "search.empty": "Aucun résultat trouvé",
-  "search.footer_hint": "↑↓ Choisir · Entrée Ouvrir · Échap Fermer",
+  "search.footer_hint": "↑↓ Naviguer · Tab Catégorie · Enter Ouvrir · Esc Fermer",
   "search.group_recent": "Sessions récentes",
   "search.group_actions": "Accès rapide",
   "search.group_sessions": "Sessions",
@@ -918,5 +918,10 @@
   "time.just_now": "À l'instant",
   "time.mins_ago": "il y a {n} min",
   "time.hours_ago": "il y a {n} h",
-  "time.days_ago": "il y a {n} j"
+  "time.days_ago": "il y a {n} j",
+  "board.day_summary": "{date} · {active} actifs · {done} terminés",
+  "board.clear_day_filter": "Effacer le filtre de date",
+  "search.scope_all": "Tout",
+  "chat.archived_toast": "« {title} » archivée",
+  "chat.undo": "Annuler"
 }

@@ -1,10 +1,89 @@
-use super::{FlowyApp, state::ActiveDialog};
+use super::{FlowyApp, Section, state::ActiveDialog};
 use flowy_ui as ui;
 use gpui::{
-    Context, Entity, IntoElement, ParentElement, Pixels, Point, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement,
+    Pixels, Point, Task, Window, div, prelude::*, px,
 };
 use gpui_kit::base::input::InputState;
+use std::time::Duration;
+
+const ARCHIVE_UNDO_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct ArchiveUndoEntry {
+    session_id: String,
+    title: String,
+    was_active: bool,
+    generation: u64,
+    _timer: Task<()>,
+}
+
+/// Minimal single-slot undo state for the 5-second post-archive banner.
+#[derive(Default)]
+pub(super) struct ArchiveUndoController {
+    generation: u64,
+    active: Option<ArchiveUndoEntry>,
+}
+
+impl ArchiveUndoController {
+    const fn next_generation(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    fn set(
+        &mut self,
+        session_id: String,
+        title: String,
+        was_viewing_active: bool,
+        generation: u64,
+        timer: Task<()>,
+    ) {
+        self.active = Some(ArchiveUndoEntry {
+            session_id,
+            title,
+            was_active: was_viewing_active,
+            generation,
+            _timer: timer,
+        });
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.active = None;
+    }
+
+    fn clear_if_generation(&mut self, generation: u64) -> bool {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            self.active = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear_if_session(&mut self, session_id: &str) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|entry| entry.session_id == session_id)
+        {
+            self.active = None;
+        }
+    }
+
+    fn take(&mut self) -> Option<(String, bool)> {
+        self.active
+            .take()
+            .map(|entry| (entry.session_id, entry.was_active))
+    }
+
+    fn active_title(&self) -> Option<&str> {
+        self.active.as_ref().map(|entry| entry.title.as_str())
+    }
+}
 
 /// Active anchor target for the unified session context menu (shared between
 /// sidebar `...` button, sidebar right-click, and Progress Board rows).
@@ -282,9 +361,25 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         self.task_menu = None;
-        let was_active =
-            self.studio.read(cx).agent.active_session_id().as_deref()
-                == Some(session_id);
+        let in_studio = self.section == Section::Studio;
+        let (was_active, was_viewing_active, title) = {
+            let studio = self.studio.read(cx);
+            let was_active =
+                studio.agent.active_session_id().as_deref() == Some(session_id);
+            let was_viewing_active = in_studio
+                && studio.surface == flowy_studio::StudioSurface::Chat
+                && was_active;
+            let raw_title = studio
+                .agent
+                .list_sessions()
+                .into_iter()
+                .find(|s| s.id == session_id)
+                .map(|s| s.title.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| self.t("dock.new_task"));
+            let title = flowy_studio::ports::redact_trace_text(&raw_title);
+            (was_active, was_viewing_active, title)
+        };
         let result = self
             .studio
             .read(cx)
@@ -295,12 +390,149 @@ impl FlowyApp {
         } else {
             self.studio.update(cx, |panel, cx| {
                 if archived && was_active {
-                    panel.new_task(cx);
+                    if in_studio {
+                        panel.new_task(cx);
+                    } else {
+                        let _ = panel.agent.clear_active();
+                    }
                 }
                 panel.refresh_board_now(cx);
             });
+            if archived {
+                let generation = self.archive_undo.next_generation();
+                let timer = cx.spawn(async move |weak, cx| {
+                    cx.background_executor().timer(ARCHIVE_UNDO_TIMEOUT).await;
+                    let _ = weak.update(cx, |app, cx| {
+                        if app.archive_undo.clear_if_generation(generation) {
+                            cx.notify();
+                        }
+                    });
+                });
+                self.archive_undo.set(
+                    session_id.to_owned(),
+                    title,
+                    was_viewing_active,
+                    generation,
+                    timer,
+                );
+            } else {
+                self.archive_undo.clear_if_session(session_id);
+            }
         }
         cx.notify();
+    }
+
+    pub(super) fn undo_last_archive(&mut self, cx: &mut Context<'_, Self>) {
+        let Some((session_id, was_viewing_active)) = self.archive_undo.take()
+        else {
+            return;
+        };
+        let result = self
+            .studio
+            .read(cx)
+            .agent
+            .set_session_archived(&session_id, false);
+        if let Err(key) = result {
+            self.studio.update(cx, |panel, cx| panel.note(key, cx));
+        } else {
+            let should_reopen = was_viewing_active
+                && self.studio.read(cx).agent.active_session_id().is_none();
+            self.studio.update(cx, |panel, cx| {
+                if should_reopen {
+                    panel.open_session(&session_id, cx);
+                }
+                panel.refresh_board_now(cx);
+            });
+            if should_reopen {
+                self.push_section(Section::Studio, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn archive_undo_banner(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let title = self.archive_undo.active_title()?;
+        let message = self.tf("chat.archived_toast", &[("title", title)]);
+        let undo_label = self.t("chat.undo");
+        let close_label = self.t("ui.close");
+        let bottom_offset = if self.prefs.activity { 108. } else { 20. };
+        Some(
+            div()
+                .id("archive-undo-banner")
+                .occlude()
+                .role(gpui::Role::Status)
+                .absolute()
+                .bottom(px(bottom_offset))
+                .right(px(24.))
+                .max_w(px(420.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded_xl()
+                .bg(self.theme.card())
+                .border_1()
+                .border_color(self.theme.line())
+                .shadow_md()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    ui::icons::archive()
+                        .size(px(15.))
+                        .flex_none()
+                        .text_color(self.theme.muted()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .text_sm()
+                        .text_color(self.theme.ink())
+                        .child(message),
+                )
+                .child(
+                    ui::interactive(
+                        "archive-undo-action",
+                        undo_label.clone(),
+                        &self.theme,
+                    )
+                    .flex_none()
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .bg(self.theme.status_active_bg())
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.theme.status_active())
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.undo_last_archive(cx);
+                    }))
+                    .child(undo_label),
+                )
+                .child(
+                    ui::IconButton::new(
+                        "archive-undo-dismiss",
+                        close_label,
+                        ui::icons::x().size(px(13.)),
+                    )
+                    .size(ui::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _, _, cx| {
+                            app.archive_undo.clear();
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn open_conversation_rename(
@@ -582,6 +814,7 @@ impl FlowyApp {
             {
                 self.active_dialog = ActiveDialog::None;
             }
+            self.archive_undo.clear_if_session(&request.id);
             // The host deletion already succeeded even when its confirmation
             // is no longer current. Refresh global source/catalog projections.
             self.studio.update(cx, |panel, cx| {

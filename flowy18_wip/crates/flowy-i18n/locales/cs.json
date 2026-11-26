@@ -902,7 +902,7 @@
   "chat.archived_badge": "Archivováno",
   "search.placeholder": "Hledat relace, knihovnu, projekty nebo dovednosti…",
   "search.empty": "Žádné odpovídající výsledky",
-  "search.footer_hint": "↑↓ Vybrat · Enter Otevřít · Esc Zavřít",
+  "search.footer_hint": "↑↓ Pohyb · Tab Rozsah · Enter Otevřít · Esc Zavřít",
   "search.group_recent": "Nedávné relace",
   "search.group_actions": "Rychlé akce",
   "search.group_sessions": "Relace",
@@ -918,5 +918,10 @@
   "time.just_now": "Právě teď",
   "time.mins_ago": "před {n} min",
   "time.hours_ago": "před {n} h",
-  "time.days_ago": "před {n} d"
+  "time.days_ago": "před {n} d",
+  "board.day_summary": "{date} · {active} aktivní · {done} hotovo",
+  "board.clear_day_filter": "Zrušit filtr data",
+  "search.scope_all": "Vše",
+  "chat.archived_toast": "Archivováno „{title}“",
+  "chat.undo": "Zpět"
 }

@@ -902,7 +902,7 @@
   "chat.archived_badge": "Gearchiveerd",
   "search.placeholder": "Zoek sessies, bibliotheek, projecten of vaardigheden…",
   "search.empty": "Geen resultaten gevonden",
-  "search.footer_hint": "↑↓ Kiezen · Enter Openen · Esc Sluiten",
+  "search.footer_hint": "↑↓ Navigeren · Tab Bereik · Enter Openen · Esc Sluiten",
   "search.group_recent": "Recente sessies",
   "search.group_actions": "Snelkoppelingen",
   "search.group_sessions": "Sessies",
@@ -918,5 +918,10 @@
   "time.just_now": "Zojuist",
   "time.mins_ago": "{n} min geleden",
   "time.hours_ago": "{n} uur geleden",
-  "time.days_ago": "{n} d geleden"
+  "time.days_ago": "{n} d geleden",
+  "board.day_summary": "{date} · {active} actief · {done} klaar",
+  "board.clear_day_filter": "Datumfilter wissen",
+  "search.scope_all": "Alles",
+  "chat.archived_toast": "\"{title}\" gearchiveerd",
+  "chat.undo": "Ongedaan maken"
 }

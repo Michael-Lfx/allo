@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use chrono::{Datelike, Duration, FixedOffset, Local, NaiveDate, TimeZone};
 use flowy_agent::{
     AcceptedMessage, AgentHandle, ChatLine, ReceiptState, RequiredDeliverable,
     SessionSummary, SubmissionOutcome, TurnStatus, VerificationIssue,
@@ -48,6 +49,111 @@ pub fn now_epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Calendar date key in local timezone: `(year, month, day)`.
+pub type LocalDateKey = (i32, u8, u8);
+
+/// Current local timezone offset in seconds east of UTC.
+#[must_use]
+pub fn local_tz_offset_secs() -> i32 {
+    Local::now().offset().local_minus_utc()
+}
+
+fn local_naive_date(ts_ms: u64, tz_offset_secs: i32) -> Option<NaiveDate> {
+    let ts = normalize_epoch_ms(ts_ms);
+    if ts == 0 {
+        return None;
+    }
+    let millis = i64::try_from(ts).ok()?;
+    let offset = FixedOffset::east_opt(tz_offset_secs)
+        .or_else(|| FixedOffset::east_opt(0))?;
+    offset
+        .timestamp_millis_opt(millis)
+        .single()
+        .map(|dt| dt.date_naive())
+}
+
+fn naive_date_key(date: NaiveDate) -> LocalDateKey {
+    (date.year(), date.month() as u8, date.day() as u8)
+}
+
+/// Resolves `(year, month, day)` in the given fixed UTC offset (seconds).
+#[must_use]
+pub fn local_date_from_epoch_ms(
+    ts_ms: u64,
+    tz_offset_secs: i32,
+) -> Option<LocalDateKey> {
+    local_naive_date(ts_ms, tz_offset_secs).map(naive_date_key)
+}
+
+/// Returns `(month, day)` in the given timezone offset, falling back to UTC
+/// civil conversion if the timestamp is outside `chrono`'s valid range.
+#[must_use]
+pub fn civil_month_day_in_tz(ts_ms: u64, tz_offset_secs: i32) -> (u8, u8) {
+    if let Some((_, month, day)) =
+        local_date_from_epoch_ms(ts_ms, tz_offset_secs)
+    {
+        (month, day)
+    } else {
+        civil_month_day_from_epoch_ms(normalize_epoch_ms(ts_ms))
+    }
+}
+
+/// Number of whole local calendar days between `ts_ms` and `now_ms`.
+/// Returns `None` when either timestamp is zero/unrepresentable.
+#[must_use]
+pub fn local_days_ago(
+    ts_ms: u64,
+    now_ms: u64,
+    tz_offset_secs: i32,
+) -> Option<i64> {
+    let today = local_naive_date(now_ms, tz_offset_secs)?;
+    let date = local_naive_date(ts_ms, tz_offset_secs)?;
+    Some(today.signed_duration_since(date).num_days())
+}
+
+/// Returns true when a timestamp falls strictly earlier than the 7-day local
+/// calendar window (`today - 6 days` through `today`). Zero or future clock-skew
+/// timestamps are never hidden behind the 7-day fold.
+#[must_use]
+pub fn is_older_than_7d_in_tz(
+    updated_at_ms: u64,
+    now_ms: u64,
+    tz_offset_secs: i32,
+) -> bool {
+    local_days_ago(updated_at_ms, now_ms, tz_offset_secs)
+        .is_some_and(|days| days >= 7)
+}
+
+/// Single source of truth mapping a session's `updated_at` timestamp to its
+/// local calendar-day bucket key (clamping minor future clock skew to Today).
+#[must_use]
+pub fn bucket_date_for_session(
+    updated_at_ms: u64,
+    now_ms: u64,
+    tz_offset_secs: i32,
+) -> Option<LocalDateKey> {
+    let today = local_naive_date(now_ms, tz_offset_secs)?;
+    let date = local_naive_date(updated_at_ms, tz_offset_secs)?;
+    if today.signed_duration_since(date).num_days() < 0 {
+        Some(naive_date_key(today))
+    } else {
+        Some(naive_date_key(date))
+    }
+}
+
+/// Whether a session timestamp belongs to the user-selected local calendar day
+/// on the 7-day Progress Board chart.
+#[must_use]
+pub fn matches_day_filter(
+    updated_at_ms: u64,
+    now_ms: u64,
+    tz_offset_secs: i32,
+    selected_day: LocalDateKey,
+) -> bool {
+    bucket_date_for_session(updated_at_ms, now_ms, tz_offset_secs)
+        == Some(selected_day)
 }
 
 /// Returns true when a normalized timestamp is strictly older than 7 days
@@ -298,8 +404,9 @@ impl SessionBoardGroup {
 /// One day bucket inside the 7-day Progress Board activity bar chart.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DailyActivityBucket {
-    /// Days ago (`6` = oldest visible day, `0` = last 24 hours / Today).
+    /// Days ago (`6` = oldest visible day, `0` = Today in local calendar).
     pub day_offset: u8,
+    pub date_key: LocalDateKey,
     pub month: u8,
     pub day: u8,
     pub active_or_blocked: usize,
@@ -313,20 +420,31 @@ impl DailyActivityBucket {
     }
 }
 
-/// Buckets non-archived sessions into 7 daily columns (`day_offset` 6 down to 0)
-/// aligned with the 7-day visual fold boundary.
+/// Buckets non-archived sessions into 7 local calendar-day columns
+/// (`day_offset` 6 down to 0) aligned with the 7-day visual fold boundary.
 #[must_use]
-pub fn compute_daily_7d(
+pub fn compute_daily_7d_in_tz(
     groups: &[&SessionBoardGroup],
     now_ms: u64,
+    tz_offset_secs: i32,
 ) -> Vec<DailyActivityBucket> {
+    let today = local_naive_date(now_ms, tz_offset_secs);
     let mut buckets: Vec<DailyActivityBucket> = (0..7_u8)
         .rev()
         .map(|offset| {
-            let bucket_ts = now_ms.saturating_sub(u64::from(offset) * DAY_MS);
-            let (month, day) = civil_month_day_from_epoch_ms(bucket_ts);
+            let (date_key, month, day) = if let Some(today_date) = today {
+                let d = today_date - Duration::days(i64::from(offset));
+                let key = naive_date_key(d);
+                (key, key.1, key.2)
+            } else {
+                let bucket_ts =
+                    now_ms.saturating_sub(u64::from(offset) * DAY_MS);
+                let (m, d) = civil_month_day_from_epoch_ms(bucket_ts);
+                ((0, m, d), m, d)
+            };
             DailyActivityBucket {
                 day_offset: offset,
+                date_key,
                 month,
                 day,
                 active_or_blocked: 0,
@@ -339,17 +457,12 @@ pub fn compute_daily_7d(
         if group.archived {
             continue;
         }
-        let ts = normalize_epoch_ms(group.updated_at);
-        if ts == 0 {
+        let Some(key) =
+            bucket_date_for_session(group.updated_at, now_ms, tz_offset_secs)
+        else {
             continue;
-        }
-        let age_ms = now_ms.saturating_sub(ts);
-        let days_ago = age_ms / DAY_MS;
-        if days_ago >= 7 {
-            continue;
-        }
-        let idx = (6 - days_ago) as usize;
-        if let Some(bucket) = buckets.get_mut(idx) {
+        };
+        if let Some(bucket) = buckets.iter_mut().find(|b| b.date_key == key) {
             if group.is_active {
                 bucket.active_or_blocked += 1;
             } else {
@@ -358,6 +471,16 @@ pub fn compute_daily_7d(
         }
     }
     buckets
+}
+
+/// Buckets non-archived sessions into 7 daily columns using the host's current
+/// local timezone.
+#[must_use]
+pub fn compute_daily_7d(
+    groups: &[&SessionBoardGroup],
+    now_ms: u64,
+) -> Vec<DailyActivityBucket> {
+    compute_daily_7d_in_tz(groups, now_ms, local_tz_offset_secs())
 }
 
 /// Pre-aggregated KPI metrics painted by `flowy-ui::charts::donut_chart` and bars.
@@ -417,6 +540,7 @@ pub struct WorkBoardSnapshot {
     pub sessions: Vec<SessionBoardGroup>,
     pub daily_7d: Vec<DailyActivityBucket>,
     pub generated_at_ms: u64,
+    pub tz_offset_secs: i32,
     pub generation: u64,
 }
 
@@ -704,14 +828,20 @@ impl BoardDataSource for AgentHandle {
         });
 
         let generated_at_ms = now_epoch_ms();
+        let tz_offset_secs = local_tz_offset_secs();
         let group_refs: Vec<&SessionBoardGroup> = groups.iter().collect();
-        let daily_7d = compute_daily_7d(&group_refs, generated_at_ms);
+        let daily_7d = compute_daily_7d_in_tz(
+            &group_refs,
+            generated_at_ms,
+            tz_offset_secs,
+        );
 
         WorkBoardSnapshot {
             kpi,
             sessions: groups,
             daily_7d,
             generated_at_ms,
+            tz_offset_secs,
             generation,
         }
     }
@@ -1711,5 +1841,98 @@ mod tests {
         }
         assert_eq!(kpi.code_count, 5);
         assert_eq!(kpi.other_count, 0);
+    }
+
+    #[test]
+    fn local_calendar_7d_buckets_respect_tz_midnight_and_match_day_filter() {
+        // UTC+8 = +28800s.
+        // now = 2026-11-26 01:00:00 +08:00 (2026-11-25 17:00:00Z).
+        let tz = 8 * 3600;
+        let utc_ms = |y: i32, m: u32, d: u32, h: u32, min: u32| -> u64 {
+            let dt = chrono::FixedOffset::east_opt(tz)
+                .unwrap()
+                .with_ymd_and_hms(y, m, d, h, min, 0)
+                .single()
+                .unwrap();
+            u64::try_from(dt.timestamp_millis()).unwrap()
+        };
+        let now_ms = utc_ms(2026, 11, 26, 1, 0);
+        let make_group =
+            |id: &str, updated_at: u64, active: bool| SessionBoardGroup {
+                session_id: id.into(),
+                title: id.into(),
+                project_id: None,
+                project_name: None,
+                workspace_display: String::new(),
+                updated_at,
+                pinned: false,
+                archived: false,
+                preview: None,
+                branches: Vec::new(),
+                total_branch_count: 0,
+                total_file_count: 0,
+                session_contract: None,
+                has_blocker: false,
+                has_delivered: false,
+                is_running: active,
+                is_active: active,
+                group_kpi: BoardKpiSummary::default(),
+            };
+
+        // 23:30 yesterday vs 00:30 today (1h apart) MUST land in distinct local days.
+        let g_yesterday =
+            make_group("yest", utc_ms(2026, 11, 25, 23, 30), false);
+        let g_today = make_group("today", utc_ms(2026, 11, 26, 0, 30), true);
+        // Minor future clock skew clamps to Today so chart and list never disagree.
+        let g_skew = make_group("skew", utc_ms(2026, 11, 26, 3, 0), false);
+        // Exactly 6 local days ago (11/20) stays in 7d window; 7 days ago (11/19) folds out.
+        let g_day6 = make_group("day6", utc_ms(2026, 11, 20, 9, 0), false);
+        let g_day7 = make_group("day7", utc_ms(2026, 11, 19, 23, 59), false);
+
+        let refs = vec![&g_yesterday, &g_today, &g_skew, &g_day6, &g_day7];
+        let buckets = compute_daily_7d_in_tz(&refs, now_ms, tz);
+        assert_eq!(buckets.len(), 7);
+        assert_eq!(buckets[6].date_key, (2026, 11, 26));
+        assert_eq!((buckets[6].month, buckets[6].day), (11, 26));
+        assert_eq!(buckets[6].active_or_blocked, 1);
+        assert_eq!(buckets[6].completed_or_delivered, 1);
+
+        assert_eq!(buckets[5].date_key, (2026, 11, 25));
+        assert_eq!(buckets[5].completed_or_delivered, 1);
+
+        assert_eq!(buckets[0].date_key, (2026, 11, 20));
+        assert_eq!(buckets[0].completed_or_delivered, 1);
+
+        // Invariant: for every bucket, matches_day_filter count == bucket.total().
+        for bucket in &buckets {
+            let matched = refs
+                .iter()
+                .filter(|g| {
+                    matches_day_filter(
+                        g.updated_at,
+                        now_ms,
+                        tz,
+                        bucket.date_key,
+                    )
+                })
+                .count();
+            assert_eq!(
+                matched,
+                bucket.total(),
+                "day {:?} filter count must equal chart bucket count",
+                bucket.date_key
+            );
+        }
+
+        assert!(!is_older_than_7d_in_tz(g_day6.updated_at, now_ms, tz));
+        assert!(is_older_than_7d_in_tz(g_day7.updated_at, now_ms, tz));
+        assert!(!is_older_than_7d_in_tz(g_skew.updated_at, now_ms, tz));
+
+        // Cross-year boundary: 2026-01-02 looks back cleanly into 2025-12-27.
+        let jan2_ms = utc_ms(2026, 1, 2, 10, 0);
+        let dec27 = make_group("dec27", utc_ms(2025, 12, 27, 15, 0), false);
+        let year_buckets = compute_daily_7d_in_tz(&[&dec27], jan2_ms, tz);
+        assert_eq!(year_buckets[0].date_key, (2025, 12, 27));
+        assert_eq!(year_buckets[0].completed_or_delivered, 1);
     }
 }

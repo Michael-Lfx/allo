@@ -39,7 +39,7 @@ impl gpui::EventEmitter<LibraryEvent> for LibraryPanel {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Popup {
     Sort,
-    Item(String),
+    Item { id: String, anchor_id: SharedString },
 }
 
 /// `IconPark` file-type artwork copied from the parent UI assets so library
@@ -193,6 +193,10 @@ impl LibraryPanel {
                             panel.preview = None;
                         } else {
                             panel.popup = None;
+                            panel.ui.overlays.update(
+                                cx,
+                                theme::OverlayHost::clear_point_anchors,
+                            );
                         }
                         cx.notify();
                     }
@@ -278,6 +282,14 @@ impl LibraryPanel {
                 .or_insert_with(|| cx.focus_handle());
         }
         self.model.items = items;
+        if let Some(Popup::Item { id, .. }) = &self.popup
+            && !self.model.items.iter().any(|item| &item.id == id)
+        {
+            self.popup = None;
+            self.ui
+                .overlays
+                .update(cx, theme::OverlayHost::clear_point_anchors);
+        }
         self.loading = false;
         cx.notify();
     }
@@ -452,8 +464,40 @@ impl LibraryPanel {
     pub fn popup_scope(&self) -> Option<SharedString> {
         self.popup.as_ref().map(|popup| match popup {
             Popup::Sort => "library-sort-menu".into(),
-            Popup::Item(_) => "library-item-menu".into(),
+            Popup::Item { .. } => "library-item-menu".into(),
         })
+    }
+
+    fn open_item_menu_anchored(
+        &mut self,
+        id: String,
+        anchor_id: SharedString,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.ui
+            .overlays
+            .update(cx, theme::OverlayHost::clear_point_anchors);
+        let popup = Popup::Item { id, anchor_id };
+        self.popup = if self.popup.as_ref() == Some(&popup) {
+            None
+        } else {
+            Some(popup)
+        };
+        cx.notify();
+    }
+
+    fn open_item_menu_at(
+        &mut self,
+        id: String,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let anchor_id = SharedString::from(format!("library-point-{id}"));
+        self.ui.overlays.update(cx, |host, cx| {
+            host.set_point_anchor(anchor_id.clone(), position, cx);
+        });
+        self.popup = Some(Popup::Item { id, anchor_id });
+        cx.notify();
     }
 
     /// Standalone example hosts call this before drawing the panel. App hosts
@@ -496,6 +540,10 @@ impl LibraryPanel {
         .render(
             &t,
             cx.listener(|panel, _, _, cx| {
+                panel
+                    .ui
+                    .overlays
+                    .update(cx, theme::OverlayHost::clear_point_anchors);
                 panel.popup = if panel.popup == Some(Popup::Sort) {
                     None
                 } else {
@@ -617,6 +665,10 @@ impl LibraryPanel {
                 cx.listener(move |panel, _, _, cx| {
                     panel.model.view = view;
                     panel.popup = None;
+                    panel
+                        .ui
+                        .overlays
+                        .update(cx, theme::OverlayHost::clear_point_anchors);
                     cx.notify();
                 }),
             ))
@@ -645,6 +697,10 @@ impl LibraryPanel {
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     panel.model.category = category;
                     panel.popup = None;
+                    panel
+                        .ui
+                        .overlays
+                        .update(cx, theme::OverlayHost::clear_point_anchors);
                     cx.notify();
                 }))
                 .on_key_down(cx.listener(
@@ -897,22 +953,43 @@ impl LibraryPanel {
             details.push_str(" · ");
             details.push_str(&item.source_title);
         }
+        details
+    }
+
+    fn item_status_pills(
+        &self,
+        item: &LibraryItem,
+        t: theme::ResolvedTheme,
+    ) -> Vec<gpui::AnyElement> {
+        let mut pills = Vec::new();
         match item.availability {
             ArtifactAvailability::Available => {}
             ArtifactAvailability::Missing => {
-                details.push_str(" · ");
-                details.push_str(&self.t("library.availability.missing"));
+                pills.push(theme::status_pill(
+                    t.status_attention_bg(),
+                    t.status_attention(),
+                    self.t("library.availability.missing"),
+                    None,
+                ));
             }
             ArtifactAvailability::Corrupt => {
-                details.push_str(" · ");
-                details.push_str(&self.t("library.availability.corrupt"));
+                pills.push(theme::status_pill(
+                    t.danger().opacity(0.14),
+                    t.danger(),
+                    self.t("library.availability.corrupt"),
+                    None,
+                ));
             }
         }
         if item.override_used {
-            details.push_str(" · ");
-            details.push_str(&self.t("verify.override.badge"));
+            pills.push(theme::status_pill(
+                t.status_attention_bg(),
+                t.status_attention(),
+                self.t("verify.override.badge"),
+                None,
+            ));
         }
-        details
+        pills
     }
 
     fn row(
@@ -922,11 +999,14 @@ impl LibraryPanel {
     ) -> impl IntoElement {
         let t = self.theme(cx);
         let id = item.id.clone();
+        let right_id = item.id.clone();
         let more_id = SharedString::from(format!("library-more-{}", item.id));
         let menu_item = item.id.clone();
+        let menu_anchor = more_id.clone();
+        let status_pills = self.item_status_pills(item, t);
         let more = theme::IconButton::new(
             more_id.clone(),
-            self.t("library.more"),
+            format!("{} \u{00b7} {}", item.title, self.t("library.more")),
             theme::icons::ellipsis().size(px(12.)),
         )
         .size(theme::ControlSize::Small)
@@ -934,13 +1014,11 @@ impl LibraryPanel {
             &t,
             cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
-                let popup = Popup::Item(menu_item.clone());
-                panel.popup = if panel.popup.as_ref() == Some(&popup) {
-                    None
-                } else {
-                    Some(popup)
-                };
-                cx.notify();
+                panel.open_item_menu_anchored(
+                    menu_item.clone(),
+                    menu_anchor.clone(),
+                    cx,
+                );
             }),
         );
         theme::interactive(
@@ -986,6 +1064,15 @@ impl LibraryPanel {
                             .render(&t)
                             .flex_1(),
                         )
+                        .when(item.favorite, |title| {
+                            title.child(
+                                theme::icons::star()
+                                    .size(px(12.))
+                                    .flex_shrink_0()
+                                    .text_color(t.status_attention()),
+                            )
+                        })
+                        .children(status_pills)
                         .when(item.pending, |title| {
                             title.child(
                                 theme::icons::loader_circle()
@@ -1031,6 +1118,13 @@ impl LibraryPanel {
         .when_some(self.item_focus.get(&item.id), |row, focus| {
             row.track_focus(focus).tab_stop(true)
         })
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener(move |panel, event: &gpui::MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                panel.open_item_menu_at(right_id.clone(), event.position, cx);
+            }),
+        )
         .on_click(cx.listener(move |panel, _, window, cx| {
             panel.preview_item(&id, window, cx);
         }))
@@ -1085,12 +1179,15 @@ impl LibraryPanel {
     ) -> impl IntoElement {
         let t = self.theme(cx);
         let id = item.id.clone();
+        let right_id = item.id.clone();
         let menu_item = item.id.clone();
         let more_id =
             SharedString::from(format!("library-card-more-{}", item.id));
+        let menu_anchor = more_id.clone();
+        let status_pills = self.item_status_pills(item, t);
         let more = theme::IconButton::new(
             more_id.clone(),
-            self.t("library.more"),
+            format!("{} \u{00b7} {}", item.title, self.t("library.more")),
             theme::icons::ellipsis().size(px(12.)),
         )
         .size(theme::ControlSize::Small)
@@ -1098,13 +1195,11 @@ impl LibraryPanel {
             &t,
             cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
-                let popup = Popup::Item(menu_item.clone());
-                panel.popup = if panel.popup.as_ref() == Some(&popup) {
-                    None
-                } else {
-                    Some(popup)
-                };
-                cx.notify();
+                panel.open_item_menu_anchored(
+                    menu_item.clone(),
+                    menu_anchor.clone(),
+                    cx,
+                );
             }),
         );
         theme::interactive(
@@ -1144,7 +1239,23 @@ impl LibraryPanel {
                 ),
             ),
         )
-        .child(self.file_icon(item, 28., cx))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .pr(px(28.))
+                .child(self.file_icon(item, 28., cx))
+                .when(item.favorite, |row| {
+                    row.child(
+                        theme::icons::star()
+                            .size(px(13.))
+                            .flex_shrink_0()
+                            .text_color(t.status_attention()),
+                    )
+                })
+                .children(status_pills),
+        )
         .child(
             theme::Title::new(theme::TitleLevel::Card, item.title.clone())
                 .truncate()
@@ -1172,6 +1283,13 @@ impl LibraryPanel {
         .when_some(self.item_focus.get(&item.id), |card, focus| {
             card.track_focus(focus).tab_stop(true)
         })
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener(move |panel, event: &gpui::MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                panel.open_item_menu_at(right_id.clone(), event.position, cx);
+            }),
+        )
         .on_click(cx.listener(move |panel, _, window, cx| {
             panel.preview_item(&id, window, cx);
         }))
@@ -1288,7 +1406,7 @@ impl LibraryPanel {
                 }
                 ("library-sort-menu", SharedString::from("library-sort"))
             }
-            Popup::Item(id) => {
+            Popup::Item { id, anchor_id } => {
                 let favorite_label = if self.model.is_favorite(id) {
                     self.t("library.favorite.remove")
                 } else {
@@ -1297,21 +1415,30 @@ impl LibraryPanel {
                 let item =
                     self.model.items.iter().find(|item| &item.id == id)?;
                 menu = menu.w(px(220.)).rounded(t.modal_radius());
+                let is_available =
+                    item.availability == ArtifactAvailability::Available;
+                let can_locate = !item.source_deleted
+                    && !item.source_unavailable
+                    && !item.source_session_id.is_empty();
                 let save_id = id.clone();
                 let open_id = id.clone();
                 let favorite_id = id.clone();
                 let next_favorite = !item.favorite;
-                menu = menu.child(Self::action_menu_row(
-                    "library-menu-save-as",
-                    self.t("library.save_as"),
-                    theme::icons::download().size(px(16.)),
-                    t,
-                    cx.listener(move |panel, _, _, cx| {
-                        cx.emit(LibraryEvent::SaveAsRequested(save_id.clone()));
-                        panel.popup = None;
-                        cx.notify();
-                    }),
-                ));
+                if is_available {
+                    menu = menu.child(Self::action_menu_row(
+                        "library-menu-save-as",
+                        self.t("library.save_as"),
+                        theme::icons::download().size(px(16.)),
+                        t,
+                        cx.listener(move |panel, _, _, cx| {
+                            cx.emit(LibraryEvent::SaveAsRequested(
+                                save_id.clone(),
+                            ));
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ));
+                }
                 if item.default_open_supported() {
                     menu = menu.child(Self::action_menu_row(
                         "library-menu-open-default",
@@ -1327,16 +1454,13 @@ impl LibraryPanel {
                         }),
                     ));
                 }
-                if !item.source_deleted
-                    && !item.source_unavailable
-                    && !item.source_session_id.is_empty()
-                {
+                if can_locate {
                     let session_id = item.source_session_id.clone();
                     let artifact_id = id.clone();
                     menu = menu.child(Self::action_menu_row(
                         "library-menu-locate-source",
                         self.t("library.locate_task"),
-                        theme::icons::external_link().size(px(16.)),
+                        theme::icons::arrow_up_right().size(px(16.)),
                         t,
                         cx.listener(move |panel, _, _, cx| {
                             cx.emit(LibraryEvent::LocateSourceRequested {
@@ -1362,10 +1486,7 @@ impl LibraryPanel {
                         cx.notify();
                     }),
                 ));
-                (
-                    "library-item-menu",
-                    SharedString::from(format!("library-more-{id}")),
-                )
+                ("library-item-menu", anchor_id.clone())
             }
         };
         Some(theme::popover(
@@ -2004,7 +2125,7 @@ mod tests {
             "row menu order changed: {order:?}"
         );
         cx.read_entity(&panel, |panel, _| {
-            assert!(matches!(panel.popup, Some(Popup::Item(_))));
+            assert!(matches!(panel.popup, Some(Popup::Item { .. })));
         });
         activate(cx, "library-menu-favorite");
         cx.read_entity(&panel, |panel, cx| {
@@ -2076,6 +2197,67 @@ mod tests {
             assert_eq!(panel.model.category, Category::Image);
             assert_eq!(panel.model.view, LibraryView::Grid);
             assert_eq!(panel.model.sort, LibrarySort::Name);
+        });
+    }
+
+    #[gpui::test]
+    fn grid_more_menu_anchors_to_card_trigger_and_missing_item_hides_save_as(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
+        let panel = cx.read_entity(&host, |host, _| host.panel.clone());
+        let item_id = "1104-byd-presentation";
+        let more = format!("library-more-{item_id}");
+
+        activate(cx, "library-view-grid");
+        activate(cx, &more);
+        cx.read_entity(&panel, |panel, _| {
+            assert_eq!(
+                panel.popup,
+                Some(Popup::Item {
+                    id: item_id.to_owned(),
+                    anchor_id: SharedString::from(format!(
+                        "library-card-more-{item_id}"
+                    )),
+                })
+            );
+        });
+        assert!(painted(cx, "library-menu-save-as"));
+
+        // Missing artifacts must not expose a dead Save As action; they keep
+        // source-session recovery and favorite controls.
+        panel.update(cx, |panel, cx| {
+            let item = panel
+                .model
+                .items
+                .iter_mut()
+                .find(|i| i.id == item_id)
+                .unwrap();
+            item.availability = ArtifactAvailability::Missing;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(!painted(cx, "library-menu-save-as"));
+        assert!(!painted(cx, "library-menu-open-default"));
+        assert!(painted(cx, "library-menu-locate-source"));
+        assert!(painted(cx, "library-menu-favorite"));
+
+        // Removing the open menu's target via `set_items` must close the popup
+        // so `OverlayHost` never remains trapped on an unrendered menu scope.
+        panel.update(cx, |panel, cx| {
+            let remaining: Vec<_> = panel
+                .model
+                .items
+                .iter()
+                .filter(|i| i.id != item_id)
+                .cloned()
+                .collect();
+            panel.set_items(remaining, cx);
+        });
+        draw(cx);
+        cx.read_entity(&panel, |panel, _| {
+            assert!(panel.popup.is_none());
+            assert!(panel.popup_scope().is_none());
         });
     }
 }

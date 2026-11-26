@@ -902,7 +902,7 @@
   "chat.archived_badge": "مؤرشف",
   "search.placeholder": "ابحث في الجلسات أو المكتبة أو المشاريع أو المهارات…",
   "search.empty": "لا توجد نتائج مطابقة",
-  "search.footer_hint": "↑↓ اختيار · Enter فتح · Esc إغلاق",
+  "search.footer_hint": "↑↓ تنقّل · Tab نطاق · Enter فتح · Esc إغلاق",
   "search.group_recent": "الجلسات الأخيرة",
   "search.group_actions": "انتقال سريع",
   "search.group_sessions": "الجلسات",
@@ -918,5 +918,10 @@
   "time.just_now": "الآن",
   "time.mins_ago": "منذ {n} د",
   "time.hours_ago": "منذ {n} س",
-  "time.days_ago": "منذ {n} ي"
+  "time.days_ago": "منذ {n} ي",
+  "board.day_summary": "{date} · {active} نشط · {done} مكتمل",
+  "board.clear_day_filter": "مسح فلتر التاريخ",
+  "search.scope_all": "الكل",
+  "chat.archived_toast": "تمت أرشفة \"{title}\"",
+  "chat.undo": "تراجع"
 }

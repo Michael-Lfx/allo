@@ -902,7 +902,7 @@
   "chat.archived_badge": "Đã lưu trữ",
   "search.placeholder": "Tìm phiên, tệp thư viện, dự án hoặc kỹ năng…",
   "search.empty": "Không tìm thấy kết quả",
-  "search.footer_hint": "↑↓ Chọn · Enter Mở · Esc Đóng",
+  "search.footer_hint": "↑↓ Chọn · Tab Phạm vi · Enter Mở · Esc Đóng",
   "search.group_recent": "Phiên gần đây",
   "search.group_actions": "Lối tắt",
   "search.group_sessions": "Phiên",
@@ -918,5 +918,10 @@
   "time.just_now": "Vừa xong",
   "time.mins_ago": "{n} phút trước",
   "time.hours_ago": "{n} giờ trước",
-  "time.days_ago": "{n} ngày trước"
+  "time.days_ago": "{n} ngày trước",
+  "board.day_summary": "{date} · {active} đang chạy · {done} xong",
+  "board.clear_day_filter": "Xóa bộ lọc ngày",
+  "search.scope_all": "Tất cả",
+  "chat.archived_toast": "Đã lưu trữ \"{title}\"",
+  "chat.undo": "Hoàn tác"
 }

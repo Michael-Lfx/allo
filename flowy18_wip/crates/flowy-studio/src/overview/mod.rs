@@ -20,8 +20,9 @@ use gpui::{
 use crate::panel::{StudioEvent, StudioPanel};
 use crate::ports::{
     BoardKpiSummary, BranchPhase, DailyActivityBucket, DeliverableFormat,
-    SessionBoardGroup, civil_month_day_from_epoch_ms, compute_daily_7d,
-    is_older_than_7d, normalize_epoch_ms, now_epoch_ms,
+    LocalDateKey, SessionBoardGroup, civil_month_day_in_tz,
+    compute_daily_7d_in_tz, is_older_than_7d_in_tz, local_days_ago,
+    local_tz_offset_secs, matches_day_filter, normalize_epoch_ms, now_epoch_ms,
 };
 
 pub use trace_panel::TraceFilter;
@@ -64,7 +65,12 @@ impl StudioPanel {
         }
     }
 
-    fn format_relative_time(&self, updated_at: u64, now_ms: u64) -> String {
+    fn format_relative_time(
+        &self,
+        updated_at: u64,
+        now_ms: u64,
+        tz_offset_secs: i32,
+    ) -> String {
         let ts = normalize_epoch_ms(updated_at);
         if ts == 0 {
             return String::new();
@@ -79,12 +85,42 @@ impl StudioPanel {
             let hours = (age_secs / 3_600).max(1);
             self.tf("time.hours_ago", &[("n", &hours.to_string())])
         } else if age_secs < 30 * 86_400 {
-            let days = (age_secs / 86_400).max(1);
+            let days = local_days_ago(ts, now_ms, tz_offset_secs)
+                .filter(|d| *d > 0)
+                .map_or_else(|| (age_secs / 86_400).max(1), i64::cast_unsigned);
             self.tf("time.days_ago", &[("n", &days.to_string())])
         } else {
-            let (month, day) = civil_month_day_from_epoch_ms(ts);
+            let (month, day) = civil_month_day_in_tz(ts, tz_offset_secs);
             format!("{month}/{day}")
         }
+    }
+
+    fn format_day_key_label(
+        &self,
+        day_key: LocalDateKey,
+        today_key: Option<LocalDateKey>,
+    ) -> String {
+        if today_key == Some(day_key) {
+            self.t("board.kpi_today")
+        } else {
+            format!("{}/{}", day_key.1, day_key.2)
+        }
+    }
+
+    fn format_bucket_summary(&self, bucket: &DailyActivityBucket) -> String {
+        let day_label = if bucket.day_offset == 0 {
+            self.t("board.kpi_today")
+        } else {
+            format!("{}/{}", bucket.month, bucket.day)
+        };
+        self.tf(
+            "board.day_summary",
+            &[
+                ("date", &day_label),
+                ("active", &bucket.active_or_blocked.to_string()),
+                ("done", &bucket.completed_or_delivered.to_string()),
+            ],
+        )
     }
 
     /// Global Visual Board surface (`StudioSurface::Board`).
@@ -94,6 +130,11 @@ impl StudioPanel {
             snapshot.generated_at_ms
         } else {
             now_epoch_ms()
+        };
+        let tz_offset_secs = if snapshot.generated_at_ms > 0 {
+            snapshot.tz_offset_secs
+        } else {
+            local_tz_offset_secs()
         };
         let project_filtered: Vec<&SessionBoardGroup> = snapshot
             .sessions
@@ -112,9 +153,15 @@ impl StudioPanel {
         let scoped_daily_7d = if self.board_project_filter.is_some()
             || snapshot.daily_7d.is_empty()
         {
-            compute_daily_7d(&project_filtered, now_ms)
+            compute_daily_7d_in_tz(&project_filtered, now_ms, tz_offset_secs)
         } else {
             snapshot.daily_7d.clone()
+        };
+        let today_key = scoped_daily_7d.last().map(|b| b.date_key);
+        let active_day_filter = if self.board_filter == BoardFilter::Archived {
+            None
+        } else {
+            self.board_day_filter
         };
         let filtered: Vec<&SessionBoardGroup> = project_filtered
             .iter()
@@ -127,6 +174,16 @@ impl StudioPanel {
                 BoardFilter::Delivered => {
                     !group.archived && group.has_delivered
                 }
+            })
+            .filter(|group| {
+                active_day_filter.is_none_or(|day_key| {
+                    matches_day_filter(
+                        group.updated_at,
+                        now_ms,
+                        tz_offset_secs,
+                        day_key,
+                    )
+                })
             })
             .collect();
 
@@ -159,7 +216,26 @@ impl StudioPanel {
                             .text_xs()
                             .text_color(self.theme.muted())
                             .child(self.t("board.empty_detail")),
-                    ),
+                    )
+                    .when(active_day_filter.is_some(), |empty| {
+                        empty.child(
+                            div().pt(px(4.)).child(
+                                theme::Button::new(
+                                    "board-clear-day-filter",
+                                    self.t("board.clear_day_filter"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(|panel, _, _, cx| {
+                                        panel.board_day_filter = None;
+                                        cx.notify();
+                                    }),
+                                ),
+                            ),
+                        )
+                    }),
             );
         } else if self.board_filter == BoardFilter::Archived {
             for (card_idx, group) in filtered.into_iter().enumerate() {
@@ -167,6 +243,7 @@ impl StudioPanel {
                     group,
                     card_idx as u64,
                     now_ms,
+                    tz_offset_secs,
                     cx,
                 ));
             }
@@ -178,16 +255,27 @@ impl StudioPanel {
                 .copied()
                 .filter(|g| {
                     !g.is_active
-                        && (g.pinned || !is_older_than_7d(g.updated_at, now_ms))
+                        && (active_day_filter.is_some()
+                            || g.pinned
+                            || !is_older_than_7d_in_tz(
+                                g.updated_at,
+                                now_ms,
+                                tz_offset_secs,
+                            ))
                 })
                 .collect();
             let older_settled: Vec<&SessionBoardGroup> = filtered
                 .iter()
                 .copied()
                 .filter(|g| {
-                    !g.is_active
+                    active_day_filter.is_none()
+                        && !g.is_active
                         && !g.pinned
-                        && is_older_than_7d(g.updated_at, now_ms)
+                        && is_older_than_7d_in_tz(
+                            g.updated_at,
+                            now_ms,
+                            tz_offset_secs,
+                        )
                 })
                 .collect();
             let show_headers =
@@ -209,9 +297,13 @@ impl StudioPanel {
                     );
                 }
                 for group in active_groups {
-                    sessions_col = sessions_col.child(
-                        self.board_session_card(group, card_idx, now_ms, cx),
-                    );
+                    sessions_col = sessions_col.child(self.board_session_card(
+                        group,
+                        card_idx,
+                        now_ms,
+                        tz_offset_secs,
+                        cx,
+                    ));
                     card_idx += 1;
                 }
             }
@@ -230,9 +322,13 @@ impl StudioPanel {
                     );
                 }
                 for group in recent_settled {
-                    sessions_col = sessions_col.child(
-                        self.board_session_card(group, card_idx, now_ms, cx),
-                    );
+                    sessions_col = sessions_col.child(self.board_session_card(
+                        group,
+                        card_idx,
+                        now_ms,
+                        tz_offset_secs,
+                        cx,
+                    ));
                     card_idx += 1;
                 }
             }
@@ -282,7 +378,11 @@ impl StudioPanel {
                     for group in older_settled {
                         sessions_col =
                             sessions_col.child(self.board_session_card(
-                                group, card_idx, now_ms, cx,
+                                group,
+                                card_idx,
+                                now_ms,
+                                tz_offset_secs,
+                                cx,
                             ));
                         card_idx += 1;
                     }
@@ -302,7 +402,7 @@ impl StudioPanel {
             .flex_col()
             .gap(self.theme.space(16.))
             .child(self.board_kpi_strip(&scoped_kpi, &scoped_daily_7d, cx))
-            .child(self.board_filter_bar(&scoped_kpi, cx))
+            .child(self.board_filter_bar(&scoped_kpi, today_key, cx))
             .child(sessions_col)
             .into_any_element()
     }
@@ -477,7 +577,7 @@ impl StudioPanel {
                     .child(div().flex().items_center().child(health_pill)),
             );
 
-        // Card 2: Real 7-day activity & delivery bar chart.
+        // Card 2: Real 7-day local calendar-day activity & delivery bar chart.
         let week_total: usize =
             daily_7d.iter().map(DailyActivityBucket::total).sum();
         let max_day = daily_7d
@@ -486,16 +586,23 @@ impl StudioPanel {
             .max()
             .unwrap_or(0)
             .max(1);
+        let selected_day = if self.board_filter == BoardFilter::Archived {
+            None
+        } else {
+            self.board_day_filter
+        };
+        let selected_bucket = selected_day
+            .and_then(|key| daily_7d.iter().find(|b| b.date_key == key));
         let mut chart_cols = div()
             .w_full()
-            .h(px(82.))
+            .h(px(88.))
             .flex()
             .items_end()
             .justify_between()
-            .gap(px(6.));
+            .gap(px(4.));
         for bucket in daily_7d {
             let total = bucket.total();
-            let bar_max_h: f32 = 50.0;
+            let bar_max_h: f32 = 46.0;
             let bar_track = if total > 0 {
                 let fill_h = ((total as f32 / max_day as f32) * bar_max_h)
                     .clamp(7.0, bar_max_h);
@@ -549,52 +656,111 @@ impl StudioPanel {
             } else {
                 format!("{}/{}", bucket.month, bucket.day)
             };
+            let a11y_label = self.format_bucket_summary(bucket);
             let is_today = bucket.day_offset == 0;
+            let is_selected = selected_day == Some(bucket.date_key);
+            let is_dimmed = selected_day.is_some() && !is_selected;
+            let date_key = bucket.date_key;
             chart_cols = chart_cols.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .h(px(13.))
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if total > 0 {
-                                self.theme.ink()
-                            } else {
-                                self.theme.muted().opacity(0.4)
-                            })
-                            .child(if total > 0 {
-                                total.to_string()
-                            } else {
-                                String::new()
-                            }),
-                    )
-                    .child(bar_track)
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(if is_today {
-                                FontWeight::SEMIBOLD
-                            } else {
-                                FontWeight::NORMAL
-                            })
-                            .text_color(if is_today {
-                                self.theme.ink()
-                            } else {
-                                self.theme.muted()
-                            })
-                            .whitespace_nowrap()
-                            .child(day_label),
-                    ),
+                theme::interactive(
+                    ("board-day-bar", u64::from(bucket.day_offset)),
+                    a11y_label,
+                    &self.theme,
+                )
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .px(px(2.))
+                .py(px(3.))
+                .rounded_lg()
+                .border_1()
+                .border_color(if is_selected {
+                    self.theme.status_active().opacity(0.7)
+                } else {
+                    gpui::transparent_black().into()
+                })
+                .bg(if is_selected {
+                    self.theme.status_active_bg()
+                } else {
+                    gpui::transparent_black().into()
+                })
+                .when(is_dimmed, |col| col.opacity(0.55))
+                .cursor_pointer()
+                .hover(|style| {
+                    if is_selected {
+                        style
+                    } else {
+                        style.bg(self.theme.soft()).opacity(1.0)
+                    }
+                })
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_end()
+                .gap(px(3.))
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    if panel.board_day_filter == Some(date_key) {
+                        panel.board_day_filter = None;
+                    } else {
+                        panel.board_day_filter = Some(date_key);
+                        if panel.board_filter == BoardFilter::Archived {
+                            panel.board_filter = BoardFilter::All;
+                        }
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .h(px(13.))
+                        .text_xs()
+                        .font_weight(if is_selected {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .text_color(if is_selected {
+                            self.theme.status_active()
+                        } else if total > 0 {
+                            self.theme.ink()
+                        } else {
+                            self.theme.muted().opacity(0.4)
+                        })
+                        .child(if total > 0 {
+                            total.to_string()
+                        } else {
+                            String::new()
+                        }),
+                )
+                .child(bar_track)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(if is_selected || is_today {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if is_selected {
+                            self.theme.status_active()
+                        } else if is_today {
+                            self.theme.ink()
+                        } else {
+                            self.theme.muted()
+                        })
+                        .whitespace_nowrap()
+                        .child(day_label),
+                ),
             );
         }
+
+        let trend_meta = if let Some(bucket) = selected_bucket {
+            self.format_bucket_summary(bucket)
+        } else {
+            self.tf(
+                "board.kpi_trend_sub",
+                &[("count", &week_total.to_string())],
+            )
+        };
 
         let card_trend = div()
             .flex_1()
@@ -603,12 +769,16 @@ impl StudioPanel {
             .p(self.theme.space(16.))
             .rounded_2xl()
             .border_1()
-            .border_color(self.theme.line())
+            .border_color(if selected_bucket.is_some() {
+                self.theme.status_active().opacity(0.45)
+            } else {
+                self.theme.line()
+            })
             .bg(self.theme.card())
             .flex()
             .flex_col()
             .justify_between()
-            .gap(self.theme.space(10.))
+            .gap(self.theme.space(8.))
             .child(
                 div()
                     .flex()
@@ -617,6 +787,7 @@ impl StudioPanel {
                     .gap(px(8.))
                     .child(
                         div()
+                            .flex_none()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.theme.ink())
@@ -625,14 +796,18 @@ impl StudioPanel {
                     )
                     .child(
                         div()
+                            .min_w_0()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
+                            .text_color(if selected_bucket.is_some() {
+                                self.theme.status_active()
+                            } else {
+                                self.theme.muted()
+                            })
+                            .overflow_hidden()
                             .whitespace_nowrap()
-                            .child(self.tf(
-                                "board.kpi_trend_sub",
-                                &[("count", &week_total.to_string())],
-                            )),
+                            .truncate()
+                            .child(trend_meta),
                     ),
             )
             .child(chart_cols);
@@ -830,6 +1005,7 @@ impl StudioPanel {
     fn board_filter_bar(
         &self,
         kpi: &BoardKpiSummary,
+        today_key: Option<LocalDateKey>,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let mut filters = vec![
@@ -891,11 +1067,41 @@ impl StudioPanel {
                             && panel.board_filter == BoardFilter::All
                         {
                             panel.board_project_filter = None;
+                            panel.board_day_filter = None;
+                        } else if filter == BoardFilter::Archived {
+                            panel.board_day_filter = None;
                         }
                         panel.board_filter = filter;
                         cx.notify();
                     },
                 )),
+            );
+        }
+
+        if let Some(day_key) = self.board_day_filter
+            && self.board_filter != BoardFilter::Archived
+        {
+            let day_label = self.format_day_key_label(day_key, today_key);
+            let chip_label = format!("{day_label} \u{00d7}");
+            pills = pills.child(
+                theme::interactive(
+                    "board-day-filter-chip",
+                    self.t("board.clear_day_filter"),
+                    &self.theme,
+                )
+                .px(self.theme.space(8.))
+                .py(px(4.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .bg(self.theme.status_active_bg())
+                .text_color(self.theme.status_active())
+                .child(chip_label)
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.board_day_filter = None;
+                    cx.notify();
+                })),
             );
         }
 
@@ -1095,12 +1301,14 @@ impl StudioPanel {
         group: &SessionBoardGroup,
         index: u64,
         now_ms: u64,
+        tz_offset_secs: i32,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let sid_card = group.session_id.clone();
         let sid_right = group.session_id.clone();
         let is_real_session = !group.is_synthetic();
-        let rel_time = self.format_relative_time(group.updated_at, now_ms);
+        let rel_time =
+            self.format_relative_time(group.updated_at, now_ms, tz_offset_secs);
 
         if !group.is_active {
             let all_file_branches: Vec<_> = group

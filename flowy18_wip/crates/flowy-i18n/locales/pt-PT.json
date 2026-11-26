@@ -902,7 +902,7 @@
   "chat.archived_badge": "Arquivado",
   "search.placeholder": "Pesquisar sessões, biblioteca, projetos ou competências…",
   "search.empty": "Sem resultados",
-  "search.footer_hint": "↑↓ Selecionar · Enter Abrir · Esc Fechar",
+  "search.footer_hint": "↑↓ Navegar · Tab Categoria · Enter Abrir · Esc Fechar",
   "search.group_recent": "Sessões recentes",
   "search.group_actions": "Atalhos",
   "search.group_sessions": "Sessões",
@@ -918,5 +918,10 @@
   "time.just_now": "Agora mesmo",
   "time.mins_ago": "há {n} min",
   "time.hours_ago": "há {n} h",
-  "time.days_ago": "há {n} d"
+  "time.days_ago": "há {n} d",
+  "board.day_summary": "{date} · {active} ativos · {done} concluídos",
+  "board.clear_day_filter": "Limpar filtro de data",
+  "search.scope_all": "Tudo",
+  "chat.archived_toast": "\"{title}\" arquivada",
+  "chat.undo": "Anular"
 }

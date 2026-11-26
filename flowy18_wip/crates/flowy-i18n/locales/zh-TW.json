@@ -902,7 +902,7 @@
   "chat.archived_badge": "已封存",
   "search.placeholder": "搜尋工作階段、資料庫檔案、專案或技能…",
   "search.empty": "找不到符合的結果",
-  "search.footer_hint": "↑↓ 選擇 · Enter 開啟 · Esc 關閉",
+  "search.footer_hint": "↑↓ 選擇 · Tab 分類 · Enter 開啟 · Esc 關閉",
   "search.group_recent": "最近對話",
   "search.group_actions": "快速跳轉",
   "search.group_sessions": "對話",
@@ -918,5 +918,10 @@
   "time.just_now": "剛剛",
   "time.mins_ago": "{n} 分鐘前",
   "time.hours_ago": "{n} 小時前",
-  "time.days_ago": "{n} 天前"
+  "time.days_ago": "{n} 天前",
+  "board.day_summary": "{date} · {active} 執行 · {done} 完成",
+  "board.clear_day_filter": "清除日期篩選",
+  "search.scope_all": "全部",
+  "chat.archived_toast": "已封存「{title}」",
+  "chat.undo": "復原"
 }
