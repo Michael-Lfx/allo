@@ -157,14 +157,33 @@ fn command_in_path(binary: &str) -> bool {
 }
 
 fn default_protected_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = std::env::var_os("HOME")
+    let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-    {
+        .map(PathBuf::from);
+    let xdg_data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    default_protected_paths_with(
+        home.as_deref(),
+        xdg_data.as_deref(),
+        appdata.as_deref(),
+    )
+}
+
+fn default_protected_paths_with(
+    home: Option<&Path>,
+    xdg_data: Option<&Path>,
+    appdata: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = home {
         paths.push(home.join(".ssh"));
         paths.push(home.join(".aws"));
         paths.push(home.join(".gnupg"));
+        paths.push(home.join(".kube").join("config"));
+        paths.push(home.join(".docker").join("config.json"));
+        paths.push(home.join(".npmrc"));
+        paths.push(home.join(".pypirc"));
+        paths.push(home.join(".git-credentials"));
         // macOS Flowy auth store (`ProjectDirs::from("com", "Flowy", "Flowy")`
         // resolves to `com.Flowy.Flowy`, plus legacy `Flowy` paths).
         paths.push(
@@ -191,11 +210,10 @@ fn default_protected_paths() -> Vec<PathBuf> {
             .push(home.join(".local").join("share").join("flowy").join("auth"));
         paths.push(home.join(".config").join("flowy").join("auth"));
     }
-    if let Some(xdg_data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
-    {
+    if let Some(xdg_data) = xdg_data {
         paths.push(xdg_data.join("flowy").join("auth"));
     }
-    if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+    if let Some(appdata) = appdata {
         paths.push(
             appdata
                 .join("Flowy")
@@ -336,7 +354,8 @@ mod tests {
 
     use super::{
         SandboxAvailability, SandboxBackend, SandboxPolicy,
-        detect_sandbox_availability, linux_bwrap_args, macos_seatbelt_profile,
+        default_protected_paths_with, detect_sandbox_availability,
+        linux_bwrap_args, macos_seatbelt_profile,
     };
 
     #[test]
@@ -416,6 +435,71 @@ mod tests {
             "non-existent protected path must be omitted so bwrap does not fail"
         );
         assert_eq!(args.last().map(String::as_str), Some("--"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_protected_paths_include_extra_credential_files_in_seatbelt_and_bwrap()
+     {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-sandbox-creds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let expected_files = [
+            root.join(".kube").join("config"),
+            root.join(".docker").join("config.json"),
+            root.join(".npmrc"),
+            root.join(".pypirc"),
+            root.join(".git-credentials"),
+        ];
+        for file in &expected_files {
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(file, b"secret").unwrap();
+        }
+
+        let protected = default_protected_paths_with(Some(&root), None, None);
+        for file in &expected_files {
+            assert!(
+                protected.contains(file),
+                "expected protected paths to include {}",
+                file.display()
+            );
+        }
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![ws.clone()],
+            protected_paths: protected,
+            allow_network: true,
+        };
+        let sbpl = macos_seatbelt_profile(&policy);
+        let bwrap = linux_bwrap_args(&policy, &ws);
+
+        for file in &expected_files {
+            let sbpl_escaped = file
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            assert!(
+                sbpl.contains(&format!(
+                    "(deny file-read* file-write* (subpath \"{sbpl_escaped}\"))"
+                )),
+                "expected Seatbelt profile to deny {}",
+                file.display()
+            );
+            let file_s = file.to_string_lossy().into_owned();
+            assert!(
+                bwrap
+                    .windows(3)
+                    .any(|w| w == ["--ro-bind", "/dev/null", &file_s]),
+                "expected bwrap args to mask {} with /dev/null",
+                file.display()
+            );
+        }
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }
