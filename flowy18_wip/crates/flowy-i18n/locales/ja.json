@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "エラーが発生しました。{product} を開いて詳細を確認してください。",
   "settings.local_data": "ローカルデータとバックアップ",
   "settings.local_data_help": "会話履歴と起動前スナップショットはこの端末の sessions と backups に保存されます。",
-  "settings.open_folder": "フォルダを開く"
+  "settings.open_folder": "フォルダを開く",
+  "chat.quote_reply": "引用して返信",
+  "composer.quote_clear": "引用を解除",
+  "chat.quoted_label": "引用"
 }

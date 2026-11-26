@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "มีข้อผิดพลาดระหว่างทำงาน เปิด {product} เพื่อตรวจสอบ",
   "settings.local_data": "ข้อมูลในเครื่องและไฟล์สำรอง",
   "settings.local_data_help": "ประวัติการสนทนาและสแนปช็อตก่อนเริ่มจะถูกบันทึกไว้ในเครื่องที่ sessions และ backups",
-  "settings.open_folder": "เปิดโฟลเดอร์"
+  "settings.open_folder": "เปิดโฟลเดอร์",
+  "chat.quote_reply": "อ้างอิงคำตอบ",
+  "composer.quote_clear": "ล้างการอ้างอิง",
+  "chat.quoted_label": "อ้างอิง"
 }

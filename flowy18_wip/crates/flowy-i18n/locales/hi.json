@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "कार्य बाधित हो गया। जांचने के लिए {product} खोलें।",
   "settings.local_data": "स्थानीय डेटा और बैकअप",
   "settings.local_data_help": "वार्तालाप इतिहास और स्टार्टअप से पहले के स्नैपशॉट स्थानीय रूप से sessions और backups में सहेजे जाते हैं।",
-  "settings.open_folder": "फ़ोल्डर खोलें"
+  "settings.open_folder": "फ़ोल्डर खोलें",
+  "chat.quote_reply": "उद्धृत करें",
+  "composer.quote_clear": "उद्धरण हटाएं",
+  "chat.quoted_label": "उद्धृत"
 }

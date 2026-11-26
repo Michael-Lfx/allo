@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Something interrupted the task. Open {product} to inspect.",
   "settings.local_data": "Local data and backups",
   "settings.local_data_help": "Conversation history and pre-launch snapshots are saved locally under sessions and backups.",
-  "settings.open_folder": "Open folder"
+  "settings.open_folder": "Open folder",
+  "chat.quote_reply": "Quote reply",
+  "composer.quote_clear": "Clear quote",
+  "chat.quoted_label": "Quoted"
 }

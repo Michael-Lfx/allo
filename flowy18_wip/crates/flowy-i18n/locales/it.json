@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Qualcosa ha interrotto l’attività. Apri {product} per controllare.",
   "settings.local_data": "Dati locali e backup",
   "settings.local_data_help": "Cronologia e snapshot pre-avvio vengono salvati localmente in sessions e backups.",
-  "settings.open_folder": "Apri cartella"
+  "settings.open_folder": "Apri cartella",
+  "chat.quote_reply": "Cita risposta",
+  "composer.quote_clear": "Rimuovi citazione",
+  "chat.quoted_label": "Citazione"
 }

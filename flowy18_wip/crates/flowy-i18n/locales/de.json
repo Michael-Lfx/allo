@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Ein Fehler hat die Aufgabe unterbrochen. Öffne {product} zur Prüfung.",
   "settings.local_data": "Lokale Daten & Backups",
   "settings.local_data_help": "Gesprächsverläufe und Vorab-Snapshots werden lokal unter sessions und backups gespeichert.",
-  "settings.open_folder": "Ordner öffnen"
+  "settings.open_folder": "Ordner öffnen",
+  "chat.quote_reply": "Zitieren",
+  "composer.quote_clear": "Zitat entfernen",
+  "chat.quoted_label": "Zitat"
 }

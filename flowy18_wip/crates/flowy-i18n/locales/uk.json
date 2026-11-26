@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Завдання перервано помилкою. Відкрийте {product} для перевірки.",
   "settings.local_data": "Локальні дані та резервні копії",
   "settings.local_data_help": "Історія розмов і передзапускові знімки зберігаються локально у теках sessions та backups.",
-  "settings.open_folder": "Відкрити теку"
+  "settings.open_folder": "Відкрити теку",
+  "chat.quote_reply": "Цитувати відповідь",
+  "composer.quote_clear": "Прибрати цитату",
+  "chat.quoted_label": "Цитата"
 }

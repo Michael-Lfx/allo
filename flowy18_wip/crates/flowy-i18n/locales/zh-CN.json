@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "任务处理出现异常，请打开 {product} 查看详情。",
   "settings.local_data": "本机数据与备份",
   "settings.local_data_help": "对话历史与启动前自动备份保存在本机（sessions 与 backups 目录）。",
-  "settings.open_folder": "打开目录"
+  "settings.open_folder": "打开目录",
+  "chat.quote_reply": "引用回复",
+  "composer.quote_clear": "取消引用",
+  "chat.quoted_label": "引用"
 }

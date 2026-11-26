@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "La tâche a été interrompue. Ouvrez {product} pour inspecter.",
   "settings.local_data": "Données locales et sauvegardes",
   "settings.local_data_help": "L’historique et les instantanés pré-démarrage sont enregistrés localement sous sessions et backups.",
-  "settings.open_folder": "Ouvrir le dossier"
+  "settings.open_folder": "Ouvrir le dossier",
+  "chat.quote_reply": "Citer et répondre",
+  "composer.quote_clear": "Effacer la citation",
+  "chat.quoted_label": "Citation"
 }

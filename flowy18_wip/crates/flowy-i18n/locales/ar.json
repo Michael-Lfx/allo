@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "حدث خطأ أثناء التنفيذ. افتح {product} للمراجعة.",
   "settings.local_data": "البيانات المحلية والنسخ الاحتياطية",
   "settings.local_data_help": "يتم حفظ سجل المحادثات واللقطات قبل التشغيل محليًا ضمن sessions وbackups.",
-  "settings.open_folder": "فتح المجلد"
+  "settings.open_folder": "فتح المجلد",
+  "chat.quote_reply": "اقتباس للرد",
+  "composer.quote_clear": "إلغاء الاقتباس",
+  "chat.quoted_label": "مقتبس"
 }

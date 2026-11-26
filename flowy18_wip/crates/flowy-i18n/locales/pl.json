@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Zadanie zostało przerwane. Otwórz {product}, aby sprawdzić szczegóły.",
   "settings.local_data": "Dane lokalne i kopie zapasowe",
   "settings.local_data_help": "Historia rozmów i migawki sprzed uruchomienia są zapisywane lokalnie w sessions i backups.",
-  "settings.open_folder": "Otwórz folder"
+  "settings.open_folder": "Otwórz folder",
+  "chat.quote_reply": "Cytuj odpowiedź",
+  "composer.quote_clear": "Usuń cytat",
+  "chat.quoted_label": "Cytat"
 }

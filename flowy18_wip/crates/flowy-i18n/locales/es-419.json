@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Algo interrumpió la tarea. Abre {product} para revisarla.",
   "settings.local_data": "Datos locales y respaldos",
   "settings.local_data_help": "El historial y las capturas previas al inicio se guardan localmente en sessions y backups.",
-  "settings.open_folder": "Abrir carpeta"
+  "settings.open_folder": "Abrir carpeta",
+  "chat.quote_reply": "Citar respuesta",
+  "composer.quote_clear": "Quitar cita",
+  "chat.quoted_label": "Cita"
 }

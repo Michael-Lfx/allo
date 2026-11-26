@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "任務處理發生異常，請開啟 {product} 查看詳情。",
   "settings.local_data": "本機資料與備份",
   "settings.local_data_help": "對話紀錄與啟動前自動備份儲存在本機（sessions 與 backups 目錄）。",
-  "settings.open_folder": "開啟資料夾"
+  "settings.open_folder": "開啟資料夾",
+  "chat.quote_reply": "引用回覆",
+  "composer.quote_clear": "取消引用",
+  "chat.quoted_label": "引用"
 }

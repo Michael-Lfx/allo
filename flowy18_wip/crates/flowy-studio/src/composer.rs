@@ -6,9 +6,9 @@ use flowy_i18n::I18n;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{
-    AnimationExt, Context, Entity, EventEmitter, Render, SharedString,
-    SpringAnimation, Subscription, Transformation, Window, div, prelude::*, px,
-    radians,
+    AnimationExt, Context, Entity, EventEmitter, FontWeight, Render,
+    SharedString, SpringAnimation, Subscription, Transformation, Window, div,
+    prelude::*, px, radians,
 };
 use gpui_kit::base::input::TextareaState;
 
@@ -16,6 +16,127 @@ use gpui_kit::base::input::TextareaState;
 #[derive(Clone, Debug, Default, PartialEq, Eq, gpui::Action)]
 #[action(namespace = flowy_studio)]
 pub struct SubmitComposer;
+
+const QUOTE_PREFIX: &str = "> \u{275d} ";
+const MAX_QUOTE_CHARS: usize = 160;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuoteRole {
+    User,
+    Assistant,
+}
+
+impl QuoteRole {
+    pub(crate) const fn protocol_tag(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Assistant => "Flowy",
+        }
+    }
+
+    fn parse_tag(tag: &str) -> Option<Self> {
+        match tag.trim() {
+            "User" | "You" => Some(Self::User),
+            "Flowy" | "Assistant" => Some(Self::Assistant),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveQuote {
+    pub role: QuoteRole,
+    pub excerpt: String,
+}
+
+pub(crate) fn make_quote_excerpt(raw: &str) -> String {
+    let (_, source) = split_quoted_prompt(raw);
+    let compact: String =
+        source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let head: String = chars.by_ref().take(MAX_QUOTE_CHARS).collect();
+    if chars.next().is_some() {
+        let clamped: String = head.chars().take(MAX_QUOTE_CHARS - 1).collect();
+        format!("{clamped}\u{2026}")
+    } else {
+        head
+    }
+}
+
+pub(crate) fn compose_quoted_prompt(
+    quote: Option<&ActiveQuote>,
+    prompt: &str,
+) -> String {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Some(quote) = quote.filter(|q| !q.excerpt.trim().is_empty()) else {
+        return prompt.to_owned();
+    };
+    let excerpt = make_quote_excerpt(&quote.excerpt);
+    let header =
+        format!("{QUOTE_PREFIX}{}: {excerpt}", quote.role.protocol_tag());
+    if trimmed.starts_with("/skill:") {
+        let (skill_cmd, rest) = match prompt.trim_start().split_once(' ') {
+            Some((head, tail)) => (head, tail.trim_start()),
+            None => (trimmed, ""),
+        };
+        if rest.is_empty() {
+            format!("{skill_cmd} {header}")
+        } else {
+            format!("{skill_cmd} {header}\n\n{rest}")
+        }
+    } else {
+        format!("{header}\n\n{prompt}")
+    }
+}
+
+pub(crate) fn split_quoted_prompt(text: &str) -> (Option<ActiveQuote>, String) {
+    let (skill_prefix, rest) = if let Some(after_slash) =
+        text.strip_prefix("/skill:")
+        && let Some((cmd, tail)) = after_slash.split_once(' ')
+        && !cmd.is_empty()
+        && tail.starts_with(QUOTE_PREFIX)
+    {
+        (Some(format!("/skill:{cmd}")), tail)
+    } else {
+        (None, text)
+    };
+    let Some(after_marker) = rest.strip_prefix(QUOTE_PREFIX) else {
+        return (None, text.to_owned());
+    };
+    let (header_line, body) =
+        if let Some((h, b)) = after_marker.split_once("\n\n") {
+            (h, b)
+        } else if skill_prefix.is_some() && !after_marker.contains('\n') {
+            (after_marker, "")
+        } else {
+            return (None, text.to_owned());
+        };
+    let Some((role_raw, excerpt_raw)) = header_line.split_once(": ") else {
+        return (None, text.to_owned());
+    };
+    let Some(role) = QuoteRole::parse_tag(role_raw) else {
+        return (None, text.to_owned());
+    };
+    let excerpt = excerpt_raw.trim();
+    if excerpt.is_empty() {
+        return (None, text.to_owned());
+    }
+    let display_body = match skill_prefix {
+        Some(skill) if body.trim().is_empty() => skill,
+        Some(skill) => format!("{skill} {body}"),
+        None => body.to_owned(),
+    };
+    (
+        Some(ActiveQuote {
+            role,
+            excerpt: excerpt.to_owned(),
+        }),
+        display_body,
+    )
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum ComposerEvent {
@@ -26,6 +147,7 @@ pub enum ComposerEvent {
     OpenAddMenu,
     ClearWorkspace,
     ClearSkill,
+    ClearQuote,
     CloudNotReady,
 }
 
@@ -42,6 +164,7 @@ pub struct ComposerViewState {
     pub workspace_label: SharedString,
     pub workspace_bound: bool,
     pub skill_label: Option<SharedString>,
+    pub(crate) active_quote: Option<ActiveQuote>,
     pub add_menu_open: bool,
 }
 
@@ -57,6 +180,7 @@ pub struct ChatComposer {
     workspace_label: SharedString,
     workspace_bound: bool,
     skill_label: Option<SharedString>,
+    active_quote: Option<ActiveQuote>,
     add_menu_open: bool,
     cloud_ready: bool,
     model_menu_open: bool,
@@ -106,6 +230,7 @@ impl ChatComposer {
             workspace_label: SharedString::default(),
             workspace_bound: false,
             skill_label: None,
+            active_quote: None,
             add_menu_open: false,
             cloud_ready: false,
             model_menu_open: false,
@@ -130,6 +255,7 @@ impl ChatComposer {
             || self.workspace_label != next.workspace_label
             || self.workspace_bound != next.workspace_bound
             || self.skill_label != next.skill_label
+            || self.active_quote != next.active_quote
             || self.add_menu_open != next.add_menu_open
         {
             self.model = next.model;
@@ -141,6 +267,7 @@ impl ChatComposer {
             self.workspace_label = next.workspace_label;
             self.workspace_bound = next.workspace_bound;
             self.skill_label = next.skill_label;
+            self.active_quote = next.active_quote;
             self.add_menu_open = next.add_menu_open;
             cx.notify();
         }
@@ -209,6 +336,9 @@ impl ChatComposer {
                     .flex()
                     .flex_col()
                     .gap(self.theme.space(8.))
+                    .when_some(self.active_quote.as_ref(), |card, quote| {
+                        card.child(self.quote_banner(quote, cx))
+                    })
                     .child(
                         // The kit multi-line editor is `h_full` inside, so it
                         // needs a bounded parent or it collapses to one row.
@@ -348,6 +478,85 @@ impl ChatComposer {
             "composer-add-trigger",
             &self.ui,
         )
+    }
+
+    fn quote_banner(
+        &self,
+        quote: &ActiveQuote,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("composer-quote-banner")
+            .debug_selector(|| "composer-quote-banner".to_owned())
+            .w_full()
+            .px(self.theme.space(10.))
+            .py(px(6.))
+            .rounded_md()
+            .border_l_2()
+            .border_color(self.theme.accent())
+            .bg(self.theme.soft())
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(self.theme.space(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        theme::icons::quote()
+                            .size(px(12.))
+                            .flex_none()
+                            .text_color(self.theme.muted()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.muted())
+                            .child(format!("{}:", self.t("chat.quoted_label"))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .text_xs()
+                            .text_color(self.theme.ink())
+                            .child(quote.excerpt.clone()),
+                    ),
+            )
+            .child(
+                theme::interactive(
+                    "composer-quote-clear",
+                    self.t("composer.quote_clear"),
+                    &self.theme,
+                )
+                .debug_selector(|| "composer-quote-clear".to_owned())
+                .size(px(20.))
+                .flex_none()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(self.theme.muted())
+                .cursor_pointer()
+                .hover(|style| {
+                    style
+                        .bg(self.theme.dock_hover())
+                        .text_color(self.theme.ink())
+                })
+                .child(theme::icons::x().size(px(11.)))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::ClearQuote);
+                })),
+            )
     }
 
     fn active_context_chip(
@@ -698,6 +907,51 @@ mod tests {
         assert_eq!(
             status_error_label("model reported an error", &fake_t),
             "<chat.status_error>"
+        );
+    }
+
+    #[test]
+    fn quote_excerpt_truncates_multibyte_chinese_without_panic() {
+        let long_zh = "深圳天气预报：今天晴转多云，气温二十四度；😀".repeat(10);
+        let excerpt =
+            super::make_quote_excerpt(&format!("第一行\n\n{long_zh}"));
+        assert!(excerpt.chars().count() <= 160);
+        assert!(excerpt.ends_with('\u{2026}'));
+        assert!(!excerpt.contains('\n'));
+        let wrapped = format!("> \u{275d} Flowy: 旧摘要\n\n用户后续提问内容");
+        assert_eq!(super::make_quote_excerpt(&wrapped), "用户后续提问内容");
+    }
+
+    #[test]
+    fn quote_compose_and_split_preserve_skill_command_and_chinese_body() {
+        let quote = super::ActiveQuote {
+            role: super::QuoteRole::Assistant,
+            excerpt: "深圳今日晴朗，气温 24°C".into(),
+        };
+        let plain = super::compose_quoted_prompt(Some(&quote), "明天降温吗？");
+        assert!(plain.starts_with("> \u{275d} Flowy: "));
+        let (parsed, body) = super::split_quoted_prompt(&plain);
+        assert_eq!(parsed.as_ref(), Some(&quote));
+        assert_eq!(body, "明天降温吗？");
+
+        let skill_packed = super::compose_quoted_prompt(
+            Some(&quote),
+            "/skill:flowy/xlsx-summary 整理第三季度表",
+        );
+        assert!(
+            skill_packed
+                .starts_with("/skill:flowy/xlsx-summary > \u{275d} Flowy: "),
+            "skill protocol prefix must remain first for prepare_skill_prompt: {skill_packed}"
+        );
+        let (parsed_skill, body_skill) =
+            super::split_quoted_prompt(&skill_packed);
+        assert_eq!(parsed_skill.as_ref(), Some(&quote));
+        assert_eq!(body_skill, "/skill:flowy/xlsx-summary 整理第三季度表");
+
+        let ordinary_md = "> 普通引文\n\n正文提问";
+        assert_eq!(
+            super::split_quoted_prompt(ordinary_md),
+            (None, ordinary_md.to_owned())
         );
     }
 }

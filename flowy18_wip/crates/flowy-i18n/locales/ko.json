@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "작업이 중단되었습니다. {product}을(를) 열어 확인하세요.",
   "settings.local_data": "로컬 데이터 및 백업",
   "settings.local_data_help": "대화 기록과 실행 전 스냅샷이 이 컴퓨터의 sessions 및 backups에 저장됩니다.",
-  "settings.open_folder": "폴더 열기"
+  "settings.open_folder": "폴더 열기",
+  "chat.quote_reply": "인용 답장",
+  "composer.quote_clear": "인용 지우기",
+  "chat.quoted_label": "인용"
 }

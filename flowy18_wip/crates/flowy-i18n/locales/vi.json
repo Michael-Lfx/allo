@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Tác vụ bị gián đoạn. Mở {product} để kiểm tra.",
   "settings.local_data": "Dữ liệu cục bộ và bản sao lưu",
   "settings.local_data_help": "Lịch sử hội thoại và bản sao lưu trước khi khởi chạy được lưu cục bộ tại sessions và backups.",
-  "settings.open_folder": "Mở thư mục"
+  "settings.open_folder": "Mở thư mục",
+  "chat.quote_reply": "Trích dẫn trả lời",
+  "composer.quote_clear": "Bỏ trích dẫn",
+  "chat.quoted_label": "Trích dẫn"
 }

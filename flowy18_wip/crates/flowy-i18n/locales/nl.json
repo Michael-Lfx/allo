@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "De taak is onderbroken. Open {product} om te controleren.",
   "settings.local_data": "Lokale gegevens en back-ups",
   "settings.local_data_help": "Gespreksgeschiedenis en snapshots vóór opstarten worden lokaal opgeslagen in sessions en backups.",
-  "settings.open_folder": "Map openen"
+  "settings.open_folder": "Map openen",
+  "chat.quote_reply": "Antwoord citeren",
+  "composer.quote_clear": "Citaat wissen",
+  "chat.quoted_label": "Citaat"
 }

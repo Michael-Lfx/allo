@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Ada gangguan pada tugas. Buka {product} untuk memeriksa.",
   "settings.local_data": "Data lokal dan cadangan",
   "settings.local_data_help": "Riwayat percakapan dan cuplikan pra-peluncuran disimpan secara lokal di sessions dan backups.",
-  "settings.open_folder": "Buka folder"
+  "settings.open_folder": "Buka folder",
+  "chat.quote_reply": "Kutip balasan",
+  "composer.quote_clear": "Hapus kutipan",
+  "chat.quoted_label": "Kutipan"
 }

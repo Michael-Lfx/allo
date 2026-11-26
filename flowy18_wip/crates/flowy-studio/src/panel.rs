@@ -1,8 +1,8 @@
 use crate::composer::{ChatComposer, ComposerEvent};
 use crate::deliverables::PreviewBody;
 use crate::feed::{
-    ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, RevealFile,
-    WorkingIndicator, WorkingIndicatorEvent,
+    ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, QuoteMessage,
+    RevealFile, WorkingIndicator, WorkingIndicatorEvent,
 };
 use flowy_agent::{
     AgentHandle, AgentWorkspace, CardAction, FileEntry, LlmConfig, Model, Plan,
@@ -308,6 +308,12 @@ pub struct StudioPanel {
     pub(crate) preview_body: Option<PreviewBody>,
     /// Composer drafts keyed by session, so switching tasks does not leak text.
     drafts: std::collections::HashMap<String, String>,
+    /// Single active WeChat-style reply quote shown above the composer.
+    pub(crate) active_quote: Option<crate::composer::ActiveQuote>,
+    /// Per-session quoted reply drafts so switching tasks keeps quotes isolated.
+    draft_quotes:
+        std::collections::HashMap<String, crate::composer::ActiveQuote>,
+    _quote_sub: gpui::Subscription,
     /// Prompt text waiting for the next render, which is the first point after
     /// most callers where a `Window` is available to install it.
     prompt_pending: Option<String>,
@@ -453,6 +459,10 @@ impl StudioPanel {
         let feed_sub = cx.subscribe(&feed, |panel, _, event: &OpenTask, cx| {
             panel.open_session(&event.0, cx);
         });
+        let quote_sub =
+            cx.subscribe(&feed, |panel, _, event: &QuoteMessage, cx| {
+                panel.set_active_quote(event.role, &event.text, cx);
+            });
         let reveal_sub =
             cx.subscribe(&feed, |panel, _, event: &RevealFile, cx| {
                 panel.reveal_file(&event.0, cx);
@@ -537,6 +547,10 @@ impl StudioPanel {
                     }
                     ComposerEvent::ClearSkill => {
                         panel.selected_skill = None;
+                        cx.notify();
+                    }
+                    ComposerEvent::ClearQuote => {
+                        panel.active_quote = None;
                         cx.notify();
                     }
                     ComposerEvent::CloudNotReady => {
@@ -649,6 +663,9 @@ impl StudioPanel {
             preview_file: None,
             preview_body: None,
             drafts: std::collections::HashMap::new(),
+            active_quote: None,
+            draft_quotes: std::collections::HashMap::new(),
+            _quote_sub: quote_sub,
             prompt_pending: None,
             _prompt_sub: prompt_sub,
             pump: None,
@@ -1131,7 +1148,38 @@ impl StudioPanel {
         }
     }
 
+    pub(crate) fn set_active_quote(
+        &mut self,
+        role: crate::composer::QuoteRole,
+        raw_text: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let excerpt = crate::composer::make_quote_excerpt(raw_text);
+        if excerpt.is_empty() {
+            return;
+        }
+        self.active_quote =
+            Some(crate::composer::ActiveQuote { role, excerpt });
+        cx.notify();
+    }
+
+    fn stash_active_quote(&mut self, session_id: Option<String>) {
+        if let Some(id) = session_id {
+            if let Some(quote) = self.active_quote.take() {
+                self.draft_quotes.insert(id, quote);
+            } else {
+                self.draft_quotes.remove(&id);
+            }
+        } else {
+            self.active_quote = None;
+        }
+    }
+
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(current) = self.agent.active_session_id() {
+            self.draft_quotes.remove(&current);
+        }
+        self.active_quote = None;
         self.invalidate_submission(cx);
         self.close_all_popovers();
         self.flow_modal.close();
@@ -1153,8 +1201,10 @@ impl StudioPanel {
             .as_deref()
             .and_then(|id| self.projects.iter().find(|p| p.id == id))
             .cloned();
+        let previous = self.agent.active_session_id();
         match self.agent.clear_active() {
             Ok(()) => {
+                self.stash_active_quote(previous);
                 self.invalidate_submission(cx);
                 self.close_all_popovers();
                 self.flow_modal.close();
@@ -1175,6 +1225,7 @@ impl StudioPanel {
     /// Present a global-home state after the host has cleared the active
     /// session and prepared its origin on a background worker.
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
+        self.active_quote = None;
         self.invalidate_submission(cx);
         self.close_all_popovers();
         self.flow_modal.close();
@@ -1399,13 +1450,20 @@ impl StudioPanel {
         self.session_opened_by_user = true;
         // Reopening the current session must not round-trip its own draft.
         let same = self.agent.active_session_id().as_deref() == Some(id);
-        if !same && let Some(current) = self.agent.active_session_id() {
+        let previous_session = if !same {
+            self.agent.active_session_id()
+        } else {
+            None
+        };
+        if let Some(current) = &previous_session {
             let draft = self.prompt_text(cx);
-            self.drafts.insert(current, draft);
+            self.drafts.insert(current.clone(), draft);
         }
         match self.agent.select_session(id) {
             Ok(()) => {
                 if !same {
+                    self.stash_active_quote(previous_session);
+                    self.active_quote = self.draft_quotes.get(id).cloned();
                     // Restore whatever this session had typed before.
                     let draft =
                         self.drafts.get(id).cloned().unwrap_or_default();
@@ -1533,7 +1591,11 @@ impl StudioPanel {
         &mut self,
         cx: &mut Context<'_, Self>,
     ) {
+        let sessions = self.agent.list_sessions();
+        self.draft_quotes
+            .retain(|sid, _| sessions.iter().any(|s| s.id == *sid));
         if self.agent.active_session_id().is_none() {
+            self.active_quote = None;
             self.invalidate_submission(cx);
             self.clear_right_sheet();
             self.surface = StudioSurface::Home;
@@ -1545,7 +1607,6 @@ impl StudioPanel {
             ..
         }) = &self.inspected_work
         {
-            let sessions = self.agent.list_sessions();
             let still_exists = sessions.iter().any(|session| {
                 session.id == *id
                     || (self.agent.session_role(&session.id)
@@ -1582,6 +1643,7 @@ impl StudioPanel {
             return Err("library.source.unavailable");
         }
         let previous = self.agent.active_session_id();
+        let same = previous.as_deref() == Some(target_root.as_str());
         self.agent.select_session(&target_root)?;
         self.invalidate_submission(cx);
         self.refresh_chat(cx);
@@ -1593,6 +1655,10 @@ impl StudioPanel {
             }
             self.refresh_chat(cx);
             return Err("library.source.unavailable");
+        }
+        if !same {
+            self.stash_active_quote(previous);
+            self.active_quote = self.draft_quotes.get(&target_root).cloned();
         }
         self.active_project_id = self
             .agent
@@ -1664,7 +1730,13 @@ impl StudioPanel {
         let typed = self.prompt_text(cx);
         let trimmed = typed.trim();
         let trimmed_draft = trimmed.to_owned();
-        let text = format_skill_prompt(self.selected_skill.as_ref(), trimmed);
+        let after_skill =
+            format_skill_prompt(self.selected_skill.as_ref(), trimmed);
+        let submitted_quote = self.active_quote.clone();
+        let text = crate::composer::compose_quoted_prompt(
+            submitted_quote.as_ref(),
+            &after_skill,
+        );
         tracing::debug!(
             target: "flowy.prompt",
             stage = "StudioPanel::send_prompt",
@@ -1673,7 +1745,7 @@ impl StudioPanel {
             chars = text.chars().count(),
             "enter"
         );
-        if text.is_empty() {
+        if after_skill.is_empty() {
             tracing::debug!(
                 target: "flowy.prompt",
                 stage = "StudioPanel::send_prompt",
@@ -1747,6 +1819,10 @@ impl StudioPanel {
                         "accepted-deferred"
                     );
                     self.set_prompt_text("", cx);
+                    self.active_quote = None;
+                    if let Some(sid) = active_session.as_deref() {
+                        self.draft_quotes.remove(sid);
+                    }
                     if self.agent.autonomous_drain() {
                         self.sync_receipts();
                         self.refresh_board_snapshot();
@@ -1864,6 +1940,15 @@ impl StudioPanel {
                         if draft_matches {
                             panel.set_prompt_text("", cx);
                         }
+                        if panel.active_quote == submitted_quote {
+                            panel.active_quote = None;
+                        }
+                        if submitted_quote.is_some()
+                            && panel.draft_quotes.get(&session_id)
+                                == submitted_quote.as_ref()
+                        {
+                            panel.draft_quotes.remove(&session_id);
+                        }
                         panel.session_opened_by_user = true;
                         panel.surface = StudioSurface::Chat;
                         panel.refresh_chat(cx);
@@ -1871,10 +1956,16 @@ impl StudioPanel {
                         panel.emit_notice(None, cx);
                         cx.emit(StudioEvent::SessionsChanged);
                     }
-                    Ok(_) => {
+                    Ok(session_id) => {
                         // User switched context mid-send: keep the new context's
                         // draft untouched while refreshing sessions/board.
                         panel.submission = None;
+                        if submitted_quote.is_some()
+                            && panel.draft_quotes.get(&session_id)
+                                == submitted_quote.as_ref()
+                        {
+                            panel.draft_quotes.remove(&session_id);
+                        }
                         panel.refresh_board_snapshot();
                         cx.emit(StudioEvent::SessionsChanged);
                     }
@@ -2129,6 +2220,10 @@ impl StudioPanel {
             self.board_project_filter = None;
         }
         if was_active {
+            if let Some(sid) = self.agent.active_session_id() {
+                self.draft_quotes.remove(&sid);
+            }
+            self.active_quote = None;
             self.active_project_id = None;
             let _ = self.agent.clear_active();
             self.agent.set_workspace_for_new_sessions(None);
@@ -2196,6 +2291,7 @@ impl StudioPanel {
             self.emit_notice(Some("project.folder_unavailable"), cx);
             return Err("project.folder_unavailable");
         }
+        self.stash_active_quote(self.agent.active_session_id());
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.flow_modal.close();
@@ -2222,6 +2318,10 @@ impl StudioPanel {
     }
 
     pub fn clear_thread(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(sid) = self.agent.active_session_id() {
+            self.draft_quotes.remove(&sid);
+        }
+        self.active_quote = None;
         self.new_task(cx);
     }
 
@@ -2276,6 +2376,7 @@ impl Render for StudioPanel {
             workspace_label: gpui::SharedString::from(workspace_label),
             workspace_bound,
             skill_label,
+            active_quote: self.active_quote.clone(),
             add_menu_open: self.is_add_menu_open(),
         };
         self.composer.update(cx, |composer, cx| {
@@ -4317,6 +4418,165 @@ mod tests {
                     if text == "existing router message while catalog loads"
             )));
         });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn quote_banner_overwrites_clears_isolates_sessions_and_roundtrips_skill_prompt(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-quote-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            let mut panel = StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            );
+            panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                id: "test-model".into(),
+                name: "Test model".into(),
+                ..Default::default()
+            }]);
+            panel.cloud_ready = true;
+            panel
+        });
+        let sid_a = Rc::new(RefCell::new(String::new()));
+        let sid_b = Rc::new(RefCell::new(String::new()));
+        panel.update(cx, |panel, cx| {
+            let a = panel
+                .agent
+                .create_router_session()
+                .expect("create router session A");
+            let b = panel
+                .agent
+                .create_router_session()
+                .expect("create router session B");
+            *sid_a.borrow_mut() = a.clone();
+            *sid_b.borrow_mut() = b.clone();
+            panel.open_session(&a, cx);
+
+            // Second quote replaces first quote cleanly (single-quote WeChat semantics).
+            panel.set_active_quote(
+                crate::composer::QuoteRole::Assistant,
+                "第一条长引用：先查环境诊断",
+                cx,
+            );
+            panel.set_active_quote(
+                crate::composer::QuoteRole::User,
+                &"第二条超长中文引用摘要：".repeat(16),
+                cx,
+            );
+            let quote = panel.active_quote.as_ref().expect("latest quote kept");
+            assert_eq!(quote.role, crate::composer::QuoteRole::User);
+            assert!(quote.excerpt.chars().count() <= 160);
+            assert!(quote.excerpt.ends_with('\u{2026}'));
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("composer-quote-banner").is_some());
+
+        // Clicking X clears the quote banner immediately.
+        let clear_btn = cx
+            .debug_bounds("composer-quote-clear")
+            .expect("quote clear X button rendered");
+        cx.simulate_click(clear_btn.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.read_entity(&panel, |panel, _| {
+            assert!(panel.active_quote.is_none());
+        });
+        assert!(cx.debug_bounds("composer-quote-banner").is_none());
+
+        // Switching sessions isolates quotes per conversation.
+        panel.update(cx, |panel, cx| {
+            panel.set_active_quote(
+                crate::composer::QuoteRole::Assistant,
+                "会话 A 的关键结论",
+                cx,
+            );
+            panel.open_session(&sid_b.borrow(), cx);
+            assert!(
+                panel.active_quote.is_none(),
+                "session B must not inherit session A quote"
+            );
+            panel.open_session(&sid_a.borrow(), cx);
+            assert_eq!(
+                panel.active_quote.as_ref().map(|q| q.excerpt.as_str()),
+                Some("会话 A 的关键结论")
+            );
+        });
+
+        // Cold-start deferred send with mounted `/skill:` preserves `/skill:` prefix & quote cleanly.
+        panel.update(cx, |panel, cx| {
+            panel.selected_skill = Some(crate::ports::SkillChip {
+                id: "flowy/xlsx-summary".into(),
+                title: "表格总结".into(),
+                summary: String::new(),
+                official: true,
+            });
+            panel.catalog_loading = true;
+            panel.cloud_ready = false;
+            panel.fill_prompt("整理本季度销售报表", cx);
+            panel.send_prompt(cx);
+            assert!(
+                panel.active_quote.is_none(),
+                "quote clears once deferred prompt is accepted"
+            );
+            let pending = panel.agent.pending_acceptances();
+            assert_eq!(pending.len(), 1);
+            assert!(
+                pending[0]
+                    .text
+                    .starts_with("/skill:flowy/xlsx-summary > \u{275d} Flowy: 会话 A 的关键结论\n\n整理本季度销售报表"),
+                "packed deferred text was: {}",
+                pending[0].text
+            );
+
+            // Render a User bubble containing that packed text and confirm top quote preview appears.
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid_a.borrow().clone()),
+                    flowy_agent::ChatHistory {
+                        rows: vec![flowy_agent::ChatLine::User {
+                            text: pending[0].text.clone(),
+                        }],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            panel.surface = StudioSurface::Chat;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("chat-user-quote-preview").is_some(),
+            "quoted User bubble renders top excerpt strip"
+        );
+
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }

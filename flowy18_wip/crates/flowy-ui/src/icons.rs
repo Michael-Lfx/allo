@@ -204,6 +204,7 @@ lucide_icons! {
     plug => "plug.svg",
     plus => "plus.svg",
     puzzle => "puzzle.svg",
+    quote => "quote.svg",
     refresh_cw => "refresh-cw.svg",
     search => "search.svg",
     send => "send.svg",

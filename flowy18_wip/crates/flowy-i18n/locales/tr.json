@@ -938,5 +938,8 @@
   "shell.notify_task_error_body": "Bir hata görevi kesintiye uğrattı. İncelemek için {product} uygulamasını açın.",
   "settings.local_data": "Yerel veriler ve yedekler",
   "settings.local_data_help": "Sohbet geçmişi ve açılış öncesi anlık görüntüler yerel olarak sessions ve backups altında saklanır.",
-  "settings.open_folder": "Klasörü aç"
+  "settings.open_folder": "Klasörü aç",
+  "chat.quote_reply": "Alıntılayarak yanıtla",
+  "composer.quote_clear": "Alıntıyı temizle",
+  "chat.quoted_label": "Alıntı"
 }
