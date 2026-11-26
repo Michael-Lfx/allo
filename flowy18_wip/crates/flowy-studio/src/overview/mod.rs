@@ -988,6 +988,7 @@ impl StudioPanel {
     fn board_row_actions(
         &self,
         session_id: &str,
+        row_title: &str,
         index: u64,
         include_flow_icon: bool,
         cx: &Context<'_, Self>,
@@ -995,9 +996,12 @@ impl StudioPanel {
         let sid_chat = session_id.to_owned();
         let sid_flow = session_id.to_owned();
         let sid_menu = session_id.to_owned();
-        let open_chat_label = self.t("board.open_chat");
-        let open_flow_label = self.t("board.open_flow");
-        let more_label = self.t("library.more");
+        let open_chat_label =
+            format!("{row_title} \u{00b7} {}", self.t("board.open_chat"));
+        let open_flow_label =
+            format!("{row_title} \u{00b7} {}", self.t("board.open_flow"));
+        let more_label =
+            format!("{row_title} \u{00b7} {}", self.t("library.more"));
 
         div()
             .flex_none()
@@ -1120,6 +1124,7 @@ impl StudioPanel {
                 let color = self.format_color(branch.format);
                 file_chips = file_chips.child(
                     div()
+                        .max_w(px(200.))
                         .px(px(7.))
                         .py(px(2.))
                         .rounded_md()
@@ -1129,8 +1134,21 @@ impl StudioPanel {
                         .gap(px(5.))
                         .text_xs()
                         .text_color(self.theme.ink())
-                        .child(div().size(px(6.)).rounded_full().bg(color))
-                        .child(branch.deliverable_name.clone()),
+                        .child(
+                            div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(color),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .truncate()
+                                .child(branch.deliverable_name.clone()),
+                        ),
                 );
             }
             if overflow_files > 0 {
@@ -1265,6 +1283,7 @@ impl StudioPanel {
                     .when(is_real_session, |right| {
                         right.child(self.board_row_actions(
                             &group.session_id,
+                            &group.title,
                             index,
                             false,
                             cx,
@@ -1598,6 +1617,7 @@ impl StudioPanel {
                         .when(is_real_session, |right| {
                             right.child(self.board_row_actions(
                                 &group.session_id,
+                                &group.title,
                                 index,
                                 true,
                                 cx,

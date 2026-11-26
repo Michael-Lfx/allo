@@ -584,7 +584,9 @@ impl BoardDataSource for AgentHandle {
             let title = redact_trace_text(&raw_title);
             let preview = raw_preview
                 .map(|text| clip_label(&redact_trace_text(&text), 72))
-                .filter(|text| !text.is_empty() && text != &title);
+                .filter(|text| {
+                    !text.is_empty() && !is_redundant_preview(&title, text)
+                });
 
             groups.push(SessionBoardGroup {
                 session_id: summary.id.clone(),
@@ -1110,6 +1112,19 @@ fn disambiguate_deliverable_names(branches: &mut [WorkBranchSummary]) {
     }
 }
 
+fn is_redundant_preview(title: &str, preview: &str) -> bool {
+    let t = title.trim_end_matches(['…', '.', ' ']);
+    let p = preview.trim_end_matches(['…', '.', ' ']);
+    if t.is_empty() || p.is_empty() || t == p {
+        return true;
+    }
+    if p.starts_with(t) || t.starts_with(p) {
+        return true;
+    }
+    let prefix_len = t.chars().count().min(p.chars().count()).min(12);
+    prefix_len >= 8 && t.chars().take(prefix_len).eq(p.chars().take(prefix_len))
+}
+
 fn path_suffix_label(path: &str, segments: usize) -> Option<String> {
     let clean = display_path_str(path);
     let trimmed = clean.trim_end_matches(['/', '\\']);
@@ -1121,7 +1136,21 @@ fn path_suffix_label(path: &str, segments: usize) -> Option<String> {
         return None;
     }
     let take = segments.min(parts.len());
-    Some(parts[parts.len() - take..].join("/"))
+    let formatted: Vec<String> = parts[parts.len() - take..]
+        .iter()
+        .map(|part| shorten_internal_segment(part))
+        .collect();
+    Some(formatted.join("/"))
+}
+
+fn shorten_internal_segment(part: &str) -> String {
+    if let Some(rest) = part.strip_prefix("submission-")
+        && rest.len() > 8
+    {
+        let short: String = rest.chars().take(6).collect();
+        return format!("sub-{short}");
+    }
+    part.to_owned()
 }
 
 fn infer_skill_label(
