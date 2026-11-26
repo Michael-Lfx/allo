@@ -109,7 +109,9 @@ impl FlowyApp {
             let sessions = studio.agent.list_sessions();
             let default_preview = sessions
                 .iter()
-                .find(|session| session.project_id.is_none())
+                .find(|session| {
+                    session.project_id.is_none() && !session.archived
+                })
                 .and_then(|session| studio.agent.session_preview(&session.id))
                 .map(|text| flowy_studio::ports::redact_trace_text(&text));
             let attention_ids: std::collections::HashSet<String> = sessions
@@ -250,9 +252,8 @@ impl FlowyApp {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .pt_4()
+            .pt_3()
             .pb_3()
-            .child(brand())
             .child(self.chief_assistant_card(
                 active_work,
                 chief_selected,
@@ -278,22 +279,18 @@ impl FlowyApp {
             window.use_keyed_state("dock-chief-hovered", cx, |_, _| false);
         let hovered = *hovered_state.read(cx);
         let scale = theme::motion::travel_scale(self.theme.motion_policy());
+        let is_working = active_work > 0;
         let badge_core = div()
             .size(px(34.))
             .flex_shrink_0()
             .rounded_xl()
-            .bg(self.theme.assistant_badge_bg())
-            .text_color(self.theme.assistant_badge_fg())
+            .overflow_hidden()
             .shadow_sm()
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                theme::icons::sparkles()
-                    .size(px(15.))
-                    .text_color(self.theme.assistant_badge_fg()),
-            );
-        let badge = if (hovered || active_work > 0) && scale > 0.0 {
+            .child(super::product_mark(34.));
+        let badge = if is_working && scale > 0.0 {
             badge_core
                 .with_animation(
                     "dock-chief-pulse",
@@ -307,13 +304,18 @@ impl FlowyApp {
                     },
                 )
                 .into_any_element()
+        } else if hovered && scale > 0.0 {
+            badge_core
+                .relative()
+                .top(px(-1.2 * scale))
+                .into_any_element()
         } else {
             badge_core.into_any_element()
         };
 
         let title = self.t("dock.chief_assistant");
         let subtitle_text = latest_preview.unwrap_or_else(|| {
-            if active_work > 0 {
+            if is_working {
                 let count = active_work.to_string();
                 self.tf("dock.chief_working", &[("count", count.as_str())])
             } else {
@@ -325,7 +327,7 @@ impl FlowyApp {
             .items_center()
             .gap(px(5.))
             .min_w_0()
-            .when(active_work > 0, |row| {
+            .when(is_working, |row| {
                 row.child(running_dot("dock-chief-active-dot", self.theme))
             })
             .child(
@@ -336,7 +338,11 @@ impl FlowyApp {
                     .whitespace_nowrap()
                     .truncate()
                     .text_size(self.theme.caption_size())
-                    .text_color(self.theme.muted())
+                    .text_color(if is_working {
+                        self.theme.status_active()
+                    } else {
+                        self.theme.muted()
+                    })
                     .child(subtitle_text),
             );
 
@@ -345,24 +351,75 @@ impl FlowyApp {
         } else {
             self.theme.dock_hover()
         };
+        let border_color = if is_working {
+            self.theme.status_active().opacity(0.55)
+        } else if hovered || selected {
+            self.theme.ink().opacity(0.18)
+        } else {
+            self.theme.line()
+        };
+        let active_tint = self.theme.status_active();
+        let flow_bar = if is_working {
+            let track = div()
+                .w_full()
+                .h(px(2.))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(active_tint.opacity(0.16));
+            if scale > 0.0 {
+                let runner = div()
+                    .h_full()
+                    .w(gpui::relative(0.42))
+                    .rounded_full()
+                    .bg(active_tint)
+                    .with_animation(
+                        "dock-chief-flow",
+                        Animation::new(std::time::Duration::from_millis(1600))
+                            .repeat(),
+                        move |el, t| {
+                            // Smooth left-to-right sweep with soft edge fade.
+                            let fade =
+                                (t * std::f32::consts::PI).sin().max(0.25);
+                            el.relative()
+                                .left(gpui::relative(t.mul_add(1.18, -0.30)))
+                                .opacity(fade)
+                        },
+                    );
+                Some(track.child(runner))
+            } else {
+                Some(
+                    track.child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(0.55))
+                            .rounded_full()
+                            .bg(active_tint),
+                    ),
+                )
+            }
+        } else {
+            None
+        };
 
         theme::interactive("dock-chief-assistant", title.clone(), &self.theme)
             .mx_2()
-            .mb_2()
+            .mb_3()
             .px(self.theme.space(8.))
-            .py(px(8.))
+            .py(px(9.))
             .rounded_xl()
             .border_1()
-            .border_color(self.theme.line())
+            .border_color(border_color)
             .flex()
-            .items_center()
-            .gap(self.theme.space(8.))
-            .bg(if selected {
+            .flex_col()
+            .gap(px(6.))
+            .bg(if is_working {
+                self.theme.status_active_bg()
+            } else if selected {
                 self.theme.card()
             } else {
                 self.theme.dock()
             })
-            .when(selected, gpui::Styled::shadow_sm)
+            .when(selected || is_working || hovered, gpui::Styled::shadow_sm)
             .hover(move |card| card.bg(hover_bg))
             .on_hover(move |active, window, cx| {
                 let changed = hovered_state.update(cx, |state, cx| {
@@ -386,36 +443,71 @@ impl FlowyApp {
                 );
                 cx.notify();
             }))
-            .child(badge)
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .w_full()
                     .flex()
-                    .flex_col()
-                    .gap(px(2.))
+                    .items_center()
+                    .gap(self.theme.space(8.))
+                    .child(badge)
                     .child(
                         div()
-                            .w_full()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(4.))
+                            .flex_col()
+                            .gap(px(2.))
                             .child(
                                 div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .text_size(self.theme.body_size())
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .child(title),
-                            ),
-                    )
-                    .child(subtitle),
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .truncate()
+                                            .text_size(self.theme.body_size())
+                                            .font_weight(
+                                                gpui::FontWeight::SEMIBOLD,
+                                            )
+                                            .text_color(self.theme.ink())
+                                            .child(title),
+                                    )
+                                    .when(is_working, |row| {
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .px(px(6.))
+                                                .py(px(1.))
+                                                .rounded_full()
+                                                .bg(self.theme.card())
+                                                .text_xs()
+                                                .font_weight(
+                                                    gpui::FontWeight::SEMIBOLD,
+                                                )
+                                                .text_color(
+                                                    self.theme.status_active(),
+                                                )
+                                                .child(active_work.to_string()),
+                                        )
+                                    })
+                                    .when(!is_working && hovered, |row| {
+                                        row.child(
+                                            theme::icons::arrow_right()
+                                                .size(px(13.))
+                                                .text_color(self.theme.muted()),
+                                        )
+                                    }),
+                            )
+                            .child(subtitle),
+                    ),
             )
+            .when_some(flow_bar, gpui::ParentElement::child)
     }
 
     fn quiet_nav_item(
@@ -512,13 +604,17 @@ impl FlowyApp {
             let menu_open =
                 self.project_menu.as_deref() == Some(project_id.as_str());
             let project_busy = sessions.iter().any(|session| {
-                session.project_id.as_deref() == Some(project_id.as_str())
+                !session.archived
+                    && session.project_id.as_deref()
+                        == Some(project_id.as_str())
                     && busy_ids.contains(&session.id)
             });
             // Never mask a pending approval / failed verification behind another
             // running session in the same project.
             let project_attention = sessions.iter().any(|session| {
-                session.project_id.as_deref() == Some(project_id.as_str())
+                !session.archived
+                    && session.project_id.as_deref()
+                        == Some(project_id.as_str())
                     && attention_ids.contains(&session.id)
             });
             let flip_offset = flip.read(cx).offset_for(&project_id);
@@ -673,7 +769,9 @@ impl FlowyApp {
 
             if expanded {
                 for session in sessions.iter().filter(|session| {
-                    session.project_id.as_deref() == Some(project_id.as_str())
+                    !session.archived
+                        && session.project_id.as_deref()
+                            == Some(project_id.as_str())
                 }) {
                     let busy = busy_ids.contains(&session.id);
                     let attention = attention_ids.contains(&session.id);
@@ -688,6 +786,7 @@ impl FlowyApp {
                             session.title.clone()
                         },
                         active_session.as_deref() == Some(session.id.as_str()),
+                        session.pinned,
                         busy,
                         attention,
                         div().w(px(16.)).h(px(16.)).flex_shrink_0(),
@@ -762,6 +861,7 @@ impl FlowyApp {
     /// fill and lines up with the project's edit button.
     #[expect(
         clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
         reason = "one row reads better than a struct built at each call site"
     )]
     fn conversation_row(
@@ -772,12 +872,16 @@ impl FlowyApp {
         session_id: String,
         title: String,
         selected: bool,
+        pinned: bool,
         busy: bool,
         attention: bool,
         leading: impl IntoElement,
         selector: &'static str,
     ) -> impl IntoElement {
-        let menu_open = self.task_menu.as_deref() == Some(session_id.as_str());
+        let menu_open = self
+            .task_menu
+            .as_ref()
+            .is_some_and(|menu| menu.session_id == session_id);
         let hovered = window.use_keyed_state(
             SharedString::from(format!(
                 "conversation-row-hovered-{session_id}"
@@ -787,6 +891,7 @@ impl FlowyApp {
         );
         let show_menu = *hovered.read(cx) || menu_open;
         let open_id = session_id.clone();
+        let right_id = session_id.clone();
         theme::interactive(row_id, title.clone(), &self.theme)
             .mx_2()
             .px(self.theme.space(8.))
@@ -829,6 +934,13 @@ impl FlowyApp {
                     .text_size(self.theme.body_size())
                     .child(title),
             )
+            .when(pinned && !show_menu, |row| {
+                row.child(
+                    theme::icons::pin()
+                        .size(px(12.))
+                        .text_color(self.theme.muted()),
+                )
+            })
             .when(attention, |row| row.child(attention_dot(self.theme)))
             .when(busy, |row| {
                 row.child(running_dot(
@@ -843,6 +955,13 @@ impl FlowyApp {
                     &session_id,
                 ))
             })
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |app, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    app.open_task_menu_at(&right_id, event.position, cx);
+                }),
+            )
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.user_menu = false;
                 app.section = Section::Studio;
@@ -900,12 +1019,13 @@ impl FlowyApp {
             .sessions
             .iter()
             .filter(|session| {
-                session.project_id.as_ref().is_none_or(|project_id| {
-                    !snapshot
-                        .projects
-                        .iter()
-                        .any(|project| &project.id == project_id)
-                })
+                !session.archived
+                    && session.project_id.as_ref().is_none_or(|project_id| {
+                        !snapshot
+                            .projects
+                            .iter()
+                            .any(|project| &project.id == project_id)
+                    })
             })
             .cloned()
             .collect();
@@ -937,6 +1057,7 @@ impl FlowyApp {
                 session.title
             };
             let selected = active.as_deref() == Some(session_id.as_str());
+            let pinned = session.pinned;
             let busy = busy_ids.contains(&session_id);
             let attention = attention_ids.contains(&session_id);
             let flip_offset = flip.read(cx).offset_for(&session_id);
@@ -947,6 +1068,7 @@ impl FlowyApp {
                 session_id.clone(),
                 title,
                 selected,
+                pinned,
                 busy,
                 attention,
                 DockIcon::Task.render(),
@@ -1212,6 +1334,11 @@ impl FlowyApp {
             panel.close_all_popovers();
             cx.notify();
         });
+        self.task_menu = None;
+        self.project_menu = None;
+        self.ui
+            .overlays
+            .update(cx, flowy_ui::OverlayHost::clear_point_anchors);
         self.user_menu = !self.user_menu;
         cx.notify();
     }
@@ -1503,21 +1630,6 @@ impl FlowyApp {
             .child(theme::icons::log_out())
             .child(div().text_size(self.theme.body_size()).child(label))
     }
-}
-
-fn brand() -> impl IntoElement {
-    div()
-        .px_4()
-        .pb_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(super::product_mark(22.))
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(crate::brand::product().to_string()),
-        )
 }
 
 /// Same inset, padding, border, and radius as a dock navigation row.

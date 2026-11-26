@@ -48,8 +48,8 @@ pub use flowy_agent_core::{
 pub use flowy_skills::{InstallOrigin, InstalledSkill};
 pub use handle::{
     AcceptedRun, AgentHandle, AgentUpdate, AgentWorkspace, CancelOutcome,
-    CardAction, CardActionOutcome, CardSelection, SessionSummary, TaskTarget,
-    WorkStatus,
+    CardAction, CardActionOutcome, CardSelection, SessionSearchHit,
+    SessionSummary, TaskTarget, WorkStatus,
 };
 pub use model::{Model, Plan};
 pub use model_directory::{
@@ -60,7 +60,9 @@ pub use projection::{
     ChatHistory, ChatLine, FileChangeKind, FileEntry, TurnStatus,
     VerificationIssue,
 };
-pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
+pub use title::{
+    TITLE_MAX_CHARS, clamp_title, fallback_title, strip_markdown_inline,
+};
 pub use verify::{
     PROVENANCE_INVALID, ResolveOutcome, resolve_contract_sync,
     ui_key as verify_ui_key,
@@ -361,6 +363,8 @@ mod tests {
                 workspace: None,
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         }
         .save(&root.0)
@@ -410,6 +414,8 @@ mod tests {
                 workspace: None,
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         }
         .save(&root.0)
@@ -463,6 +469,8 @@ mod tests {
                 workspace: None,
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         };
         index.save(&root.0).unwrap();
@@ -569,6 +577,8 @@ mod tests {
                 workspace: None,
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         };
         std::fs::create_dir_all(root.0.join("sessions")).unwrap();
@@ -735,6 +745,8 @@ mod tests {
                 workspace: None,
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: false,
+                archived: false,
             }],
         }
         .save(&root.0)

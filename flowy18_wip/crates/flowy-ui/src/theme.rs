@@ -412,6 +412,10 @@ impl ResolvedTheme {
     pub fn file_kind_doc(self) -> Rgba {
         rgb(if self.dark { 0x0060_a5fa } else { 0x0025_63eb })
     }
+    /// Identity tint for code & web deliverables (HTML / CSS / JS / TS / PY / RS / JSON).
+    pub fn file_kind_code(self) -> Rgba {
+        rgb(if self.dark { 0x00a7_8bfa } else { 0x006d_28d9 })
+    }
     /// Neutral identity tint for other local deliverables.
     pub fn file_kind_other(self) -> Rgba {
         self.muted()

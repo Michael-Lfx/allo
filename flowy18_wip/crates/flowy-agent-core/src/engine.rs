@@ -493,18 +493,104 @@ impl Engine {
         titled: bool,
     ) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
-        let record = inner.index.get_mut(id).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("session {id} not found"),
-            )
-        })?;
-        for commit in &mut record.delivery_commits {
-            commit.origin_title_snapshot.clone_from(&title);
+        let (prev_title, prev_titled, prev_snapshots) = {
+            let record = inner.index.get_mut(id).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session {id} not found"),
+                )
+            })?;
+            let prev_title = record.title.clone();
+            let prev_titled = record.titled;
+            let prev_snapshots: Vec<String> = record
+                .delivery_commits
+                .iter()
+                .map(|commit| commit.origin_title_snapshot.clone())
+                .collect();
+            for commit in &mut record.delivery_commits {
+                commit.origin_title_snapshot.clone_from(&title);
+            }
+            record.title = title;
+            record.titled = titled;
+            (prev_title, prev_titled, prev_snapshots)
+        };
+        let saved = inner.index.save(&self.root);
+        if let Err(error) = saved {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.title = prev_title;
+                record.titled = prev_titled;
+                for (commit, prev) in
+                    record.delivery_commits.iter_mut().zip(prev_snapshots)
+                {
+                    commit.origin_title_snapshot = prev;
+                }
+            }
+            return Err(error);
         }
-        record.title = title;
-        record.titled = titled;
-        inner.index.save(&self.root)
+        drop(inner);
+        Ok(())
+    }
+
+    /// Persist the user-pinned flag for one session without altering its
+    /// activity timestamp (`updated_at`), rolling back in-memory state if disk
+    /// persistence fails.
+    pub fn set_session_pinned(
+        &self,
+        id: &str,
+        pinned: bool,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let prev = {
+            let record = inner.index.get_mut(id).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session {id} not found"),
+                )
+            })?;
+            let prev = record.pinned;
+            record.pinned = pinned;
+            prev
+        };
+        let saved = inner.index.save(&self.root);
+        if let Err(error) = saved {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.pinned = prev;
+            }
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
+    }
+
+    /// Persist the user-archived flag for one session without altering its
+    /// activity timestamp (`updated_at`), rolling back in-memory state if disk
+    /// persistence fails.
+    pub fn set_session_archived(
+        &self,
+        id: &str,
+        archived: bool,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let prev = {
+            let record = inner.index.get_mut(id).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session {id} not found"),
+                )
+            })?;
+            let prev = record.archived;
+            record.archived = archived;
+            prev
+        };
+        let saved = inner.index.save(&self.root);
+        if let Err(error) = saved {
+            if let Some(record) = inner.index.get_mut(id) {
+                record.archived = prev;
+            }
+            return Err(error);
+        }
+        drop(inner);
+        Ok(())
     }
 
     /// Persist one host-derived delivery commit. Repeated calls with the same

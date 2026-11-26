@@ -32,6 +32,10 @@ pub struct SessionRecord {
     pub origin: SessionOrigin,
     #[serde(default)]
     pub session_workspace: Option<SessionWorkspace>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -221,6 +225,8 @@ mod tests {
                 workspace: Some(workspace.clone()),
                 origin: SessionOrigin::default(),
                 session_workspace: None,
+                pinned: true,
+                archived: false,
             }],
         }
         .save(&root)
@@ -228,6 +234,8 @@ mod tests {
 
         let loaded = SessionIndex::load(&root).unwrap();
         assert_eq!(loaded.sessions[0].workspace.as_ref(), Some(&workspace));
+        assert!(loaded.sessions[0].pinned);
+        assert!(!loaded.sessions[0].archived);
         fs::remove_dir_all(root).unwrap();
     }
 }

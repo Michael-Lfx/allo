@@ -18,9 +18,61 @@ use crate::projects::Project;
 /// Synthetic session group id used to surface unassigned queued/failed receipts.
 pub const UNASSIGNED_QUEUE_SESSION_ID: &str = "unassigned-queue";
 
+/// Milliseconds in one 24-hour day.
+pub const DAY_MS: u64 = 86_400_000;
+
+/// Milliseconds in 7 days (default visual fold boundary on Progress Board).
+pub const SEVEN_DAYS_MS: u64 = 7 * DAY_MS;
+
 /// Maximum branches retained for visual display per session card/modal.
 /// KPI totals are always accumulated across all branches before truncation.
 const MAX_DISPLAY_BRANCHES: usize = 6;
+
+/// Normalizes Unix timestamps to epoch milliseconds.
+///
+/// Legacy fixtures or older records may store Unix seconds (`< 10^10`); modern
+/// `SessionSummary::updated_at` and `AcceptedMessage::created_at_ms` store
+/// milliseconds (`~1.7 × 10^12`).
+#[must_use]
+pub const fn normalize_epoch_ms(ts: u64) -> u64 {
+    if ts > 0 && ts < 10_000_000_000 {
+        ts.saturating_mul(1_000)
+    } else {
+        ts
+    }
+}
+
+/// Current wall-clock epoch time in milliseconds.
+#[must_use]
+pub fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Returns true when a normalized timestamp is strictly older than 7 days
+/// relative to `now_ms`. Zero/unknown timestamps are treated as not older so
+/// brand-new sessions are never hidden behind the fold.
+#[must_use]
+pub const fn is_older_than_7d(updated_at_ms: u64, now_ms: u64) -> bool {
+    let ts = normalize_epoch_ms(updated_at_ms);
+    ts > 0 && now_ms.saturating_sub(ts) > SEVEN_DAYS_MS
+}
+
+/// Howard Hinnant's civil-from-days algorithm returning `(month, day)` for
+/// zero-dependency 7-day chart axis labels and older relative dates.
+#[must_use]
+pub const fn civil_month_day_from_epoch_ms(ts_ms: u64) -> (u8, u8) {
+    let z = (ts_ms / DAY_MS).cast_signed() + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097).cast_unsigned();
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+    (month, day)
+}
 
 /// High-level deliverable format bucket for KPI visualization and file pills.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,6 +80,7 @@ pub enum DeliverableFormat {
     Sheet,
     Slides,
     Doc,
+    CodeWeb,
     #[default]
     Other,
 }
@@ -45,6 +98,13 @@ impl DeliverableFormat {
             Some("docx" | "doc" | "pdf" | "md" | "txt" | "rtf" | "odt") => {
                 Self::Doc
             }
+            Some(
+                "html" | "htm" | "css" | "scss" | "less" | "js" | "mjs" | "cjs"
+                | "ts" | "tsx" | "jsx" | "py" | "rs" | "go" | "java" | "kt"
+                | "c" | "cc" | "cpp" | "h" | "hpp" | "cs" | "rb" | "php"
+                | "swift" | "json" | "yaml" | "yml" | "toml" | "xml" | "sql"
+                | "sh" | "bash" | "ps1" | "vue" | "svelte",
+            ) => Self::CodeWeb,
             _ => Self::Other,
         }
     }
@@ -55,6 +115,7 @@ impl DeliverableFormat {
             Self::Sheet => "XLSX",
             Self::Slides => "PPTX",
             Self::Doc => "DOCX",
+            Self::CodeWeb => "CODE",
             Self::Other => "FILE",
         }
     }
@@ -207,9 +268,15 @@ pub struct SessionBoardGroup {
     pub project_name: Option<String>,
     pub workspace_display: String,
     pub updated_at: u64,
+    pub pinned: bool,
+    pub archived: bool,
+    pub preview: Option<String>,
     pub branches: Vec<WorkBranchSummary>,
     /// Total branch count before visual truncation (`MAX_DISPLAY_BRANCHES`).
     pub total_branch_count: usize,
+    /// Total non-idle / file deliverable count before visual truncation so
+    /// compact row `+N` badges never under-report sessions with >6 files.
+    pub total_file_count: usize,
     pub session_contract: Option<WorkContractProgress>,
     pub has_blocker: bool,
     pub has_delivered: bool,
@@ -228,6 +295,71 @@ impl SessionBoardGroup {
     }
 }
 
+/// One day bucket inside the 7-day Progress Board activity bar chart.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DailyActivityBucket {
+    /// Days ago (`6` = oldest visible day, `0` = last 24 hours / Today).
+    pub day_offset: u8,
+    pub month: u8,
+    pub day: u8,
+    pub active_or_blocked: usize,
+    pub completed_or_delivered: usize,
+}
+
+impl DailyActivityBucket {
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.active_or_blocked + self.completed_or_delivered
+    }
+}
+
+/// Buckets non-archived sessions into 7 daily columns (`day_offset` 6 down to 0)
+/// aligned with the 7-day visual fold boundary.
+#[must_use]
+pub fn compute_daily_7d(
+    groups: &[&SessionBoardGroup],
+    now_ms: u64,
+) -> Vec<DailyActivityBucket> {
+    let mut buckets: Vec<DailyActivityBucket> = (0..7_u8)
+        .rev()
+        .map(|offset| {
+            let bucket_ts = now_ms.saturating_sub(u64::from(offset) * DAY_MS);
+            let (month, day) = civil_month_day_from_epoch_ms(bucket_ts);
+            DailyActivityBucket {
+                day_offset: offset,
+                month,
+                day,
+                active_or_blocked: 0,
+                completed_or_delivered: 0,
+            }
+        })
+        .collect();
+
+    for group in groups {
+        if group.archived {
+            continue;
+        }
+        let ts = normalize_epoch_ms(group.updated_at);
+        if ts == 0 {
+            continue;
+        }
+        let age_ms = now_ms.saturating_sub(ts);
+        let days_ago = age_ms / DAY_MS;
+        if days_ago >= 7 {
+            continue;
+        }
+        let idx = (6 - days_ago) as usize;
+        if let Some(bucket) = buckets.get_mut(idx) {
+            if group.is_active {
+                bucket.active_or_blocked += 1;
+            } else {
+                bucket.completed_or_delivered += 1;
+            }
+        }
+    }
+    buckets
+}
+
 /// Pre-aggregated KPI metrics painted by `flowy-ui::charts::donut_chart` and bars.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BoardKpiSummary {
@@ -238,21 +370,26 @@ pub struct BoardKpiSummary {
     pub sheet_count: usize,
     pub slides_count: usize,
     pub doc_count: usize,
+    pub code_count: usize,
     pub other_count: usize,
     pub active_sessions: usize,
     pub total_sessions: usize,
+    pub archived_sessions: usize,
 }
 
 impl BoardKpiSummary {
     /// Aggregates KPI totals across a filtered slice of session groups using
-    /// each group's pre-truncation counts.
+    /// each group's pre-truncation counts. Archived sessions are excluded from
+    /// active/delivered KPI totals and tallied separately in `archived_sessions`.
     #[must_use]
     pub fn from_groups(groups: &[&SessionBoardGroup]) -> Self {
-        let mut out = Self {
-            total_sessions: groups.len(),
-            ..Self::default()
-        };
+        let mut out = Self::default();
         for group in groups {
+            if group.archived {
+                out.archived_sessions += 1;
+                continue;
+            }
+            out.total_sessions += 1;
             if group.is_active {
                 out.active_sessions += 1;
             }
@@ -263,6 +400,7 @@ impl BoardKpiSummary {
             out.sheet_count += group.group_kpi.sheet_count;
             out.slides_count += group.group_kpi.slides_count;
             out.doc_count += group.group_kpi.doc_count;
+            out.code_count += group.group_kpi.code_count;
             out.other_count += group.group_kpi.other_count;
         }
         out
@@ -277,6 +415,8 @@ impl BoardKpiSummary {
 pub struct WorkBoardSnapshot {
     pub kpi: BoardKpiSummary,
     pub sessions: Vec<SessionBoardGroup>,
+    pub daily_7d: Vec<DailyActivityBucket>,
+    pub generated_at_ms: u64,
     pub generation: u64,
 }
 
@@ -351,10 +491,7 @@ impl BoardDataSource for AgentHandle {
         }
 
         let mut groups = Vec::with_capacity(sessions.len());
-        let mut kpi = BoardKpiSummary {
-            total_sessions: sessions.len(),
-            ..BoardKpiSummary::default()
-        };
+        let mut kpi = BoardKpiSummary::default();
 
         for summary in &sessions {
             let lines = self.session_lines(&summary.id);
@@ -400,18 +537,33 @@ impl BoardDataSource for AgentHandle {
             let is_running = is_busy
                 || branches.iter().any(|branch| branch.phase.is_running());
             let is_active = has_blocker || is_running;
-            if is_active {
-                kpi.active_sessions += 1;
-            }
 
             // Accumulate KPIs across every branch BEFORE visual truncation so
-            // sessions with >6 branches never under-report counts.
+            // sessions with >6 branches never under-report counts. Archived
+            // sessions stay out of active KPIs and tally into `archived_sessions`.
             let mut group_kpi = BoardKpiSummary::default();
             for branch in &branches {
-                accumulate_kpi(&mut kpi, branch);
                 accumulate_kpi(&mut group_kpi, branch);
+                if !summary.archived {
+                    accumulate_kpi(&mut kpi, branch);
+                }
+            }
+            if summary.archived {
+                kpi.archived_sessions += 1;
+            } else {
+                kpi.total_sessions += 1;
+                if is_active {
+                    kpi.active_sessions += 1;
+                }
             }
             let total_branch_count = branches.len();
+            let total_file_count = branches
+                .iter()
+                .filter(|b| {
+                    b.deliverable_path.is_some()
+                        || !matches!(b.phase, BranchPhase::Idle)
+                })
+                .count();
             branches.sort_by_key(|branch| {
                 if branch.phase.is_blocker() {
                     0_u8
@@ -423,13 +575,18 @@ impl BoardDataSource for AgentHandle {
             });
             branches.truncate(MAX_DISPLAY_BRANCHES);
 
+            let raw_preview = self.session_preview(&summary.id);
             let raw_title = if summary.title.trim().is_empty() {
-                self.session_preview(&summary.id)
-                    .unwrap_or_else(|| short_id(&summary.id))
+                raw_preview.clone().unwrap_or_else(|| short_id(&summary.id))
             } else {
                 summary.title.clone()
             };
             let title = redact_trace_text(&raw_title);
+            let preview = raw_preview
+                .map(|text| clip_label(&redact_trace_text(&text), 72))
+                .filter(|text| {
+                    !text.is_empty() && !is_redundant_preview(&title, text)
+                });
 
             groups.push(SessionBoardGroup {
                 session_id: summary.id.clone(),
@@ -437,9 +594,13 @@ impl BoardDataSource for AgentHandle {
                 project_id: summary.project_id.clone(),
                 project_name: project.map(|proj| proj.name.clone()),
                 workspace_display,
-                updated_at: summary.updated_at,
+                updated_at: normalize_epoch_ms(summary.updated_at),
+                pinned: summary.pinned,
+                archived: summary.archived,
+                preview,
                 branches,
                 total_branch_count,
+                total_file_count,
                 session_contract,
                 has_blocker,
                 has_delivered,
@@ -514,11 +675,15 @@ impl BoardDataSource for AgentHandle {
                     workspace_display: default_space_label.to_owned(),
                     updated_at: unassigned
                         .iter()
-                        .map(|(r, _)| r.created_at_ms / 1000)
+                        .map(|(r, _)| normalize_epoch_ms(r.created_at_ms))
                         .max()
                         .unwrap_or(0),
+                    pinned: false,
+                    archived: false,
+                    preview: None,
                     branches,
                     total_branch_count,
+                    total_file_count: total_branch_count,
                     session_contract: None,
                     has_blocker,
                     has_delivered: false,
@@ -529,17 +694,24 @@ impl BoardDataSource for AgentHandle {
             );
         }
 
-        // Priority sort: blockers first, then running, then newest updated_at.
+        // Priority sort: pinned first, then blockers, then running, then newest updated_at.
         groups.sort_by(|a, b| {
-            b.has_blocker
-                .cmp(&a.has_blocker)
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.has_blocker.cmp(&a.has_blocker))
                 .then_with(|| b.is_running.cmp(&a.is_running))
                 .then_with(|| b.updated_at.cmp(&a.updated_at))
         });
 
+        let generated_at_ms = now_epoch_ms();
+        let group_refs: Vec<&SessionBoardGroup> = groups.iter().collect();
+        let daily_7d = compute_daily_7d(&group_refs, generated_at_ms);
+
         WorkBoardSnapshot {
             kpi,
             sessions: groups,
+            daily_7d,
+            generated_at_ms,
             generation,
         }
     }
@@ -574,6 +746,7 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
                 DeliverableFormat::Sheet => kpi.sheet_count += 1,
                 DeliverableFormat::Slides => kpi.slides_count += 1,
                 DeliverableFormat::Doc => kpi.doc_count += 1,
+                DeliverableFormat::CodeWeb => kpi.code_count += 1,
                 DeliverableFormat::Other => kpi.other_count += 1,
             }
         }
@@ -726,6 +899,8 @@ where
         }
     }
 
+    disambiguate_deliverable_names(&mut branches);
+
     // 2.5 Durable delivery commit failed after turn completion.
     if delivery_failed {
         let safe_title = redact_trace_text(&summary.title);
@@ -849,7 +1024,8 @@ where
             .rev()
             .find_map(|line| match line {
                 ChatLine::Assistant { text } | ChatLine::User { text } => {
-                    let trimmed = text.trim();
+                    let stripped = flowy_agent::strip_markdown_inline(text);
+                    let trimmed = stripped.trim();
                     (!trimmed.is_empty()).then(|| {
                         let safe = super::redact_trace_text(trimmed);
                         clip_label(&safe, 48)
@@ -898,6 +1074,85 @@ where
     branches
 }
 
+/// Progressively disambiguates colliding deliverable basenames across all file
+/// branches (including monorepo `crates/a/src/lib.rs` vs `crates/b/src/lib.rs`,
+/// cross-drive `C:\report.xlsx` vs `D:\report.xlsx`, and blocker+delivered
+/// pairs) without ever dropping distinct real deliverables before KPI totals.
+fn disambiguate_deliverable_names(branches: &mut [WorkBranchSummary]) {
+    let mut depth: usize = 1;
+    loop {
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, branch) in branches.iter().enumerate() {
+            if branch.deliverable_path.is_some() {
+                groups
+                    .entry(branch.deliverable_name.to_ascii_lowercase())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+        let mut widened_any = false;
+        for indices in groups.into_values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+            for idx in indices {
+                if let Some(path) = branches[idx].deliverable_path.as_deref()
+                    && let Some(wider) = path_suffix_label(path, depth + 1)
+                    && wider != branches[idx].deliverable_name
+                {
+                    branches[idx].deliverable_name = wider;
+                    widened_any = true;
+                }
+            }
+        }
+        depth += 1;
+        if !widened_any || depth >= 6 {
+            break;
+        }
+    }
+}
+
+fn is_redundant_preview(title: &str, preview: &str) -> bool {
+    let t = title.trim_end_matches(['…', '.', ' ']);
+    let p = preview.trim_end_matches(['…', '.', ' ']);
+    if t.is_empty() || p.is_empty() || t == p {
+        return true;
+    }
+    if p.starts_with(t) || t.starts_with(p) {
+        return true;
+    }
+    let prefix_len = t.chars().count().min(p.chars().count()).min(12);
+    prefix_len >= 8 && t.chars().take(prefix_len).eq(p.chars().take(prefix_len))
+}
+
+fn path_suffix_label(path: &str, segments: usize) -> Option<String> {
+    let clean = display_path_str(path);
+    let trimmed = clean.trim_end_matches(['/', '\\']);
+    let parts: Vec<&str> = trimmed
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() <= 1 {
+        return None;
+    }
+    let take = segments.min(parts.len());
+    let formatted: Vec<String> = parts[parts.len() - take..]
+        .iter()
+        .map(|part| shorten_internal_segment(part))
+        .collect();
+    Some(formatted.join("/"))
+}
+
+fn shorten_internal_segment(part: &str) -> String {
+    if let Some(rest) = part.strip_prefix("submission-")
+        && rest.len() > 8
+    {
+        let short: String = rest.chars().take(6).collect();
+        return format!("sub-{short}");
+    }
+    part.to_owned()
+}
+
 fn infer_skill_label(
     format: DeliverableFormat,
     tool: Option<&str>,
@@ -919,6 +1174,7 @@ fn infer_skill_label(
         DeliverableFormat::Sheet => SkillLabel::Key("deliverables.kind_data"),
         DeliverableFormat::Slides => SkillLabel::Key("library.category.slides"),
         DeliverableFormat::Doc => SkillLabel::Key("deliverables.kind_document"),
+        DeliverableFormat::CodeWeb => SkillLabel::Key("deliverables.kind_code"),
         DeliverableFormat::Other => SkillLabel::Key("board.skill_work"),
     }
 }
@@ -935,6 +1191,8 @@ mod tests {
             title: "Q3 Report".into(),
             updated_at: 42,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![
             ChatLine::Verification {
@@ -1068,6 +1326,8 @@ mod tests {
             title: "Pure Q&A".into(),
             updated_at: 100,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![
             ChatLine::User {
@@ -1155,6 +1415,8 @@ mod tests {
             title: "Bulk Deliverables".into(),
             updated_at: 200,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let mut lines = Vec::new();
         for i in 0..8 {
@@ -1242,6 +1504,8 @@ mod tests {
             title: "check api_key=sk-secret-do-not-leak".into(),
             updated_at: 42,
             project_id: None,
+            pinned: false,
+            archived: false,
         };
         let lines = vec![ChatLine::User {
             text: "Bearer tok_1234567890abcdef".into(),
@@ -1297,5 +1561,155 @@ mod tests {
         assert!(live.detail.contains("read config · running shell"));
         assert!(!live.detail.contains("sk-live-secret-999999"));
         assert!(!live.detail.contains("user:pass"));
+    }
+
+    #[test]
+    fn normalize_epoch_ms_and_daily_7d_handle_ms_seconds_and_archived_exclusion()
+     {
+        let now_ms = 1_760_000_000_000_u64;
+        // Legacy Unix seconds are upgraded to ms; ms timestamps stay unchanged.
+        assert_eq!(normalize_epoch_ms(1_760_000_000), 1_760_000_000_000);
+        assert_eq!(normalize_epoch_ms(now_ms), now_ms);
+        assert_eq!(normalize_epoch_ms(0), 0);
+
+        assert!(!is_older_than_7d(now_ms - DAY_MS, now_ms));
+        assert!(is_older_than_7d(now_ms - 8 * DAY_MS, now_ms));
+        assert!(!is_older_than_7d(0, now_ms));
+
+        let make_group =
+            |id: &str, updated_at: u64, active: bool, archived: bool| {
+                SessionBoardGroup {
+                    session_id: id.into(),
+                    title: id.into(),
+                    project_id: None,
+                    project_name: None,
+                    workspace_display: String::new(),
+                    updated_at,
+                    pinned: false,
+                    archived,
+                    preview: None,
+                    branches: Vec::new(),
+                    total_branch_count: 0,
+                    total_file_count: 0,
+                    session_contract: None,
+                    has_blocker: false,
+                    has_delivered: false,
+                    is_running: active,
+                    is_active: active,
+                    group_kpi: BoardKpiSummary::default(),
+                }
+            };
+        let g_today = make_group("today", now_ms - 60_000, true, false);
+        let g_legacy_2d =
+            make_group("two-days", (now_ms - 2 * DAY_MS) / 1_000, false, false);
+        let g_old = make_group("old", now_ms - 9 * DAY_MS, false, false);
+        let g_archived = make_group("arch", now_ms - 10_000, false, true);
+        let refs = vec![&g_today, &g_legacy_2d, &g_old, &g_archived];
+
+        let kpi = BoardKpiSummary::from_groups(&refs);
+        assert_eq!(kpi.total_sessions, 3);
+        assert_eq!(kpi.active_sessions, 1);
+        assert_eq!(kpi.archived_sessions, 1);
+
+        let buckets = compute_daily_7d(&refs, now_ms);
+        assert_eq!(buckets.len(), 7);
+        assert_eq!(buckets[6].day_offset, 0);
+        assert_eq!(buckets[6].active_or_blocked, 1);
+        assert_eq!(buckets[6].completed_or_delivered, 0);
+        assert_eq!(buckets[4].day_offset, 2);
+        assert_eq!(buckets[4].completed_or_delivered, 1);
+        let total: usize = buckets.iter().map(DailyActivityBucket::total).sum();
+        assert_eq!(
+            total, 2,
+            "older-than-7d and archived sessions stay out of 7d chart"
+        );
+    }
+
+    #[test]
+    fn duplicate_basenames_disambiguate_and_classify_code_web_deliverables() {
+        let summary = SessionSummary {
+            id: "web-1".into(),
+            title: "Portfolio Site".into(),
+            updated_at: 1_760_000_000_000,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let lines = vec![
+            ChatLine::FileChange {
+                path: r"D:\Site\src\styles\tokens.css".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 40,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::FileChange {
+                path: r"D:\Site\dist\tokens.css".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 40,
+                removed: 0,
+                binary: false,
+            },
+            // Monorepo same-parent paths & cross-drive files must both be
+            // preserved and disambiguated without dropping real deliverables.
+            ChatLine::FileChange {
+                path: r"D:\Backup\dist\tokens.css".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 40,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::FileChange {
+                path: r"C:\index.html".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 20,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::FileChange {
+                path: r"D:\index.html".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 20,
+                removed: 0,
+                binary: false,
+            },
+        ];
+        let branches = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            false,
+            None,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            |_| None,
+        );
+        let names: Vec<&str> = branches
+            .iter()
+            .map(|b| b.deliverable_name.as_str())
+            .collect();
+        assert_eq!(
+            branches.len(),
+            5,
+            "no distinct deliverable may be dropped: {names:?}"
+        );
+        assert!(names.contains(&"styles/tokens.css"), "{names:?}");
+        assert!(names.contains(&"Site/dist/tokens.css"), "{names:?}");
+        assert!(names.contains(&"Backup/dist/tokens.css"), "{names:?}");
+        assert!(names.contains(&"C:/index.html"), "{names:?}");
+        assert!(names.contains(&"D:/index.html"), "{names:?}");
+        assert!(
+            branches
+                .iter()
+                .all(|b| b.format == DeliverableFormat::CodeWeb)
+        );
+
+        let mut kpi = BoardKpiSummary::default();
+        for b in &branches {
+            accumulate_kpi(&mut kpi, b);
+        }
+        assert_eq!(kpi.code_count, 5);
+        assert_eq!(kpi.other_count, 0);
     }
 }

@@ -12,9 +12,11 @@ mod local_path;
 mod trace;
 
 pub use board::{
-    BoardDataSource, BoardKpiSummary, BranchPhase, DeliverableFormat,
-    SessionBoardGroup, SkillChip, SkillLabel, UNASSIGNED_QUEUE_SESSION_ID,
-    WorkBoardSnapshot, WorkBranchSummary, WorkContractProgress,
+    BoardDataSource, BoardKpiSummary, BranchPhase, DailyActivityBucket,
+    DeliverableFormat, SEVEN_DAYS_MS, SessionBoardGroup, SkillChip, SkillLabel,
+    UNASSIGNED_QUEUE_SESSION_ID, WorkBoardSnapshot, WorkBranchSummary,
+    WorkContractProgress, civil_month_day_from_epoch_ms, compute_daily_7d,
+    is_older_than_7d, normalize_epoch_ms, now_epoch_ms,
 };
 pub use local_env::{
     EnvSeverity, LocalEnvCheck, LocalEnvDetail, LocalEnvSnapshot,

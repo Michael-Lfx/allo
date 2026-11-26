@@ -360,6 +360,12 @@ impl StudioPanel {
         .detach();
     }
 
+    /// Forces an immediate board snapshot rebuild and notifies observers.
+    pub fn refresh_board_now(&mut self, cx: &mut Context<'_, Self>) {
+        self.refresh_board_snapshot();
+        cx.notify();
+    }
+
     /// Rebuilds the cached Visual Board snapshot from `AgentHandle`.
     /// Called strictly on structural `AgentUpdate`, project changes, or opening
     /// the Board — never per-token or inside `Render::render`.
@@ -514,8 +520,10 @@ impl StudioPanel {
             .sessions
             .iter()
             .filter(|group| {
-                proj_filter
-                    .is_none_or(|pid| group.project_id.as_deref() == Some(pid))
+                !group.archived
+                    && proj_filter.is_none_or(|pid| {
+                        group.project_id.as_deref() == Some(pid)
+                    })
             })
             .find_map(|group| {
                 group

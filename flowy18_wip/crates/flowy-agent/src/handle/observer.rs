@@ -22,8 +22,7 @@ pub(super) fn extract_session_preview(lines: &[ChatLine]) -> Option<String> {
         }
         _ => None,
     })?;
-    let collapsed: String =
-        raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = title::strip_markdown_inline(raw);
     if collapsed.is_empty() {
         return None;
     }
@@ -299,7 +298,6 @@ impl TurnObserver for UiObserver {
                     },
                 };
                 if outcome != LoopOutcome::Completed {
-                    live.auto_title_pending = false;
                     live.projection.lines.push(ChatLine::Status {
                         text: next_status.key().into(),
                     });
@@ -326,7 +324,6 @@ impl TurnObserver for UiObserver {
             let mut live = lock(&self.state.live);
             if let Some(live) = live.get_mut(session) {
                 live.projection.flush();
-                live.auto_title_pending = false;
                 let already_waiting_line = matches!(
                     live.projection.lines.last(),
                     Some(ChatLine::Status { text })
@@ -372,7 +369,6 @@ impl TurnObserver for UiObserver {
             let mut live = lock(&self.state.live);
             live.get_mut(session).is_some_and(|live| {
                 live.projection.flush();
-                live.auto_title_pending = false;
                 let transition = matches!(
                     live.status,
                     TurnStatus::Running
@@ -457,11 +453,23 @@ pub(super) async fn generate_title(
     id: String,
     prompt: String,
 ) {
-    let pending = lock(&state.live)
-        .get(&id)
-        .is_some_and(|session| session.auto_title_pending);
-    clear_auto_title(&state, &id);
-    if !pending || signal.is_cancelled() {
+    let acquired = {
+        let mut live = lock(&state.live);
+        live.get_mut(&id).is_some_and(|session| {
+            if !session.auto_title_pending
+                || session.auto_title_in_flight
+                || session.auto_title_attempts >= super::MAX_AUTO_TITLE_ATTEMPTS
+                || signal.is_cancelled()
+            {
+                return false;
+            }
+            session.auto_title_in_flight = true;
+            session.auto_title_attempts =
+                session.auto_title_attempts.saturating_add(1);
+            true
+        })
+    };
+    if !acquired {
         return;
     }
     let prompt: String = prompt.chars().take(2000).collect();
@@ -474,29 +482,48 @@ pub(super) async fn generate_title(
         signal.clone(),
     )
     .await;
-    if signal.is_cancelled() {
-        return;
-    }
-    let title = generated
-        .ok()
-        .map(|text| title::clamp_title(&text, TITLE_MAX_CHARS))
-        .filter(|text| !text.is_empty());
+    let title = if signal.is_cancelled() {
+        None
+    } else {
+        generated
+            .ok()
+            .map(|text| title::clamp_title(&text, TITLE_MAX_CHARS))
+            .filter(|text| !text.is_empty())
+    };
     let Some(title) = title else {
+        if let Some(session) = lock(&state.live).get_mut(&id) {
+            session.auto_title_in_flight = false;
+            if session.auto_title_attempts >= super::MAX_AUTO_TITLE_ATTEMPTS {
+                session.auto_title_pending = false;
+            }
+        }
         return;
     };
-    // Serialize the title commit with session deletion. Once the dispatcher
-    // has removed the source, this task must not write the title back.
+    // Serialize the title commit with session deletion and manual rename.
+    // Once the user renames or deletes the session, this task must not overwrite it.
     let _dispatch = lock(&state.dispatch);
-    if signal.is_cancelled() {
+    let still_pending = lock(&state.live)
+        .get(&id)
+        .is_some_and(|session| session.auto_title_pending);
+    if signal.is_cancelled() || !still_pending {
+        if let Some(session) = lock(&state.live).get_mut(&id) {
+            session.auto_title_in_flight = false;
+        }
         return;
     }
-    if engine.set_session_title(&id, title.clone(), true).is_ok() {
-        sync_artifact_title(&state, &engine, &id);
-    } else {
+    if engine.set_session_title(&id, title.clone(), true).is_err() {
+        if let Some(session) = lock(&state.live).get_mut(&id) {
+            session.auto_title_in_flight = false;
+        }
         state.report_storage_error();
+        return;
     }
+    sync_artifact_title(&state, &engine, &id);
     if let Some(session) = lock(&state.live).get_mut(&id) {
         session.title = title;
+        session.titled = true;
+        session.auto_title_pending = false;
+        session.auto_title_in_flight = false;
         session.updated_at = now_ms();
     }
     if persist_index(&state).is_err() {
@@ -824,12 +851,6 @@ pub(super) fn sync_artifact_title(state: &UiState, engine: &Engine, id: &str) {
     }
 }
 
-pub(super) fn clear_auto_title(state: &UiState, id: &str) {
-    if let Some(session) = lock(&state.live).get_mut(id) {
-        session.auto_title_pending = false;
-    }
-}
-
 pub(super) fn persist_index(state: &UiState) -> Result<(), &'static str> {
     persist_index_with_status(state, None)
 }
@@ -857,6 +878,8 @@ fn persist_index_with_status(
             workspace: session.workspace.clone(),
             origin: session.origin.clone(),
             session_workspace: session.session_workspace.clone(),
+            pinned: session.pinned,
+            archived: session.archived,
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -937,6 +960,8 @@ pub(super) fn import_engine_sessions(
         if let Some(existing) = live.get_mut(&record.id) {
             existing.origin = record.origin.clone();
             existing.session_workspace.clone_from(&record.workspace);
+            existing.pinned = record.pinned;
+            existing.archived = record.archived;
             let existing_ids = existing
                 .projection
                 .lines
@@ -1026,7 +1051,11 @@ pub(super) fn import_engine_sessions(
                 projection: ChatProjection::from_lines(lines),
                 title,
                 titled,
+                pinned: record.pinned,
+                archived: record.archived,
                 auto_title_pending: false,
+                auto_title_in_flight: false,
+                auto_title_attempts: 0,
                 title_signal: CancelToken::new(),
                 status,
                 updated_at: record.updated_at,
@@ -1567,6 +1596,8 @@ pub(super) fn hydrate_engine(
                 origin: SessionOrigin::Unknown,
                 workspace: None,
                 delivery_commits: Vec::new(),
+                pinned: session.pinned,
+                archived: session.archived,
                 ..SessionRecord::default()
             })
             .is_err()
