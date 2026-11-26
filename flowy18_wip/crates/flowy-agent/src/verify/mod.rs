@@ -116,6 +116,48 @@ pub use self::resolver::{
     ResolveOutcome, apply_disambiguation_selection, resolve_contract_sync,
 };
 
+fn format_verification_summary(report: &VerifyReport) -> String {
+    if report.ok {
+        return "verification passed".to_owned();
+    }
+    if report.issues.is_empty() {
+        return "verification failed".to_owned();
+    }
+    let mut grouped: Vec<(&'static str, Vec<&str>)> = Vec::new();
+    for issue in &report.issues {
+        if let Some((_, fields)) =
+            grouped.iter_mut().find(|(code, _)| *code == issue.code)
+        {
+            fields.push(issue.field.as_str());
+        } else {
+            grouped.push((issue.code, vec![issue.field.as_str()]));
+        }
+    }
+    let parts: Vec<String> = grouped
+        .into_iter()
+        .map(|(code, fields)| {
+            let total = fields.len();
+            let non_empty: Vec<&str> = fields
+                .into_iter()
+                .map(str::trim)
+                .filter(|field| !field.is_empty())
+                .collect();
+            if non_empty.is_empty() {
+                format!("{total}x {code}")
+            } else if non_empty.len() > 3 {
+                let extra = non_empty.len() - 3;
+                format!(
+                    "{total}x {code} ({}, +{extra} more)",
+                    non_empty[..3].join(", ")
+                )
+            } else {
+                format!("{total}x {code} ({})", non_empty.join(", "))
+            }
+        })
+        .collect();
+    format!("verification failed: {}", parts.join(", "))
+}
+
 fn next_action_for(report: &VerifyReport) -> &'static str {
     if report.ok {
         "publish"
@@ -286,19 +328,7 @@ async fn finalize_report(
         l3_duration_ms,
         "artifact verification completed"
     );
-    let summary = if report.ok {
-        "verification passed".to_owned()
-    } else {
-        format!(
-            "verification failed: {}",
-            report
-                .issues
-                .iter()
-                .map(|issue| issue.code)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
+    let summary = format_verification_summary(&report);
     let mut value = report.to_value_with_meta(
         &summary,
         &report_id,

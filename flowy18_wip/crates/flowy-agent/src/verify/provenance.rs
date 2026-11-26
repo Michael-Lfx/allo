@@ -58,6 +58,23 @@ pub struct ProvenanceEvaluation {
 /// Maximum provenance claims evaluated per verification call.
 const MAX_PROVENANCE_CLAIMS: usize = 64;
 
+/// Normalize an optional case-insensitive `"sha256:"` prefix and validate that
+/// the remaining digest consists of exactly 64 ASCII hex digits.
+fn normalize_sha256_digest(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    let digest = if trimmed
+        .as_bytes()
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"sha256:"))
+    {
+        &trimmed[7..]
+    } else {
+        trimmed
+    };
+    (digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(digest)
+}
+
 /// Evaluate provenance claims against the workspace filesystem.
 #[cfg(test)]
 #[must_use]
@@ -160,12 +177,21 @@ pub(super) fn evaluate_provenance_with_signal(
                         root.join(path)
                     }
                 };
-                if let Some(expected_hash) = claim
+                if let Some(raw_hash) = claim
                     .sha256
                     .as_deref()
                     .map(str::trim)
                     .filter(|hash| !hash.is_empty())
                 {
+                    let Some(expected_hash) = normalize_sha256_digest(raw_hash)
+                    else {
+                        push_unique(
+                            &mut eval.issues,
+                            PROVENANCE_INVALID,
+                            field_label,
+                        );
+                        continue;
+                    };
                     let cache_key = std::fs::canonicalize(&candidate)
                         .unwrap_or_else(|_| candidate.clone());
                     let actual = hash_cache

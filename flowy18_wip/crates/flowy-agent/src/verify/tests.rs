@@ -1387,3 +1387,510 @@ fn contract_and_resolver_handle_utf8_dots_stale_overrides_all_scope_mixed_clause
         "targeting a Record via reply_to_object_id must fail closed to Ambiguous"
     );
 }
+
+fn build_zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        for (name, body) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+fn append_zip_entries(path: &Path, extra: &[(&str, &[u8])]) {
+    use std::io::Read;
+    let orig = std::fs::read(path).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(orig)).unwrap();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        for idx in 0..archive.len() {
+            let mut entry = archive.by_index(idx).unwrap();
+            let name = entry.name().to_owned();
+            if entry.is_dir() {
+                writer
+                    .add_directory(name, SimpleFileOptions::default())
+                    .unwrap();
+            } else {
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                writer
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(&data).unwrap();
+            }
+        }
+        for (name, body) in extra {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    std::fs::write(path, buf.into_inner()).unwrap();
+}
+
+#[test]
+fn pptx_embedded_chart_validates_pinned_facts_errors_corrupt_empty_and_limits()
+{
+    let root = std::env::temp_dir()
+        .join(format!("flowy-verify-pptx-chart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let base_anchors = [
+        anchor("S0-title", "Q3 销售汇报"),
+        anchor("S0-body", "核心区域走势见附图"),
+    ];
+    let contract =
+        BriefContract::from_brief("请制作1页 Q3 销售汇报，报价 35 万");
+
+    // 0) Benign PPTX without embeddings stays identical (no extra chart snippets).
+    let plain_deck = root.join("plain.pptx");
+    crate::pptx::write_deck(
+        &plain_deck,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    let plain_verified =
+        verify_deck_file_with_shapes(&plain_deck, 1, &base_anchors, None)
+            .unwrap();
+    assert!(plain_verified.report.ok);
+    assert_eq!(plain_verified.shapes.len(), 2);
+
+    // 1) Valid embedded chart xlsx passes and exposes chart data for pinned-fact checks & L3 snippets.
+    let chart_ok_xlsx = build_zip_bytes(&[
+        ("xl/workbook.xml", b"<workbook><sheets><sheet name=\"Sales\" sheetId=\"1\"/></sheets></workbook>"),
+        (
+            "xl/sharedStrings.xml",
+            b"<sst><si><t>Region</t></si><si><t>Quote</t></si><si><t>East</t></si></sst>",
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            br#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>350000</v></c></row></sheetData></worksheet>"#,
+        ),
+    ]);
+    let deck_chart_ok = root.join("chart-ok.pptx");
+    crate::pptx::write_deck(
+        &deck_chart_ok,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    append_zip_entries(
+        &deck_chart_ok,
+        &[(
+            "ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+            &chart_ok_xlsx,
+        )],
+    );
+    let ok_verified = verify_deck_file_with_shapes(
+        &deck_chart_ok,
+        1,
+        &base_anchors,
+        Some(&contract),
+    )
+    .unwrap();
+    assert!(
+        ok_verified.report.ok,
+        "pinned quote 350000 inside embedded chart must satisfy 35万 contract: {:?}",
+        ok_verified.report.issues
+    );
+    assert!(
+        ok_verified
+            .shapes
+            .iter()
+            .any(|(name, val)| name.starts_with("chart:")
+                && val.contains("350000")),
+        "chart summary snippet must be appended to VerifiedDeck.shapes for L3 probe"
+    );
+
+    // Contract with missing pinned fact (neither slide nor embedded chart contains 48万) fails.
+    let missing_fact_contract =
+        BriefContract::from_brief("请制作1页 Q3 销售汇报，报价 48 万");
+    let missing_fact_verified = verify_deck_file_with_shapes(
+        &deck_chart_ok,
+        1,
+        &base_anchors,
+        Some(&missing_fact_contract),
+    )
+    .unwrap();
+    assert!(!missing_fact_verified.report.ok);
+    assert!(
+        missing_fact_verified
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == VALUE_MISMATCH && i.field == "brief_quote")
+    );
+
+    // 2) Embedded chart with Excel error cells (`t="e"` and cached error literals) hard fails with STRUCTURE.
+    let chart_err_xlsx = build_zip_bytes(&[
+        ("xl/workbook.xml", b"<workbook><sheets><sheet name=\"Data\" sheetId=\"1\"/></sheets></workbook>"),
+        (
+            "xl/worksheets/sheet1.xml",
+            br#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>East</t></is></c><c r="B1" t="e"><f>1/0</f><v>#DIV/0!</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>West</t></is></c><c r="B2"><v>#REF!</v></c></row><row r="3"><c r="A3" t="e"/></row></sheetData></worksheet>"#,
+        ),
+    ]);
+    let deck_chart_err = root.join("chart-err.pptx");
+    crate::pptx::write_deck(
+        &deck_chart_err,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    append_zip_entries(
+        &deck_chart_err,
+        &[(
+            "ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+            &chart_err_xlsx,
+        )],
+    );
+    let err_verified =
+        verify_deck_file_with_shapes(&deck_chart_err, 1, &base_anchors, None)
+            .unwrap();
+    assert!(!err_verified.report.ok);
+    assert!(
+        err_verified.report.issues.iter().any(|i| {
+            i.code == STRUCTURE
+                && i.field == "chart:Microsoft_Excel_Worksheet1.xlsx!Data!B1"
+                && ui_key(i.code) == "verify.structure"
+        }),
+        "t=\"e\" #DIV/0! error cell must emit STRUCTURE: {:?}",
+        err_verified.report.issues
+    );
+    assert!(
+        err_verified.report.issues.iter().any(|i| {
+            i.code == STRUCTURE
+                && i.field == "chart:Microsoft_Excel_Worksheet1.xlsx!Data!B2"
+        }),
+        "cached #REF! literal must emit STRUCTURE: {:?}",
+        err_verified.report.issues
+    );
+    assert!(
+        err_verified.report.issues.iter().any(|i| {
+            i.code == STRUCTURE
+                && i.field == "chart:Microsoft_Excel_Worksheet1.xlsx!Data!A3"
+        }),
+        "bare t=\"e\" cell without <v> must emit STRUCTURE: {:?}",
+        err_verified.report.issues
+    );
+
+    // 3) Corrupted embedded .xlsx bytes fail closed cleanly with STRUCTURE.
+    let deck_chart_corrupt = root.join("chart-corrupt.pptx");
+    crate::pptx::write_deck(
+        &deck_chart_corrupt,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    append_zip_entries(
+        &deck_chart_corrupt,
+        &[(
+            "ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+            b"not-a-valid-xlsx-zip",
+        )],
+    );
+    let corrupt_verified = verify_deck_file_with_shapes(
+        &deck_chart_corrupt,
+        1,
+        &base_anchors,
+        None,
+    )
+    .unwrap();
+    assert!(!corrupt_verified.report.ok);
+    assert!(
+        corrupt_verified.report.issues.iter().any(|i| {
+            i.code == STRUCTURE
+                && i.field == "chart:Microsoft_Excel_Worksheet1.xlsx"
+        }),
+        "corrupted embedded xlsx must fail with STRUCTURE: {:?}",
+        corrupt_verified.report.issues
+    );
+
+    // 4) Empty embedded .xlsx fails closed with chart:<entry>:empty.
+    let chart_empty_xlsx = build_zip_bytes(&[
+        ("xl/workbook.xml", b"<workbook><sheets><sheet name=\"Sheet1\" sheetId=\"1\"/></sheets></workbook>"),
+        ("xl/worksheets/sheet1.xml", b"<worksheet><sheetData/></worksheet>"),
+    ]);
+    let deck_chart_empty = root.join("chart-empty.pptx");
+    crate::pptx::write_deck(
+        &deck_chart_empty,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    append_zip_entries(
+        &deck_chart_empty,
+        &[(
+            "ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+            &chart_empty_xlsx,
+        )],
+    );
+    let empty_verified =
+        verify_deck_file_with_shapes(&deck_chart_empty, 1, &base_anchors, None)
+            .unwrap();
+    assert!(!empty_verified.report.ok);
+    assert!(
+        empty_verified.report.issues.iter().any(|i| {
+            i.code == STRUCTURE
+                && i.field == "chart:Microsoft_Excel_Worksheet1.xlsx:empty"
+        }),
+        "empty embedded xlsx must fail with STRUCTURE: {:?}",
+        empty_verified.report.issues
+    );
+
+    // 5) More than MAX_EMBEDDED_XLSX_FILES (32) embedded workbooks fails closed with chart_archive_limit.
+    let deck_too_many = root.join("chart-too-many.pptx");
+    crate::pptx::write_deck(
+        &deck_too_many,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    let names: Vec<String> = (1..=33)
+        .map(|i| format!("ppt/embeddings/chart_{i:02}.xlsx"))
+        .collect();
+    let extras: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(|n| (n.as_str(), chart_ok_xlsx.as_slice()))
+        .collect();
+    append_zip_entries(&deck_too_many, &extras);
+    let limit_verified =
+        verify_deck_file_with_shapes(&deck_too_many, 1, &base_anchors, None)
+            .unwrap();
+    assert!(!limit_verified.report.ok);
+    assert!(
+        limit_verified
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == STRUCTURE && i.field == "chart_archive_limit"),
+        "exceeding MAX_EMBEDDED_XLSX_FILES must emit chart_archive_limit: {:?}",
+        limit_verified.report.issues
+    );
+
+    // 6) Cumulative uncompressed byte limit across embedded `.xlsx` entries (> 16 MiB)
+    //    triggers `chart_archive_limit` without OOM.
+    let deck_too_big = root.join("chart-too-big.pptx");
+    crate::pptx::write_deck(
+        &deck_too_big,
+        "Q3 销售汇报",
+        &["核心区域走势见附图".to_owned()],
+    )
+    .unwrap();
+    let nine_mib = vec![b'x'; 9 * 1024 * 1024];
+    append_zip_entries(
+        &deck_too_big,
+        &[
+            ("ppt/embeddings/b_chart.xlsx", &nine_mib),
+            ("ppt/embeddings/a_chart.xlsx", &nine_mib),
+        ],
+    );
+    let size_limit_verified =
+        verify_deck_file_with_shapes(&deck_too_big, 1, &base_anchors, None)
+            .unwrap();
+    assert!(!size_limit_verified.report.ok);
+    assert!(
+        size_limit_verified
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == STRUCTURE && i.field == "chart_archive_limit"),
+        "exceeding MAX_EMBEDDED_XLSX_BYTES must emit chart_archive_limit: {:?}",
+        size_limit_verified.report.issues
+    );
+    // Sorted order processes `a_chart.xlsx` first (9 MiB, corrupt zip -> chart:a_chart.xlsx)
+    // and hits the 16 MiB cumulative limit on `b_chart.xlsx`.
+    assert!(
+        size_limit_verified
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == STRUCTURE && i.field == "chart:a_chart.xlsx"),
+        "entries must be sorted deterministically: {:?}",
+        size_limit_verified.report.issues
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn finalize_report_summary_aggregates_grouped_codes_and_preserves_issues()
+{
+    let ok_report = VerifyReport {
+        artifact: "ok.pptx".to_owned(),
+        anchor: "shape_name",
+        ok: true,
+        issues: Vec::new(),
+    };
+    assert_eq!(
+        format_verification_summary(&ok_report),
+        "verification passed"
+    );
+
+    let grouped_report = VerifyReport {
+        artifact: "bad.pptx".to_owned(),
+        anchor: "shape_name",
+        ok: false,
+        issues: vec![
+            VerifyIssue {
+                code: ANCHOR_MISSING,
+                field: "S0-title".to_owned(),
+            },
+            VerifyIssue {
+                code: STRUCTURE,
+                field: "anchors".to_owned(),
+            },
+            VerifyIssue {
+                code: ANCHOR_MISSING,
+                field: "S1-title".to_owned(),
+            },
+            VerifyIssue {
+                code: ANCHOR_MISSING,
+                field: "S2-title".to_owned(),
+            },
+            VerifyIssue {
+                code: ANCHOR_MISSING,
+                field: "S3-title".to_owned(),
+            },
+            VerifyIssue {
+                code: ANCHOR_MISSING,
+                field: "S4-title".to_owned(),
+            },
+        ],
+    };
+    assert_eq!(
+        format_verification_summary(&grouped_report),
+        "verification failed: 5x ANCHOR_MISSING (S0-title, S1-title, S2-title, +2 more), 1x STRUCTURE (anchors)"
+    );
+
+    // Verify end-to-end through `verify_deck` -> `finalize_report`.
+    let root = std::env::temp_dir()
+        .join(format!("flowy-verify-summary-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let deck = root.join("deck.pptx");
+    crate::pptx::write_deck(
+        &deck,
+        "Summary",
+        &["slide 1".to_owned(), "slide 2".to_owned()],
+    )
+    .unwrap();
+    let tool = definition(None);
+    let ToolExecutionResult::Success { value, .. } = (tool.execute)(
+        ToolCallArgs {
+            call_id: "c-summary".to_owned(),
+            name: "verify_deck".to_owned(),
+            arguments: json!({
+                "path": "deck.pptx",
+                "slides": 2,
+                "anchors": [
+                    {"anchor": "S0-title", "value": "Summary"},
+                    {"anchor": "S0-body", "value": "slide 1"},
+                    {"anchor": "S1-title", "value": "Summary · 2"},
+                    {"anchor": "S1-body", "value": "slide 2"},
+                    {"anchor": "missing_a", "value": "1"},
+                    {"anchor": "missing_b", "value": "2"},
+                    {"anchor": "missing_c", "value": "3"},
+                    {"anchor": "missing_d", "value": "4"},
+                ],
+            }),
+        },
+        tool_context(&root),
+    )
+    .await
+    else {
+        panic!("expected structured report");
+    };
+    assert_eq!(value["ok"], false);
+    assert_eq!(
+        value["summary"],
+        "verification failed: 4x ANCHOR_MISSING (missing_a, missing_b, missing_c, +1 more)"
+    );
+    assert_eq!(value["issues"].as_array().unwrap().len(), 4);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn provenance_sha256_prefix_case_insensitivity_and_strict_64_hex_validation() {
+    let root = std::env::temp_dir()
+        .join(format!("flowy-prov-sha256-fmt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let data = root.join("data.csv");
+    std::fs::write(&data, b"k,v\na,1\n").unwrap();
+    let actual = delivery::hash_bytes(b"k,v\na,1\n");
+    assert_eq!(actual.len(), 64);
+
+    let claim = |sha: &str| ProvenanceClaim {
+        field: "chart_data".to_owned(),
+        kind: super::provenance::ProvenanceKind::UserFile,
+        path: Some("data.csv".to_owned()),
+        sha256: Some(sha.to_owned()),
+        note: None,
+    };
+
+    // Valid forms: bare 64-hex, `sha256:<64hex>`, and uppercase `SHA256:<64HEX>`.
+    for valid in [
+        actual.clone(),
+        format!("sha256:{actual}"),
+        format!("SHA256:{}", actual.to_ascii_uppercase()),
+        format!("  Sha256:{actual}  "),
+    ] {
+        let eval = evaluate_provenance(&[claim(&valid)], Some(&root));
+        assert!(
+            eval.issues.is_empty(),
+            "valid sha256 {valid:?} must pass: {eval:?}"
+        );
+    }
+
+    // Mismatched valid 64-hex with `sha256:` prefix fails closed.
+    let flipped = if let Some(rest) = actual.strip_prefix('0') {
+        format!("sha256:1{rest}")
+    } else {
+        format!("sha256:0{}", &actual[1..])
+    };
+    let mismatch = evaluate_provenance(&[claim(&flipped)], Some(&root));
+    assert_eq!(
+        mismatch.issues,
+        vec![VerifyIssue {
+            code: PROVENANCE_INVALID,
+            field: "chart_data".to_owned(),
+        }]
+    );
+
+    // Malformed values (empty after prefix, wrong length, double prefix, non-hex 'g', UTF-8).
+    let non_hex_64 = format!("{}g", &actual[..63]);
+    let double_prefix_64 = format!("sha256:sha256:{}", &actual[..57]);
+    for bad in [
+        "sha256:",
+        "SHA256:",
+        "sha256:abc",
+        &format!("sha256:sha256:{actual}"),
+        &double_prefix_64,
+        &non_hex_64,
+        &format!("sha256:{non_hex_64}"),
+        "中文sha256:abcd",
+    ] {
+        let eval = evaluate_provenance(&[claim(bad)], Some(&root));
+        assert_eq!(
+            eval.issues,
+            vec![VerifyIssue {
+                code: PROVENANCE_INVALID,
+                field: "chart_data".to_owned(),
+            }],
+            "malformed sha256 {bad:?} must fail closed with PROVENANCE_INVALID"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}

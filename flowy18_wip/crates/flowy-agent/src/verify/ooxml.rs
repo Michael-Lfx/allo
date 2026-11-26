@@ -96,6 +96,29 @@ const MAX_PPTX_TOTAL_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_XML_BYTES: u64 = 32 * 1024 * 1024;
 /// Maximum total populated cells processed across all sheets of one `.xlsx`.
 const MAX_XLSX_CELLS: usize = 200_000;
+/// Maximum embedded chart `.xlsx` files inspected per `.pptx` deck.
+const MAX_EMBEDDED_XLSX_FILES: usize = 32;
+/// Maximum cumulative uncompressed bytes across embedded chart `.xlsx` entries (16 MiB).
+const MAX_EMBEDDED_XLSX_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum total chart characters appended into pinned-fact text per deck.
+const MAX_CHART_TEXT_CHARS: usize = 32 * 1024;
+/// Maximum chart row snippets forwarded to L3 semantic probing per deck.
+const MAX_CHART_SNIPPETS: usize = 32;
+/// Maximum characters per chart snippet forwarded to L3 semantic probing.
+const MAX_CHART_SNIPPET_CHARS: usize = 400;
+/// Excel formula/cell error literals detected in embedded chart workbooks.
+const EXCEL_ERROR_LITERALS: &[&str] = &[
+    "#REF!",
+    "#DIV/0!",
+    "#VALUE!",
+    "#NAME?",
+    "#N/A",
+    "#NUM!",
+    "#NULL!",
+    "#SPILL!",
+    "#CALC!",
+    "#GETTING_DATA",
+];
 
 /// Bounded ZIP-bomb preflight run BEFORE `rpptx::Presentation::from_bytes`.
 ///
@@ -213,11 +236,24 @@ pub(super) fn verify_deck_file_with_shapes(
         expected.len(),
         &mut report.issues,
     );
-    let combined_text: String = deck
+    let mut combined_text: String = deck
         .iter()
         .map(|(_, text)| text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
+    let mut chart_text = String::new();
+    inspect_pptx_embedded_charts(
+        &bytes,
+        &mut deck,
+        &mut chart_text,
+        &mut report.issues,
+    );
+    if !chart_text.is_empty() {
+        if !combined_text.is_empty() {
+            combined_text.push('\n');
+        }
+        combined_text.push_str(&chart_text);
+    }
     active_contract.check_pinned_facts_for_path(
         path,
         &combined_text,
@@ -507,6 +543,378 @@ fn resolve_xlsx_sheets(
         .collect()
 }
 
+#[derive(Debug)]
+struct ParsedXlsxCell {
+    col: String,
+    cell_ref: String,
+    value: String,
+}
+
+#[derive(Debug)]
+struct ParsedXlsxErrorCell {
+    sheet_title: String,
+    cell_ref: String,
+}
+
+#[derive(Debug)]
+struct ParsedXlsxSheet {
+    title: String,
+    rows: Vec<Vec<ParsedXlsxCell>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XlsxParseFailure {
+    InvalidArchive,
+    InvalidWorkbook,
+    NoSheets,
+}
+
+#[derive(Debug)]
+struct ParsedXlsxWorkbook {
+    sheets: Vec<ParsedXlsxSheet>,
+    error_cells: Vec<ParsedXlsxErrorCell>,
+    non_empty_rows: usize,
+    had_shared_strings_error: bool,
+    had_sheet_error: bool,
+    hit_cell_limit: bool,
+}
+
+fn is_excel_error_literal(value: &str) -> bool {
+    let trimmed = value.trim();
+    EXCEL_ERROR_LITERALS
+        .iter()
+        .any(|literal| trimmed.eq_ignore_ascii_case(literal))
+}
+
+fn extract_xlsx_cell_raw(
+    cell: roxmltree::Node<'_, '_>,
+    cell_type: Option<&str>,
+    shared_strings: &[String],
+) -> String {
+    match cell_type {
+        Some("s") => cell
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "v")
+            .and_then(|n| n.text())
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .and_then(|idx| shared_strings.get(idx))
+            .cloned()
+            .unwrap_or_default(),
+        Some("inlineStr") => cell
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "t")
+            .filter_map(|n| n.text())
+            .collect::<String>(),
+        _ => {
+            let cached = cell
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "v")
+                .and_then(|n| n.text())
+                .map_or_default(str::trim);
+            if !cached.is_empty() {
+                cached.to_owned()
+            } else if let Some(formula) = cell
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "f")
+                .and_then(|n| n.text())
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+            {
+                format!("={formula}")
+            } else {
+                String::new()
+            }
+        }
+    }
+}
+
+fn parse_xlsx_workbook(
+    bytes: &[u8],
+) -> Result<ParsedXlsxWorkbook, XlsxParseFailure> {
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes)) else {
+        return Err(XlsxParseFailure::InvalidArchive);
+    };
+    let mut xml_budget = MAX_ARCHIVE_XML_BYTES;
+    let Some(wb_xml) =
+        read_zip_xml_budgeted(&mut archive, "xl/workbook.xml", &mut xml_budget)
+    else {
+        return Err(XlsxParseFailure::InvalidWorkbook);
+    };
+    let Ok(wb_doc) = roxmltree::Document::parse(&wb_xml) else {
+        return Err(XlsxParseFailure::InvalidWorkbook);
+    };
+    let has_shared_strings = archive.by_name("xl/sharedStrings.xml").is_ok();
+    let mut had_shared_strings_error = false;
+    let shared_strings: Vec<String> = if has_shared_strings {
+        read_zip_xml_budgeted(
+            &mut archive,
+            "xl/sharedStrings.xml",
+            &mut xml_budget,
+        )
+        .and_then(|xml| {
+            let doc = roxmltree::Document::parse(&xml).ok()?;
+            Some(
+                doc.descendants()
+                    .filter(|node| {
+                        node.is_element() && node.tag_name().name() == "si"
+                    })
+                    .map(|si| {
+                        si.descendants()
+                            .filter(|node| {
+                                node.is_element()
+                                    && node.tag_name().name() == "t"
+                            })
+                            .filter_map(|node| node.text())
+                            .collect::<String>()
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| {
+            had_shared_strings_error = true;
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+
+    let resolved_sheets =
+        resolve_xlsx_sheets(&mut archive, &wb_doc, &mut xml_budget);
+    if resolved_sheets.is_empty() {
+        return Err(XlsxParseFailure::NoSheets);
+    }
+
+    let mut sheets = Vec::with_capacity(resolved_sheets.len());
+    let mut error_cells = Vec::new();
+    let mut non_empty_rows = 0_usize;
+    let mut total_cells = 0_usize;
+    let mut had_sheet_error = false;
+    let mut hit_cell_limit = false;
+
+    'sheets: for (sheet_title, sheet_name) in resolved_sheets {
+        let Some(sheet_xml) =
+            read_zip_xml_budgeted(&mut archive, &sheet_name, &mut xml_budget)
+        else {
+            had_sheet_error = true;
+            if xml_budget == 0 {
+                break 'sheets;
+            }
+            continue;
+        };
+        let Ok(doc) = roxmltree::Document::parse(&sheet_xml) else {
+            had_sheet_error = true;
+            continue;
+        };
+        let sheet_idx = sheets.len();
+        sheets.push(ParsedXlsxSheet {
+            title: sheet_title.clone(),
+            rows: Vec::new(),
+        });
+        for (row_idx, row) in doc
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "row")
+            .enumerate()
+        {
+            let mut row_cells: Vec<ParsedXlsxCell> = Vec::new();
+            for (col_idx, cell) in row
+                .children()
+                .filter(|node| {
+                    node.is_element() && node.tag_name().name() == "c"
+                })
+                .enumerate()
+            {
+                total_cells = total_cells.saturating_add(1);
+                if total_cells > MAX_XLSX_CELLS {
+                    hit_cell_limit = true;
+                    break 'sheets;
+                }
+                let cell_ref = cell.attribute("r").map_or_else(
+                    || format!("{}{}", column_letters(col_idx), row_idx + 1),
+                    str::to_ascii_uppercase,
+                );
+                let col: String = cell_ref
+                    .chars()
+                    .take_while(char::is_ascii_alphabetic)
+                    .collect();
+                let cell_type = cell.attribute("t");
+                let raw =
+                    extract_xlsx_cell_raw(cell, cell_type, &shared_strings);
+                let value = raw.trim().to_owned();
+                if cell_type == Some("e") || is_excel_error_literal(&value) {
+                    error_cells.push(ParsedXlsxErrorCell {
+                        sheet_title: sheet_title.clone(),
+                        cell_ref: cell_ref.clone(),
+                    });
+                }
+                if !value.is_empty() {
+                    row_cells.push(ParsedXlsxCell {
+                        col,
+                        cell_ref,
+                        value,
+                    });
+                }
+            }
+            if !row_cells.is_empty() {
+                non_empty_rows += 1;
+                sheets[sheet_idx].rows.push(row_cells);
+            }
+        }
+    }
+
+    Ok(ParsedXlsxWorkbook {
+        sheets,
+        error_cells,
+        non_empty_rows,
+        had_shared_strings_error,
+        had_sheet_error,
+        hit_cell_limit,
+    })
+}
+
+fn inspect_pptx_embedded_charts(
+    pptx_bytes: &[u8],
+    deck: &mut Vec<(String, String)>,
+    chart_text: &mut String,
+    issues: &mut Vec<VerifyIssue>,
+) {
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(pptx_bytes)) else {
+        push_unique(issues, STRUCTURE, "chart_archive");
+        return;
+    };
+    let mut chart_entries: Vec<String> = (0..archive.len())
+        .filter_map(|idx| {
+            let entry = archive.by_index(idx).ok()?;
+            if entry.is_dir() {
+                return None;
+            }
+            let name = entry.name();
+            let lower = name.to_ascii_lowercase();
+            (lower.starts_with("ppt/embeddings/")
+                && Path::new(&lower)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx")))
+            .then(|| name.to_owned())
+        })
+        .collect();
+    if chart_entries.is_empty() {
+        return;
+    }
+    chart_entries.sort();
+    if chart_entries.len() > MAX_EMBEDDED_XLSX_FILES {
+        push_unique(issues, STRUCTURE, "chart_archive_limit");
+    }
+
+    let mut remaining_bytes = MAX_EMBEDDED_XLSX_BYTES;
+    let mut chart_snippets_pushed = 0_usize;
+    let mut chart_text_chars = 0_usize;
+
+    for entry_name in chart_entries.iter().take(MAX_EMBEDDED_XLSX_FILES) {
+        let chart_label = entry_name
+            .get("ppt/embeddings/".len()..)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(entry_name.as_str());
+        let Ok(entry) = archive.by_name(entry_name) else {
+            push_unique(issues, STRUCTURE, &format!("chart:{chart_label}"));
+            continue;
+        };
+        let mut entry_bytes = Vec::new();
+        if entry
+            .take(remaining_bytes.saturating_add(1))
+            .read_to_end(&mut entry_bytes)
+            .is_err()
+        {
+            push_unique(issues, STRUCTURE, &format!("chart:{chart_label}"));
+            continue;
+        }
+        if entry_bytes.len() as u64 > remaining_bytes {
+            push_unique(issues, STRUCTURE, "chart_archive_limit");
+            break;
+        }
+        remaining_bytes =
+            remaining_bytes.saturating_sub(entry_bytes.len() as u64);
+
+        let parsed = match parse_xlsx_workbook(&entry_bytes) {
+            Ok(parsed) => parsed,
+            Err(
+                XlsxParseFailure::InvalidArchive
+                | XlsxParseFailure::InvalidWorkbook,
+            ) => {
+                push_unique(issues, STRUCTURE, &format!("chart:{chart_label}"));
+                continue;
+            }
+            Err(XlsxParseFailure::NoSheets) => {
+                push_unique(
+                    issues,
+                    STRUCTURE,
+                    &format!("chart:{chart_label}:empty"),
+                );
+                continue;
+            }
+        };
+        if parsed.had_shared_strings_error
+            || parsed.had_sheet_error
+            || parsed.hit_cell_limit
+        {
+            push_unique(issues, STRUCTURE, &format!("chart:{chart_label}"));
+        }
+        for err_cell in &parsed.error_cells {
+            push_unique(
+                issues,
+                STRUCTURE,
+                &format!(
+                    "chart:{chart_label}!{}!{}",
+                    err_cell.sheet_title, err_cell.cell_ref
+                ),
+            );
+        }
+        if parsed.non_empty_rows == 0
+            && parsed.error_cells.is_empty()
+            && !parsed.had_sheet_error
+        {
+            push_unique(
+                issues,
+                STRUCTURE,
+                &format!("chart:{chart_label}:empty"),
+            );
+            continue;
+        }
+
+        for sheet in &parsed.sheets {
+            for row_cells in &sheet.rows {
+                let Some(first) = row_cells.first() else {
+                    continue;
+                };
+                let summary = row_cells
+                    .iter()
+                    .map(|cell| cell.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                if chart_text_chars < MAX_CHART_TEXT_CHARS {
+                    let avail = MAX_CHART_TEXT_CHARS - chart_text_chars;
+                    let chunk: String = summary.chars().take(avail).collect();
+                    chart_text_chars += chunk.chars().count();
+                    if !chart_text.is_empty() {
+                        chart_text.push('\n');
+                    }
+                    chart_text.push_str(&chunk);
+                }
+                if chart_snippets_pushed < MAX_CHART_SNIPPETS {
+                    let snippet: String =
+                        summary.chars().take(MAX_CHART_SNIPPET_CHARS).collect();
+                    deck.push((
+                        format!(
+                            "chart:{chart_label}!{}!{}",
+                            sheet.title, first.value
+                        ),
+                        snippet,
+                    ));
+                    chart_snippets_pushed += 1;
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn verify_xlsx_file(
     path: &Path,
     expected: &[DeckAnchor],
@@ -524,72 +932,40 @@ pub(super) fn verify_xlsx_file(
     if expected.is_empty() {
         push_unique(&mut issues, STRUCTURE, "anchors");
     }
-    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))
-    else {
-        push_unique(&mut issues, STRUCTURE, "xlsx_archive");
-        return Ok(VerifiedArtifact {
-            report: report_for(path, "row_key", issues),
-            bytes,
-            snippets: Vec::new(),
-        });
+    let parsed = match parse_xlsx_workbook(&bytes) {
+        Ok(parsed) => parsed,
+        Err(XlsxParseFailure::InvalidArchive) => {
+            push_unique(&mut issues, STRUCTURE, "xlsx_archive");
+            return Ok(VerifiedArtifact {
+                report: report_for(path, "row_key", issues),
+                bytes,
+                snippets: Vec::new(),
+            });
+        }
+        Err(XlsxParseFailure::InvalidWorkbook) => {
+            push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
+            return Ok(VerifiedArtifact {
+                report: report_for(path, "row_key", issues),
+                bytes,
+                snippets: Vec::new(),
+            });
+        }
+        Err(XlsxParseFailure::NoSheets) => {
+            push_unique(&mut issues, STRUCTURE, "xlsx_sheets");
+            return Ok(VerifiedArtifact {
+                report: report_for(path, "row_key", issues),
+                bytes,
+                snippets: Vec::new(),
+            });
+        }
     };
-    let mut xml_budget = MAX_ARCHIVE_XML_BYTES;
-    let Some(wb_xml) =
-        read_zip_xml_budgeted(&mut archive, "xl/workbook.xml", &mut xml_budget)
-    else {
-        push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok(VerifiedArtifact {
-            report: report_for(path, "row_key", issues),
-            bytes,
-            snippets: Vec::new(),
-        });
-    };
-    let Ok(wb_doc) = roxmltree::Document::parse(&wb_xml) else {
-        push_unique(&mut issues, STRUCTURE, "xlsx_workbook");
-        return Ok(VerifiedArtifact {
-            report: report_for(path, "row_key", issues),
-            bytes,
-            snippets: Vec::new(),
-        });
-    };
-    let shared_strings: Vec<String> = read_zip_xml_budgeted(
-        &mut archive,
-        "xl/sharedStrings.xml",
-        &mut xml_budget,
-    )
-    .and_then(|xml| {
-        let doc = roxmltree::Document::parse(&xml).ok()?;
-        Some(
-            doc.descendants()
-                .filter(|node| {
-                    node.is_element() && node.tag_name().name() == "si"
-                })
-                .map(|si| {
-                    si.descendants()
-                        .filter(|node| {
-                            node.is_element() && node.tag_name().name() == "t"
-                        })
-                        .filter_map(|node| node.text())
-                        .collect::<String>()
-                })
-                .collect(),
-        )
-    })
-    .unwrap_or_default();
-
-    let resolved_sheets =
-        resolve_xlsx_sheets(&mut archive, &wb_doc, &mut xml_budget);
-    if resolved_sheets.is_empty() {
-        push_unique(&mut issues, STRUCTURE, "xlsx_sheets");
-        return Ok(VerifiedArtifact {
-            report: report_for(path, "row_key", issues),
-            bytes,
-            snippets: Vec::new(),
-        });
+    if parsed.had_sheet_error {
+        push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
+    }
+    if parsed.hit_cell_limit {
+        push_unique(&mut issues, STRUCTURE, "xlsx_cell_limit");
     }
 
-    let mut non_empty_rows = 0_usize;
-    let mut total_cells = 0_usize;
     let mut cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut qualified_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut row_summaries: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -600,108 +976,21 @@ pub(super) fn verify_xlsx_file(
     let mut snippets: Vec<(String, String)> = Vec::new();
     let mut all_text = String::new();
 
-    'sheets: for (sheet_title, sheet_name) in &resolved_sheets {
+    for sheet in parsed.sheets {
+        let sheet_title = sheet.title;
         let sheet_key = sheet_title.to_ascii_lowercase();
-        let Some(sheet_xml) =
-            read_zip_xml_budgeted(&mut archive, sheet_name, &mut xml_budget)
-        else {
-            push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
-            if xml_budget == 0 {
-                break 'sheets;
-            }
-            continue;
-        };
-        let Ok(doc) = roxmltree::Document::parse(&sheet_xml) else {
-            push_unique(&mut issues, STRUCTURE, "xlsx_sheet");
-            continue;
-        };
         // Isolate column headers per sheet so Sheet 2 never inherits Sheet 1 headers.
         let mut headers: BTreeMap<String, String> = BTreeMap::new();
-        for (row_idx, row) in doc
-            .descendants()
-            .filter(|node| node.is_element() && node.tag_name().name() == "row")
-            .enumerate()
-        {
-            let mut row_cells: Vec<(String, String, String)> = Vec::new();
-            for (col_idx, cell) in row
-                .children()
-                .filter(|node| {
-                    node.is_element() && node.tag_name().name() == "c"
-                })
-                .enumerate()
-            {
-                total_cells = total_cells.saturating_add(1);
-                if total_cells > MAX_XLSX_CELLS {
-                    push_unique(&mut issues, STRUCTURE, "xlsx_cell_limit");
-                    break 'sheets;
-                }
-                let cell_ref = cell.attribute("r").map_or_else(
-                    || format!("{}{}", column_letters(col_idx), row_idx + 1),
-                    str::to_ascii_uppercase,
-                );
-                let col: String = cell_ref
-                    .chars()
-                    .take_while(char::is_ascii_alphabetic)
-                    .collect();
-                let raw = match cell.attribute("t") {
-                    Some("s") => cell
-                        .children()
-                        .find(|n| n.is_element() && n.tag_name().name() == "v")
-                        .and_then(|n| n.text())
-                        .and_then(|s| s.trim().parse::<usize>().ok())
-                        .and_then(|idx| shared_strings.get(idx))
-                        .cloned()
-                        .unwrap_or_default(),
-                    Some("inlineStr") => cell
-                        .descendants()
-                        .filter(|n| {
-                            n.is_element() && n.tag_name().name() == "t"
-                        })
-                        .filter_map(|n| n.text())
-                        .collect::<String>(),
-                    _ => {
-                        let cached = cell
-                            .children()
-                            .find(|n| {
-                                n.is_element() && n.tag_name().name() == "v"
-                            })
-                            .and_then(|n| n.text())
-                            .map_or_default(str::trim);
-                        if !cached.is_empty() {
-                            cached.to_owned()
-                        } else if let Some(formula) = cell
-                            .children()
-                            .find(|n| {
-                                n.is_element() && n.tag_name().name() == "f"
-                            })
-                            .and_then(|n| n.text())
-                            .map(str::trim)
-                            .filter(|f| !f.is_empty())
-                        {
-                            format!("={formula}")
-                        } else {
-                            String::new()
-                        }
-                    }
-                };
-                let value = raw.trim().to_owned();
-                if !value.is_empty() {
-                    row_cells.push((col, cell_ref, value));
-                }
-            }
-            if row_cells.is_empty() {
-                continue;
-            }
-            non_empty_rows += 1;
+        for row_cells in sheet.rows {
             if headers.is_empty() {
-                for (col, _, value) in &row_cells {
-                    headers.insert(col.clone(), value.clone());
+                for cell in &row_cells {
+                    headers.insert(cell.col.clone(), cell.value.clone());
                 }
             }
-            let row_key = row_cells[0].2.clone();
+            let row_key = row_cells[0].value.clone();
             let summary = row_cells
                 .iter()
-                .map(|(_, _, val)| val.as_str())
+                .map(|cell| cell.value.as_str())
                 .collect::<Vec<_>>()
                 .join(" | ");
             all_text.push_str(&summary);
@@ -716,26 +1005,29 @@ pub(super) fn verify_xlsx_file(
                 .entry(row_key.clone())
                 .or_default()
                 .push(summary);
-            for (col, cell_ref, value) in row_cells {
+            for cell in row_cells {
                 qualified_cells
-                    .entry(format!("{sheet_key}!{cell_ref}"))
+                    .entry(format!("{sheet_key}!{}", cell.cell_ref))
                     .or_default()
-                    .push(value.clone());
-                cells.entry(cell_ref).or_default().push(value.clone());
-                if let Some(header) = headers.get(&col) {
+                    .push(cell.value.clone());
+                cells
+                    .entry(cell.cell_ref)
+                    .or_default()
+                    .push(cell.value.clone());
+                if let Some(header) = headers.get(&cell.col) {
                     qualified_row_col
                         .entry(format!("{sheet_key}!{row_key}:{header}"))
                         .or_default()
-                        .push(value.clone());
+                        .push(cell.value.clone());
                     row_col_values
                         .entry(format!("{row_key}:{header}"))
                         .or_default()
-                        .push(value);
+                        .push(cell.value);
                 }
             }
         }
     }
-    if non_empty_rows == 0 {
+    if parsed.non_empty_rows == 0 {
         push_unique(&mut issues, STRUCTURE, "xlsx_empty");
     }
     for anchor in expected {
