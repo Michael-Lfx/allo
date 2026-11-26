@@ -24,35 +24,23 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
-        let rtl = self.i18n.locale().is_rtl();
         let (group, selected_branch) = self.resolve_flow_modal()?;
         let group = group.clone();
         let selected_branch = selected_branch.clone();
 
         let open_sid = group.session_id.clone();
         let can_open_session = !group.is_synthetic();
-        let close_label = self.t("chat.close");
-        let close_btn = theme::IconButton::new(
+        let close_button = self.icon_tooltip_button(
             "flow-modal-close",
-            close_label.clone(),
-            theme::icons::x().size(px(14.)),
-        )
-        .variant(theme::ControlVariant::Ghost)
-        .size(theme::ControlSize::Small)
-        .render_interactive(
-            &self.theme,
-            cx.listener(|panel, _, _, cx| {
-                panel.close_flow_modal(cx);
-            }),
-        );
-        let close_button = theme::tooltip_trigger(
             "flow-modal-close-tip",
-            close_btn,
-            close_label,
-            &self.ui,
+            self.t("chat.close"),
+            theme::icons::x().size(px(14.)),
+            theme::ControlVariant::Ghost,
+            |panel, _, cx| {
+                panel.close_flow_modal(cx);
+            },
             window,
             cx,
-            rtl,
         );
 
         let header = div()
@@ -715,7 +703,6 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let rtl = self.i18n.locale().is_rtl();
         let left_card = match &branch.phase {
             BranchPhase::NeedsApproval {
                 report_id,
@@ -829,52 +816,30 @@ impl StudioPanel {
             let open_path = path.clone();
             let reveal_path = path.clone();
             let open_btn = can_open.then(|| {
-                let open_label = self.t("deliverables.open_external");
-                let btn = theme::IconButton::new(
+                self.icon_tooltip_button(
                     "fm-open-file",
-                    open_label.clone(),
-                    theme::icons::external_link().size(px(14.)),
-                )
-                .variant(theme::ControlVariant::Secondary)
-                .size(theme::ControlSize::Small)
-                .render_interactive(
-                    &self.theme,
-                    cx.listener(move |panel, _, _, cx| {
-                        panel.open_file_externally(&open_path, cx);
-                    }),
-                );
-                theme::tooltip_trigger(
                     "fm-open-file-tip",
-                    btn,
-                    open_label,
-                    &self.ui,
+                    self.t("deliverables.open_external"),
+                    theme::icons::external_link().size(px(14.)),
+                    theme::ControlVariant::Secondary,
+                    move |panel, _, cx| {
+                        panel.open_file_externally(&open_path, cx);
+                    },
                     window,
                     cx,
-                    rtl,
                 )
             });
-            let reveal_label = self.t("board.reveal_folder");
-            let reveal_trigger = theme::IconButton::new(
+            let reveal_btn = self.icon_tooltip_button(
                 "fm-reveal-folder",
-                reveal_label.clone(),
-                theme::icons::folder_open().size(px(14.)),
-            )
-            .variant(theme::ControlVariant::Ghost)
-            .size(theme::ControlSize::Small)
-            .render_interactive(
-                &self.theme,
-                cx.listener(move |panel, _, _, cx| {
-                    panel.reveal_file(&reveal_path, cx);
-                }),
-            );
-            let reveal_btn = theme::tooltip_trigger(
                 "fm-reveal-folder-tip",
-                reveal_trigger,
-                reveal_label,
-                &self.ui,
+                self.t("board.reveal_folder"),
+                theme::icons::folder_open().size(px(14.)),
+                theme::ControlVariant::Ghost,
+                move |panel, _, cx| {
+                    panel.reveal_file(&reveal_path, cx);
+                },
                 window,
                 cx,
-                rtl,
             );
             div()
                 .flex()

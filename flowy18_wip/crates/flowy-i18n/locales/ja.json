@@ -783,7 +783,6 @@
   "studio.deliverables_count": "成果物 ({count})",
   "studio.view_deliverables": "成果物を見る",
   "studio.return_to_chat": "会話に戻る",
-  "drawer.work_title": "バックグラウンドタスク",
   "drawer.work_open_session": "会話を開く",
   "drawer.work_stop": "タスクを停止",
   "drawer.work_no_steps": "実行ステップを待機中…",
@@ -882,5 +881,13 @@
   "card.stop_handoff_modified": "Modified files: {files}",
   "card.stop_handoff_pending": "Pending checks: {items}",
   "card.heartbeat_waiting": "Waiting, no confirmed progress yet",
-  "verify.visual_disclaimer": "Note: Checked file structure and declared fields; not visually rendered in PowerPoint/Excel."
+  "verify.visual_disclaimer": "Note: Checked file structure and declared fields; not visually rendered in PowerPoint/Excel.",
+  "notice.card_not_found": "この確認カードはすでに処理されています。",
+  "notice.card_selection_empty": "少なくとも1つ選択してください。",
+  "notice.card_selection_invalid": "選択内容が無効になりました。更新してからもう一度お試しください。",
+  "notice.approval_hash_mismatch": "実行内容が変更されたため、最新の内容を確認してから承認してください。",
+  "card.stop_handoff_verified": "確認済み：{items}",
+  "card.stop_rollback_none": "ファイルはまだ変更されていないため、そのまま次の指示を送れます。",
+  "card.stop_rollback_modified": "変更されたファイルはローカル作業フォルダにのみ残っており未公開です。確認後に再実行できます。",
+  "card.disambig_empty_hint": "選択できる対象がありません。新しい指示で続けてください。"
 }

@@ -97,10 +97,10 @@ impl crate::panel::StudioPanel {
                         rtl,
                     ));
                 }
-                ActivePopover::ModelMenu { anchor } => {
+                ActivePopover::ModelMenu => {
                     column = column.child(theme::popover_above(
                         "model-list",
-                        anchor,
+                        "composer-model-trigger",
                         self.model_menu(cx),
                         &self.ui,
                         window,

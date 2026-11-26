@@ -21,8 +21,9 @@ pub struct SubmitComposer;
 pub enum ComposerEvent {
     Send,
     Stop,
-    ModelMenu(&'static str),
+    ModelMenu,
     AddMenu,
+    OpenAddMenu,
     ClearWorkspace,
     ClearSkill,
     CloudNotReady,
@@ -35,6 +36,7 @@ pub struct ComposerViewState {
     pub model: Model,
     pub model_menu_open: bool,
     pub running: bool,
+    pub stopping: bool,
     pub model_label: SharedString,
     pub cloud_ready: bool,
     pub workspace_label: SharedString,
@@ -59,8 +61,20 @@ pub struct ChatComposer {
     cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
+    stopping: bool,
     _theme_sub: Subscription,
     _prompt_sub: Subscription,
+}
+
+struct ContextChipSpec {
+    pill_id: &'static str,
+    clear_id: &'static str,
+    max_w: f32,
+    aria_label: SharedString,
+    label: SharedString,
+    clear_label: String,
+    icon: theme::icons::Icon,
+    clear_event: ComposerEvent,
 }
 
 impl EventEmitter<ComposerEvent> for ChatComposer {}
@@ -96,6 +110,7 @@ impl ChatComposer {
             cloud_ready: false,
             model_menu_open: false,
             running: false,
+            stopping: false,
             _theme_sub: theme_sub,
             _prompt_sub: prompt_sub,
         }
@@ -109,6 +124,7 @@ impl ChatComposer {
         if self.model != next.model
             || self.model_menu_open != next.model_menu_open
             || self.running != next.running
+            || self.stopping != next.stopping
             || self.model_label != next.model_label
             || self.cloud_ready != next.cloud_ready
             || self.workspace_label != next.workspace_label
@@ -119,6 +135,7 @@ impl ChatComposer {
             self.model = next.model;
             self.model_menu_open = next.model_menu_open;
             self.running = next.running;
+            self.stopping = next.stopping;
             self.model_label = next.model_label;
             self.cloud_ready = next.cloud_ready;
             self.workspace_label = next.workspace_label;
@@ -333,6 +350,73 @@ impl ChatComposer {
         )
     }
 
+    fn active_context_chip(
+        &self,
+        spec: ContextChipSpec,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let ContextChipSpec {
+            pill_id,
+            clear_id,
+            max_w,
+            aria_label,
+            label,
+            clear_label,
+            icon,
+            clear_event,
+        } = spec;
+        let bg = self.theme.status_active_bg();
+        let fg = self.theme.status_active();
+        div()
+            .min_h(self.theme.control_height(theme::ControlSize::Small))
+            .max_w(px(max_w))
+            .pl(self.theme.space(8.))
+            .pr(px(4.))
+            .rounded_full()
+            .bg(bg)
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                theme::interactive(pill_id, aria_label, &self.theme)
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_xs()
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .child(icon.text_color(fg))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(label),
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(ComposerEvent::OpenAddMenu);
+                    })),
+            )
+            .child(
+                theme::interactive(clear_id, clear_label, &self.theme)
+                    .size(px(18.))
+                    .flex_none()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.dock_hover()))
+                    .child(theme::icons::x().size(px(11.)).text_color(fg))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(clear_event);
+                    })),
+            )
+    }
+
     fn active_workspace_chip(
         &self,
         cx: &Context<'_, Self>,
@@ -342,65 +426,21 @@ impl ChatComposer {
         } else {
             self.workspace_label.to_string()
         };
-        let aria_label = format!("{}: {label}", self.t("dock.projects"));
-        let bg = self.theme.status_active_bg();
-        let fg = self.theme.status_active();
-        div()
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .max_w(px(184.))
-            .pl(self.theme.space(8.))
-            .pr(px(4.))
-            .rounded_full()
-            .bg(bg)
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .child(
-                theme::interactive(
-                    "composer-workspace-pill",
-                    aria_label,
-                    &self.theme,
-                )
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_xs()
-                .text_color(fg)
-                .cursor_pointer()
-                .child(theme::icons::folder().size(px(12.)).text_color(fg))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .truncate()
-                        .child(label),
-                )
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::AddMenu);
-                })),
-            )
-            .child(
-                theme::interactive(
-                    "composer-clear-workspace",
-                    self.t("composer.clear_workspace"),
-                    &self.theme,
-                )
-                .size(px(18.))
-                .flex_none()
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(fg)
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.dock_hover()))
-                .child(theme::icons::x().size(px(11.)).text_color(fg))
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::ClearWorkspace);
-                })),
-            )
+        let aria_label =
+            SharedString::from(format!("{}: {label}", self.t("dock.projects")));
+        self.active_context_chip(
+            ContextChipSpec {
+                pill_id: "composer-workspace-pill",
+                clear_id: "composer-clear-workspace",
+                max_w: 184.0,
+                aria_label,
+                label: SharedString::from(label),
+                clear_label: self.t("composer.clear_workspace"),
+                icon: theme::icons::folder().size(px(12.)),
+                clear_event: ComposerEvent::ClearWorkspace,
+            },
+            cx,
+        )
     }
 
     fn active_skill_chip(
@@ -408,64 +448,19 @@ impl ChatComposer {
         label: SharedString,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let bg = self.theme.status_active_bg();
-        let fg = self.theme.status_active();
-        div()
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .max_w(px(172.))
-            .pl(self.theme.space(8.))
-            .pr(px(4.))
-            .rounded_full()
-            .bg(bg)
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .child(
-                theme::interactive(
-                    "composer-skill-pill",
-                    label.clone(),
-                    &self.theme,
-                )
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_xs()
-                .text_color(fg)
-                .cursor_pointer()
-                .child(theme::icons::sparkles().size(px(11.)).text_color(fg))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .truncate()
-                        .child(label),
-                )
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::AddMenu);
-                })),
-            )
-            .child(
-                theme::interactive(
-                    "composer-clear-skill",
-                    self.t("composer.skill_clear"),
-                    &self.theme,
-                )
-                .size(px(18.))
-                .flex_none()
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(fg)
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.dock_hover()))
-                .child(theme::icons::x().size(px(11.)).text_color(fg))
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::ClearSkill);
-                })),
-            )
+        self.active_context_chip(
+            ContextChipSpec {
+                pill_id: "composer-skill-pill",
+                clear_id: "composer-clear-skill",
+                max_w: 172.0,
+                aria_label: label.clone(),
+                label,
+                clear_label: self.t("composer.skill_clear"),
+                icon: theme::icons::sparkles().size(px(11.)),
+                clear_event: ComposerEvent::ClearSkill,
+            },
+            cx,
+        )
     }
 
     fn model_selector(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -506,7 +501,7 @@ impl ChatComposer {
                 .child(label)
                 .child(chevron)
                 .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
+                    cx.emit(ComposerEvent::ModelMenu);
                 })),
             "composer-model-trigger",
             &self.ui,
@@ -533,13 +528,25 @@ impl ChatComposer {
             .gap(self.theme.space(4.));
         let send_size = self.theme.control_height(theme::ControlSize::Small);
         if running {
+            let stopping = self.stopping;
             let danger_bg = self.theme.danger_bg();
             let danger_fg = self.theme.danger();
+            let stop_label = if stopping {
+                self.t("chat.status_stopping")
+            } else {
+                self.t("chat.stop")
+            };
             row = row.child(
-                theme::interactive(
+                theme::button(
                     "chat-stop",
-                    self.t("chat.stop"),
+                    stop_label,
+                    stopping,
                     &self.theme,
+                    cx.listener(|this, _, _, cx| {
+                        if !this.stopping {
+                            cx.emit(ComposerEvent::Stop);
+                        }
+                    }),
                 )
                 .w(send_size)
                 .h(send_size)
@@ -551,17 +558,16 @@ impl ChatComposer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .cursor_pointer()
-                .hover(move |style| {
-                    style
-                        .bg(danger_bg)
-                        .border_color(danger_fg.opacity(0.45))
-                        .text_color(danger_fg)
+                .when(stopping, |el| el.opacity(0.5))
+                .when(!stopping, move |el| {
+                    el.hover(move |style| {
+                        style
+                            .bg(danger_bg)
+                            .border_color(danger_fg.opacity(0.45))
+                            .text_color(danger_fg)
+                    })
                 })
-                .child(theme::icons::square().size(px(11.)))
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::Stop);
-                })),
+                .child(theme::icons::square().size(px(11.))),
             );
         }
         let send_colors =

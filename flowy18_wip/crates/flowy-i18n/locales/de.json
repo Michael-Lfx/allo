@@ -783,7 +783,6 @@
   "studio.deliverables_count": "Deliverables ({count})",
   "studio.view_deliverables": "View deliverables",
   "studio.return_to_chat": "View chat",
-  "drawer.work_title": "Background task",
   "drawer.work_open_session": "Open conversation",
   "drawer.work_stop": "Stop task",
   "drawer.work_no_steps": "Waiting for execution updates…",
@@ -882,5 +881,13 @@
   "card.stop_handoff_modified": "Modified files: {files}",
   "card.stop_handoff_pending": "Pending checks: {items}",
   "card.heartbeat_waiting": "Waiting, no confirmed progress yet",
-  "verify.visual_disclaimer": "Note: Checked file structure and declared fields; not visually rendered in PowerPoint/Excel."
+  "verify.visual_disclaimer": "Note: Checked file structure and declared fields; not visually rendered in PowerPoint/Excel.",
+  "notice.card_not_found": "That confirmation card was already handled.",
+  "notice.card_selection_empty": "Please pick at least one option first.",
+  "notice.card_selection_invalid": "That selection is no longer valid — please refresh and try again.",
+  "notice.approval_hash_mismatch": "The command details changed before confirmation; please review the latest request.",
+  "card.stop_handoff_verified": "Verified so far: {items}",
+  "card.stop_rollback_none": "No workspace files were modified; you can send a new instruction right away.",
+  "card.stop_rollback_modified": "Modified files remain in the local workspace and were not published; review or revert before retrying.",
+  "card.disambig_empty_hint": "No editable targets remain for this card."
 }

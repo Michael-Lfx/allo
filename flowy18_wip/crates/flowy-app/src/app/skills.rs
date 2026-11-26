@@ -294,20 +294,31 @@ fn installed_skill_chips(
         let invocation_id =
             format!("{}/{}", skill.id.owner_handle, skill.id.slug);
         if seen.insert(invocation_id.clone()) {
-            let title = if skill.name.trim().is_empty() {
+            let trimmed_name = skill.name.trim();
+            let title = if trimmed_name.is_empty() {
                 skill.id.slug.clone()
             } else {
-                skill.name.clone()
+                trimmed_name.to_owned()
             };
             chips.push(flowy_studio::SkillChip {
                 id: invocation_id,
                 title,
-                summary: skill.description.clone(),
+                summary: skill.description.trim().to_owned(),
                 official: matches!(
                     skill.origin,
                     flowy_skills::InstallOrigin::Official
                 ),
             });
+        }
+    }
+    let mut title_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for chip in &chips {
+        *title_counts.entry(chip.title.clone()).or_insert(0) += 1;
+    }
+    for chip in &mut chips {
+        if title_counts.get(&chip.title).copied().unwrap_or(0) > 1 {
+            chip.title = format!("{} ({})", chip.title, chip.id);
         }
     }
     chips
@@ -554,7 +565,6 @@ impl FlowyApp {
                             }
                         }
                     }
-                    app.sync_studio_skills(cx);
                     cx.notify();
                 });
                 if finished {

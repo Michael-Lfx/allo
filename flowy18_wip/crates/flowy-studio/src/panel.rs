@@ -147,9 +147,7 @@ pub enum ActivePopover {
     #[default]
     None,
     ModelInfo,
-    ModelMenu {
-        anchor: &'static str,
-    },
+    ModelMenu,
     BgTasks,
     EnvStatus,
     AddMenu,
@@ -163,7 +161,7 @@ impl ActivePopover {
             // Closed state and information-only Credits hover card must not
             // claim popup focus scope (prevents hover focus theft).
             Self::None | Self::Credits => None,
-            Self::ModelMenu { .. } => Some("model-list"),
+            Self::ModelMenu => Some("model-list"),
             Self::ModelInfo => Some("model-info"),
             Self::AddMenu => Some("composer-add-menu"),
             Self::EnvStatus => Some("env-status-popover"),
@@ -218,11 +216,11 @@ pub struct StudioPanel {
     /// Verification report IDs currently executing `CardAction::OverrideDeliver`
     /// on a background worker (prevents double-click re-entry).
     pub(crate) overriding_reports: std::collections::HashSet<String>,
-    /// Multi-select object ids ticked per `PendingCard::Disambiguation` card id.
+    /// Multi-select object ids ticked per `(session_id, card_id)`.
     pub(crate) pending_card_selected:
-        std::collections::HashMap<String, Vec<String>>,
-    /// Pending card IDs currently resolving via `CardAction::ResolveCard`.
-    pub(crate) resolving_cards: std::collections::HashSet<String>,
+        std::collections::HashMap<(String, String), Vec<String>>,
+    /// `(session_id, card_id)` keys currently resolving via `CardAction::ResolveCard`.
+    pub(crate) resolving_cards: std::collections::HashSet<(String, String)>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
@@ -497,14 +495,16 @@ impl StudioPanel {
                         panel.send_prompt(cx);
                     }
                     ComposerEvent::Stop => panel.stop_turn(cx),
-                    ComposerEvent::ModelMenu(anchor) => {
-                        panel.toggle_popover(ActivePopover::ModelMenu {
-                            anchor,
-                        });
+                    ComposerEvent::ModelMenu => {
+                        panel.toggle_popover(ActivePopover::ModelMenu);
                         cx.notify();
                     }
                     ComposerEvent::AddMenu => {
                         panel.toggle_popover(ActivePopover::AddMenu);
+                        cx.notify();
+                    }
+                    ComposerEvent::OpenAddMenu => {
+                        panel.open_popover(ActivePopover::AddMenu);
                         cx.notify();
                     }
                     ComposerEvent::ClearWorkspace => {
@@ -516,9 +516,7 @@ impl StudioPanel {
                         cx.notify();
                     }
                     ComposerEvent::CloudNotReady => {
-                        panel.open_popover(ActivePopover::ModelMenu {
-                            anchor: "composer-model-trigger",
-                        });
+                        panel.open_popover(ActivePopover::ModelMenu);
                         panel.emit_notice(
                             Some("notice.model_setup_required"),
                             cx,
@@ -1233,6 +1231,7 @@ impl StudioPanel {
         );
         self.agent.create_session()?;
         self.invalidate_submission(cx);
+        self.clear_right_sheet();
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.set_prompt_text("", cx);
@@ -1345,6 +1344,7 @@ impl StudioPanel {
                     let draft =
                         self.drafts.get(id).cloned().unwrap_or_default();
                     self.fill_prompt(&draft, cx);
+                    self.clear_right_sheet();
                 }
                 self.invalidate_submission(cx);
                 // The journal is global, but re-read it on every open so the
@@ -1487,12 +1487,26 @@ impl StudioPanel {
     ) {
         if self.agent.active_session_id().is_none() {
             self.invalidate_submission(cx);
+            self.clear_right_sheet();
             self.surface = StudioSurface::Home;
             self.document = DocumentSession::new(self.product);
             self.active_project_id = None;
             self.agent.set_workspace_for_new_sessions(None);
             self.agent.set_origin_for_new_sessions(SessionOrigin::Home);
             self.set_prompt_text("", cx);
+        } else if let Some(crate::deliverables::InspectedWork::Session {
+            id,
+            ..
+        }) = &self.inspected_work
+        {
+            let still_exists = self
+                .agent
+                .list_sessions()
+                .iter()
+                .any(|session| &session.id == id);
+            if !still_exists {
+                self.clear_right_sheet();
+            }
         }
         self.refresh_chat(cx);
         self.refresh_board_snapshot();
@@ -1533,6 +1547,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -1558,6 +1573,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.surface = StudioSurface::Chat;
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
         cx.emit(StudioEvent::SessionsChanged);
@@ -1991,6 +2007,7 @@ impl StudioPanel {
             self.agent.set_workspace_for_new_sessions(None);
             self.surface = StudioSurface::Home;
             self.flow_modal.close();
+            self.clear_right_sheet();
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
         }
@@ -2057,6 +2074,7 @@ impl StudioPanel {
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
         self.flow_modal.close();
+        self.clear_right_sheet();
         self.agent.set_workspace_for_new_sessions(Some(workspace));
         self.agent
             .set_origin_for_new_sessions(SessionOrigin::Project {
@@ -2131,6 +2149,7 @@ impl Render for StudioPanel {
             model: self.model,
             model_menu_open: self.is_model_menu_open(),
             running: self.submission_pending || self.status.is_busy(),
+            stopping: matches!(self.status, flowy_agent::TurnStatus::Stopping),
             model_label: gpui::SharedString::from(model_label),
             cloud_ready: can_submit,
             workspace_label: gpui::SharedString::from(workspace_label),
@@ -3656,17 +3675,13 @@ mod tests {
             assert!(panel.is_add_menu_open());
 
             // Opening the composer model menu replaces AddMenu (never two popovers).
-            panel.toggle_popover(ActivePopover::ModelMenu {
-                anchor: "composer-model-trigger",
-            });
+            panel.toggle_popover(ActivePopover::ModelMenu);
             assert_eq!(panel.active_popup_scope(), Some("model-list"));
             assert!(panel.is_model_menu_open());
             assert!(!panel.is_add_menu_open());
 
-            // Same anchor toggles closed.
-            panel.toggle_popover(ActivePopover::ModelMenu {
-                anchor: "composer-model-trigger",
-            });
+            // Same popover toggles closed.
+            panel.toggle_popover(ActivePopover::ModelMenu);
             assert_eq!(panel.active_popup_scope(), None);
 
             // Overlay dismissal only closes matching scope and also handles Flow Modal.

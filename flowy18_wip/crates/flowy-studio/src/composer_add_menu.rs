@@ -2,7 +2,10 @@
 //! and Preferences (replacing 3 noisy composer chrome chips with one calm menu).
 
 use flowy_ui as theme;
-use gpui::{Context, FontWeight, IntoElement, div, prelude::*, px};
+use gpui::{
+    ClickEvent, Context, ElementId, FontWeight, IntoElement, Window, div,
+    prelude::*, px,
+};
 
 use crate::panel::StudioPanel;
 
@@ -20,29 +23,45 @@ impl StudioPanel {
             .child(self.preferences_section(cx))
     }
 
-    fn add_menu_section_heading(&self, key: &str) -> impl IntoElement {
+    fn add_menu_section(
+        &self,
+        heading_key: &str,
+        top_divider: bool,
+    ) -> gpui::Div {
         div()
-            .px(self.theme.space(8.))
-            .pt(px(4.))
-            .pb(px(2.))
-            .text_xs()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.theme.muted())
-            .child(self.t(key))
+            .when(top_divider, |el| {
+                el.mt(px(4.))
+                    .pt(px(4.))
+                    .border_t_1()
+                    .border_color(self.theme.line())
+            })
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(
+                div()
+                    .px(self.theme.space(8.))
+                    .pt(px(4.))
+                    .pb(px(2.))
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(self.theme.muted())
+                    .child(self.t(heading_key)),
+            )
     }
 
-    fn workspace_section(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut section = div().flex().flex_col().gap(px(2.)).child(
-            self.add_menu_section_heading("composer.add_workspace_heading"),
-        );
-
-        let default_selected = self.active_project_id.is_none();
-        section = section.child(
-            theme::interactive(
-                "workspace-opt-default",
-                self.t("composer.workspace_default"),
-                &self.theme,
-            )
+    fn add_menu_choice_row(
+        &self,
+        id: impl Into<ElementId>,
+        icon: theme::icons::Icon,
+        title: String,
+        subtitle: Option<String>,
+        selected: bool,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> impl IntoElement {
+        let subtitle = subtitle.filter(|s| !s.is_empty());
+        let has_subtitle = subtitle.is_some();
+        theme::interactive(id, title.clone(), &self.theme)
             .w_full()
             .px(self.theme.space(8.))
             .py(px(6.))
@@ -53,122 +72,92 @@ impl StudioPanel {
             .items_center()
             .justify_between()
             .gap(px(6.))
-            .text_xs()
-            .text_color(self.theme.ink())
             .child(
                 div()
                     .min_w_0()
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .child(icon.size(px(13.)).text_color(self.theme.muted()))
                     .child(
-                        theme::icons::folder()
-                            .size(px(13.))
-                            .text_color(self.theme.muted()),
-                    )
-                    .child(self.t("composer.workspace_default")),
-            )
-            .when(default_selected, |row| {
-                row.child(
-                    theme::icons::check()
-                        .size(px(13.))
-                        .text_color(self.theme.status_active()),
-                )
-            })
-            .on_click(cx.listener(|panel, _, _, cx| {
-                panel.close_all_popovers();
-                panel.bind_default_workspace(cx);
-            })),
-        );
-
-        for (idx, project) in self.projects.iter().enumerate() {
-            let pid = project.id.clone();
-            let selected =
-                self.active_project_id.as_deref() == Some(pid.as_str());
-            let path_label = crate::ports::display_path(&project.root);
-            section = section.child(
-                theme::interactive(
-                    ("workspace-opt-proj", idx as u64),
-                    project.name.clone(),
-                    &self.theme,
-                )
-                .w_full()
-                .px(self.theme.space(8.))
-                .py(px(6.))
-                .rounded_lg()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            theme::icons::folder_open()
-                                .size(px(13.))
-                                .text_color(self.theme.muted()),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.ink())
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .truncate()
-                                        .child(project.name.clone()),
-                                )
-                                .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .when(has_subtitle, |el| {
+                                        el.font_weight(FontWeight::MEDIUM)
+                                    })
+                                    .text_color(self.theme.ink())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .when_some(subtitle, |col, sub| {
+                                col.child(
                                     div()
                                         .text_xs()
                                         .text_color(self.theme.muted())
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .truncate()
-                                        .child(path_label),
-                                ),
-                        ),
+                                        .child(sub),
+                                )
+                            }),
+                    ),
+            )
+            .when(selected, |row| {
+                row.child(
+                    theme::icons::check()
+                        .size(px(13.))
+                        .text_color(self.theme.status_active()),
                 )
-                .when(selected, |row| {
-                    row.child(
-                        theme::icons::check()
-                            .size(px(13.))
-                            .text_color(self.theme.status_active()),
-                    )
-                })
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        panel.close_all_popovers();
-                        let _ = panel.open_project(&pid, cx);
-                    },
-                )),
-            );
+            })
+            .on_click(on_click)
+    }
+
+    fn workspace_section(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let mut section =
+            self.add_menu_section("composer.add_workspace_heading", false);
+
+        section = section.child(self.add_menu_choice_row(
+            "workspace-opt-default",
+            theme::icons::folder(),
+            self.t("composer.workspace_default"),
+            None,
+            self.active_project_id.is_none(),
+            cx.listener(|panel, _, _, cx| {
+                panel.close_all_popovers();
+                panel.bind_default_workspace(cx);
+            }),
+        ));
+
+        for (idx, project) in self.projects.iter().enumerate() {
+            let pid = project.id.clone();
+            let selected =
+                self.active_project_id.as_deref() == Some(pid.as_str());
+            let path_label = crate::ports::display_path(&project.root);
+            section = section.child(self.add_menu_choice_row(
+                ("workspace-opt-proj", idx as u64),
+                theme::icons::folder_open(),
+                project.name.clone(),
+                Some(path_label),
+                selected,
+                cx.listener(move |panel, _, _, cx| {
+                    panel.close_all_popovers();
+                    let _ = panel.open_project(&pid, cx);
+                }),
+            ));
         }
         section
     }
 
     fn skills_section(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut section = div()
-            .mt(px(4.))
-            .pt(px(4.))
-            .border_t_1()
-            .border_color(self.theme.line())
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(
-                self.add_menu_section_heading("composer.add_skills_heading"),
-            );
+        let mut section =
+            self.add_menu_section("composer.add_skills_heading", true);
 
         if self.selected_skill.is_some() {
             section = section.child(
@@ -211,94 +200,24 @@ impl StudioPanel {
                 .selected_skill
                 .as_ref()
                 .is_some_and(|cur| cur.id == skill.id);
-            section = section.child(
-                theme::interactive(
-                    ("skill-opt-item", idx as u64),
-                    skill.title.clone(),
-                    &self.theme,
-                )
-                .w_full()
-                .px(self.theme.space(8.))
-                .py(px(6.))
-                .rounded_lg()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            theme::icons::sparkles()
-                                .size(px(13.))
-                                .text_color(self.theme.muted()),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(self.theme.ink())
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .truncate()
-                                        .child(skill.title.clone()),
-                                )
-                                .when(!skill.summary.is_empty(), |col| {
-                                    col.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(self.theme.muted())
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .truncate()
-                                            .child(skill.summary.clone()),
-                                    )
-                                }),
-                        ),
-                )
-                .when(selected, |row| {
-                    row.child(
-                        theme::icons::check()
-                            .size(px(13.))
-                            .text_color(self.theme.status_active()),
-                    )
-                })
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        panel.selected_skill = Some(chip.clone());
-                        panel.close_all_popovers();
-                        cx.notify();
-                    },
-                )),
-            );
+            section = section.child(self.add_menu_choice_row(
+                ("skill-opt-item", idx as u64),
+                theme::icons::sparkles(),
+                skill.title.clone(),
+                Some(skill.summary.clone()),
+                selected,
+                cx.listener(move |panel, _, _, cx| {
+                    panel.selected_skill = Some(chip.clone());
+                    panel.close_all_popovers();
+                    cx.notify();
+                }),
+            ));
         }
         section
     }
 
     fn connectors_section(&self) -> impl IntoElement {
-        div()
-            .mt(px(4.))
-            .pt(px(4.))
-            .border_t_1()
-            .border_color(self.theme.line())
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(
-                self.add_menu_section_heading(
-                    "composer.add_connectors_heading",
-                ),
-            )
+        self.add_menu_section("composer.add_connectors_heading", true)
             .child(
                 div()
                     .w_full()
@@ -343,15 +262,7 @@ impl StudioPanel {
         } else {
             self.t("env.state_off")
         };
-        div()
-            .mt(px(4.))
-            .pt(px(4.))
-            .border_t_1()
-            .border_color(self.theme.line())
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(self.add_menu_section_heading("composer.add_prefs_heading"))
+        self.add_menu_section("composer.add_prefs_heading", true)
             .child(
                 theme::interactive(
                     "composer-add-verify-toggle",

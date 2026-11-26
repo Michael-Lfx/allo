@@ -2546,7 +2546,15 @@ impl Render for WorkingIndicator {
                                 .text_color(self.theme.danger()),
                         )
                     })
-                    .child(self.label.clone())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(self.label.clone()),
+                    )
                     .when(retry, |row| {
                         row.child(
                             theme::Button::new(

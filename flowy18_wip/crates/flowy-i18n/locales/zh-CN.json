@@ -783,7 +783,6 @@
   "studio.deliverables_count": "文件 ({count})",
   "studio.view_deliverables": "查看文件",
   "studio.return_to_chat": "返回对话",
-  "drawer.work_title": "任务过程",
   "drawer.work_open_session": "打开对话",
   "drawer.work_stop": "停止此项",
   "drawer.work_no_steps": "等待执行步骤更新…",
@@ -882,5 +881,13 @@
   "card.stop_handoff_modified": "已改动文件：{files}",
   "card.stop_handoff_pending": "尚未完成检查：{items}",
   "card.heartbeat_waiting": "正在等待，尚未确认进展",
-  "verify.visual_disclaimer": "说明：已核对文件结构与声明内容，未在 PowerPoint/Excel 中打开做视觉实测。"
+  "verify.visual_disclaimer": "说明：已核对文件结构与声明内容，未在 PowerPoint/Excel 中打开做视觉实测。",
+  "notice.card_not_found": "这张确认卡片已经处理过了。",
+  "notice.card_selection_empty": "请先至少选择一项。",
+  "notice.card_selection_invalid": "选项已失效，请刷新后重试。",
+  "notice.approval_hash_mismatch": "操作参数已变更，请重新核对后再确认。",
+  "card.stop_handoff_verified": "已确认完成：{items}",
+  "card.stop_rollback_none": "本轮尚未改动文件，可以直接继续发送新指令。",
+  "card.stop_rollback_modified": "已改动的文件仅留在本地目录且未发布，检查后可继续或重跑。",
+  "card.disambig_empty_hint": "当前没有可选目标，可开始新指令继续。"
 }

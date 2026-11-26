@@ -11,32 +11,61 @@ use flowy_agent::{
 };
 use flowy_ui as theme;
 use gpui::{
-    AnyElement, Context, FontWeight, SharedString, div, prelude::*, px,
+    AnyElement, Context, FontWeight, SharedString, Stateful, div, prelude::*,
+    px,
 };
 
 use crate::panel::StudioPanel;
 
-/// Formats a live [`BranchHeartbeat`] into one concise, honest progress line
-/// without fabricating percentage progress when no new evidence has arrived.
+const MAX_COMMAND_PREVIEW_CHARS: usize = 600;
+
+/// Deterministic 64-bit FNV-1a hash so element IDs derive from stable
+/// `(session_id, card_id, subkey)` tuples instead of positional list indices.
+fn stable_card_hash(parts: &[&str]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+fn clamp_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}\u{2026}")
+    } else {
+        head
+    }
+}
+
+/// Formats a live [`BranchHeartbeat`] into one concise, honest, redacted
+/// progress line without fabricating percentage progress when no new evidence
+/// has arrived.
 #[must_use]
 pub fn format_heartbeat_line(
     heartbeat: &BranchHeartbeat,
     waiting_label: &str,
 ) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::with_capacity(3);
+    let mut parts: Vec<String> = Vec::with_capacity(3);
     if let Some(last) = heartbeat
         .last_completed
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        parts.push(last);
+        parts.push(crate::ports::redact_trace_text(last));
     }
     let current = heartbeat.current_action.trim();
     if !current.is_empty() {
-        parts.push(current);
+        parts.push(crate::ports::redact_trace_text(current));
     } else if heartbeat.awaiting_evidence && !waiting_label.trim().is_empty() {
-        parts.push(waiting_label.trim());
+        parts.push(waiting_label.trim().to_owned());
     }
     if let Some(next) = heartbeat
         .next_check_hint
@@ -44,16 +73,81 @@ pub fn format_heartbeat_line(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        parts.push(next);
+        parts.push(crate::ports::redact_trace_text(next));
     }
     if parts.is_empty() {
         None
     } else {
-        Some(parts.join(" · "))
+        Some(parts.join(" \u{00b7} "))
     }
 }
 
 impl StudioPanel {
+    fn is_session_resolving(&self, session_id: &str) -> bool {
+        self.resolving_cards
+            .iter()
+            .any(|(sid, _)| sid == session_id)
+    }
+
+    fn pending_card_shell(
+        &self,
+        id: (&'static str, u64),
+        debug_sel: &'static str,
+        title: String,
+        badge: Option<String>,
+    ) -> Stateful<gpui::Div> {
+        let header_title = div()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(6.))
+            .child(
+                theme::icons::circle_alert()
+                    .size(px(14.))
+                    .text_color(self.theme.status_attention()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.theme.ink())
+                    .child(title.clone()),
+            );
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(self.theme.space(8.))
+            .child(header_title)
+            .when_some(badge, |row, tag| {
+                row.child(
+                    div()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded_md()
+                        .bg(self.theme.soft())
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(tag),
+                )
+            });
+        div()
+            .id(id)
+            .debug_selector(move || debug_sel.to_owned())
+            .role(gpui::Role::Alert)
+            .aria_label(title)
+            .w_full()
+            .rounded_xl()
+            .border_1()
+            .border_color(self.theme.status_attention().opacity(0.45))
+            .bg(self.theme.card())
+            .shadow_xs()
+            .p(self.theme.space(12.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
+            .child(header)
+    }
+
     /// Renders persisted pending decision cards for the active conversation.
     pub(crate) fn pending_cards_slot(
         &self,
@@ -71,12 +165,14 @@ impl StudioPanel {
             .flex_1()
             .min_w_0()
             .max_w(px(crate::STAGE_MAX_W))
+            .max_h(px(320.))
+            .overflow_y_scroll()
             .px(self.theme.space(32.))
             .pb(self.theme.space(8.))
             .flex()
             .flex_col()
             .gap(self.theme.space(8.));
-        for (idx, card) in cards.iter().enumerate() {
+        for card in &cards {
             stack = stack.child(match card {
                 PendingCard::Disambiguation {
                     card_id,
@@ -92,7 +188,6 @@ impl StudioPanel {
                     impact_boundary,
                     options,
                     *allow_multi,
-                    idx as u64,
                     cx,
                 ),
                 PendingCard::ToolApproval {
@@ -111,7 +206,6 @@ impl StudioPanel {
                     args_hash,
                     risk_reason,
                     command_preview,
-                    idx as u64,
                     cx,
                 ),
             });
@@ -136,28 +230,51 @@ impl StudioPanel {
         impact_boundary: &str,
         options: &[DisambiguationOption],
         allow_multi: bool,
-        idx: u64,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let resolving = self.resolving_cards.contains(card_id);
-        let selected_ids = self
+        let card_hash = stable_card_hash(&[session_id, card_id]);
+        let resolving = self.is_session_resolving(session_id);
+        let card_key = (session_id.to_owned(), card_id.to_owned());
+        let selected_ids: Vec<String> = self
             .pending_card_selected
-            .get(card_id)
-            .cloned()
-            .unwrap_or_default();
+            .get(&card_key)
+            .map_or_default(|ids| {
+                ids.iter()
+                    .filter(|oid| {
+                        options.iter().any(|opt| &opt.object_id == *oid)
+                    })
+                    .cloned()
+                    .collect()
+            });
 
         let mut option_list = div().w_full().flex().flex_col().gap(px(6.));
-        for (opt_ix, option) in options.iter().enumerate() {
+        if options.is_empty() {
+            option_list = option_list.child(
+                div()
+                    .w_full()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(8.))
+                    .rounded_lg()
+                    .bg(self.theme.soft().opacity(0.5))
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("card.disambig_empty_hint")),
+            );
+        }
+        for option in options {
             let is_selected = selected_ids.contains(&option.object_id);
             let sid = session_id.to_owned();
             let cid = card_id.to_owned();
             let oid = option.object_id.clone();
+            let opt_hash = stable_card_hash(&[session_id, card_id, &oid]);
             let ext_tag = option.extension.trim().to_ascii_uppercase();
-            let label = option.label.clone();
-            let anchor = option.anchor_summary.trim().to_owned();
+            let label = crate::ports::redact_trace_text(option.label.trim());
+            let anchor =
+                crate::ports::redact_trace_text(option.anchor_summary.trim());
             option_list = option_list.child(
                 theme::interactive(
-                    ("disambig-opt", idx * 32 + opt_ix as u64),
+                    ("disambig-opt", opt_hash),
                     SharedString::from(label.clone()),
                     &self.theme,
                 )
@@ -181,8 +298,11 @@ impl StudioPanel {
                 .items_center()
                 .justify_between()
                 .gap(self.theme.space(8.))
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
+                .when(resolving, |row| row.opacity(0.6))
+                .when(!resolving, |row| {
+                    row.cursor_pointer()
+                        .hover(|style| style.bg(self.theme.soft()))
+                })
                 .child(
                     div()
                         .flex_1()
@@ -240,13 +360,13 @@ impl StudioPanel {
                 )
                 .on_click(cx.listener(
                     move |panel, _, _, cx| {
-                        if panel.resolving_cards.contains(&cid) {
+                        if panel.is_session_resolving(&sid) {
                             return;
                         }
                         if allow_multi {
                             let entry = panel
                                 .pending_card_selected
-                                .entry(cid.clone())
+                                .entry((sid.clone(), cid.clone()))
                                 .or_default();
                             if let Some(pos) =
                                 entry.iter().position(|x| x == &oid)
@@ -274,92 +394,67 @@ impl StudioPanel {
         let sid_confirm = session_id.to_owned();
         let cid_confirm = card_id.to_owned();
         let confirm_ids = selected_ids;
-        let title = self.t("card.disambig_title");
-        let boundary = impact_boundary.trim().to_owned();
-        let prompt_line = prompt.trim().to_owned();
+        let boundary = crate::ports::redact_trace_text(impact_boundary.trim());
+        let prompt_line = crate::ports::redact_trace_text(prompt.trim());
 
-        div()
-            .id(("pending-disambig-card", idx))
-            .debug_selector(|| "chat-pending-disambig-card".to_owned())
-            .role(gpui::Role::Alert)
-            .aria_label(title.clone())
-            .w_full()
-            .rounded_xl()
-            .border_1()
-            .border_color(self.theme.status_attention().opacity(0.45))
-            .bg(self.theme.card())
-            .shadow_xs()
-            .p(self.theme.space(12.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(8.))
-            .child(
+        self.pending_card_shell(
+            ("pending-disambig-card", card_hash),
+            "chat-pending-disambig-card",
+            self.t("card.disambig_title"),
+            None,
+        )
+        .when(!boundary.is_empty(), |card| {
+            card.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(6.))
-                    .child(
-                        theme::icons::circle_alert()
-                            .size(px(14.))
-                            .text_color(self.theme.status_attention()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.ink())
-                            .child(title),
-                    ),
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(boundary),
             )
-            .when(!boundary.is_empty(), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .whitespace_normal()
-                        .child(boundary),
-                )
-            })
-            .when(!prompt_line.is_empty(), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.ink().opacity(0.85))
-                        .whitespace_normal()
-                        .child(prompt_line),
-                )
-            })
-            .child(option_list)
-            .when(allow_multi, |card| {
-                card.child(
-                    div().w_full().flex().justify_end().child(
-                        theme::Button::new(
-                            ("disambig-confirm", idx),
-                            self.t("card.disambig_confirm"),
-                        )
-                        .variant(theme::ControlVariant::Primary)
-                        .size(theme::ControlSize::Small)
-                        .disabled(resolving || confirm_ids.is_empty())
-                        .loading(resolving)
-                        .render(
-                            &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                if !confirm_ids.is_empty() {
-                                    panel.resolve_pending_card(
-                                        sid_confirm.clone(),
-                                        cid_confirm.clone(),
-                                        CardSelection::Disambiguate {
-                                            object_ids: confirm_ids.clone(),
-                                        },
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
+        })
+        .when(!prompt_line.is_empty(), |card| {
+            card.child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.ink().opacity(0.85))
+                    .whitespace_normal()
+                    .child(prompt_line),
+            )
+        })
+        .child(option_list)
+        .when(allow_multi && !options.is_empty(), |card| {
+            card.child(
+                div().w_full().flex().justify_end().child(
+                    theme::Button::new(
+                        ("disambig-confirm", card_hash),
+                        self.t("card.disambig_confirm"),
+                    )
+                    .variant(theme::ControlVariant::Primary)
+                    .size(theme::ControlSize::Small)
+                    .disabled(confirm_ids.is_empty())
+                    .loading(resolving)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            if panel.is_session_resolving(&sid_confirm)
+                                || confirm_ids.is_empty()
+                            {
+                                return;
+                            }
+                            panel.resolve_pending_card(
+                                sid_confirm.clone(),
+                                cid_confirm.clone(),
+                                CardSelection::Disambiguate {
+                                    object_ids: confirm_ids.clone(),
+                                },
+                                cx,
+                            );
+                        }),
                     ),
-                )
-            })
-            .into_any_element()
+                ),
+            )
+        })
+        .into_any_element()
     }
 
     #[expect(
@@ -375,158 +470,124 @@ impl StudioPanel {
         args_hash: &str,
         risk_reason: &str,
         command_preview: &str,
-        idx: u64,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let resolving = self.resolving_cards.contains(card_id);
-        let title = self.t("card.tool_approval_title");
+        let card_hash = stable_card_hash(&[session_id, card_id]);
+        let resolving = self.is_session_resolving(session_id);
         let reason = crate::ports::redact_trace_text(risk_reason.trim());
         let target = crate::ports::redact_trace_text(target_summary.trim());
-        let preview = crate::ports::redact_trace_text(command_preview.trim());
+        let preview = clamp_chars(
+            &crate::ports::redact_trace_text(command_preview.trim()),
+            MAX_COMMAND_PREVIEW_CHARS,
+        );
         let sid_ok = session_id.to_owned();
         let cid_ok = card_id.to_owned();
         let hash_ok = args_hash.to_owned();
         let sid_no = session_id.to_owned();
         let cid_no = card_id.to_owned();
 
-        div()
-            .id(("pending-tool-approval-card", idx))
-            .debug_selector(|| "chat-pending-tool-approval-card".to_owned())
-            .role(gpui::Role::Alert)
-            .aria_label(title.clone())
-            .w_full()
-            .rounded_xl()
-            .border_1()
-            .border_color(self.theme.status_attention().opacity(0.45))
-            .bg(self.theme.card())
-            .shadow_xs()
-            .p(self.theme.space(12.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(8.))
-            .child(
+        self.pending_card_shell(
+            ("pending-tool-approval-card", card_hash),
+            "chat-pending-tool-approval-card",
+            self.t("card.tool_approval_title"),
+            Some(tool_name.to_owned()),
+        )
+        .when(!reason.is_empty(), |card| {
+            card.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(self.theme.space(6.))
-                            .child(
-                                theme::icons::circle_alert()
-                                    .size(px(14.))
-                                    .text_color(self.theme.status_attention()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .child(title),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded_md()
-                            .bg(self.theme.soft())
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .child(tool_name.to_owned()),
-                    ),
+                    .text_xs()
+                    .text_color(self.theme.ink())
+                    .whitespace_normal()
+                    .child(reason),
             )
-            .when(!reason.is_empty(), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.ink())
-                        .whitespace_normal()
-                        .child(reason),
-                )
-            })
-            .when(!target.is_empty(), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .whitespace_normal()
-                        .child(target),
-                )
-            })
-            .when(!preview.is_empty(), |card| {
-                card.child(
-                    div()
-                        .w_full()
-                        .px(self.theme.space(10.))
-                        .py(self.theme.space(6.))
-                        .rounded_lg()
-                        .bg(self.theme.soft())
-                        .text_xs()
-                        .text_color(self.theme.ink())
-                        .whitespace_normal()
-                        .child(preview),
-                )
-            })
-            .child(
+        })
+        .when(!target.is_empty(), |card| {
+            card.child(
                 div()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(target),
+            )
+        })
+        .when(!preview.is_empty(), |card| {
+            card.child(
+                div()
+                    .id(("tool-approval-preview", card_hash))
                     .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        theme::Button::new(
-                            ("tool-approval-deny", idx),
-                            self.t("card.tool_deny"),
-                        )
-                        .variant(theme::ControlVariant::Secondary)
-                        .size(theme::ControlSize::Small)
-                        .disabled(resolving)
-                        .render(
-                            &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.resolve_pending_card(
-                                    sid_no.clone(),
-                                    cid_no.clone(),
-                                    CardSelection::DenyTool { reason: None },
-                                    cx,
-                                );
-                            }),
-                        ),
-                    )
-                    .child(
-                        theme::Button::new(
-                            ("tool-approval-approve", idx),
-                            self.t("card.tool_approve"),
-                        )
-                        .variant(theme::ControlVariant::Primary)
-                        .size(theme::ControlSize::Small)
-                        .disabled(resolving)
-                        .loading(resolving)
-                        .render(
-                            &self.theme,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.resolve_pending_card(
-                                    sid_ok.clone(),
-                                    cid_ok.clone(),
-                                    CardSelection::ApproveTool {
-                                        args_hash: hash_ok.clone(),
-                                    },
-                                    cx,
-                                );
-                            }),
-                        ),
-                    ),
+                    .max_h(px(140.))
+                    .overflow_y_scroll()
+                    .px(self.theme.space(10.))
+                    .py(self.theme.space(6.))
+                    .rounded_lg()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.ink())
+                    .whitespace_normal()
+                    .child(preview),
             )
-            .into_any_element()
+        })
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(self.theme.space(8.))
+                .child(
+                    theme::Button::new(
+                        ("tool-approval-deny", card_hash),
+                        self.t("card.tool_deny"),
+                    )
+                    .variant(theme::ControlVariant::Secondary)
+                    .size(theme::ControlSize::Small)
+                    .disabled(resolving)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            if panel.is_session_resolving(&sid_no) {
+                                return;
+                            }
+                            panel.resolve_pending_card(
+                                sid_no.clone(),
+                                cid_no.clone(),
+                                CardSelection::DenyTool { reason: None },
+                                cx,
+                            );
+                        }),
+                    ),
+                )
+                .child(
+                    theme::Button::new(
+                        ("tool-approval-approve", card_hash),
+                        self.t("card.tool_approve"),
+                    )
+                    .variant(theme::ControlVariant::Primary)
+                    .size(theme::ControlSize::Small)
+                    .loading(resolving)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            if panel.is_session_resolving(&sid_ok) {
+                                return;
+                            }
+                            panel.resolve_pending_card(
+                                sid_ok.clone(),
+                                cid_ok.clone(),
+                                CardSelection::ApproveTool {
+                                    args_hash: hash_ok.clone(),
+                                },
+                                cx,
+                            );
+                        }),
+                    ),
+                ),
+        )
+        .into_any_element()
     }
 
     /// Quiet, honest stop-handoff summary shown when a stopped turn left
-    /// modified files, pending checks, or rollback advice.
+    /// modified files, verified effects, pending checks, or rollback advice.
     pub(crate) fn stop_handoff_slot(
         &self,
         _cx: &Context<'_, Self>,
@@ -549,20 +610,40 @@ impl StudioPanel {
             let names: Vec<String> = manifest
                 .modified_files
                 .iter()
-                .map(|p| crate::ports::basename(p))
+                .map(|p| {
+                    crate::ports::redact_trace_text(&crate::ports::basename(p))
+                })
                 .collect();
             self.tf(
                 "card.stop_handoff_modified",
                 &[("files", &names.join(", "))],
             )
         });
+        let verified_line =
+            (!manifest.verified_effects.is_empty()).then(|| {
+                let items: Vec<String> = manifest
+                    .verified_effects
+                    .iter()
+                    .map(|item| crate::ports::redact_trace_text(item))
+                    .collect();
+                self.tf(
+                    "card.stop_handoff_verified",
+                    &[("items", &items.join(", "))],
+                )
+            });
         let pending_line = (!manifest.pending_checks.is_empty()).then(|| {
+            let items: Vec<String> = manifest
+                .pending_checks
+                .iter()
+                .map(|item| crate::ports::redact_trace_text(item))
+                .collect();
             self.tf(
                 "card.stop_handoff_pending",
-                &[("items", &manifest.pending_checks.join(", "))],
+                &[("items", &items.join(", "))],
             )
         });
-        let rollback = manifest.rollback_hint.trim().to_owned();
+        let rollback =
+            localize_rollback_hint(&manifest.rollback_hint, &|k| self.t(k));
 
         div()
             .w_full()
@@ -603,6 +684,15 @@ impl StudioPanel {
                                 .child(text),
                         )
                     })
+                    .when_some(verified_line, |col, text| {
+                        col.child(
+                            div()
+                                .text_xs()
+                                .text_color(self.theme.muted())
+                                .whitespace_normal()
+                                .child(text),
+                        )
+                    })
                     .when_some(pending_line, |col, text| {
                         col.child(
                             div()
@@ -632,33 +722,52 @@ impl StudioPanel {
         selection: CardSelection,
         cx: &mut Context<'_, Self>,
     ) {
-        if !self.resolving_cards.insert(card_id.clone()) {
+        if self.is_session_resolving(&session_id) {
+            return;
+        }
+        let guard_key = (session_id.clone(), card_id.clone());
+        if !self.resolving_cards.insert(guard_key.clone()) {
             return;
         }
         let agent = self.agent.clone();
-        let card_done = card_id.clone();
         cx.notify();
         cx.spawn(async move |panel, cx| {
-            let result = cx
+            let sid_for_job = session_id.clone();
+            let (result, updates) = cx
                 .background_executor()
                 .spawn(async move {
-                    agent.apply_card_action(CardAction::ResolveCard {
-                        session_id,
-                        card_id,
-                        selection,
-                    })
+                    let outcome = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            agent.apply_card_action(CardAction::ResolveCard {
+                                session_id: sid_for_job,
+                                card_id,
+                                selection,
+                            })
+                        }),
+                    )
+                    .unwrap_or(Err("notice.agent_failed"));
+                    let updates = agent.drain_updates();
+                    (outcome, updates)
                 })
                 .await;
             let _ = panel.update(cx, |panel, cx| {
-                panel.resolving_cards.remove(&card_done);
-                panel.pending_card_selected.remove(&card_done);
+                panel.resolving_cards.remove(&guard_key);
+                panel.process_agent_updates(updates, cx);
                 match result {
                     Ok(_) => {
+                        panel.pending_card_selected.remove(&guard_key);
                         panel.refresh_chat(cx);
                         panel.refresh_board_snapshot();
                     }
                     Err(notice) => {
-                        panel.emit_notice(Some(notice), cx);
+                        if notice == "notice.card_not_found" {
+                            panel.pending_card_selected.remove(&guard_key);
+                        }
+                        if panel.agent.active_session_id().as_deref()
+                            == Some(guard_key.0.as_str())
+                        {
+                            panel.emit_notice(Some(notice), cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -668,8 +777,21 @@ impl StudioPanel {
     }
 }
 
+fn localize_rollback_hint(raw: &str, t: &dyn Fn(&str) -> String) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("card.stop_rollback_") {
+        t(trimmed)
+    } else {
+        crate::ports::redact_trace_text(trimmed)
+    }
+}
+
 fn stop_handoff_has_details(manifest: &StopHandoffManifest) -> bool {
     !manifest.modified_files.is_empty()
+        || !manifest.verified_effects.is_empty()
         || !manifest.pending_checks.is_empty()
         || !manifest.rollback_hint.trim().is_empty()
 }
@@ -679,7 +801,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heartbeat_line_omits_empty_parts_and_surfaces_waiting_honestly() {
+    fn heartbeat_line_omits_empty_parts_redacts_secrets_and_surfaces_waiting() {
         let waiting = BranchHeartbeat {
             last_completed: Some("已读取报价表".into()),
             last_completed_at_ms: Some(1_000),
@@ -693,18 +815,37 @@ mod tests {
             Some("已读取报价表 · 正在等待，尚未确认进展 · 等待工具返回")
         );
 
+        let with_secret = BranchHeartbeat {
+            current_action:
+                "curl -H 'Authorization: Bearer sk-1234567890abcdef1234567890'"
+                    .into(),
+            ..BranchHeartbeat::default()
+        };
+        let rendered = format_heartbeat_line(&with_secret, "waiting").unwrap();
+        assert!(!rendered.contains("sk-1234567890abcdef1234567890"));
+
         let empty = BranchHeartbeat::default();
         assert_eq!(format_heartbeat_line(&empty, "waiting"), None);
     }
 
     #[test]
-    fn stop_handoff_visibility_requires_real_details() {
+    fn stop_handoff_visibility_and_rollback_localization_work() {
         assert!(!stop_handoff_has_details(&StopHandoffManifest::default()));
-        let populated = StopHandoffManifest {
-            modified_files: vec!["outputs/deck.pptx".into()],
+        let verified_only = StopHandoffManifest {
+            verified_effects: vec!["verify_deck (deck.pptx)".into()],
             ..StopHandoffManifest::default()
         };
-        assert!(stop_handoff_has_details(&populated));
+        assert!(stop_handoff_has_details(&verified_only));
+        assert_eq!(
+            localize_rollback_hint("card.stop_rollback_none", &|k| format!(
+                "<{k}>"
+            )),
+            "<card.stop_rollback_none>"
+        );
+        assert_eq!(
+            localize_rollback_hint("legacy hint", &|k| format!("<{k}>")),
+            "legacy hint"
+        );
     }
 
     #[gpui::test]
@@ -782,7 +923,17 @@ mod tests {
                             },
                         ],
                         true,
-                        0,
+                        cx,
+                    )
+                });
+                let empty_disambig = self.panel.update(cx, |panel, cx| {
+                    panel.render_disambiguation_card(
+                        "s-test",
+                        "card-disambig-empty",
+                        "empty options guard",
+                        "",
+                        &[],
+                        false,
                         cx,
                     )
                 });
@@ -795,36 +946,24 @@ mod tests {
                         "abc123",
                         "将修改工作区文件",
                         "Remove-Item -Recurse ./dist",
-                        1,
                         cx,
                     )
                 });
                 div()
-                    .size_full()
+                    .w(px(640.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
                     .child(disambig)
+                    .child(empty_disambig)
                     .child(approval)
             }
         }
-        let panel_ref = panel.clone();
+        let panel_clone = panel.clone();
         let (_preview, preview_cx) =
-            cx.add_window_view(move |_, _| CardPreview { panel: panel_ref });
-        preview_cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(
-            preview_cx
-                .debug_bounds("chat-pending-disambig-card")
-                .is_some(),
-            "disambiguation card must paint"
-        );
-        assert!(
-            preview_cx
-                .debug_bounds("chat-pending-tool-approval-card")
-                .is_some(),
-            "tool approval card must paint"
-        );
+            cx.add_window_view(|_, _| CardPreview { panel: panel_clone });
+        preview_cx.run_until_parked();
         drop(panel);
-        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

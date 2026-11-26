@@ -783,7 +783,6 @@
   "studio.deliverables_count": "檔案 ({count})",
   "studio.view_deliverables": "查看檔案",
   "studio.return_to_chat": "返回對話",
-  "drawer.work_title": "背景任務透視",
   "drawer.work_open_session": "切到該對話",
   "drawer.work_stop": "停止此項",
   "drawer.work_no_steps": "等待執行步驟更新…",
@@ -882,5 +881,13 @@
   "card.stop_handoff_modified": "已更動檔案：{files}",
   "card.stop_handoff_pending": "尚未完成檢查：{items}",
   "card.heartbeat_waiting": "正在等待，尚未確認進展",
-  "verify.visual_disclaimer": "說明：已核對檔案結構與聲明內容，未在 PowerPoint/Excel 中開啟做視覺實測。"
+  "verify.visual_disclaimer": "說明：已核對檔案結構與聲明內容，未在 PowerPoint/Excel 中開啟做視覺實測。",
+  "notice.card_not_found": "這張確認卡片已經處理過了。",
+  "notice.card_selection_empty": "請先至少選擇一項。",
+  "notice.card_selection_invalid": "選項已失效，請重新整理後再試。",
+  "notice.approval_hash_mismatch": "操作參數已變更，請重新核對後再確認。",
+  "card.stop_handoff_verified": "已確認完成：{items}",
+  "card.stop_rollback_none": "本輪尚未更動檔案，可以直接繼續傳送新指令。",
+  "card.stop_rollback_modified": "已更動的檔案僅留在本機目錄且未發布，檢查後可繼續或重跑。",
+  "card.disambig_empty_hint": "目前沒有可選目標，可開始新指令繼續。"
 }

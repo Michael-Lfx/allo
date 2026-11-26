@@ -124,6 +124,41 @@ pub fn load_preview(path: &str) -> PreviewBody {
 }
 
 impl StudioPanel {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared tooltip-wrapped icon button used across drawer and modal toolbars"
+    )]
+    pub(crate) fn icon_tooltip_button(
+        &self,
+        id: &'static str,
+        tip_id: &'static str,
+        label: String,
+        icon: theme::icons::Icon,
+        variant: theme::ControlVariant,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<'_, Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let rtl = self.i18n.locale().is_rtl();
+        let handler = cx.listener(move |panel, _event, window, cx| {
+            on_click(panel, window, cx);
+        });
+        let button = theme::IconButton::new(id, label.clone(), icon)
+            .variant(variant)
+            .size(theme::ControlSize::Small)
+            .render_interactive(&self.theme, handler);
+        theme::tooltip_trigger(tip_id, button, label, &self.ui, window, cx, rtl)
+            .into_any_element()
+    }
+
+    fn switch_to_deliverables_tab(&mut self, cx: &Context<'_, Self>) {
+        self.drawer_tab = RightDrawerTab::Deliverables;
+        self.inspected_work = None;
+        if self.deliverables.is_none() {
+            self.deliverables = self.feed.read(cx).latest_deliverables();
+        }
+    }
+
     /// Unified right-hand sheet drawer: calm 2-tab inspector (Files | Activity)
     /// plus a quiet Trace debug toggle and focused Single-Work Inspector.
     pub(crate) fn right_sheet_drawer(
@@ -131,7 +166,6 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let rtl = self.i18n.locale().is_rtl();
         let active_session = self.agent.active_session_id();
         let body = if let Some(work) = &self.inspected_work {
             match self.drawer_tab {
@@ -205,62 +239,39 @@ impl StudioPanel {
         };
 
         let trace_active = self.drawer_tab == RightDrawerTab::Trace;
-        let trace_label = self.t("drawer.toggle_trace");
-        let trace_btn = theme::IconButton::new(
+        let trace_toggle = self.icon_tooltip_button(
             "drawer-tab-trace",
-            trace_label.clone(),
+            "drawer-tab-trace-tip",
+            self.t("drawer.toggle_trace"),
             theme::icons::sliders_horizontal().size(px(14.)),
-        )
-        .variant(if trace_active {
-            theme::ControlVariant::Secondary
-        } else {
-            theme::ControlVariant::Ghost
-        })
-        .size(theme::ControlSize::Small)
-        .render_interactive(
-            &self.theme,
-            cx.listener(|panel, _, _, cx| {
-                panel.drawer_tab = if panel.drawer_tab == RightDrawerTab::Trace
-                {
-                    RightDrawerTab::Deliverables
+            if trace_active {
+                theme::ControlVariant::Secondary
+            } else {
+                theme::ControlVariant::Ghost
+            },
+            |panel, _, cx| {
+                if panel.drawer_tab == RightDrawerTab::Trace {
+                    panel.switch_to_deliverables_tab(cx);
                 } else {
-                    RightDrawerTab::Trace
-                };
+                    panel.drawer_tab = RightDrawerTab::Trace;
+                }
                 panel.refresh_trace_cache();
                 cx.notify();
-            }),
-        );
-        let trace_toggle = theme::tooltip_trigger(
-            "drawer-tab-trace-tip",
-            trace_btn,
-            trace_label,
-            &self.ui,
+            },
             window,
             cx,
-            rtl,
         );
-        let close_label = self.t("chat.close");
-        let close_btn = theme::IconButton::new(
+        let close_button = self.icon_tooltip_button(
             "deliverables-close",
-            close_label.clone(),
-            theme::icons::x().size(px(14.)),
-        )
-        .variant(theme::ControlVariant::Ghost)
-        .size(theme::ControlSize::Small)
-        .render_interactive(
-            &self.theme,
-            cx.listener(|panel, _, _, cx| {
-                panel.close_right_sheet(cx);
-            }),
-        );
-        let close_button = theme::tooltip_trigger(
             "deliverables-close-tip",
-            close_btn,
-            close_label,
-            &self.ui,
+            self.t("chat.close"),
+            theme::icons::x().size(px(14.)),
+            theme::ControlVariant::Ghost,
+            |panel, _, cx| {
+                panel.close_right_sheet(cx);
+            },
             window,
             cx,
-            rtl,
         );
 
         let tab_pill =
@@ -285,13 +296,10 @@ impl StudioPanel {
                     })
                     .child(label)
                     .on_click(cx.listener(move |panel, _, _, cx| {
-                        panel.drawer_tab = tab;
                         if matches!(tab, RightDrawerTab::Deliverables) {
-                            panel.inspected_work = None;
-                            if panel.deliverables.is_none() {
-                                panel.deliverables =
-                                    panel.feed.read(cx).latest_deliverables();
-                            }
+                            panel.switch_to_deliverables_tab(cx);
+                        } else {
+                            panel.drawer_tab = tab;
                         }
                         panel.refresh_trace_cache();
                         cx.notify();
@@ -992,7 +1000,6 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let rtl = self.i18n.locale().is_rtl();
         let name = crate::ports::basename(path);
         let external_path = path.to_owned();
         let body = match preview {
@@ -1012,79 +1019,44 @@ impl StudioPanel {
                 .child(self.t(key))
                 .into_any_element(),
         };
-        let back_label = self.t("chat.back");
-        let back_btn = theme::IconButton::new(
+        let back_button = self.icon_tooltip_button(
             "preview-back",
-            back_label.clone(),
-            theme::icons::arrow_left().size(px(14.)),
-        )
-        .variant(theme::ControlVariant::Ghost)
-        .size(theme::ControlSize::Small)
-        .render_interactive(
-            &self.theme,
-            cx.listener(|panel, _, _, cx| {
-                panel.set_preview_file(None, cx);
-            }),
-        );
-        let back_button = theme::tooltip_trigger(
             "preview-back-tip",
-            back_btn,
-            back_label,
-            &self.ui,
+            self.t("chat.back"),
+            theme::icons::arrow_left().size(px(14.)),
+            theme::ControlVariant::Ghost,
+            |panel, _, cx| {
+                panel.set_preview_file(None, cx);
+            },
             window,
             cx,
-            rtl,
         );
-        let reveal_label = self.t("board.reveal_folder");
-        let reveal_btn = theme::IconButton::new(
+        let reveal_path = external_path.clone();
+        let reveal_button = self.icon_tooltip_button(
             "preview-reveal-folder",
-            reveal_label.clone(),
-            theme::icons::folder_open().size(px(14.)),
-        )
-        .variant(theme::ControlVariant::Ghost)
-        .size(theme::ControlSize::Small)
-        .render_interactive(
-            &self.theme,
-            cx.listener({
-                let reveal_path = external_path.clone();
-                move |panel, _, _, cx| {
-                    panel.reveal_file(&reveal_path, cx);
-                }
-            }),
-        );
-        let reveal_button = theme::tooltip_trigger(
             "preview-reveal-folder-tip",
-            reveal_btn,
-            reveal_label,
-            &self.ui,
+            self.t("board.reveal_folder"),
+            theme::icons::folder_open().size(px(14.)),
+            theme::ControlVariant::Ghost,
+            move |panel, _, cx| {
+                panel.reveal_file(&reveal_path, cx);
+            },
             window,
             cx,
-            rtl,
         );
         let open_button =
             flowy_agent::can_open_with_default_app(&external_path).then(|| {
-                let open_label = self.t("deliverables.open_external");
-                let open_btn = theme::IconButton::new(
+                self.icon_tooltip_button(
                     "preview-open-external",
-                    open_label.clone(),
-                    theme::icons::external_link().size(px(14.)),
-                )
-                .variant(theme::ControlVariant::Ghost)
-                .size(theme::ControlSize::Small)
-                .render_interactive(
-                    &self.theme,
-                    cx.listener(move |panel, _, _, cx| {
-                        panel.open_file_externally(&external_path, cx);
-                    }),
-                );
-                theme::tooltip_trigger(
                     "preview-open-external-tip",
-                    open_btn,
-                    open_label,
-                    &self.ui,
+                    self.t("deliverables.open_external"),
+                    theme::icons::external_link().size(px(14.)),
+                    theme::ControlVariant::Ghost,
+                    move |panel, _, cx| {
+                        panel.open_file_externally(&external_path, cx);
+                    },
                     window,
                     cx,
-                    rtl,
                 )
             });
         div()

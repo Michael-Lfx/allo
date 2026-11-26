@@ -134,6 +134,7 @@ impl StudioPanel {
         }
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
+        self.clear_right_sheet();
         self.active_project_id = None;
         self.agent.set_workspace_for_new_sessions(None);
         self.agent
@@ -245,7 +246,7 @@ impl StudioPanel {
 
     #[must_use]
     pub(crate) const fn is_model_menu_open(&self) -> bool {
-        matches!(self.popover, ActivePopover::ModelMenu { .. })
+        matches!(self.popover, ActivePopover::ModelMenu)
     }
 
     #[must_use]
