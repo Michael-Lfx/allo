@@ -298,8 +298,8 @@ pub struct StudioPanel {
     /// must not pull the app back into the last thread, but a session restored
     /// because the user asked for it should land on Chat.
     pub(crate) session_opened_by_user: bool,
-    /// Files the deliverables drawer lists; `None` keeps it closed.
-    pub(crate) deliverables: Option<Vec<FileEntry>>,
+    /// Files the deliverables drawer lists; `None` keeps it empty or closed.
+    pub(crate) deliverables: Option<crate::deliverables::DeliverableScope>,
     /// Single background work or queued receipt inspected in the right sheet.
     pub(crate) inspected_work: Option<crate::deliverables::InspectedWork>,
     /// Path being previewed inside the drawer.
@@ -928,6 +928,7 @@ impl StudioPanel {
             feed.set_suppress_trailing_stopped(suppress_trailing_stopped);
             feed.sync_history(session, history, cx);
         });
+        self.sync_right_drawer_deliverables(cx);
         if status != self.status {
             let was_busy = self.status.is_busy();
             self.status = status;
@@ -2092,9 +2093,25 @@ impl StudioPanel {
         files: Vec<FileEntry>,
         cx: &mut Context<'_, Self>,
     ) {
+        let had_input = !files.is_empty();
+        let filtered = self.feed.read(cx).filter_settled_deliverables(files);
+        if had_input && filtered.is_empty() {
+            if self
+                .preview_file
+                .as_deref()
+                .is_some_and(|path| self.feed.read(cx).is_path_failed(path))
+            {
+                self.preview_file = None;
+                self.preview_body = None;
+            }
+            self.emit_notice(Some("verify.card.failed"), cx);
+            return;
+        }
         self.clear_right_sheet();
         self.right_drawer_open = true;
-        self.deliverables = Some(files);
+        self.deliverables = Some(
+            crate::deliverables::DeliverableScope::TurnSnapshot(filtered),
+        );
         self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
         self.close_all_popovers();
         cx.notify();
@@ -2126,7 +2143,8 @@ impl StudioPanel {
         self.clear_right_sheet();
         self.right_drawer_open = true;
         if let Some(files) = files {
-            self.deliverables = Some(files);
+            self.deliverables =
+                Some(crate::deliverables::DeliverableScope::Latest(files));
             self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
         } else {
             self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
@@ -2144,10 +2162,7 @@ impl StudioPanel {
 
     /// Number of deliverables available in the current session's latest turn.
     pub(crate) fn deliverable_count(&self, cx: &Context<'_, Self>) -> usize {
-        self.feed
-            .read(cx)
-            .latest_deliverables()
-            .map_or(0, |files| files.len())
+        self.feed.read(cx).latest_deliverable_count()
     }
 
     /// Picks a file to preview; `None` returns the drawer to the list.
@@ -2156,10 +2171,63 @@ impl StudioPanel {
         path: Option<String>,
         cx: &mut Context<'_, Self>,
     ) {
+        if let Some(target) = path.as_deref()
+            && self.feed.read(cx).is_path_failed(target)
+        {
+            self.preview_file = None;
+            self.preview_body = None;
+            self.emit_notice(Some("verify.card.failed"), cx);
+            return;
+        }
         self.preview_body =
             path.as_deref().map(crate::deliverables::load_preview);
         self.preview_file = path;
         cx.notify();
+    }
+
+    fn sync_right_drawer_deliverables(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.right_drawer_open {
+            return;
+        }
+        let mut changed = false;
+        let next = match &self.deliverables {
+            Some(crate::deliverables::DeliverableScope::TurnSnapshot(
+                existing,
+            )) => {
+                let filtered = self
+                    .feed
+                    .read(cx)
+                    .filter_settled_deliverables(existing.clone());
+                (!filtered.is_empty()).then_some(
+                    crate::deliverables::DeliverableScope::TurnSnapshot(
+                        filtered,
+                    ),
+                )
+            }
+            Some(crate::deliverables::DeliverableScope::Latest(_)) | None => {
+                self.feed
+                    .read(cx)
+                    .latest_deliverables()
+                    .map(crate::deliverables::DeliverableScope::Latest)
+            }
+        };
+        if next != self.deliverables {
+            self.deliverables = next;
+            changed = true;
+        }
+        if self
+            .preview_file
+            .as_deref()
+            .is_some_and(|path| self.feed.read(cx).is_path_failed(path))
+        {
+            self.preview_file = None;
+            self.preview_body = None;
+            self.emit_notice(Some("verify.card.failed"), cx);
+            changed = false;
+        }
+        if changed {
+            cx.notify();
+        }
     }
 
     pub fn create_project(
@@ -4705,6 +4773,217 @@ mod tests {
                 panel.active_quote.is_none(),
                 "clear_thread permanently removes session A quote"
             );
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn drawer_blocks_overturned_history_clicks_preserves_turn_snapshot_and_evicts_failed_preview(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy_studio_drawer_settlement_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let work_dir = root.join("work");
+        std::fs::create_dir_all(&work_dir).expect("create work dir");
+        let a_path = work_dir.join("alpha.md");
+        let b_path = work_dir.join("beta.md");
+        std::fs::write(&a_path, "alpha preview").expect("write alpha");
+        std::fs::write(&b_path, "beta preview").expect("write beta");
+        let a_str = a_path.to_string_lossy().into_owned();
+        let a_variant =
+            format!(r"\\?\{}", a_str.to_ascii_uppercase().replace('\\', "/"));
+        let b_str = b_path.to_string_lossy().into_owned();
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        let entry_a = FileEntry {
+            path: a_str.clone(),
+            change: flowy_agent::FileChangeKind::Add,
+            added: 1,
+            removed: 0,
+            binary: false,
+        };
+        let entry_b = FileEntry {
+            path: b_str.clone(),
+            change: flowy_agent::FileChangeKind::Add,
+            added: 1,
+            removed: 0,
+            binary: false,
+        };
+        let verify_line = |id: &str, path: &str, ok: bool| {
+            flowy_agent::ChatLine::Verification {
+                report_id: id.into(),
+                artifact_path: path.into(),
+                artifact_hash: format!("hash-{id}"),
+                ok,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            }
+        };
+
+        // 1. User pins Turn 1 snapshot [A]; Turn 2 delivers independent [B];
+        //    sync must preserve [A] instead of kicking user to [B].
+        panel.update(cx, |panel, cx| {
+            let sid =
+                panel.agent.create_router_session().expect("create session");
+            panel.open_session(&sid, cx);
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid.clone()),
+                    flowy_agent::ChatHistory {
+                        rows: vec![
+                            flowy_agent::ChatLine::User {
+                                text: "turn 1".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_a.clone()],
+                            },
+                            verify_line("r1", &a_str, true),
+                        ],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+                cx.emit(OpenDeliverables(vec![entry_a.clone()]));
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            assert!(panel.right_drawer_open);
+            assert_eq!(
+                panel.deliverables.as_ref().map(
+                    crate::deliverables::DeliverableScope::files
+                ),
+                Some(&[entry_a.clone()][..])
+            );
+
+            // Turn 2 adds B while Turn 1 snapshot is pinned open.
+            let sid = panel.agent.active_session_id().unwrap();
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid),
+                    flowy_agent::ChatHistory {
+                        rows: vec![
+                            flowy_agent::ChatLine::User {
+                                text: "turn 1".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_a.clone()],
+                            },
+                            verify_line("r1", &a_str, true),
+                            flowy_agent::ChatLine::User {
+                                text: "turn 2".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_b.clone()],
+                            },
+                            verify_line("r2", &b_str, true),
+                        ],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            panel.sync_right_drawer_deliverables(cx);
+            assert_eq!(
+                panel.deliverables,
+                Some(crate::deliverables::DeliverableScope::TurnSnapshot(vec![
+                    entry_a.clone(),
+                ])),
+                "live sync must not overwrite pinned historical turn snapshot"
+            );
+            assert_eq!(panel.deliverable_count(cx), 1);
+
+            // Start previewing A, then Turn 3 fails verification on A via variant path.
+            panel.set_preview_file(Some(a_str.clone()), cx);
+            assert_eq!(panel.preview_file.as_deref(), Some(a_str.as_str()));
+            assert!(matches!(panel.preview_body, Some(PreviewBody::Text(_))));
+
+            let sid = panel.agent.active_session_id().unwrap();
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid),
+                    flowy_agent::ChatHistory {
+                        rows: vec![
+                            flowy_agent::ChatLine::User {
+                                text: "turn 1".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_a.clone()],
+                            },
+                            verify_line("r1", &a_str, true),
+                            flowy_agent::ChatLine::User {
+                                text: "turn 2".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_b.clone()],
+                            },
+                            verify_line("r2", &b_str, true),
+                            flowy_agent::ChatLine::User {
+                                text: "turn 3".into(),
+                            },
+                            verify_line("r3", &a_variant, false),
+                        ],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            panel.sync_right_drawer_deliverables(cx);
+            assert!(
+                panel.preview_file.is_none() && panel.preview_body.is_none(),
+                "active preview must be evicted when later turn fails verification"
+            );
+            assert!(panel.deliverables.is_none());
+            assert_eq!(panel.notice, Some("verify.card.failed"));
+
+            // Attempting to re-open historical FileChanges([A]) or preview A is blocked.
+            panel.close_right_sheet(cx);
+            panel.emit_notice(None, cx);
+            panel.open_deliverables(vec![entry_a.clone()], cx);
+            assert!(!panel.right_drawer_open);
+            assert_eq!(panel.notice, Some("verify.card.failed"));
+
+            panel.emit_notice(None, cx);
+            panel.set_preview_file(Some(a_str.clone()), cx);
+            assert!(panel.preview_file.is_none());
+            assert_eq!(panel.notice, Some("verify.card.failed"));
         });
 
         drop(panel);

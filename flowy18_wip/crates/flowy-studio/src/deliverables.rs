@@ -26,6 +26,24 @@ pub enum RightDrawerTab {
     Trace,
 }
 
+/// Source scope for the files listed inside the Deliverables drawer so
+/// background refreshes update live latest results without overwriting a user's
+/// pinned historical turn snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliverableScope {
+    Latest(Vec<FileEntry>),
+    TurnSnapshot(Vec<FileEntry>),
+}
+
+impl DeliverableScope {
+    #[must_use]
+    pub const fn files(&self) -> &[FileEntry] {
+        match self {
+            Self::Latest(files) | Self::TurnSnapshot(files) => files.as_slice(),
+        }
+    }
+}
+
 /// Truncated parent directory path, keeping the tail legible in a narrow drawer.
 fn short_parent_path(path: &str) -> String {
     let cleaned = crate::ports::display_path_str(path);
@@ -155,7 +173,11 @@ impl StudioPanel {
         self.drawer_tab = RightDrawerTab::Deliverables;
         self.inspected_work = None;
         if self.deliverables.is_none() {
-            self.deliverables = self.feed.read(cx).latest_deliverables();
+            self.deliverables = self
+                .feed
+                .read(cx)
+                .latest_deliverables()
+                .map(DeliverableScope::Latest);
         }
     }
 
@@ -193,7 +215,10 @@ impl StudioPanel {
         } else {
             match self.drawer_tab {
                 RightDrawerTab::Deliverables => {
-                    let files = self.deliverables.as_deref().unwrap_or(&[]);
+                    let files = self
+                        .deliverables
+                        .as_ref()
+                        .map_or(&[][..], DeliverableScope::files);
                     match (&self.preview_file, &self.preview_body) {
                         (Some(path), Some(preview)) => self
                             .preview_view(path, preview, window, cx)
