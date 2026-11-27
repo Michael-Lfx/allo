@@ -7,11 +7,14 @@
       （#275/#278/#286）照出了本仓 t1/t3/c1 没收掉的衍生缺口。已按影响面
       复核立 pg0–pg5 六票并全部关票：Stage 0/1/1c + 三个衍生
       小修；Stage 2 先量后裁（pg0 样本 0 翻转），Stage 3 不搬。后端
-      1137/0、UI 学习页 529/0、typecheck/check 绿。真机补跑（2026-11-27）：
+      1138/0、UI 学习页 529/0、typecheck/check 绿。真机补跑（2026-11-27）：
       pg1 staged/enforce 单批 EXIT 0；enforce 2 批第 2 批 11 行
       （8 已教）direct=0/sibling=0 通过，第 1 批因自证两次走 Degraded；
       温度计目标在第 1 批 teaches 门耗尽（标尺/刻度线，另票候选）。pg2
-      两臂与 pg4 拆读仍欠；详见各票 Resolution。已并回 feat/learn1116
+      服务级真 DB 已跑（声明块注记/剔除/不级联），LLM 两臂欠；pg3 删课
+      purge 三表归零 + 墓碑、pg4 学完再跳过 409 + 遗留重叠读数、pg5
+      归档 due=false/start 409/恢复 due=true 均经真 HTTP/DB；UI 走查欠。
+      详见各票 Resolution。已并回 feat/learn1116
       @67e8b362f（已推）；main 未动。 -->
 
 ## 一、隔壁这波是什么（2026-11-26 复核）

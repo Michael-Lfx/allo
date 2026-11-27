@@ -3308,7 +3308,7 @@ impl LearningService {
     /// 盘点。同一份上下文起草、重裁、评审复用——评审面渲染时不含地形清单，
     /// 也不含概念缺口附注（m3，教练面专属；开关 on 臂才装配）
     /// （[`crate::learning_graph::CoachContext::render_for_review`]）。
-    async fn build_coach_context(
+    pub(super) async fn build_coach_context(
         &self,
         course_id: &LearningCourseId,
         engine: &crate::learning_graph::GrowthRunner,

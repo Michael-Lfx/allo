@@ -142,3 +142,14 @@ part_of: map.md
 - 测试：`structure_view` 3 项（剔除/反级联、首批限定/空集逐字节、无 slug
   不误删）；`basis_tests` 加声明块 slug 可读断言；全量 1137/0。
 - 欠账：真机两臂（勾声明 vs 不勾）未跑；单测已覆盖渲染面与读取面。
+
+### 真机补跑（2026-11-27）
+
+- **服务级真 DB（生产装配，非 mock）**：`build_coach_context` 在真首批
+  （课时表空）无声明 → `块甲(block-a)` 在参考面；插入
+  `learning_basis_declarations.blocks_json=["block-a"]` → 参考面出现
+  `已会声明块（本批不装）：块甲`、块甲行消失、块乙(block-b)保留。
+  测试：`declared_floor_hides_declared_block_only_in_first_batch_context`。
+- **仍未跑**：真 LLM 两臂（带声明课 vs 不带声明课各 grow 一次）。当前
+  只有服务级真 DB + 渲染单测；该过滤在 LLM 之前，机制面已覆盖，但
+  “教练在真实工具目标下是否真的不生成声明块节点”仍是欠账。

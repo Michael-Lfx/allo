@@ -109,3 +109,15 @@ learnhub #278（2026-11-26，票面自述「来源: allo t1 的同构面」）�
   （due=false、start 409、恢复 due 回来）；全量 1137/0。
 - UI 零改（已按 `course.enabled` 藏入口）；聚合 overview 已筛 enabled，
   不重复改。欠账：无（仅 API 行为收紧，票面已记）。
+
+### 真机补跑（2026-11-27，HTTP/DB）
+
+新二进制 + 临时 fresh 数据目录起本地 `nomicore --local`，真 HTTP：
+
+- 完课 6 节 → `GET /courses/{id}/quiz/progress`：
+  `settled_count=6 trigger_count=6 due=true`。
+- `POST /courses/{id}/archive` 200 → 同读数 `due=false`；
+  `POST /courses/{id}/quiz/start` **409**
+  `Conflict: 课程已归档，恢复后可继续`。
+- `POST /courses/{id}/restore` 200 → `due=true` 回来。
+- UI 真机走查未做（UI 已按 enabled 藏入口）；API 面已端到端验证。

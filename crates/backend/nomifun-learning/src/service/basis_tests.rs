@@ -827,3 +827,71 @@ async fn growth_review_reusing_declared_concept_passes_provenance_without_degrad
         "提名名落池：{aliases_json}"
     );
 }
+
+/// pg2 真机（服务级、真 DB）：真首批（课时表空）无声明 → 块甲在参考面；
+/// 声明 block-a 后 → 参考面出现「已会声明块（本批不装）：块甲」且块甲行
+/// 消失，未声明块乙保留。走 `build_coach_context` 生产装配，不 mock 渲染。
+#[tokio::test]
+async fn declared_floor_hides_declared_block_only_in_first_batch_context() {
+    let completer = SequencedCompleter::new(vec![]);
+    let (service, user, course) = seed_basis_course(completer.clone()).await;
+    // 删控制节点 → lesson_titles 空 = 真首批（不是花名册空的宽条件）。
+    sqlx::query(
+        "DELETE FROM learning_lessons WHERE module_id IN \
+         (SELECT module_id FROM learning_modules WHERE course_id = ?)",
+    )
+    .bind(course.as_str())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let engine = crate::learning_graph::GrowthRunner {
+        course_id: course.clone(),
+        user_id: user.clone(),
+        model_override: None,
+        trigger: crate::learning_graph::system_action::SystemActionTrigger::Manual,
+        ready_count: 0,
+    };
+
+    let baseline = service
+        .build_coach_context(&course, &engine, completer.as_ref())
+        .await
+        .unwrap();
+    assert!(
+        baseline.terrain_list.contains("- 块甲(block-a)"),
+        "无声明首批：块甲在参考面\n{}",
+        baseline.terrain_list
+    );
+
+    sqlx::query(
+        "INSERT INTO learning_basis_declarations \
+         (course_id, doors_json, blocks_json, concept_ids_json, declared_at, note) \
+         VALUES (?, '[\"G1\"]', '[\"block-a\"]', '[]', ?, '')",
+    )
+    .bind(course.as_str())
+    .bind(now_ms())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+
+    let declared = service
+        .build_coach_context(&course, &engine, completer.as_ref())
+        .await
+        .unwrap();
+    assert!(
+        declared
+            .terrain_list
+            .contains("已会声明块（本批不装）：块甲"),
+        "声明后首批参考面须有注记\n{}",
+        declared.terrain_list
+    );
+    assert!(
+        !declared.terrain_list.contains("- 块甲(block-a)"),
+        "声明块行须从首批参考面消失\n{}",
+        declared.terrain_list
+    );
+    assert!(
+        declared.terrain_list.contains("- 块乙(block-b)"),
+        "未声明块保留（不级联）\n{}",
+        declared.terrain_list
+    );
+}

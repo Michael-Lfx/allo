@@ -165,3 +165,16 @@ node-completed 的节点），卡片分子分母同口径；「已跳过 K」拆
 - 欠账：「已跳过 K 个」拆读未做（需新增双语 i18n；当前 skipped 被静默
   从分母剔除）。传统课**无 XP 账本**时，存量「完成后再跳过」没有结算
   证据，读侧仍按 skipped 计；图/完成链路有 node-completed，按已学完算。
+
+### 真机补跑（2026-11-27，HTTP/DB）
+
+新二进制 + 临时 fresh 数据目录起本地 `nomicore --local`，真 HTTP：
+
+- 导入 6 课时课 → `POST /lessons/{id}/progress {"status":"completed"}`
+  200 → 再 `{"status":"skipped"}` **409**
+  `Conflict: 这个课时已经学完，不需要跳过`。
+- 直写遗留重叠（status=skipped、completed_at=NULL）→
+  `GET /courses/{id}`：`skipped_lessons=0`、`settled_or_completed=1`、
+  `completed_lessons=0`、`total_lessons=6`——读侧按已学完算，skipped 不
+  双计；卡片/工作区分子走 `settled_or_completed`，与分母同口径。
+- UI 真机走查（已完成节点隐藏跳过钮）未做；UI 测试覆盖。

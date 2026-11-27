@@ -194,3 +194,16 @@ learnhub #275（2026-11-26，票面自述「来源: allo t3 的同构面」）�
   `skipped_not_settled_clause` 单源。
 - 欠账：在跑 lesson 任务无法取消是既有协议限制；它靠发布守卫失败可见，
   不再写回墓碑课。UI pill 未加删除事件，任务被取消后由快照显示终态。
+
+### 真机补跑（2026-11-27，HTTP/DB）
+
+新二进制 + 临时 fresh 数据目录起本地 `nomicore --local`，真 HTTP：
+
+- 种入 `learning_growth_batches` / `learning_structure_findings` /
+  `learning_structure_mounts` 各 1 行 → `DELETE /api/learning/courses/{id}`
+  返回 **200** → 三表按 `course_id` 归零；课程行 `deleted_at` 置位、
+  `enabled=0`；`GET /courses` 不再含该课。
+- 在途任务/草稿取消仍由单测覆盖（`cancel_for_course` 2 项、
+  `delete_course_clears_lesson_drafts_before_purge`、
+  `apply_batch_refuses_deleted_course_before_any_write`）；真实“删课时有
+  生长任务在跑”的 UI 时序未跑。
