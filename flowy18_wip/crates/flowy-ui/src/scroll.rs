@@ -35,7 +35,6 @@ const THUMB_IDLE_INSET_PX: f32 = 3.0;
 const THUMB_ACTIVE_WIDTH_PX: f32 = 6.0;
 const THUMB_ACTIVE_INSET_PX: f32 = 2.0;
 const THUMB_MIN_LENGTH_PX: f32 = 36.0;
-const MIN_VIEWPORT_WIDTH_FOR_SCROLLBAR_PX: f32 = 1.0;
 
 type ViewportModifier = Box<dyn FnOnce(gpui::Div) -> gpui::Div>;
 
@@ -569,21 +568,27 @@ fn flowy_scrollbar<H: ScrollbarHandle + Clone + 'static>(
     inset_y: Pixels,
 ) -> AnyElement {
     let styles = scrollbar_styles_for(theme);
-    let vp_width = f32::from(handle.viewport_bounds().size.width);
-    // Avoid overlapping text if a pane is momentarily collapsed below 1px.
     let bar = Scrollbar::new(handle)
         .id(id)
         .axis(axis)
         .mode(mode)
         .styles(move |_| styles);
-    if inset_y > px(0.) && vp_width >= MIN_VIEWPORT_WIDTH_FOR_SCROLLBAR_PX {
+    if inset_y > px(0.) {
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
             .py(inset_y)
-            .child(bar.viewport_from_layout())
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .child(bar.viewport_from_layout()),
+            )
             .into_any_element()
     } else {
         bar.into_any_element()
