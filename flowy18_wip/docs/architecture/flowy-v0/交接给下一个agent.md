@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.17 更新）**：**直接先读 §26（`origin/main@c4da1ac65` PR #505/#506/#508/#509/#510/#511 合流基线、Shell/Skills 加固、图表核验、Spill/View-GC、S5 时钟跳变/增量尾读缓存与唤醒队列）**，再按需查 §25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§25 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §26 不一致处，**一律以 §26 为准**。
+> **现役唯一入口（2026-11-27 修订 9.19 更新）**：**直接先读 §27（`origin/main@331e7a535` + `refactor/flowy18-split-panel`：PR #512–#527 主干账本、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 重锚完结与 worktree 状态）**，再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§26 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §27 不一致处，**一律以 §27 为准**。
 
 ---
 
@@ -833,3 +833,29 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
   2. **`persona.rs` 注入与跨轮 `dispatch_receipt_id` 细粒度重锚**（§24.2 遗留）。
   3. **V6 外发通道**（仍受 [`BLOCKED.md`](BLOCKED.md) §5 🔴 硬阻塞，未经拍板不动工）。
 - **工作树提醒**：暖构建 worktree `.agents/worktrees/feat-router-kernel`（build dir `Temp\flowy18-router-build`）与 `.agents/worktrees/fix-windows-hotpatch`（build dir `Temp\flowy18-s4-build`）已保留备用，严禁双 worktree 共用同一 `CARGO_BUILD_BUILD_DIR`。
+
+---
+
+## 27. `origin/main@331e7a535` PR #512–#527 合流与 `panel/` 拆分收口基线（2026-11-27 · 修订 9.19）
+
+- **主干与分支基线**：`origin/main` 已合入至 `331e7a535`（含 `PR #512` `3a944f8da`、`PR #513` `b0129f38d`、`PR #514` `b528defbb`、`PR #515` `35f6aac8b`、`PR #516` `e5b04ff9b`、`PR #517` `fa2645a68`、`PR #518` `802150b06`、`PR #520` `20addf87f`、`PR #521` `e9048d7bf`、`PR #519` `881c198d3`、`PR #522` `811733fc6`、`PR #523` `de8cd800f`、`PR #524` `8a41e08cf`、`PR #525` `2c0bc9444`、`PR #526` `d16911e75`、`PR #527` `331e7a535`）；当前 PR 分支 `refactor/flowy18-split-panel` 在其基础上完成 `flowy-studio/src/panel.rs` 目录化拆分与文档对账。
+- **核心改动速查**：
+  1. **Wave 1 CI 与仓内治理（PR #514 / #516 / #520）**：`flowy18-ui.yml` 覆盖 14/14 活跃 crate；清零生产 `.unwrap()` 与移除孤立 `crates/flowy-chat`；修复 Ubuntu APT 与 Windows `resolve_deepest_ancestor` 对 `..` 的路径处理。
+  2. **Router/Work 架构文档、Mission Control 看板与按回执重锚（PR #523 / #525 / #526）**：新增 `docs/architecture/router-work-and-tool-extension.md`；上线 Direction C Master-Detail 看板 UI、23 语言 locale key 与 pdf/markdown 主题 token；通过 `dispatch_receipt_id` 完成修订 Worker 卡片逐轮重锚（原 §24.2 遗留项**已完结**）。
+  3. **Wave 2 五大核心模块目录映射**：
+     - `crates/flowy-agent/src/handle/`（14 文件，PR #519）：`mod.rs`(2301) / `observer.rs`(2112) / `work.rs`(1761) / `router.rs`(1387) / `queue.rs`(1312) / `submit.rs`(1028) / `artifacts.rs`(895) / `workspace_lock.rs`(673) / `sessions.rs`(637) / `boot.rs`(551) / `guards.rs`(460) / `work_events.rs`(328) / `tests.rs`(3316) / `router_tests.rs`(5736)。
+     - `crates/flowy-agent/src/artifact_store/`（5 文件，PR #522）：`mod.rs`(1596) / `views_gc.rs`(588) / `deletion_plan.rs`(563) / `io_helpers.rs`(385) / `tests.rs`(1547)。
+     - `crates/flowy-studio/src/feed/`（7 文件，PR #524）：`mod.rs`(873) / `cards.rs`(899) / `bubbles.rs`(646) / `process_blocks.rs`(424) / `settlement.rs`(209) / `indicator.rs`(154) / `tests.rs`(1663)。
+     - `crates/flowy-studio/src/panel/`（5 文件，本分支）：`mod.rs`(1170) / `submit.rs`(490) / `nav.rs`(733) / `drawer.rs`(606) / `tests.rs`(3087)；`mod/submit/nav/drawer` 全部采用显式非通配符导入，`#[cfg(test)] mod tests;` 固定置底以保持 `check-ui-contracts.mjs` 全量扫描，`tests.rs` 同步 `include_bytes!("../../examples/fixtures/preview/sample.pptx")` 相对路径且未改任何测试断言。
+     - `crates/flowy-app/src/app/`（25 文件，PR #527）：`mod.rs`(1451) / `skills.rs`(2876) / `dock.rs`(1811) / `quick_search.rs`(1065) / `settings.rs`(1045) / `conversation_actions.rs`(909) / `gallery.rs`(892) / `projects.rs`(844) / `login.rs`(806) / `more.rs`(778) / `artifact_preview.rs`(600) / `ota.rs`(555) / `titlebar.rs`(541) / `invite.rs`(538) / `bootstrap.rs`(487) / `flex.rs`(483) / `cloud_sync.rs`(455) / `appearance.rs`(433) / `login_flow.rs`(380) / `skills_jobs.rs`(376) / `library_actions.rs`(357) / `artifact_cleanup.rs`(285) / `state.rs`(221) / `tests.rs`(1516) / `artifact_tests.rs`(494)。
+- **实测验证基线（2026-11-27）**：`cargo fmt --all -- --check` 0 diff；`bun scripts/check-ui-contracts.mjs --self-test`（24 夹具 PASS）与 `bun scripts/check-ui-contracts.mjs` PASS；`cargo test -p flowy-studio --locked` **175 passed; 0 failed; 2 ignored**；`cargo clippy --workspace --all-targets --locked -- -D warnings` 0 告警；`cargo check -p flowy-desktop --locked` PASS；`panel/` 5 文件均为纯 LF（`hasCR=False`），生产文件 0 `::*;` 与 0 `.unwrap(`。
+- **后续优先级**：
+  1. **在研并行分支协同**：`.agents/worktrees/feat-work-capability-seam`（分支 `feat/flowy18-work-capability-provider`，触及 `flowy-agent-core/src/tools/{provider,registry}.rs`、`flowy-agent/src/handle/provider_tests.rs`、`docs/architecture/{README,router-work-and-tool-extension}.md`）仍在开发中，注意避免接口冲突。
+  2. **OS 沙箱子进程真机 `Enforced` 接入**（`sandbox.rs` macOS Seatbelt / Linux `bwrap` / Windows AppContainer）。
+  3. **`persona.rs` 注入**（原 §24.2 `dispatch_receipt_id` 已由 PR #526 完成，此处仅余 `persona.rs`）。
+  4. **V6 外发通道**（仍受 [`BLOCKED.md`](BLOCKED.md) §5 🔴 硬阻塞，未经拍板不动工）。
+- **工作树现状清单（仅盘点，仍严格遵守一 worktree 一独立 `CARGO_BUILD_BUILD_DIR`）**：
+  - 保留暖构建工作树：`.agents/worktrees/fix-windows-hotpatch`（本收口分支 `refactor/flowy18-split-panel`）
+  - 保留在研工作树：`.agents/worktrees/feat-work-capability-seam`（`feat/flowy18-work-capability-provider`）
+  - 已合主干可确认后清理候选：`.agents/worktrees/docs-router-work-arch`（PR #523 已合）、`.agents/worktrees/feat-router-kernel`（PR #525 已合）、`.agents/worktrees/feat-flowy-local-receipt`（PR #526 已合）
+
