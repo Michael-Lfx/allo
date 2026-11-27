@@ -408,9 +408,17 @@ impl ResolvedTheme {
     pub fn file_kind_slides(self) -> Rgba {
         rgb(if self.dark { 0x00fb_bf24 } else { 0x00b4_5309 })
     }
-    /// Identity tint for document deliverables (DOCX / PDF / MD).
+    /// Identity tint for document deliverables (DOCX).
     pub fn file_kind_doc(self) -> Rgba {
         rgb(if self.dark { 0x0060_a5fa } else { 0x0025_63eb })
+    }
+    /// Identity tint for PDF deliverables (PDF).
+    pub fn file_kind_pdf(self) -> Rgba {
+        rgb(if self.dark { 0x00f8_7171 } else { 0x00b9_1c1c })
+    }
+    /// Identity tint for Markdown deliverables (MD / Markdown).
+    pub fn file_kind_markdown(self) -> Rgba {
+        rgb(if self.dark { 0x0022_d3ee } else { 0x000e_7490 })
     }
     /// Identity tint for code & web deliverables (HTML / CSS / JS / TS / PY / RS / JSON).
     pub fn file_kind_code(self) -> Rgba {
@@ -515,6 +523,8 @@ mod tests {
                     assert!(contrast(t.muted(), bg) >= 4.5);
                     assert!(contrast(t.focus_ring(), bg) >= 3.);
                     assert!(contrast(t.border_strong(), bg) >= 3.);
+                    assert!(contrast(t.file_kind_pdf(), bg) >= 4.5);
+                    assert!(contrast(t.file_kind_markdown(), bg) >= 4.5);
                 }
                 assert!(contrast(t.composer_muted(), t.composer()) >= 4.5);
             }
@@ -746,5 +756,46 @@ mod reference_tests {
                 && light.status_attention_bg().a < 0.25
         );
         assert!(light.danger_bg().a > 0.05 && light.danger_bg().a < 0.25);
+    }
+
+    #[test]
+    fn file_kind_pdf_and_markdown_have_distinct_dual_theme_tokens() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_eq!(light.file_kind_pdf(), rgb(0x00b9_1c1c));
+        assert_eq!(dark.file_kind_pdf(), rgb(0x00f8_7171));
+        assert_ne!(light.file_kind_pdf(), dark.file_kind_pdf());
+
+        assert_eq!(light.file_kind_markdown(), rgb(0x000e_7490));
+        assert_eq!(dark.file_kind_markdown(), rgb(0x0022_d3ee));
+        assert_ne!(light.file_kind_markdown(), dark.file_kind_markdown());
+
+        for theme in [light, dark] {
+            let palette = [
+                theme.file_kind_sheet(),
+                theme.file_kind_slides(),
+                theme.file_kind_doc(),
+                theme.file_kind_pdf(),
+                theme.file_kind_markdown(),
+                theme.file_kind_code(),
+            ];
+            for (idx, color) in palette.iter().enumerate() {
+                for other in palette.iter().skip(idx + 1) {
+                    assert_ne!(color, other);
+                }
+            }
+        }
     }
 }

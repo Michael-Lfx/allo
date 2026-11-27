@@ -548,7 +548,10 @@ impl FlowyApp {
                     app.close_overlay(scope.as_ref(), cx);
                 },
             ),
-            cx.observe(&studio, |_, _, cx| cx.notify()),
+            cx.observe(&studio, |app, _, cx| {
+                app.sync_section_from_studio(cx);
+                cx.notify();
+            }),
             cx.observe(&library, |_, _, cx| cx.notify()),
             cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
             cx.observe(&ui.theme, |app, _, cx| {
@@ -1789,11 +1792,30 @@ impl FlowyApp {
         }
     }
 
+    /// Reconciles `FlowyApp.section` when `StudioPanel` leaves
+    /// `StudioSurface::Board` (e.g. Board "Open chat" or "New task"), keeping
+    /// sidebar selection and Back/Forward history synchronized.
+    pub(super) fn sync_section_from_studio(
+        &mut self,
+        cx: &Context<'_, Self>,
+    ) -> bool {
+        if self.section == Section::Board
+            && self.studio.read(cx).surface != StudioSurface::Board
+        {
+            self.nav_back.push(Section::Board);
+            self.nav_forward.clear();
+            self.section = Section::Studio;
+            return true;
+        }
+        false
+    }
+
     fn on_studio_event(
         &mut self,
         event: &StudioEvent,
         cx: &mut Context<'_, Self>,
     ) {
+        let section_synced = self.sync_section_from_studio(cx);
         match event {
             StudioEvent::Notice(notice) => {
                 // Events are delivered after the current action. Reconcile the
@@ -1860,13 +1882,6 @@ impl FlowyApp {
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
-                if self.section == Section::Board
-                    && self.studio.read(cx).surface != StudioSurface::Board
-                {
-                    self.nav_back.push(Section::Board);
-                    self.nav_forward.clear();
-                    self.section = Section::Studio;
-                }
                 self.load_library(cx);
                 cx.notify();
             }
@@ -1891,6 +1906,9 @@ impl FlowyApp {
                     cx,
                 );
             }
+        }
+        if section_synced {
+            cx.notify();
         }
     }
 
