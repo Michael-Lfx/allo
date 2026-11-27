@@ -39,7 +39,10 @@ pub trait ToolProvider: Send + Sync {
     ///
     /// Called only for `Worker (ReadWrite)` and legacy `Standard` sessions.
     /// Implementations must remain fast and side-effect-free (no blocking IO,
-    /// network calls, or subprocess spawns during registration).
+    /// network calls, or subprocess spawns during registration). Only registered
+    /// [`ToolDefinition`](crate::tools::ToolDefinition) items are mounted from the
+    /// staging registry; pre-execution policies belong in
+    /// [`ToolProvider::evaluate_pre_tool`].
     fn register_tools(
         &self,
         ctx: &ToolProviderContext<'_>,

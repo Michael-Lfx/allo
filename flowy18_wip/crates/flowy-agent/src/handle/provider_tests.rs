@@ -566,10 +566,7 @@ fn read_write_worker_mounts_stateful_provider_and_respects_session_id_filter() {
     );
 
     let worker_id = handle.child_works(&router_id)[0].work_id.clone();
-    assert_eq!(
-        *service.executed_sessions.lock().unwrap(),
-        vec![worker_id.clone()]
-    );
+    assert_eq!(*service.executed_sessions.lock().unwrap(), vec![worker_id]);
     let rw_req = server
         .recorded()
         .into_iter()
@@ -957,7 +954,7 @@ fn register_tool_provider_hot_swap_and_unregister_are_idempotent() {
         },
     );
     handle.register_tool_provider(Arc::new(NamedProvider("   ")));
-    assert!(handle.registered_tool_provider_ids().is_empty());
+    assert_eq!(handle.registered_tool_provider_ids(), Vec::<String>::new());
 
     handle.register_tool_provider(Arc::new(NamedProvider("mcp-a")));
     handle.register_tool_provider(Arc::new(NamedProvider("mcp-b")));

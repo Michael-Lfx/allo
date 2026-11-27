@@ -29,7 +29,7 @@ pub enum ToolSource {
 impl ToolSource {
     /// Human-readable origin label for tool search catalogs and telemetry.
     #[must_use]
-    pub fn label(&self) -> &str {
+    pub const fn label(&self) -> &str {
         match self {
             Self::Builtin => "builtin",
             Self::Host => "host",
@@ -163,7 +163,7 @@ impl ToolDefinition {
     }
 
     #[must_use]
-    pub fn source(&self) -> &ToolSource {
+    pub const fn source(&self) -> &ToolSource {
         &self.source
     }
 
