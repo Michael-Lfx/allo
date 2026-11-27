@@ -780,6 +780,7 @@ impl FlowyApp {
                 self.active_dialog = ActiveDialog::None;
             }
             self.archive_undo.clear_if_session(&request.id);
+            self.delete_conversation_automations(&request.id);
             // The host deletion already succeeded even when its confirmation
             // is no longer current. Refresh global source/catalog projections.
             self.studio.update(cx, |panel, cx| {

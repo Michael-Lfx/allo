@@ -7,6 +7,7 @@
 
 mod artifact_source;
 mod artifact_store;
+mod automation_tools;
 mod catalog;
 mod config;
 mod conversation_artifacts;

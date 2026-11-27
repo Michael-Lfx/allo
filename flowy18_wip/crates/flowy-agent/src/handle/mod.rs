@@ -57,6 +57,7 @@ const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_MAX_CONCURRENT_WORKS: usize = 3;
 
 mod artifacts;
+mod automation;
 mod boot;
 mod guards;
 mod observer;
@@ -390,6 +391,8 @@ struct UiState {
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
+    /// Backs the Worker automation tools; `None` hides them.
+    automation: Mutex<Option<Arc<flowy_automation::AutomationService>>>,
     initializing: Mutex<bool>,
     context_generation: AtomicU64,
     semantic_verify_enabled: AtomicBool,
@@ -451,6 +454,7 @@ impl UiState {
             workspace_for_new_sessions: Mutex::new(None),
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
+            automation: Mutex::new(None),
             initializing: Mutex::new(true),
             context_generation: AtomicU64::new(0),
             semantic_verify_enabled: AtomicBool::new(

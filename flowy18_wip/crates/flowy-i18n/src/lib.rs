@@ -284,6 +284,16 @@ fn key_set(messages: &HashMap<String, String>) -> BTreeSet<&str> {
 }
 
 #[cfg(test)]
+fn placeholders(value: &str) -> BTreeSet<&str> {
+    value
+        .split('{')
+        .skip(1)
+        .filter_map(|tail| tail.split_once('}'))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::{I18n, Locale, key_set};
     use std::fs;
@@ -291,13 +301,38 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn every_locale_preserves_english_placeholders() {
+        let i18n = I18n::embedded("Flowy");
+        let english = i18n.messages.get(&Locale::En).unwrap();
+        for locale in Locale::ALL {
+            let messages = i18n.messages.get(&locale).unwrap();
+            for (key, expected) in
+                english.iter().filter(|(key, _)| key.starts_with("auto."))
+            {
+                assert_eq!(
+                    super::placeholders(messages.get(key).unwrap()),
+                    super::placeholders(expected),
+                    "{} / {key}",
+                    locale.code(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_locale_has_the_same_keys() {
         let i18n = I18n::embedded("Flowy");
         let base = key_set(i18n.messages.get(&Locale::ZhCn).unwrap());
         assert!(base.len() > 20);
         for locale in Locale::ALL {
-            let keys = key_set(i18n.messages.get(&locale).unwrap());
+            let messages = i18n.messages.get(&locale).unwrap();
+            let keys = key_set(messages);
             assert_eq!(keys, base, "{}", locale.code());
+            for (key, value) in
+                messages.iter().filter(|(key, _)| key.starts_with("auto."))
+            {
+                assert!(!value.trim().is_empty(), "{} / {key}", locale.code());
+            }
         }
     }
 
@@ -321,6 +356,30 @@ mod tests {
             i18n.t("chat.publish.staged"),
             "File staged. It will be delivered when the turn completes."
         );
+    }
+
+    #[test]
+    fn automation_onboarding_is_localized() {
+        let mut i18n = I18n::embedded("Flowy");
+        for (locale, lead, schedule, trigger) in [
+            (
+                Locale::ZhCn,
+                "安排周期性工作，或在特定事件发生时启动任务。",
+                "定时任务",
+                "触发器",
+            ),
+            (
+                Locale::En,
+                "Schedule recurring work or trigger it when a specific event happens.",
+                "Scheduled task",
+                "Trigger",
+            ),
+        ] {
+            i18n.set_locale(locale);
+            assert_eq!(i18n.t("auto.lead"), lead);
+            assert_eq!(i18n.t("auto.schedule_title"), schedule);
+            assert_eq!(i18n.t("auto.trigger_title"), trigger);
+        }
     }
 
     #[test]

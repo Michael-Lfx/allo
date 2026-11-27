@@ -241,6 +241,8 @@ jobs:
         run: cargo test -p flowy-ui --locked
       - name: All 23 locale dictionaries
         run: cargo test -p flowy-i18n --locked
+      - name: Automation storage and scheduler tests
+        run: cargo test -p flowy-automation --locked -- --test-threads=1
       - name: Shell integration tests
         run: cargo test -p flowy-shell --locked
       - name: Studio regression tests

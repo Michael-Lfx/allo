@@ -161,6 +161,7 @@ impl FlowyApp {
                             app.auth.attempted_code.clear();
                             app.set_input_text(&app.auth.code, "", cx);
                             app.auth.session = Some(session);
+                            app.set_automation_signed_in(true);
                             app.auth.phase = LoginPhase::Success;
                             app.auth.message = Some("login.success");
                             app.auth.pending_req_no = None;
@@ -337,6 +338,7 @@ impl FlowyApp {
         self.set_input_text(&self.auth.email, "", cx);
         self.set_input_text(&self.auth.code, "", cx);
         self.auth.session = None;
+        self.set_automation_signed_in(false);
         self.auth.step = LoginStep::Email;
         self.auth.phase = LoginPhase::Idle;
         self.auth.message = None;

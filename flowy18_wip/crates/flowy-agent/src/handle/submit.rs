@@ -701,6 +701,15 @@ impl Harness {
                     force_reconfirm_tools,
                 }));
         }
+        if let Some((service, conversation)) =
+            self.automation_tools_for(&core_session)
+        {
+            crate::automation_tools::register(
+                &run_config.registry,
+                &service,
+                &conversation,
+            );
+        }
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)
         {
