@@ -789,7 +789,7 @@
   "board.branch_count": "{count} 项",
   "board.empty_detail": "新建任务或切换筛选条件，即可在此查看各会话的推进状态与本机交付物。",
   "board.empty_title": "当前筛选下暂无会话",
-  "board.esc_hint": "按 Esc 关闭弹窗",
+  "board.esc_hint": "按 Esc 关闭",
   "board.filter_all": "全部会话 ({count})",
   "board.filter_approval": "待确认",
   "board.filter_delivered": "已交付",

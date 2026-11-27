@@ -279,7 +279,7 @@ impl StudioPanel {
                 .child(
                     theme::interactive(
                         "board-drawer-scrim",
-                        self.t("board.close_drawer"),
+                        self.t("board.esc_hint"),
                         &self.theme,
                     )
                     .w(px(56.))

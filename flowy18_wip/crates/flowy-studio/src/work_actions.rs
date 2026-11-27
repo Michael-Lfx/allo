@@ -585,26 +585,11 @@ impl StudioPanel {
             return;
         }
         let proj_filter = self.board_project_filter.as_deref();
-        let next = self
-            .board_snapshot
-            .sessions
-            .iter()
-            .filter(|g| {
-                !g.archived
-                    && proj_filter
-                        .is_none_or(|pid| g.project_id.as_deref() == Some(pid))
-            })
-            .max_by_key(|g| {
-                if g.has_blocker {
-                    3_u8
-                } else if g.is_running {
-                    2
-                } else {
-                    1
-                }
-            })
-            .or_else(|| self.board_snapshot.sessions.first())
-            .map(|g| g.session_id.clone());
+        let next = pick_default_board_session(
+            &self.board_snapshot.sessions,
+            proj_filter,
+        )
+        .map(str::to_owned);
         self.board_inspector.session = next;
         self.board_inspector.branch = None;
         self.board_inspector.worker_session = None;
@@ -932,5 +917,78 @@ impl StudioPanel {
             }
             Err(key) => self.emit_notice(Some(key), cx),
         }
+    }
+}
+
+/// Picks the default selected session in the Board Master-Detail Inspector,
+/// preferring the first non-synthetic blocker at the top of the action queue.
+fn pick_default_board_session<'a>(
+    sessions: &'a [crate::ports::SessionBoardGroup],
+    project_filter: Option<&str>,
+) -> Option<&'a str> {
+    let matches_scope = |g: &&crate::ports::SessionBoardGroup| {
+        !g.archived
+            && project_filter
+                .is_none_or(|pid| g.project_id.as_deref() == Some(pid))
+    };
+    let preds: [fn(&crate::ports::SessionBoardGroup) -> bool; 4] = [
+        |g| !g.is_synthetic() && g.has_blocker,
+        |g| g.has_blocker,
+        |g| g.is_running,
+        |_| true,
+    ];
+    preds
+        .into_iter()
+        .find_map(|pred| {
+            sessions.iter().filter(matches_scope).find(|g| pred(g))
+        })
+        .or_else(|| sessions.first())
+        .map(|g| g.session_id.as_str())
+}
+
+#[cfg(test)]
+mod board_selection_tests {
+    use super::pick_default_board_session;
+    use crate::ports::{
+        BoardKpiSummary, SessionBoardGroup, UNASSIGNED_QUEUE_SESSION_ID,
+    };
+
+    fn group(id: &str, blocker: bool, running: bool) -> SessionBoardGroup {
+        SessionBoardGroup {
+            session_id: id.into(),
+            title: id.into(),
+            project_id: None,
+            project_name: None,
+            workspace_display: String::new(),
+            updated_at: 1_700_000_000_000,
+            pinned: false,
+            archived: false,
+            preview: None,
+            assistant_summary: None,
+            branches: Vec::new(),
+            workspace_changes: Vec::new(),
+            child_workers: Vec::new(),
+            total_branch_count: 0,
+            total_file_count: 0,
+            session_contract: None,
+            has_blocker: blocker,
+            has_delivered: false,
+            is_running: running,
+            is_active: blocker || running,
+            group_kpi: BoardKpiSummary::default(),
+        }
+    }
+
+    #[test]
+    fn default_board_selection_prefers_first_real_blocker_over_queue() {
+        let sessions = vec![
+            group("s-first-blocker", true, false),
+            group(UNASSIGNED_QUEUE_SESSION_ID, true, true),
+            group("s-second-blocker", true, false),
+        ];
+        assert_eq!(
+            pick_default_board_session(&sessions, None),
+            Some("s-first-blocker")
+        );
     }
 }

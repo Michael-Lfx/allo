@@ -80,9 +80,13 @@ impl StudioPanel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .scrollbar_width(px(6.))
-                    .px(self.theme.space(16.))
-                    .py(self.theme.space(12.))
-                    .child(self.modal_trace_panel(trace_sid, cx))
+                    .child(
+                        div()
+                            .w_full()
+                            .px(self.theme.space(16.))
+                            .py(self.theme.space(12.))
+                            .child(self.modal_trace_panel(trace_sid, cx)),
+                    )
                     .into_any_element()
             }
         };
@@ -509,32 +513,43 @@ impl StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        if let (Some(path), Some(body)) =
+            (&self.drawer_preview.file, &self.drawer_preview.body)
+        {
+            return div()
+                .id("board-inspector-preview-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .scrollbar_width(px(6.))
+                .child(
+                    div()
+                        .w_full()
+                        .px(self.theme.space(16.))
+                        .py(self.theme.space(12.))
+                        .child(
+                            div()
+                                .w_full()
+                                .rounded_xl()
+                                .border_1()
+                                .border_color(self.theme.line())
+                                .bg(self.theme.canvas())
+                                .overflow_hidden()
+                                .child(self.drawer_preview_view(
+                                    path, body, window, cx,
+                                )),
+                        ),
+                )
+                .into_any_element();
+        }
+
         let mut col = div()
-            .id("board-inspector-overview-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .scrollbar_width(px(6.))
+            .w_full()
             .px(self.theme.space(16.))
             .py(self.theme.space(12.))
             .flex()
             .flex_col()
             .gap(self.theme.space(12.));
-
-        if let (Some(path), Some(body)) =
-            (&self.drawer_preview.file, &self.drawer_preview.body)
-        {
-            col = col.child(
-                div()
-                    .w_full()
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(self.theme.line())
-                    .bg(self.theme.canvas())
-                    .overflow_hidden()
-                    .child(self.drawer_preview_view(path, body, window, cx)),
-            );
-        }
 
         for card in self.inspector_status_cards(group, active_branch, cx) {
             col = col.child(card);
@@ -591,7 +606,14 @@ impl StudioPanel {
             );
         }
 
-        col.into_any_element()
+        div()
+            .id("board-inspector-overview-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .scrollbar_width(px(6.))
+            .child(col)
+            .into_any_element()
     }
 
     fn inspector_status_cards(
@@ -1350,11 +1372,7 @@ impl StudioPanel {
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let mut col = div()
-            .id("board-inspector-timeline-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .scrollbar_width(px(6.))
+            .w_full()
             .px(self.theme.space(16.))
             .py(self.theme.space(12.))
             .flex()
@@ -1507,14 +1525,20 @@ impl StudioPanel {
             .filter(|(sid, _)| sid == target_sid)
             .map_or(&[], |(_, lines)| lines.as_slice());
 
-        col.child(self.structured_steps_view(
-            target_sid,
-            cached_lines,
-            target_running,
-            window,
-            cx,
-        ))
-        .into_any_element()
+        div()
+            .id("board-inspector-timeline-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .scrollbar_width(px(6.))
+            .child(col.child(self.structured_steps_view(
+                target_sid,
+                cached_lines,
+                target_running,
+                window,
+                cx,
+            )))
+            .into_any_element()
     }
 
     fn inspector_sticky_footer(

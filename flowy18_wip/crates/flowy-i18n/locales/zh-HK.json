@@ -789,7 +789,7 @@
   "board.branch_count": "{count} 項",
   "board.empty_detail": "建立新任務或切換篩選條件，即可檢視各工作階段進度與本機交付物。",
   "board.empty_title": "目前篩選下暫無工作階段",
-  "board.esc_hint": "按 Esc 關閉視窗",
+  "board.esc_hint": "按 Esc 關閉",
   "board.filter_all": "全部 ({count})",
   "board.filter_approval": "待確認",
   "board.filter_delivered": "已交付",
