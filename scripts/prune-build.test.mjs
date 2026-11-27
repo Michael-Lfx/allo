@@ -1,5 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import {
+  discoverCheckoutBuildTargets,
+  guardBuildTarget,
+  hasMatchingEnvBuildDir,
+  isFlowy18TempBuildName,
+  shouldPruneTempEntry,
+} from './prune-build.mjs';
 
 const rootPackage = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const pruneSource = readFileSync(new URL('./prune-build.mjs', import.meta.url), 'utf8');
@@ -19,6 +28,14 @@ describe('build cache entry points', () => {
     expect(pruneSource).toContain("const isClean = args.includes('--clean') || isRelease;");
     expect(pruneSource).toContain('inspectBuildCache();');
     expect(pruneSource).toContain('assertNoActiveDevSession(BUILD_DIR);');
+  });
+
+  test('new build:inspect:all / build:gc:all scripts stay guarded and skip --prune-temp by default', () => {
+    expect(rootPackage.scripts['build:inspect:all']).toContain('--inspect');
+    expect(rootPackage.scripts['build:inspect:all']).toContain('--flowy18');
+    expect(rootPackage.scripts['build:inspect:all']).toContain('--worktrees');
+    expect(rootPackage.scripts['build:gc:all']).toContain('--gc');
+    expect(rootPackage.scripts['build:gc:all']).not.toContain('--prune-temp');
   });
 });
 
@@ -48,5 +65,73 @@ describe('build cache cap enforcement', () => {
     expect(pruneSource).toContain("cargoSweepMaxsize(BUILD_DIR, BUILD_CAP_GB, 'build.noindex')");
     expect(pruneSource).not.toContain('const CAP_GB');
     expect(pruneSource).toContain('--cap needs a positive number of GB');
+    expect(pruneSource).toContain('manifestRoot = ROOT');
+  });
+});
+
+describe('flowy18, worktrees, and temp build safety guards', () => {
+  test('recognizes flowy18 temp build directory names without matching unrelated folders', () => {
+    expect(isFlowy18TempBuildName('flowy18-main-build')).toBe(true);
+    expect(isFlowy18TempBuildName('flowy18-build-dir')).toBe(true);
+    expect(isFlowy18TempBuildName('flowy18-router-build')).toBe(true);
+    expect(isFlowy18TempBuildName('nomi-empty-123')).toBe(false);
+    expect(isFlowy18TempBuildName('flowy-notes')).toBe(false);
+  });
+
+  test('blocks cleanup when CARGO_BUILD_BUILD_DIR, CARGO_TARGET_DIR, or active binary matches target', () => {
+    const targetDir = join('D:', 'tmp', 'flowy18-main-build');
+    expect(
+      hasMatchingEnvBuildDir([targetDir], { CARGO_BUILD_BUILD_DIR: join(targetDir, 'nested') }),
+    ).toBe(true);
+    expect(
+      guardBuildTarget(
+        { buildDir: targetDir, manifestRoot: join('D:', 'repo', 'flowy18_wip') },
+        { env: { CARGO_BUILD_BUILD_DIR: targetDir } },
+      ).blocked,
+    ).toBe(true);
+    expect(
+      guardBuildTarget(
+        { buildDir: targetDir, manifestRoot: join('D:', 'repo', 'flowy18_wip') },
+        { env: {}, activePaths: [join(targetDir, 'debug', 'flowy-app.exe')] },
+      ).blocked,
+    ).toBe(true);
+    expect(
+      guardBuildTarget(
+        { buildDir: targetDir, manifestRoot: join('D:', 'repo', 'flowy18_wip') },
+        { env: {}, activePaths: [join('D:', 'other', 'flowy-app.exe')] },
+      ).blocked,
+    ).toBe(false);
+  });
+
+  test('temp pruning enforces age threshold and guard status', () => {
+    expect(shouldPruneTempEntry({ ageDays: 6.9 }, 7, { blocked: false }).prune).toBe(false);
+    expect(shouldPruneTempEntry({ ageDays: 10 }, 7, { blocked: true, reason: 'active' }).prune).toBe(false);
+    expect(shouldPruneTempEntry({ ageDays: 7.1 }, 7, { blocked: false }).prune).toBe(true);
+  });
+
+  test('discovers flowy18_wip and sibling worktree targets with proper manifestRoot', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'prune-build-test-'));
+    try {
+      const flowyMain = join(sandbox, 'flowy18_wip');
+      mkdirSync(join(flowyMain, 'build.noindex'), { recursive: true });
+      const wtFlowy = join(sandbox, '.agents', 'worktrees', 'wt-alpha', 'flowy18_wip');
+      mkdirSync(join(wtFlowy, 'target'), { recursive: true });
+      const wtBeta = join(sandbox, '.agents', 'worktrees', 'wt-beta');
+      mkdirSync(join(wtBeta, 'flowy18_wip'), { recursive: true });
+
+      const foundFromMain = discoverCheckoutBuildTargets(sandbox, { flowy18: true, worktrees: true });
+      expect(foundFromMain.map((t) => [t.label, t.manifestRoot])).toEqual([
+        ['flowy18_wip', flowyMain],
+        ['worktree/wt-alpha/flowy18_wip', wtFlowy],
+      ]);
+
+      const foundFromSibling = discoverCheckoutBuildTargets(wtBeta, { flowy18: true, worktrees: true });
+      expect(foundFromSibling.map((t) => [t.label, t.manifestRoot])).toEqual([
+        ['main/flowy18_wip', flowyMain],
+        ['worktree/wt-alpha/flowy18_wip', wtFlowy],
+      ]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 });

@@ -65,11 +65,16 @@
  *                                           # for this run (heavy test loop)
  */
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertNoActiveDevSession } from './dev-session-lock.mjs';
+import {
+  assertNoActiveDevSession,
+  isDevSessionActive,
+  quarantineStaleDevSession,
+  readDevSessionLock,
+} from './dev-session-lock.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_DIR = join(ROOT, 'build.noindex');
@@ -91,6 +96,7 @@ const BUILD_MAXSIZE_GB = 28;
 const TARGET_MAXSIZE_GB = 5; // cargo-sweep trims target/ back under this
 const BUILD_INCREMENTAL_BUDGET_GB = 8;
 const TARGET_INCREMENTAL_BUDGET_GB = 2;
+const DEFAULT_TEMP_MAX_AGE_DAYS = 7;
 
 // ── Parse flags ──────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -100,6 +106,9 @@ const isInspect = args.includes('--inspect');
 const isGc = args.includes('--gc');
 const isPre = args.includes('--pre');
 const isPost = args.includes('--post');
+const includeFlowy18 = args.includes('--flowy18') || args.includes('--all-builds');
+const includeWorktrees = args.includes('--worktrees') || args.includes('--all-builds');
+const pruneTemp = args.includes('--prune-temp');
 /**
  * `--cap <GB>` overrides the build.noindex size cap for this run: the value fed
  * to `cargo sweep --maxsize` AND the threshold the residual warning compares
@@ -110,6 +119,11 @@ const capIdx = args.indexOf('--cap');
 const capValue = capIdx >= 0 ? Number(args[capIdx + 1]) : NaN;
 const capIsValid = Number.isFinite(capValue) && capValue > 0;
 const BUILD_CAP_GB = capIsValid ? capValue : BUILD_MAXSIZE_GB;
+
+const daysIdx = args.indexOf('--days');
+const daysValue = daysIdx >= 0 ? Number(args[daysIdx + 1]) : NaN;
+const daysIsValid = Number.isFinite(daysValue) && daysValue >= 1;
+const TEMP_MAX_AGE_DAYS = daysIsValid ? daysValue : DEFAULT_TEMP_MAX_AGE_DAYS;
 
 const TAG = '[prune-build]';
 
@@ -151,6 +165,204 @@ function fmtGB(gb) {
   return `${gb.toFixed(1)}G`;
 }
 
+function normalizeGuardPath(target) {
+  const resolved = resolve(target);
+  return isWin ? resolved.toLowerCase() : resolved;
+}
+
+export function isFlowy18TempBuildName(name) {
+  return /^flowy18(?:[-_.].*)?build/i.test(name);
+}
+
+export function hasMatchingEnvBuildDir(dirs, env = process.env) {
+  const active = [env.CARGO_BUILD_BUILD_DIR, env.CARGO_TARGET_DIR]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => normalizeGuardPath(value));
+  if (!active.length) return false;
+  return dirs.filter(Boolean).some((dir) => {
+    const candidate = normalizeGuardPath(dir);
+    return active.some((cur) => cur === candidate || cur.startsWith(`${candidate}${sep}`) || candidate.startsWith(`${cur}${sep}`));
+  });
+}
+
+function listActiveFlowyExecutablePaths() {
+  if (!isWin) return [];
+  try {
+    const r = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        "Get-Process -Name 'flowy-app','flowy-app-*','flowy_app','dx','Flowy' -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -ExpandProperty Path",
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+    );
+    if (r.status !== 0 || !r.stdout) return [];
+    return r.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export function guardBuildTarget(target, { env = process.env, activePaths = [], quarantineStale = false } = {}) {
+  const dirs = [target.buildDir, target.targetDir].filter(Boolean);
+  if (hasMatchingEnvBuildDir(dirs, env)) {
+    return { blocked: true, reason: 'matches active env CARGO_BUILD_BUILD_DIR/CARGO_TARGET_DIR' };
+  }
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    const lock = readDevSessionLock(dir);
+    if (lock && isDevSessionActive(lock)) {
+      return { blocked: true, reason: `active dev session ${lock.sessionId}` };
+    }
+    if (lock && quarantineStale) {
+      quarantineStaleDevSession(dir);
+    }
+  }
+  const normalizedDirs = [...dirs, target.manifestRoot].filter(Boolean).map(normalizeGuardPath);
+  for (const exePath of activePaths) {
+    const normalizedExe = normalizeGuardPath(exePath);
+    if (normalizedDirs.some((dir) => normalizedExe === dir || normalizedExe.startsWith(`${dir}${sep}`))) {
+      return { blocked: true, reason: `running process uses ${exePath}` };
+    }
+  }
+  return { blocked: false, reason: null };
+}
+
+function resolveWorktreesDir(repoRoot = ROOT) {
+  const direct = join(repoRoot, '.agents', 'worktrees');
+  if (existsSync(direct)) return direct;
+  const parentAgents = resolve(repoRoot, '..', '..');
+  const sibling = join(parentAgents, 'worktrees');
+  if (basename(parentAgents) === '.agents' && existsSync(sibling)) return sibling;
+  return null;
+}
+
+export function discoverCheckoutBuildTargets(
+  repoRoot = ROOT,
+  { flowy18 = false, worktrees = false } = {},
+) {
+  const targets = [];
+  const seen = new Set();
+  const addTarget = (label, manifestRoot, buildDir, targetDir) => {
+    const key = normalizeGuardPath(buildDir || targetDir || manifestRoot);
+    if (seen.has(key)) return;
+    if (!existsSync(manifestRoot)) return;
+    if (!existsSync(buildDir) && !existsSync(targetDir)) return;
+    seen.add(key);
+    targets.push({ label, manifestRoot, buildDir, targetDir });
+  };
+
+  if (flowy18) {
+    const flowyRoot = join(repoRoot, 'flowy18_wip');
+    addTarget('flowy18_wip', flowyRoot, join(flowyRoot, 'build.noindex'), join(flowyRoot, 'target'));
+  }
+
+  if (worktrees) {
+    const worktreesDir = resolveWorktreesDir(repoRoot);
+    if (worktreesDir) {
+      const primaryRepo = resolve(worktreesDir, '..', '..');
+      if (normalizeGuardPath(primaryRepo) !== normalizeGuardPath(repoRoot)) {
+        addTarget('main', primaryRepo, join(primaryRepo, 'build.noindex'), join(primaryRepo, 'target'));
+        addTarget(
+          'main/flowy18_wip',
+          join(primaryRepo, 'flowy18_wip'),
+          join(primaryRepo, 'flowy18_wip', 'build.noindex'),
+          join(primaryRepo, 'flowy18_wip', 'target'),
+        );
+      }
+      let ents = [];
+      try { ents = readdirSync(worktreesDir, { withFileTypes: true }); } catch { ents = []; }
+      for (const ent of ents) {
+        if (!ent.isDirectory() || ent.isSymbolicLink()) continue;
+        const wtRoot = join(worktreesDir, ent.name);
+        if (normalizeGuardPath(wtRoot) !== normalizeGuardPath(repoRoot)) {
+          addTarget(`worktree/${ent.name}`, wtRoot, join(wtRoot, 'build.noindex'), join(wtRoot, 'target'));
+        }
+        const wtFlowy = join(wtRoot, 'flowy18_wip');
+        addTarget(
+          `worktree/${ent.name}/flowy18_wip`,
+          wtFlowy,
+          join(wtFlowy, 'build.noindex'),
+          join(wtFlowy, 'target'),
+        );
+      }
+    }
+  }
+  return targets;
+}
+
+export function discoverFlowy18TempDirs(tempRoot = tmpdir(), nowMs = Date.now()) {
+  const dirs = [];
+  let ents = [];
+  try { ents = readdirSync(tempRoot, { withFileTypes: true }); } catch { return dirs; }
+  for (const ent of ents) {
+    if (!ent.isDirectory() || ent.isSymbolicLink()) continue;
+    if (!isFlowy18TempBuildName(ent.name)) continue;
+    const dir = join(tempRoot, ent.name);
+    let mtimeMs = nowMs;
+    try { mtimeMs = statSync(dir).mtimeMs; } catch { continue; }
+    const bytes = dirSizeBytes(dir);
+    const ageDays = Math.max(0, (nowMs - mtimeMs) / 86_400_000);
+    dirs.push({ name: ent.name, dir, bytes, sizeGB: bytes / 1024 ** 3, mtimeMs, ageDays });
+  }
+  dirs.sort((a, b) => b.bytes - a.bytes);
+  return dirs;
+}
+
+export function shouldPruneTempEntry(entry, maxAgeDays, guard) {
+  if (guard?.blocked) {
+    return { prune: false, reason: guard.reason };
+  }
+  if (entry.ageDays < maxAgeDays) {
+    return { prune: false, reason: `recent (${entry.ageDays.toFixed(1)}d < ${maxAgeDays}d)` };
+  }
+  return { prune: true, reason: null };
+}
+
+function inspectExtendedCaches() {
+  const activePaths = listActiveFlowyExecutablePaths();
+  if (includeFlowy18 || includeWorktrees) {
+    const targets = discoverCheckoutBuildTargets(ROOT, {
+      flowy18: includeFlowy18,
+      worktrees: includeWorktrees,
+    });
+    if (!targets.length) {
+      log('inspect: no flowy18_wip / worktree build caches found on disk');
+    } else {
+      let totalGB = 0;
+      for (const target of targets) {
+        const buildGB = dirSizeGB(target.buildDir);
+        const targetGB = dirSizeGB(target.targetDir);
+        totalGB += buildGB + targetGB;
+        const guard = guardBuildTarget(target, { activePaths });
+        const status = guard.blocked ? ` [GUARDED: ${guard.reason}]` : '';
+        log(`inspect [${target.label}]: build.noindex=${fmtGB(buildGB)}, target=${fmtGB(targetGB)}${status}`);
+      }
+      log(`inspect [extended-checkouts total]: ${fmtGB(totalGB)}`);
+    }
+  }
+  if (pruneTemp || includeFlowy18 || includeWorktrees) {
+    const temps = discoverFlowy18TempDirs();
+    if (!temps.length) {
+      log('inspect [temp flowy18*]: none found');
+    } else {
+      let tempTotalGB = 0;
+      for (const entry of temps) {
+        tempTotalGB += entry.sizeGB;
+        const guard = guardBuildTarget({ buildDir: entry.dir }, { activePaths });
+        const decision = shouldPruneTempEntry(entry, TEMP_MAX_AGE_DAYS, guard);
+        const tag = pruneTemp
+          ? (decision.prune ? ` [ELIGIBLE >=${TEMP_MAX_AGE_DAYS}d]` : ` [KEEP: ${decision.reason}]`)
+          : ` [${entry.ageDays.toFixed(1)}d old]`;
+        log(`inspect [temp/${entry.name}]: ${fmtGB(entry.sizeGB)}${tag}`);
+      }
+      log(`inspect [temp flowy18* total]: ${fmtGB(tempTotalGB)} (pass --gc --prune-temp --days ${TEMP_MAX_AGE_DAYS} to reclaim stale entries)`);
+    }
+  }
+}
+
 function inspectBuildCache() {
   const buildGB = dirSizeGB(BUILD_DIR);
   const targetGB = dirSizeGB(TARGET_DIR);
@@ -168,6 +380,9 @@ function inspectBuildCache() {
         + 'install it, or accept a cold rebuild with `bun run build:clean`');
   } else {
     log('inspect: cache is within the soft budget; no files changed');
+  }
+  if (includeFlowy18 || includeWorktrees || pruneTemp) {
+    inspectExtendedCaches();
   }
 }
 
@@ -535,11 +750,11 @@ const CARGO_SWEEP_TIMEOUT_MS = 30 * 60_000;
  * Deleting artifacts (leaving .fingerprint behind) is safe: cargo re-runs any
  * unit whose output file is missing.
  */
-function cargoSweepMaxsize(targetDir, maxGB, label) {
+function cargoSweepMaxsize(targetDir, maxGB, label, manifestRoot = ROOT) {
   if (!existsSync(targetDir)) return;
   try {
     const env = { ...process.env, CARGO_TARGET_DIR: targetDir, CARGO_NET_OFFLINE: 'true' };
-    execSync(`cargo sweep --maxsize ${maxGB}GB "${ROOT}"`, {
+    execSync(`cargo sweep --maxsize ${maxGB}GB "${manifestRoot}"`, {
       encoding: 'utf8',
       stdio: 'pipe',
       env,
@@ -552,7 +767,7 @@ function cargoSweepMaxsize(targetDir, maxGB, label) {
     if (e.signal || /ETIMEDOUT|killed/i.test(msg)) {
       log('  WARN: the sweep was interrupted, so the cache may be partially trimmed and still over cap.');
       log(`  WARN: re-run after the current command returns, or sweep by hand: `
-        + `CARGO_TARGET_DIR="${targetDir}" cargo sweep --maxsize ${maxGB}GB "${ROOT}"`);
+        + `CARGO_TARGET_DIR="${targetDir}" cargo sweep --maxsize ${maxGB}GB "${manifestRoot}"`);
     }
   }
 }
@@ -611,44 +826,123 @@ function boundedCleanup(initialSizes) {
   return { buildGB, targetGB };
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-try {
-  if (capIdx >= 0 && !capIsValid) {
-    log(`WARN: --cap needs a positive number of GB (got ${JSON.stringify(args[capIdx + 1])}); `
-      + `falling back to ${BUILD_MAXSIZE_GB}G.`);
+function gcSingleRoot(target, haveSweep, activePaths) {
+  const guard = guardBuildTarget(target, { activePaths, quarantineStale: true });
+  if (guard.blocked) {
+    log(`  SKIP [${target.label}]: ${guard.reason}`);
+    return;
   }
-  const beforeSizes = { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
-  const beforeGB = beforeSizes.buildGB + beforeSizes.targetGB;
-  const mode = isInspect ? ' [inspect]' : isGc ? ' [gc]' : isPre ? ' [pre]' : isPost ? ' [post]' : isClean ? ' [clean]' : '';
-  log(`start: ${fmtGB(beforeGB)} total (build.noindex + target)${mode}`);
-  let afterSizes;
-
-  if (isInspect || (!isGc && !isPre && !isPost && !isClean)) {
-    inspectBuildCache();
-    process.exit(0);
-  } else if (isPre) {
-    // Cheap pre-build step (tauri beforeBuildCommand): clean output + junk only,
-    // so the release compile starts immediately. Bounded cleanup runs via --post.
-    preReleaseClean();
-  } else if (isPost) {
-    // Preserve warm debug caches after release while still enforcing disk bounds.
-    afterSizes = boundedCleanup(beforeSizes);
-  } else if (isClean) {
-    // Explicit destructive cleanup (`bun run clean`): outputs + debug profiles.
-    preReleaseClean();
-    reclaimDebugDeadWeight();
-  } else {
-    afterSizes = boundedCleanup(beforeSizes);
+  for (const incrDir of [
+    ...incrementalCacheDirsUnder(target.buildDir),
+    ...incrementalCacheDirsUnder(target.targetDir),
+  ]) {
+    if (existsSync(incrDir)) pruneIncrementalSessions(incrDir);
   }
-
-  afterSizes ??= { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
-  const afterGB = afterSizes.buildGB + afterSizes.targetGB;
-  const freed = beforeGB - afterGB;
-  log(freed > 0.01 ? `done: freed ${fmtGB(freed)} (${fmtGB(beforeGB)} -> ${fmtGB(afterGB)})` : `done: ${fmtGB(afterGB)} total (already clean)`);
-  freeSpaceWarn();
-} catch (e) {
-  // NEVER fail the build chain.
-  log(`WARN: prune failed (${e.message}) — continuing build`);
+  const buildGB = dirSizeGB(target.buildDir);
+  const targetGB = dirSizeGB(target.targetDir);
+  log(`  checking [${target.label}]: build.noindex=${fmtGB(buildGB)}, target=${fmtGB(targetGB)}`);
+  if (buildGB > BUILD_CAP_GB) {
+    if (haveSweep) cargoSweepMaxsize(target.buildDir, BUILD_CAP_GB, `${target.label}/build.noindex`, target.manifestRoot);
+    else trimIncrementalUnitsToBudget(
+      incrementalCacheDirsUnder(target.buildDir),
+      BUILD_INCREMENTAL_BUDGET_GB,
+      `${target.label} build.noindex incremental`,
+    );
+  }
+  if (targetGB > TARGET_MAXSIZE_GB) {
+    if (haveSweep) cargoSweepMaxsize(target.targetDir, TARGET_MAXSIZE_GB, `${target.label}/target`, target.manifestRoot);
+    else trimIncrementalUnitsToBudget(
+      incrementalCacheDirsUnder(target.targetDir),
+      TARGET_INCREMENTAL_BUDGET_GB,
+      `${target.label} target incremental`,
+    );
+  }
 }
 
-process.exit(0);
+function gcExtendedCaches() {
+  const haveSweep = cargoSweepInstalled();
+  const activePaths = listActiveFlowyExecutablePaths();
+  let checked = 0;
+  let skipped = 0;
+  let tempRemoved = 0;
+  if (includeFlowy18 || includeWorktrees) {
+    const targets = discoverCheckoutBuildTargets(ROOT, {
+      flowy18: includeFlowy18,
+      worktrees: includeWorktrees,
+    });
+    for (const target of targets) {
+      checked++;
+      const beforeGuard = guardBuildTarget(target, { activePaths });
+      if (beforeGuard.blocked) skipped++;
+      gcSingleRoot(target, haveSweep, activePaths);
+    }
+  }
+  if (pruneTemp) {
+    const temps = discoverFlowy18TempDirs();
+    for (const entry of temps) {
+      checked++;
+      const guard = guardBuildTarget({ buildDir: entry.dir }, { activePaths, quarantineStale: true });
+      const decision = shouldPruneTempEntry(entry, TEMP_MAX_AGE_DAYS, guard);
+      if (!decision.prune) {
+        skipped++;
+        log(`  SKIP [temp/${entry.name}] (${fmtGB(entry.sizeGB)}): ${decision.reason}`);
+        continue;
+      }
+      rmDir(entry.dir, `temp/${entry.name} (${fmtGB(entry.sizeGB)}, ${entry.ageDays.toFixed(1)}d old)`);
+      tempRemoved++;
+    }
+  }
+  log(`extended gc summary: targets=${checked}, skipped=${skipped}, tempRemoved=${tempRemoved}`);
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
+if (import.meta.main || invokedPath === fileURLToPath(import.meta.url)) {
+  try {
+    if (capIdx >= 0 && !capIsValid) {
+      log(`WARN: --cap needs a positive number of GB (got ${JSON.stringify(args[capIdx + 1])}); `
+        + `falling back to ${BUILD_MAXSIZE_GB}G.`);
+    }
+    if (daysIdx >= 0 && !daysIsValid) {
+      log(`WARN: --days needs a number >= 1 (got ${JSON.stringify(args[daysIdx + 1])}); `
+        + `falling back to ${DEFAULT_TEMP_MAX_AGE_DAYS}d.`);
+    }
+    const beforeSizes = { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
+    const beforeGB = beforeSizes.buildGB + beforeSizes.targetGB;
+    const mode = isInspect ? ' [inspect]' : isGc ? ' [gc]' : isPre ? ' [pre]' : isPost ? ' [post]' : isClean ? ' [clean]' : '';
+    log(`start: ${fmtGB(beforeGB)} total (build.noindex + target)${mode}`);
+    let afterSizes;
+
+    if (isInspect || (!isGc && !isPre && !isPost && !isClean)) {
+      inspectBuildCache();
+      process.exit(0);
+    } else if (isPre) {
+      // Cheap pre-build step (tauri beforeBuildCommand): clean output + junk only,
+      // so the release compile starts immediately. Bounded cleanup runs via --post.
+      preReleaseClean();
+    } else if (isPost) {
+      // Preserve warm debug caches after release while still enforcing disk bounds.
+      afterSizes = boundedCleanup(beforeSizes);
+    } else if (isClean) {
+      // Explicit destructive cleanup (`bun run clean`): outputs + debug profiles.
+      preReleaseClean();
+      reclaimDebugDeadWeight();
+    } else {
+      afterSizes = boundedCleanup(beforeSizes);
+      if (includeFlowy18 || includeWorktrees || pruneTemp) {
+        gcExtendedCaches();
+      }
+    }
+
+    afterSizes ??= { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
+    const afterGB = afterSizes.buildGB + afterSizes.targetGB;
+    const freed = beforeGB - afterGB;
+    log(freed > 0.01 ? `done: freed ${fmtGB(freed)} (${fmtGB(beforeGB)} -> ${fmtGB(afterGB)})` : `done: ${fmtGB(afterGB)} total (already clean)`);
+    freeSpaceWarn();
+  } catch (e) {
+    // NEVER fail the build chain.
+    log(`WARN: prune failed (${e.message}) — continuing build`);
+  }
+
+  process.exit(0);
+}
