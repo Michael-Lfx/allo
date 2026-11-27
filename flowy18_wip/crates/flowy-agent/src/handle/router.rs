@@ -929,13 +929,15 @@ impl Harness {
                 if unique_workers.len() > 1 {
                     return Err("MULTIPLE_TARGET_WORKERS");
                 }
-                let owner = (*unique_workers.iter().next().unwrap()).to_owned();
-                if let Some(explicit) = effective_target.as_deref()
-                    && explicit != owner
-                {
-                    return Err("TARGET_WORK_OBJECT_MISMATCH");
+                if let Some(&owner_ref) = unique_workers.iter().next() {
+                    let owner = owner_ref.to_owned();
+                    if let Some(explicit) = effective_target.as_deref()
+                        && explicit != owner
+                    {
+                        return Err("TARGET_WORK_OBJECT_MISMATCH");
+                    }
+                    effective_target = Some(owner);
                 }
-                effective_target = Some(owner);
             }
 
             let now = now_ms();

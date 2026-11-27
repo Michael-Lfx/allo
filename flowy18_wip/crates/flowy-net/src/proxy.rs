@@ -7,7 +7,7 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::{
     io::Read,
     process::{Command, Stdio},
@@ -15,9 +15,9 @@ use std::{
 };
 
 const SYSTEM_PROXY_CACHE_TTL: Duration = Duration::from_millis(250);
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 const SYSTEM_PROXY_COMMAND_TIMEOUT: Duration = Duration::from_millis(750);
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const PROXY_ENV_KEYS: &[&str] = &[
@@ -167,7 +167,7 @@ fn detect_platform_proxy() -> Option<SystemProxyConfig> {
     None
 }
 
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn command_stdout_with_timeout(
     command: &mut Command,
     timeout: Duration,

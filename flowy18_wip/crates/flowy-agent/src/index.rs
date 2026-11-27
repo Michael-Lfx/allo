@@ -133,7 +133,9 @@ pub fn save_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
         file.sync_all()?;
         drop(file);
         // Windows can deny two simultaneous replacements of the same file.
-        let _replace = REPLACE.lock().unwrap();
+        let _replace = REPLACE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         fs::rename(&tmp, path).map_err(|error| {
             io::Error::new(
                 error.kind(),

@@ -129,11 +129,12 @@ mod tests {
     fn missing_cloud_is_not_a_successful_empty_snapshot() {
         assert!(parse_available_models(&json!({"auto": []})).is_err());
         assert!(parse_available_models(&json!({"cloud": null})).is_err());
-        assert!(
+        assert_eq!(
             parse_available_models(&json!({"cloud": []}))
                 .unwrap()
                 .cloud
-                .is_empty()
+                .as_slice(),
+            []
         );
     }
 
@@ -154,6 +155,6 @@ mod tests {
     #[test]
     fn missing_fields_use_defaults() {
         let catalog = parse_available_models(&json!({"cloud":[{}]})).unwrap();
-        assert!(catalog.cloud.is_empty());
+        assert_eq!(catalog.cloud.as_slice(), []);
     }
 }

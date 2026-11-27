@@ -1,5 +1,7 @@
 # 迁移进度（gpui-ce → gpui-pre + gpui-kit）
 
+> **说明**：本文件归档 2026-11-23～11-24 的 `gpui-ce → gpui-pre + gpui-kit` 迁移验收记录；迁移后 `flowy18_wip` 持续迭代的主进度账本位于 [`docs/architecture/flowy-v0/PROGRESS.md`](docs/architecture/flowy-v0/PROGRESS.md)。
+
 ## 2026-11-24 · Clippy 欠债清理（fix-flowy18-clippy-debt）
 
 - 理解的目标：让 `flowy18-ui` 的 UI clippy 门禁在干净 main 上转绿，并修掉让 Windows 作业长期静默跳过的依赖预检。
