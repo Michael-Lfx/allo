@@ -192,7 +192,15 @@ impl StudioPanel {
 
     /// Recomputes the dirty-cached structured chat lines for the currently
     /// inspected Board session/worker so `Render::render` stays lock-free.
+    /// Skips cloning `Vec<ChatLine>` unless the Board `Timeline` tab is active.
     pub(crate) fn refresh_board_lines_cache(&mut self) {
+        if self.surface != StudioSurface::Board
+            || self.board_inspector.tab
+                != crate::overview::BoardInspectorTab::Timeline
+        {
+            self.cached_board_lines = None;
+            return;
+        }
         let Some(target_sid) = self
             .board_inspector
             .worker_session

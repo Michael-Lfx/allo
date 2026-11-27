@@ -1530,6 +1530,10 @@ impl StudioPanel {
         }
         match self.agent.select_session(id) {
             Ok(()) => {
+                if self.surface == StudioSurface::Board {
+                    self.board_inspector.close_drawer();
+                    self.drawer_preview.clear();
+                }
                 if !same {
                     self.sync_quote_session();
                     // Restore whatever this session had typed before.
@@ -2264,6 +2268,36 @@ impl StudioPanel {
         self.feed.read(cx).latest_deliverable_count()
     }
 
+    fn is_preview_path_failed(
+        &self,
+        path: &str,
+        cx: &Context<'_, Self>,
+    ) -> bool {
+        if self.surface == StudioSurface::Board {
+            let target_key = crate::ports::canonical_path_key(path);
+            return self.resolve_board_inspector().is_some_and(|group| {
+                group.branches.iter().any(|branch| {
+                    matches!(
+                        &branch.phase,
+                        crate::ports::BranchPhase::NeedsApproval {
+                            artifact_path,
+                            ..
+                        } if crate::ports::canonical_path_key(artifact_path)
+                            == target_key
+                            || branch
+                                .deliverable_path
+                                .as_deref()
+                                .is_some_and(|p| {
+                                    crate::ports::canonical_path_key(p)
+                                        == target_key
+                                })
+                    )
+                })
+            });
+        }
+        self.feed.read(cx).is_path_failed(path)
+    }
+
     /// Picks a file to preview asynchronously inside the drawer; `None` returns
     /// to the deliverables list.
     pub(crate) fn set_preview_file(
@@ -2272,7 +2306,7 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         if let Some(target) = path.as_deref()
-            && self.feed.read(cx).is_path_failed(target)
+            && self.is_preview_path_failed(target, cx)
         {
             self.drawer_preview.clear();
             self.emit_notice(Some("verify.card.failed"), cx);
@@ -2300,7 +2334,7 @@ impl StudioPanel {
                             return;
                         }
                         if panel.drawer_preview.file.as_deref().is_some_and(
-                            |p| panel.feed.read(cx).is_path_failed(p),
+                            |p| panel.is_preview_path_failed(p, cx),
                         ) {
                             panel.drawer_preview.clear();
                             panel.emit_notice(Some("verify.card.failed"), cx);
@@ -2469,12 +2503,37 @@ impl StudioPanel {
         self.set_preview_file(Some(path.to_owned()), cx);
     }
 
+    fn ensure_composer_surface_from_board(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.surface != StudioSurface::Board {
+            return;
+        }
+        self.board_inspector.close_drawer();
+        self.drawer_preview.clear();
+        let board_sid = self
+            .board_inspector
+            .session
+            .clone()
+            .filter(|id| id != crate::ports::UNASSIGNED_QUEUE_SESSION_ID);
+        if let Some(sid) = board_sid {
+            self.open_session(&sid, cx);
+        } else {
+            self.surface = StudioSurface::Home;
+            self.emit_notice(None, cx);
+            cx.emit(StudioEvent::SessionsChanged);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn quote_file_to_composer(
         &mut self,
         path: &str,
         window: Option<&mut Window>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.ensure_composer_surface_from_board(cx);
         let name = crate::ports::basename(path);
         let display = crate::ports::display_path_str(path);
         let quote_text = self.tf(
@@ -2498,6 +2557,7 @@ impl StudioPanel {
         window: Option<&mut Window>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.ensure_composer_surface_from_board(cx);
         let fix_text = if let Some(path) = path.as_deref() {
             let name = crate::ports::basename(path);
             self.tf(
@@ -5785,6 +5845,291 @@ mod tests {
             assert_eq!(panel.feed.read(cx).session_artifacts().len(), 1);
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn board_lines_cache_skips_cloning_outside_timeline_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-panel-board-lines-cache-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        panel.update(cx, |panel, cx| {
+            let sid = panel.agent.create_session().expect("create session");
+            panel.open_board(cx);
+            assert_eq!(
+                panel.board_inspector.session.as_deref(),
+                Some(sid.as_str())
+            );
+            assert!(
+                panel.cached_board_lines.is_none(),
+                "Overview tab must not clone cached_board_lines"
+            );
+
+            panel.select_board_tab(
+                crate::overview::BoardInspectorTab::Timeline,
+                cx,
+            );
+            assert_eq!(
+                panel.cached_board_lines.as_ref().map(|(id, _)| id.as_str()),
+                Some(sid.as_str()),
+                "Timeline tab must populate cached_board_lines"
+            );
+
+            panel.select_board_tab(
+                crate::overview::BoardInspectorTab::Trace,
+                cx,
+            );
+            assert!(
+                panel.cached_board_lines.is_none(),
+                "leaving Timeline tab must drop cached_board_lines"
+            );
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn board_preview_failed_gate_uses_inspected_board_session_not_chat_feed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-panel-board-preview-gate-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+
+        let chat_failed_file = root.join("chat_failed_board_ok.md");
+        let board_failed_file = root.join("board_failed.md");
+        std::fs::write(&chat_failed_file, "# ok on board").expect("write md");
+        std::fs::write(&board_failed_file, "# failed on board")
+            .expect("write md");
+        let chat_failed_str = chat_failed_file.to_string_lossy().into_owned();
+        let board_failed_str = board_failed_file.to_string_lossy().into_owned();
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        panel.update(cx, |panel, cx| {
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some("chat-sess".into()),
+                    flowy_agent::ChatHistory {
+                        rows: vec![flowy_agent::ChatLine::Verification {
+                            report_id: "rep-chat".into(),
+                            artifact_path: chat_failed_str.clone(),
+                            artifact_hash: "0000".into(),
+                            ok: false,
+                            issues: vec![flowy_agent::VerificationIssue {
+                                code: "formula_error".into(),
+                                field: "file".into(),
+                            }],
+                            semantic_hint: None,
+                            override_used: false,
+                            provenance_warnings: Vec::new(),
+                            source_session_id: None,
+                        }],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+
+            panel.surface = StudioSurface::Board;
+            panel.board_snapshot.sessions =
+                vec![crate::ports::SessionBoardGroup {
+                    session_id: "s-board".into(),
+                    title: "Board Session".into(),
+                    project_id: None,
+                    project_name: None,
+                    workspace_display: String::new(),
+                    updated_at: 1_700_000_000_000,
+                    pinned: false,
+                    archived: false,
+                    preview: None,
+                    assistant_summary: None,
+                    branches: vec![
+                        crate::ports::WorkBranchSummary {
+                            id: "b-pass".into(),
+                            owner_session_id: None,
+                            skill_label: crate::ports::SkillLabel::Key(
+                                "board.skill_work",
+                            ),
+                            phase: crate::ports::BranchPhase::Delivered {
+                                override_used: false,
+                                hash_short: "abcd".into(),
+                                provenance_warnings: Vec::new(),
+                            },
+                            deliverable_name: "chat_failed_board_ok.md".into(),
+                            deliverable_path: Some(chat_failed_str.clone()),
+                            format: crate::ports::DeliverableFormat::Markdown,
+                            is_workspace_change: false,
+                            progress_pct: 100.0,
+                            detail: String::new(),
+                            work_progress: None,
+                        },
+                        crate::ports::WorkBranchSummary {
+                            id: "b-fail".into(),
+                            owner_session_id: None,
+                            skill_label: crate::ports::SkillLabel::Key(
+                                "board.skill_work",
+                            ),
+                            phase: crate::ports::BranchPhase::NeedsApproval {
+                                report_id: "rep-board".into(),
+                                artifact_path: board_failed_str.clone(),
+                                summary: "failed".into(),
+                                issues: Vec::new(),
+                                semantic_hint: None,
+                                provenance_warnings: Vec::new(),
+                            },
+                            deliverable_name: "board_failed.md".into(),
+                            deliverable_path: Some(board_failed_str.clone()),
+                            format: crate::ports::DeliverableFormat::Markdown,
+                            is_workspace_change: false,
+                            progress_pct: 50.0,
+                            detail: String::new(),
+                            work_progress: None,
+                        },
+                    ],
+                    workspace_changes: Vec::new(),
+                    child_workers: Vec::new(),
+                    total_branch_count: 2,
+                    total_file_count: 2,
+                    session_contract: None,
+                    has_blocker: true,
+                    has_delivered: true,
+                    is_running: false,
+                    is_active: true,
+                    group_kpi: crate::ports::BoardKpiSummary::default(),
+                }];
+            panel.board_inspector.session = Some("s-board".into());
+
+            panel.set_preview_file(Some(chat_failed_str.clone()), cx);
+            assert_eq!(
+                panel.drawer_preview.file.as_deref(),
+                Some(chat_failed_str.as_str()),
+                "unrelated chat failure must not block previewing passed board deliverable"
+            );
+
+            panel.set_preview_file(Some(board_failed_str), cx);
+            assert!(
+                panel.drawer_preview.file.is_none(),
+                "NeedsApproval deliverable on inspected board session must be blocked"
+            );
+            assert_eq!(panel.notice, Some("verify.card.failed"));
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn quote_file_from_board_opens_inspected_session_and_attaches_quote(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-panel-board-quote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        panel.update(cx, |panel, cx| {
+            let sid_a = panel.agent.create_session().expect("session A");
+            let sid_b = panel.agent.create_session().expect("session B");
+            panel.open_session(&sid_b, cx);
+            assert_eq!(
+                panel.agent.active_session_id().as_deref(),
+                Some(sid_b.as_str())
+            );
+
+            panel.open_board(cx);
+            panel.board_inspector.session = Some(sid_a.clone());
+            panel.board_inspector.drawer_open = true;
+            panel.drawer_preview.file = Some("/tmp/q.md".into());
+
+            panel.quote_file_to_composer("/tmp/q.md", None, cx);
+            assert_ne!(panel.surface, StudioSurface::Board);
+            assert!(!panel.board_inspector.drawer_open);
+            assert!(panel.drawer_preview.file.is_none());
+            assert_eq!(
+                panel.agent.active_session_id().as_deref(),
+                Some(sid_a.as_str()),
+                "quoting from Board must switch active session to inspected session A"
+            );
+            assert!(
+                panel
+                    .active_quote
+                    .as_ref()
+                    .is_some_and(|q| q.excerpt.contains("q.md")),
+                "attached file quote must survive transition from Board"
+            );
+        });
 
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
