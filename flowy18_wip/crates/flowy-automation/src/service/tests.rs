@@ -267,3 +267,24 @@ async fn update_keeps_the_conversation_and_delete_conversation_removes_all() {
         Err(ServiceError::NotFound)
     ));
 }
+
+#[tokio::test]
+async fn expired_one_time_schedules_are_rejected_on_create_and_update() {
+    let h = harness(Some(RunOutcome::Succeeded), Duration::from_secs(1));
+    let expired = AutomationInput {
+        trigger: TriggerSpec::Once {
+            scheduled_at_ms: now_ms() - 1_000,
+        },
+        ..agent_task()
+    };
+    assert!(matches!(
+        h.service.create("r-1", expired.clone()),
+        Err(ServiceError::Invalid(_))
+    ));
+    let original = h.service.create("r-1", agent_task()).unwrap();
+    assert!(matches!(
+        h.service.update(original.id, expired),
+        Err(ServiceError::Invalid(_))
+    ));
+    assert_eq!(h.service.get(original.id).unwrap(), original);
+}

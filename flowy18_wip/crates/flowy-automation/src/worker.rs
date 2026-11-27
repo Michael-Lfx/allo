@@ -146,15 +146,23 @@ impl Inner {
     /// and its next run moves past now.
     fn start_due(self: &Arc<Self>) -> Result<(), StoreError> {
         let now = now_ms();
-        for mut automation in self.store.due(now)? {
-            automation.next_run_at_ms =
-                automation.trigger.next_after(now).ok().flatten();
-            self.store.save(&automation)?;
+        for automation in self.store.due(now)? {
+            if !self.executor.is_ready(&automation) {
+                continue;
+            }
+            let next = automation.trigger.next_after(now).ok().flatten();
             let run = Run::started(automation.id, now);
-            self.store.save_run(&run)?;
             let cancel = CancelToken::default();
-            self.inflight()
-                .insert(run.id, (automation.id, cancel.clone()));
+            {
+                let mut inflight = self.inflight();
+                if !self.active.load(Ordering::Acquire) {
+                    break;
+                }
+                if !self.store.claim(&automation, next, &run)? {
+                    continue;
+                }
+                inflight.insert(run.id, (automation.id, cancel.clone()));
+            }
             let inner = Arc::clone(self);
             self.runtime.spawn(async move {
                 inner.execute(automation, run, cancel).await;
@@ -202,7 +210,14 @@ impl Inner {
                 cancel.cancel();
             })
         };
-        let mut report = self.executor.run(automation, run_id, cancel).await;
+        let mut report = if cancel.is_cancelled() {
+            RunReport {
+                work_id: None,
+                outcome: RunOutcome::Cancelled,
+            }
+        } else {
+            self.executor.run(automation, run_id, cancel).await
+        };
         timer.abort();
         if report.outcome == RunOutcome::Cancelled
             && timed_out.load(Ordering::Acquire)

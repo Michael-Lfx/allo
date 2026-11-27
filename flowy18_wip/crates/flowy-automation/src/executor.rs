@@ -31,6 +31,11 @@ pub struct RunReport {
 /// the worker never builds notifications. The executor watches `cancel` and
 /// stops the Worker when it fires.
 pub trait RunExecutor: Send + Sync {
+    /// A temporarily unavailable host leaves the occurrence due.
+    fn is_ready(&self, _automation: &Automation) -> bool {
+        true
+    }
+
     fn run<'a>(
         &'a self,
         automation: &'a Automation,

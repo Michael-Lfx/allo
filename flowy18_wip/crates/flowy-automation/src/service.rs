@@ -59,6 +59,7 @@ impl AutomationService {
             return Err(ServiceError::Invalid("conversation is missing"));
         }
         let now = now_ms();
+        validate_trigger(input.trigger, now)?;
         let automation = Automation {
             id: AutomationId::generate(),
             conversation_id: conversation_id.to_owned(),
@@ -80,6 +81,8 @@ impl AutomationService {
         input: AutomationInput,
     ) -> Result<Automation, ServiceError> {
         validate(&input)?;
+        let now = now_ms();
+        validate_trigger(input.trigger, now)?;
         let automation = Automation {
             title: input.title.trim().to_owned(),
             action: input.action,
@@ -87,7 +90,7 @@ impl AutomationService {
             access: input.access,
             ..self.get(id)?
         };
-        self.save(automation, now_ms())
+        self.save(automation, now)
     }
 
     pub fn pause(&self, id: AutomationId) -> Result<Automation, ServiceError> {
@@ -128,8 +131,8 @@ impl AutomationService {
     }
 
     pub fn delete(&self, id: AutomationId) -> Result<(), ServiceError> {
-        self.worker.cancel_automation(id);
         if self.store.delete(id)? {
+            self.worker.cancel_automation(id);
             Ok(())
         } else {
             Err(ServiceError::NotFound)
@@ -180,6 +183,16 @@ impl AutomationService {
     pub fn run(&self, run_id: RunId) -> Result<Option<Run>, ServiceError> {
         Ok(self.store.run(run_id)?)
     }
+}
+
+fn validate_trigger(
+    trigger: crate::schedule::TriggerSpec,
+    now: i64,
+) -> Result<(), ServiceError> {
+    if trigger.next_after(now)?.is_none() {
+        return Err(ServiceError::Invalid("schedule has no future occurrence"));
+    }
+    Ok(())
 }
 
 fn validate(input: &AutomationInput) -> Result<(), ServiceError> {

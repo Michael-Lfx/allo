@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rusqlite::types::Type;
-use rusqlite::{Connection, Params, Row, params};
+use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
 use crate::model::{
     Access, Automation, AutomationId, Run, RunId, RunStatus, now_ms,
@@ -201,10 +201,42 @@ impl AutomationStore {
         Ok(rows)
     }
 
+    /// Claims a still-current occurrence and records its run in one transaction.
+    pub(crate) fn claim(
+        &self,
+        expected: &Automation,
+        next: Option<i64>,
+        run: &Run,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let current = tx.query_row(
+            &format!("SELECT {AUTOMATION_COLUMNS} FROM automations WHERE automation_id = ?1"),
+            [expected.id.to_string()],
+            automation_from_row,
+        ).optional()?;
+        if current.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE automations SET next_run_at_ms = ?1 WHERE automation_id = ?2",
+            params![next, expected.id.to_string()],
+        )?;
+        Self::write_run(&tx, run)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Inserts or replaces the run. A run whose automation was deleted is
     /// not written back.
     pub fn save_run(&self, run: &Run) -> Result<(), StoreError> {
-        self.lock().execute(
+        Self::write_run(&self.lock(), run)
+    }
+
+    fn write_run(conn: &Connection, run: &Run) -> Result<(), StoreError> {
+        conn.execute(
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) \
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 \

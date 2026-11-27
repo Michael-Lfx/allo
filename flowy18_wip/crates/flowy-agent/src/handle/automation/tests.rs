@@ -162,6 +162,9 @@ fn a_run_dispatches_a_worker_in_its_conversation_without_the_tools() {
     assert_eq!(worker.role, SessionRole::Worker);
     assert_eq!(worker.root_session_id.as_deref(), Some(router_id.as_str()));
     assert_eq!(worker.access_mode, WorkAccessMode::ReadWrite);
+    let sidebar_sessions = handle.list_sessions();
+    assert_eq!(sidebar_sessions.len(), 1);
+    assert_eq!(sidebar_sessions[0].id, router_id);
     assert!(
         handle
             .inner
@@ -224,18 +227,31 @@ fn a_run_without_its_conversation_fails() {
 
 #[test]
 fn work_states_map_to_run_outcomes() {
-    assert_eq!(settled("queued", false), None);
-    assert_eq!(settled("running", false), None);
-    assert_eq!(settled("completed", false), Some(RunOutcome::Succeeded));
-    assert_eq!(settled("delivered", false), Some(RunOutcome::Succeeded));
-    assert_eq!(settled("stopped", true), Some(RunOutcome::Cancelled));
-    assert!(matches!(
-        settled("failed", false),
-        Some(RunOutcome::Failed(_))
-    ));
-    assert!(matches!(
-        settled("awaiting_approval", false),
-        Some(RunOutcome::Failed(_))
-    ));
-    assert_eq!(settled("awaiting_approval", true), None);
+    assert_eq!(settled("queued"), None);
+    assert_eq!(settled("running"), None);
+    assert_eq!(settled("completed"), Some(RunOutcome::Succeeded));
+    assert_eq!(settled("delivered"), Some(RunOutcome::Succeeded));
+    assert_eq!(settled("stopped"), Some(RunOutcome::Cancelled));
+    assert!(matches!(settled("failed"), Some(RunOutcome::Failed(_))));
+    assert_eq!(settled("awaiting_approval"), None);
+}
+
+#[test]
+fn a_reminder_is_visible_and_survives_reopening_without_a_model_turn() {
+    let root = Scratch::new("reminder");
+    let handle = echo_handle(&root.0);
+    let router = handle.create_router_session().unwrap();
+    let task = automation(&router, Access::Read);
+
+    handle.inner.post_reminder(&task, "stand-up").unwrap();
+    let has_reminder = |handle: &AgentHandle| {
+        handle.session_lines(&router).iter().any(|line| {
+            matches!(line, ChatLine::Assistant { text } if text.contains("stand-up"))
+        })
+    };
+    assert!(has_reminder(&handle));
+    assert!(handle.child_works(&router).is_empty());
+
+    drop(handle);
+    assert!(has_reminder(&echo_handle(&root.0)));
 }
