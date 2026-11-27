@@ -15,7 +15,8 @@ use flowy_agent_core::{
     EngineConfig, LoopOutcome, ModelRoute, PendingCard, PendingRouterFollowup,
     PromptTurn, ReceiptState, RequiredDeliverable, SessionOrigin,
     SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TurnObserver, TurnState, WorkAccessMode, complete_text,
+    SubmissionOutcome, ToolProvider, TurnObserver, TurnState, WorkAccessMode,
+    complete_text,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -58,6 +59,8 @@ mod artifacts;
 mod boot;
 mod guards;
 mod observer;
+#[cfg(test)]
+mod provider_tests;
 mod queue;
 mod router;
 #[cfg(test)]
@@ -456,13 +459,17 @@ impl Drop for RuntimeOwner {
 /// `accept_drain` -> `dispatch` -> `engine` (clone & release) ->
 /// `index_write` -> `live` -> leaf locks (`active`, `active_claims`,
 /// `workspace_locks`, `router_inboxes`, `updates`, `tool_args`,
-/// `notified_quarantined`).
+/// `notified_quarantined`, `providers`).
+///
+/// `providers` is strictly a leaf lock: callers must clone the `Vec` snapshot
+/// and release it immediately before invoking any provider callback.
 struct Harness {
     runtime: tokio::runtime::Handle,
     state: Arc<UiState>,
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
     config: Mutex<LlmConfig>,
     skills: Mutex<Vec<InstalledSkill>>,
+    providers: Mutex<Vec<Arc<dyn ToolProvider>>>,
 }
 
 struct SubmissionSelection<'a> {
@@ -557,6 +564,7 @@ impl AgentHandle {
                 engine,
                 config: Mutex::new(config),
                 skills: Mutex::new(Vec::new()),
+                providers: Mutex::new(Vec::new()),
             }),
             _runtime: owner,
         }
@@ -565,6 +573,50 @@ impl AgentHandle {
     pub fn replace_skill_catalog(&self, skills: Vec<InstalledSkill>) {
         *lock(&self.inner.skills) = skills;
         self.inner.state.push_update(AgentUpdate::Skills);
+    }
+
+    /// Register or idempotently replace (by [`ToolProvider::id`]) a stateful
+    /// Worker capability provider.
+    ///
+    /// Providers are mounted ONLY into `Worker (ReadWrite)` and legacy
+    /// `Standard` sessions — never `Router` or `Worker (ReadOnly)`. Empty
+    /// provider IDs are ignored.
+    pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
+        let id = provider.id().trim();
+        if id.is_empty() {
+            return;
+        }
+        let mut guard = lock(&self.inner.providers);
+        if let Some(existing) =
+            guard.iter_mut().find(|item| item.id().trim() == id)
+        {
+            *existing = provider;
+        } else {
+            guard.push(provider);
+        }
+    }
+
+    /// Unregister a previously registered [`ToolProvider`] by ID. Returns
+    /// `true` if a matching provider was removed.
+    #[must_use]
+    pub fn unregister_tool_provider(&self, provider_id: &str) -> bool {
+        let trimmed = provider_id.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let mut guard = lock(&self.inner.providers);
+        let before = guard.len();
+        guard.retain(|item| item.id().trim() != trimmed);
+        guard.len() != before
+    }
+
+    /// Snapshot IDs of currently registered [`ToolProvider`]s in order.
+    #[must_use]
+    pub fn registered_tool_provider_ids(&self) -> Vec<String> {
+        lock(&self.inner.providers)
+            .iter()
+            .map(|item| item.id().to_owned())
+            .collect()
     }
 
     #[must_use]
@@ -1648,6 +1700,10 @@ impl Harness {
         lock(&self.skills).clone()
     }
 
+    pub(super) fn tool_providers(&self) -> Vec<Arc<dyn ToolProvider>> {
+        lock(&self.providers).clone()
+    }
+
     pub(super) fn can_run_turns(&self) -> bool {
         lock(&self.config).can_run_turns()
     }
@@ -2227,6 +2283,7 @@ fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
         delivery_committer: None,
         work_contract: None,
         pre_tool_hook: None,
+        pre_activated_tools: Vec::new(),
     }
 }
 

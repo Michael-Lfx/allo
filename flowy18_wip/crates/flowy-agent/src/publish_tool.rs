@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use flowy_agent_core::tools::ToolDefinition;
+use flowy_agent_core::tools::{ToolDefinition, ToolSource};
 use flowy_agent_core::{
     ContentBlock, SessionOrigin, ToolCallArgs, ToolExecutionResult,
     ToolRunContext,
@@ -378,7 +378,8 @@ pub fn definition_with_revision(
                 })
             },
         )
-        .with_artifact_delivery(),
+        .with_artifact_delivery()
+        .with_source(ToolSource::Host),
     )
 }
 

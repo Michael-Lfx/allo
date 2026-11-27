@@ -4,7 +4,7 @@
 //! explicit policy callback plus any number of guards. A denial can never be
 //! turned back into permission by listener ordering.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,38 @@ use crate::types::{
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// Origin classification for a registered [`ToolDefinition`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ToolSource {
+    #[default]
+    Builtin,
+    Host,
+    Provider(String),
+}
+
+impl ToolSource {
+    /// Human-readable origin label for tool search catalogs and telemetry.
+    #[must_use]
+    pub const fn label(&self) -> &str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Host => "host",
+            Self::Provider(id) => id.as_str(),
+        }
+    }
+}
+
+/// Controls whether a tool schema is injected into the model's initial tool
+/// list (`Eager`) or discovered on demand via `tool_search` (`Deferred`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolExposure {
+    #[default]
+    Eager,
+    Deferred,
+}
+
 /// One registered tool: schema plus the execution body.
+#[derive(Clone)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
@@ -30,6 +61,10 @@ pub struct ToolDefinition {
     >,
     pub is_concurrency_safe: bool,
     artifact_delivery: bool,
+    read_only: bool,
+    exposure: ToolExposure,
+    source: ToolSource,
+    tags: Vec<String>,
 }
 
 impl std::fmt::Debug for ToolDefinition {
@@ -38,6 +73,10 @@ impl std::fmt::Debug for ToolDefinition {
             .field("name", &self.name)
             .field("concurrency_safe", &self.is_concurrency_safe)
             .field("artifact_delivery", &self.artifact_delivery)
+            .field("read_only", &self.read_only)
+            .field("exposure", &self.exposure)
+            .field("source", &self.source)
+            .field("tags", &self.tags)
             .finish_non_exhaustive()
     }
 }
@@ -62,6 +101,10 @@ impl ToolDefinition {
             execute: Arc::new(execute),
             is_concurrency_safe: false,
             artifact_delivery: false,
+            read_only: false,
+            exposure: ToolExposure::Eager,
+            source: ToolSource::Builtin,
+            tags: Vec::new(),
         }
     }
 
@@ -74,9 +117,81 @@ impl ToolDefinition {
         self
     }
 
+    /// Strip `artifact_delivery` capability (used when mounting untrusted or
+    /// extension provider tools).
+    #[must_use]
+    pub const fn without_artifact_delivery(mut self) -> Self {
+        self.artifact_delivery = false;
+        self
+    }
+
     #[must_use]
     pub const fn supports_artifact_delivery(&self) -> bool {
         self.artifact_delivery
+    }
+
+    /// Declare whether this tool performs only side-effect-free inspection.
+    #[must_use]
+    pub const fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Control whether this tool is eagerly sent in initial schemas or
+    /// discovered on demand via `tool_search`.
+    #[must_use]
+    pub const fn with_exposure(mut self, exposure: ToolExposure) -> Self {
+        self.exposure = exposure;
+        self
+    }
+
+    #[must_use]
+    pub const fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    /// Record the origin (`Builtin`, `Host`, or `Provider(id)`) of this tool.
+    #[must_use]
+    pub fn with_source(mut self, source: ToolSource) -> Self {
+        self.source = source;
+        self
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> &ToolSource {
+        &self.source
+    }
+
+    /// Attach searchable keyword tags for `tool_search` discovery.
+    #[must_use]
+    pub fn with_tags<I, S>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tags.clear();
+        for tag in tags {
+            let trimmed = tag.into().trim().to_owned();
+            if !trimmed.is_empty()
+                && !self
+                    .tags
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&trimmed))
+            {
+                self.tags.push(trimmed);
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tags(&self) -> &[String] {
+        &self.tags
     }
 
     #[must_use]
@@ -166,11 +281,20 @@ impl ToolRegistry {
         lock(&self.inner.guards).push(guard);
     }
 
-    /// Model-facing schemas of every registered tool.
+    /// Registered tool definitions in deterministic ascending name order.
+    #[must_use]
+    pub fn definitions(&self) -> Vec<Arc<ToolDefinition>> {
+        let mut defs: Vec<Arc<ToolDefinition>> =
+            lock(&self.inner.tools).values().cloned().collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
+    }
+
+    /// Model-facing schemas of every registered tool in deterministic order.
     #[must_use]
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        lock(&self.inner.tools)
-            .values()
+        self.definitions()
+            .into_iter()
             .map(|tool| tool.schema())
             .collect()
     }
@@ -186,6 +310,59 @@ impl ToolRegistry {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<ToolDefinition>> {
         lock(&self.inner.tools).get(name).cloned()
+    }
+
+    /// True if a registered tool declares side-effect-free read-only semantics.
+    #[must_use]
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|tool| tool.is_read_only())
+    }
+
+    /// True if at least one registered tool uses [`ToolExposure::Deferred`].
+    #[must_use]
+    pub fn has_deferred(&self) -> bool {
+        lock(&self.inner.tools)
+            .values()
+            .any(|tool| tool.exposure() == ToolExposure::Deferred)
+    }
+
+    /// Registered [`ToolExposure::Deferred`] tools in ascending name order.
+    #[must_use]
+    pub fn deferred_definitions(&self) -> Vec<Arc<ToolDefinition>> {
+        let mut defs: Vec<Arc<ToolDefinition>> = lock(&self.inner.tools)
+            .values()
+            .filter(|tool| tool.exposure() == ToolExposure::Deferred)
+            .cloned()
+            .collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
+    }
+
+    /// Set of registered tool names marked `read_only`.
+    #[must_use]
+    pub fn read_only_tool_names(&self) -> HashSet<String> {
+        lock(&self.inner.tools)
+            .iter()
+            .filter(|(_, tool)| tool.is_read_only())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Create an independent shallow copy (isolated mutexes for tools, guards,
+    /// and policy) so per-turn additions like `tool_search` never mutate a
+    /// shared base registry.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        let tools = lock(&self.inner.tools).clone();
+        let guards = lock(&self.inner.guards).clone();
+        let policy = lock(&self.inner.policy).clone();
+        Self {
+            inner: Arc::new(Inner {
+                tools: Mutex::new(tools),
+                guards: Mutex::new(guards),
+                policy: Mutex::new(policy),
+            }),
+        }
     }
 
     /// Run one accepted call through policy, guards, and the tool body.
@@ -374,5 +551,41 @@ mod tests {
             "result content must reach the model unchanged"
         );
         assert!(executed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn schemas_are_sorted_deterministically_and_fork_isolates_mutations() {
+        let registry = ToolRegistry::new();
+        for name in ["zeta", "alpha", "middle"] {
+            registry.register(Arc::new(ToolDefinition::new(
+                name,
+                format!("tool {name}"),
+                json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text("ok", json!({}))
+                    })
+                },
+            )));
+        }
+        let schema_names: Vec<String> =
+            registry.schemas().into_iter().map(|s| s.name).collect();
+        assert_eq!(schema_names, vec!["alpha", "middle", "zeta"]);
+
+        let forked = registry.fork();
+        forked.unregister("alpha");
+        forked.register(Arc::new(ToolDefinition::new(
+            "extra",
+            "extra",
+            json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text("ok", json!({}))
+                })
+            },
+        )));
+
+        assert_eq!(registry.list(), vec!["alpha", "middle", "zeta"]);
+        assert_eq!(forked.list(), vec!["extra", "middle", "zeta"]);
     }
 }

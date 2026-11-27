@@ -509,7 +509,8 @@ fn read_file_tool() -> Arc<ToolDefinition> {
                 }
             })
         },
-    ))
+    )
+    .with_read_only(true))
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +856,8 @@ fn glob_tool() -> Arc<ToolDefinition> {
                 ToolExecutionResult::success_text(text, value)
             })
         },
-    ))
+    )
+    .with_read_only(true))
 }
 
 async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
@@ -1030,7 +1032,8 @@ fn grep_tool() -> Arc<ToolDefinition> {
                 ToolExecutionResult::success_text(text, value)
             })
         },
-    ))
+    )
+    .with_read_only(true))
 }
 
 async fn collect_files(base: &Path) -> Vec<PathBuf> {

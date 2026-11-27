@@ -338,6 +338,9 @@ async fn orphaned_tool_call_is_repaired_before_the_provider_request() {
             prompt: "hi".into(),
             route: route(),
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -389,6 +392,9 @@ async fn successful_turn_returns_host_messages_not_raw_ok() {
             prompt: "hi".into(),
             route: route(),
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -416,6 +422,9 @@ async fn provider_error_is_failed_not_completed() {
             prompt: "hi".into(),
             route: route(),
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -574,6 +583,9 @@ async fn run_turn_stops_at_max_tool_turns_cap() {
             prompt: "loop forever".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -907,6 +919,9 @@ async fn same_non_transient_error_trips_circuit_breaker_without_burning_24_turns
             prompt: "write protected file".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -960,6 +975,9 @@ async fn transient_readonly_tool_error_allows_one_retry_before_tripping() {
             prompt: "read busy file".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -1067,6 +1085,9 @@ async fn different_args_on_same_file_do_not_false_trip_circuit_breaker() {
             prompt: "edit src/lib.rs".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -1118,6 +1139,9 @@ async fn intervening_successful_tool_evidence_resets_error_breaker() {
             prompt: "retry after evidence".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: None,
         },
@@ -1173,6 +1197,9 @@ async fn before_tool_call_ask_suspends_cleanly_without_executing_tool() {
             prompt: "clean deliverables".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal: CancelToken::new(),
             pre_tool_hook: Some(hook),
         },
@@ -1341,6 +1368,9 @@ async fn cancelled_turn_takes_priority_over_pre_tool_approval() {
             prompt: "clean".into(),
             route: route(),
             tools: vec![tool],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
             signal,
             pre_tool_hook: Some(hook),
         },
@@ -1382,4 +1412,85 @@ fn failure_detail_prefers_error_message_and_falls_back_to_plain_text() {
         super::failure_detail(&fallback_text).as_deref(),
         Some("upstream closed stream")
     );
+}
+
+#[tokio::test]
+async fn custom_read_only_metadata_allows_one_transient_retry_while_mutating_trips_on_second()
+ {
+    let transient_tool = || {
+        make_test_tool(
+            crate::tools::ToolDefinition::new(
+                "custom_probe",
+                "custom probe returning transient 503",
+                serde_json::json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        crate::types::ToolExecutionResult::error(
+                            "REMOTE_503",
+                            "HTTP 503 service unavailable",
+                        )
+                    })
+                },
+            )
+            .with_read_only(true),
+        )
+    };
+
+    let mutating_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (emitter_m, _) = CollectorEmitter::new();
+    let res_mut = run_turn(
+        TurnRequest {
+            session_id: None,
+            system: String::new(),
+            history: Vec::new(),
+            prompt: "probe".into(),
+            route: route(),
+            tools: vec![transient_tool()],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
+            signal: CancelToken::new(),
+            pre_tool_hook: None,
+        },
+        make_tool_stream(
+            "custom_probe",
+            serde_json::json!({}),
+            Arc::clone(&mutating_calls),
+        ),
+        Arc::new(emitter_m),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res_mut.outcome, LoopOutcome::Failed);
+    assert_eq!(mutating_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    let readonly_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (emitter_r, _) = CollectorEmitter::new();
+    let res_ro = run_turn(
+        TurnRequest {
+            session_id: None,
+            system: String::new(),
+            history: Vec::new(),
+            prompt: "probe".into(),
+            route: route(),
+            tools: vec![transient_tool()],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::from([
+                "custom_probe".into()
+            ]),
+            signal: CancelToken::new(),
+            pre_tool_hook: None,
+        },
+        make_tool_stream(
+            "custom_probe",
+            serde_json::json!({}),
+            Arc::clone(&readonly_calls),
+        ),
+        Arc::new(emitter_r),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res_ro.outcome, LoopOutcome::Failed);
+    assert_eq!(readonly_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
 }

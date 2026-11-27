@@ -4,7 +4,7 @@
 //! converts between the stored [`Message`] vocabulary and pi's agent messages.
 //! Tool execution is wired by the embedding host (see `tools`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +19,7 @@ use rpi_ai::types::{
 };
 
 use crate::session::PendingCard;
+use crate::tools::ActivatedToolSet;
 use crate::types::{CancelToken, ContentBlock, Message, MessageSource, Role};
 
 /// Hard ceiling on assistant/tool-loop turns inside a single submission so a
@@ -158,6 +159,9 @@ pub struct TurnRequest {
     pub prompt: String,
     pub route: ModelRoute,
     pub tools: Vec<Arc<dyn AgentTool>>,
+    pub deferred_tools: Vec<Arc<dyn AgentTool>>,
+    pub activated_tools: Option<ActivatedToolSet>,
+    pub read_only_tools: HashSet<String>,
     pub signal: CancelToken,
     pub pre_tool_hook: Option<PreToolHook>,
 }
@@ -169,6 +173,8 @@ impl std::fmt::Debug for TurnRequest {
             .field("prompt_len", &self.prompt.len())
             .field("route", &self.route)
             .field("tools", &self.tools.len())
+            .field("deferred_tools", &self.deferred_tools.len())
+            .field("read_only_tools", &self.read_only_tools.len())
             .field("has_pre_tool_hook", &self.pre_tool_hook.is_some())
             .finish_non_exhaustive()
     }
@@ -240,10 +246,16 @@ pub async fn run_turn(
         }
     }
     let history = repair_tool_call_history(history);
+    let initial_tools = request.tools;
+    let prepare_next_turn = build_prepare_next_turn(
+        &initial_tools,
+        request.deferred_tools,
+        request.activated_tools,
+    );
     let context = AgentContext {
         system_prompt: request.system,
         messages: history,
-        tools: request.tools,
+        tools: initial_tools,
     };
     let pi_model = request.route.rpi_model();
     let char_budget = if request.route.context_window > 0 {
@@ -362,6 +374,13 @@ pub async fn run_turn(
     let tripped_breaker: Arc<Mutex<Option<SameErrorTrip>>> =
         Arc::new(Mutex::new(None));
     let breaker_slot = Arc::clone(&tripped_breaker);
+    let normalized_readonly: Arc<HashSet<String>> = Arc::new(
+        request
+            .read_only_tools
+            .into_iter()
+            .map(|name| normalize_signature(&name, 80))
+            .collect(),
+    );
     let should_stop_after_turn: rpi_agent::hooks::ShouldStopAfterTurn =
         Arc::new(move |ctx| {
             let awaiting_approval = stop_slot
@@ -384,7 +403,12 @@ pub async fn run_turn(
                 );
             }
             let same_error_trip = (!awaiting_approval)
-                .then(|| should_trip_same_error_breaker(ctx.new_messages))
+                .then(|| {
+                    should_trip_same_error_breaker_with_readonly(
+                        ctx.new_messages,
+                        &normalized_readonly,
+                    )
+                })
                 .flatten();
             if let Some(trip) = &same_error_trip {
                 tracing::warn!(
@@ -415,7 +439,7 @@ pub async fn run_turn(
         transform_context: Some(transform_context),
         get_api_key: None,
         should_stop_after_turn: Some(should_stop_after_turn),
-        prepare_next_turn: None,
+        prepare_next_turn,
         after_tool_results: None,
         get_steering_messages: None,
         get_follow_up_messages: None,
@@ -494,6 +518,62 @@ pub async fn run_turn(
     })
 }
 
+fn build_prepare_next_turn(
+    initial_tools: &[Arc<dyn AgentTool>],
+    deferred_tools: Vec<Arc<dyn AgentTool>>,
+    activated: Option<ActivatedToolSet>,
+) -> Option<rpi_agent::hooks::PrepareNextTurn> {
+    if deferred_tools.is_empty() {
+        return None;
+    }
+    let activated = activated?;
+    let mut deferred_by_name: BTreeMap<String, Arc<dyn AgentTool>> =
+        BTreeMap::new();
+    for tool in deferred_tools {
+        deferred_by_name.insert(tool.schema().name.clone(), tool);
+    }
+    let deferred_by_name = Arc::new(deferred_by_name);
+    let initial_applied: BTreeSet<String> = initial_tools
+        .iter()
+        .map(|tool| tool.schema().name.clone())
+        .collect();
+    let applied = Arc::new(Mutex::new(initial_applied));
+    Some(Arc::new(move |ctx| {
+        let activated_names = activated.snapshot();
+        let pending_names: Vec<String> = {
+            let mut applied_guard = applied
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut names = Vec::new();
+            for name in activated_names {
+                if deferred_by_name.contains_key(&name)
+                    && applied_guard.insert(name.clone())
+                {
+                    names.push(name);
+                }
+            }
+            drop(applied_guard);
+            names
+        };
+        if pending_names.is_empty() {
+            return Box::pin(async { None });
+        }
+        let mut next_ctx = ctx.context.clone();
+        for name in pending_names {
+            if let Some(tool) = deferred_by_name.get(&name) {
+                next_ctx.tools.push(Arc::clone(tool));
+            }
+        }
+        Box::pin(async move {
+            Some(rpi_agent::AgentLoopTurnUpdate {
+                context: Some(next_ctx),
+                model: None,
+                thinking_level: None,
+            })
+        })
+    }))
+}
+
 /// One-shot text completion with no tools or history, used for sidecar tasks
 /// such as title generation.
 pub async fn complete_text(
@@ -514,6 +594,9 @@ pub async fn complete_text(
             prompt: prompt.to_owned(),
             route,
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: HashSet::new(),
             signal,
             pre_tool_hook: None,
         },
@@ -842,6 +925,13 @@ fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
     (normalize_signature(&raw, 160), raw)
 }
 
+#[cfg(test)]
+fn should_trip_same_error_breaker(
+    new_messages: &[AgentMessage],
+) -> Option<SameErrorTrip> {
+    should_trip_same_error_breaker_with_readonly(new_messages, &HashSet::new())
+}
+
 /// Detect repeating `(tool_name, canonical_args_json, error_sig)` failures
 /// across turns with zero intervening successful tool evidence.
 ///
@@ -852,8 +942,9 @@ fn tool_error_signature(result: &ToolResultMessage) -> (String, String) {
 ///   and trip if the subsequent identical attempt still fails (`streak >= 3`).
 /// - Any successful tool result (`!is_error`) provides new evidence and resets
 ///   the streak.
-fn should_trip_same_error_breaker(
+fn should_trip_same_error_breaker_with_readonly(
     new_messages: &[AgentMessage],
+    read_only_tools: &HashSet<String>,
 ) -> Option<SameErrorTrip> {
     let mut call_targets: HashMap<&str, (String, usize)> = HashMap::new();
     let mut assistant_turn: usize = 0;
@@ -908,8 +999,10 @@ fn should_trip_same_error_breaker(
                     streak = 1;
                     trailing_trip = None;
                 }
-                let transient = is_readonly_idempotent_tool(&tool_name)
-                    && is_transient_tool_error(&raw_error);
+                let is_readonly = read_only_tools.contains(&tool_name)
+                    || is_readonly_idempotent_tool(&tool_name);
+                let transient =
+                    is_readonly && is_transient_tool_error(&raw_error);
                 let limit = if transient { 3 } else { 2 };
                 if streak >= limit {
                     trailing_trip = Some(SameErrorTrip {

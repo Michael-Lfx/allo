@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use flowy_agent_core::ToolCallArgs;
 use flowy_agent_core::ToolExecutionResult;
-use flowy_agent_core::tools::ToolDefinition;
+use flowy_agent_core::tools::{ToolDefinition, ToolSource};
 use rpptx::Presentation;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -287,7 +287,8 @@ pub fn definition() -> Arc<ToolDefinition> {
                 })
             })
         },
-    ))
+    )
+    .with_source(ToolSource::Host))
 }
 
 #[cfg(test)]

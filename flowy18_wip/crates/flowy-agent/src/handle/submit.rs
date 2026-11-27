@@ -1,20 +1,20 @@
 //! Turn submission, tool/skill prompt assembly, and streaming execution dispatch.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use flowy_agent_core::{
     AcceptanceQueue, BranchHeartbeat, Engine, EnqueueOutcome, LoopOutcome,
     PendingCard, PendingRouterFollowup, PromptTurn, ReceiptState, RunError,
-    SessionOrigin, SessionRole, TurnState, WorkAccessMode, echo_stream_fn,
-    log_preview,
+    SessionOrigin, SessionRole, ToolProviderContext, TurnState, WorkAccessMode,
+    echo_stream_fn, log_preview,
     types::{CancelToken, MessageSource, Role},
 };
 
 use super::guards::{
-    build_pre_tool_hook, read_only_tool_registry, session_working_directory,
-    tool_registry,
+    PreToolHookSpec, build_pre_tool_hook, mount_tool_providers,
+    read_only_tool_registry, session_working_directory, tool_registry,
 };
 use super::observer::{
     self, capture_turn_artifacts, ensure_engine_session, persist_index,
@@ -397,11 +397,6 @@ impl Harness {
             );
         } else {
             run_config.registry = tool_registry(&cwd, &skills, active_skills);
-            run_config.pre_tool_hook = Some(build_pre_tool_hook(
-                id.clone(),
-                cwd.clone(),
-                Arc::clone(state),
-            ));
             if core_session.origin == SessionOrigin::Home
                 && let Some(submission) = submission
                 && let Some(session_workspace) = core_session.workspace.as_ref()
@@ -537,6 +532,44 @@ impl Harness {
             }
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
+            let providers = self.tool_providers();
+            let provider_ctx = ToolProviderContext {
+                session_id: &id,
+                cwd: &cwd,
+                origin: &core_session.origin,
+                access_mode: core_session.access_mode,
+            };
+            let provider_hints = mount_tool_providers(
+                &run_config.registry,
+                &providers,
+                &provider_ctx,
+            );
+            if !provider_hints.is_empty() {
+                run_config.system.push_str("\n\n[ProviderCapabilities]");
+                for hint in provider_hints {
+                    run_config.system.push_str("\n- ");
+                    run_config.system.push_str(&hint);
+                }
+            }
+            run_config.pre_tool_hook =
+                Some(build_pre_tool_hook(PreToolHookSpec {
+                    session_id: id.clone(),
+                    cwd: cwd.clone(),
+                    origin: core_session.origin.clone(),
+                    state: Arc::clone(state),
+                    registry: run_config.registry.clone(),
+                    providers,
+                }));
+            if preserve_tool_approval
+                && let Some(grants) = lock(&state.approved_tool_calls).get(&id)
+            {
+                let pre_activated: BTreeSet<String> = grants
+                    .iter()
+                    .map(|(tool_name, _)| tool_name.clone())
+                    .collect();
+                run_config.pre_activated_tools =
+                    pre_activated.into_iter().collect();
+            }
         }
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)

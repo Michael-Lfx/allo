@@ -3,13 +3,42 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use flowy_agent_core::tools::{ShellPolicyDecision, evaluate_shell_command};
+use flowy_agent_core::{
+    SessionOrigin, ToolDefinition, ToolPolicyContext, ToolProvider,
+    ToolProviderContext, ToolSource,
+    tools::{ShellPolicyDecision, evaluate_shell_command},
+};
 use flowy_skills::{InstalledSkill, SkillId};
 
 use super::{
     AgentWorkspace, Arc, Path, PathBuf, ToolCallArgs, ToolGuard, ToolRegistry,
     lock, log_storage_io_error, pi_shell_definition, register_builtin_tools,
 };
+
+/// Canonical host / built-in / Router tool names that extension providers may
+/// never register or shadow.
+const RESERVED_HOST_TOOLS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "todo_write",
+    "bash",
+    "powershell",
+    "create_deck",
+    "verify_deck",
+    "verify_artifact",
+    "publish_file",
+    flowy_agent_core::TOOL_SEARCH_NAME,
+    "dispatch_work",
+    "query_work_status",
+    "control_work",
+    "ask_user_choice",
+];
+
+const MAX_PROVIDER_WORKER_HINT_CHARS: usize = 240;
+const MAX_TOTAL_WORKER_HINTS_CHARS: usize = 1_200;
 
 /// Compute a deterministic SHA-256 hex digest over `(tool_name, canonical(args))`
 /// so `PendingCard::ToolApproval` approvals are pinned to exact invocation args.
@@ -33,18 +62,140 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "find_files",
     "verify_deck",
     "verify_artifact",
+    flowy_agent_core::TOOL_SEARCH_NAME,
 ];
+
+/// Parameters bundled for [`build_pre_tool_hook`] to keep hook wiring explicit.
+pub(super) struct PreToolHookSpec {
+    pub(super) session_id: String,
+    pub(super) cwd: PathBuf,
+    pub(super) origin: SessionOrigin,
+    pub(super) state: Arc<super::UiState>,
+    pub(super) registry: ToolRegistry,
+    pub(super) providers: Vec<Arc<dyn ToolProvider>>,
+}
+
+/// Mount all registered extension [`ToolProvider`]s into `registry` for a
+/// `Worker (ReadWrite)` or legacy `Standard` turn, rejecting reserved or
+/// duplicate tool names fail-closed and stripping `artifact_delivery`.
+pub(super) fn mount_tool_providers(
+    registry: &ToolRegistry,
+    providers: &[Arc<dyn ToolProvider>],
+    ctx: &ToolProviderContext<'_>,
+) -> Vec<String> {
+    let mut hints = Vec::new();
+    let mut total_hint_chars = 0_usize;
+    for provider in providers {
+        let provider_id = provider.id().trim();
+        if provider_id.is_empty() {
+            continue;
+        }
+        let staging = ToolRegistry::new();
+        provider.register_tools(ctx, &staging);
+        for def in staging.definitions() {
+            let trimmed = def.name.trim();
+            if trimmed.is_empty() || trimmed != def.name {
+                tracing::warn!(
+                    target: "flowy.prompt",
+                    provider = provider_id,
+                    tool = %def.name,
+                    "refused provider tool with empty or whitespace-padded name"
+                );
+                continue;
+            }
+            if RESERVED_HOST_TOOLS.contains(&def.name.as_str())
+                || registry.get(&def.name).is_some()
+            {
+                tracing::warn!(
+                    target: "flowy.prompt",
+                    provider = provider_id,
+                    tool = %def.name,
+                    "refused provider tool shadowing reserved host tool or duplicate name"
+                );
+                continue;
+            }
+            let sanitized: ToolDefinition = (*def)
+                .clone()
+                .without_artifact_delivery()
+                .with_source(ToolSource::Provider(provider_id.to_owned()));
+            registry.register(Arc::new(sanitized));
+        }
+        if let Some(raw_hint) = provider.worker_prompt_hint(ctx) {
+            let cleaned =
+                raw_hint.split_whitespace().collect::<Vec<_>>().join(" ");
+            if cleaned.is_empty() {
+                continue;
+            }
+            let remaining =
+                MAX_TOTAL_WORKER_HINTS_CHARS.saturating_sub(total_hint_chars);
+            if remaining == 0 {
+                continue;
+            }
+            let clamped = flowy_agent_core::log_preview(
+                &cleaned,
+                MAX_PROVIDER_WORKER_HINT_CHARS.min(remaining),
+            );
+            total_hint_chars =
+                total_hint_chars.saturating_add(clamped.chars().count());
+            hints.push(clamped);
+        }
+    }
+    hints
+}
+
+fn consume_or_request_approval(
+    state: &super::UiState,
+    session_id: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+    target_summary: String,
+    risk_reason: String,
+    command_preview: String,
+) -> flowy_agent_core::PreToolDecision {
+    let args_hash = canonical_tool_args_hash(tool_name, args);
+    let consumed_grant = {
+        let mut grants = lock(&state.approved_tool_calls);
+        if let Some(list) = grants.get_mut(session_id)
+            && let Some(pos) = list
+                .iter()
+                .position(|(t, h)| t == tool_name && h == &args_hash)
+        {
+            list.remove(pos);
+            true
+        } else {
+            false
+        }
+    };
+    if consumed_grant {
+        return flowy_agent_core::PreToolDecision::Allow;
+    }
+    flowy_agent_core::PreToolDecision::Ask {
+        target_summary,
+        args_hash,
+        risk_reason,
+        command_preview,
+    }
+}
 
 /// Build the host `PreToolHook` wired into `rpi_agent`'s `before_tool_call`
 /// enforcing turn-scoped `UserDenied` anti-bypass, 3-way `shell_policy`
-/// (`Allow | Ask | Deny`), and one-shot `args_hash` approval grants.
+/// (`Allow | Ask | Deny`), provider-scoped pre-tool policies, and one-shot
+/// `args_hash` approval grants.
 pub(super) fn build_pre_tool_hook(
-    session_id: String,
-    cwd: PathBuf,
-    state: Arc<super::UiState>,
+    spec: PreToolHookSpec,
 ) -> flowy_agent_core::PreToolHook {
+    let PreToolHookSpec {
+        session_id,
+        cwd,
+        origin,
+        state,
+        registry,
+        providers,
+    } = spec;
     Arc::new(move |tool_name: &str, args: &serde_json::Value| {
-        if !READ_ONLY_TOOLS.contains(&tool_name) {
+        let is_read_only = READ_ONLY_TOOLS.contains(&tool_name)
+            || registry.is_read_only(tool_name);
+        if !is_read_only {
             let denied =
                 lock(&state.denied_tool_turns).get(&session_id).cloned();
             if let Some(reason) = denied {
@@ -69,35 +220,51 @@ pub(super) fn build_pre_tool_hook(
                     };
                 }
                 ShellPolicyDecision::Ask { reason, .. } => {
-                    let args_hash = canonical_tool_args_hash(tool_name, args);
-                    let consumed_grant = {
-                        let mut grants = lock(&state.approved_tool_calls);
-                        if let Some(list) = grants.get_mut(&session_id)
-                            && let Some(pos) = list.iter().position(|(t, h)| {
-                                t == tool_name && h == &args_hash
-                            })
-                        {
-                            list.remove(pos);
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if consumed_grant {
-                        return flowy_agent_core::PreToolDecision::Allow;
-                    }
                     let preview =
                         flowy_agent_core::log_preview(command.trim(), 160);
-                    return flowy_agent_core::PreToolDecision::Ask {
-                        target_summary: format!(
-                            "{tool_name} ({})",
-                            cwd.display()
-                        ),
-                        args_hash,
-                        risk_reason: reason,
-                        command_preview: preview,
-                    };
+                    return consume_or_request_approval(
+                        &state,
+                        &session_id,
+                        tool_name,
+                        args,
+                        format!("{tool_name} ({})", cwd.display()),
+                        reason,
+                        preview,
+                    );
                 }
+            }
+        }
+        if let Some(def) = registry.get(tool_name)
+            && let ToolSource::Provider(owner_id) = def.source()
+            && let Some(provider) = providers
+                .iter()
+                .find(|p| p.id().trim() == owner_id.as_str())
+        {
+            let policy_ctx = ToolPolicyContext {
+                session_id: &session_id,
+                cwd: &cwd,
+                origin: &origin,
+            };
+            if let Some(decision) =
+                provider.evaluate_pre_tool(tool_name, args, &policy_ctx)
+            {
+                return match decision {
+                    flowy_agent_core::PreToolDecision::Ask {
+                        target_summary,
+                        risk_reason,
+                        command_preview,
+                        ..
+                    } => consume_or_request_approval(
+                        &state,
+                        &session_id,
+                        tool_name,
+                        args,
+                        target_summary,
+                        risk_reason,
+                        command_preview,
+                    ),
+                    other => other,
+                };
             }
         }
         flowy_agent_core::PreToolDecision::Allow

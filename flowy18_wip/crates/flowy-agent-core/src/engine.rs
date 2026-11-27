@@ -23,7 +23,10 @@ use crate::session::{
     SessionRecord, SessionRole, SessionWorkspace, StopHandoffManifest,
     SubmissionOutcome, TrackedObject, TurnState, WorkAccessMode, WorkContract,
 };
-use crate::tools::{RegistryTool, ToolRegistry};
+use crate::tools::{
+    ActivatedToolSet, RegistryTool, TOOL_SEARCH_NAME, ToolExposure,
+    ToolRegistry, format_deferred_tool_catalog, tool_search_definition,
+};
 use crate::types::{
     ArtifactReceipt, CancelToken, ContentBlock, Message, MessageSource,
     PromptTurn, Role, TodoSink, ToolRunContext,
@@ -90,6 +93,9 @@ pub struct EngineConfig {
     pub work_contract: Option<WorkContract>,
     /// Optional host pre-tool gate wired into `rpi_agent`'s `before_tool_call`.
     pub pre_tool_hook: Option<PreToolHook>,
+    /// Deferred tool names pre-activated at Step 1 of this turn (used e.g. when
+    /// resuming after `PendingCard::ToolApproval`).
+    pub pre_activated_tools: Vec<String>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -99,6 +105,7 @@ impl std::fmt::Debug for EngineConfig {
             .field("has_key", &self.api_key.is_some())
             .field("system_len", &self.system.len())
             .field("tools", &self.registry.list().len())
+            .field("pre_activated_tools", &self.pre_activated_tools.len())
             .field("has_delivery_committer", &self.delivery_committer.is_some())
             .finish_non_exhaustive()
     }
@@ -1465,7 +1472,7 @@ impl Engine {
         });
         let delivery_committer = config.delivery_committer.clone();
         let artifact_receipts = Arc::new(Mutex::new(Vec::new()));
-        let tools = build_tools(
+        let prepared_tools = prepare_turn_tools(
             &config,
             session_id,
             ticket.signal().clone(),
@@ -1479,18 +1486,22 @@ impl Engine {
             stage = "Engine::run_prepared",
             session = %session_id,
             history = history.len(),
-            tools = tools.len(),
+            tools = prepared_tools.eager_tools.len(),
+            deferred_tools = prepared_tools.deferred_tools.len(),
             model = %config.route.model,
             base_url = %config.route.base_url,
             "→ run_turn"
         );
         let request = TurnRequest {
             session_id: Some(session_id.to_owned()),
-            system: config.system,
+            system: prepared_tools.system,
             history,
             prompt: prompt.to_owned(),
             route: config.route,
-            tools,
+            tools: prepared_tools.eager_tools,
+            deferred_tools: prepared_tools.deferred_tools,
+            activated_tools: prepared_tools.activated_tools,
+            read_only_tools: prepared_tools.read_only_tools,
             signal: ticket.signal().clone(),
             pre_tool_hook: config.pre_tool_hook,
         };
@@ -1999,7 +2010,15 @@ fn delivery_commit(
     })
 }
 
-fn build_tools(
+struct PreparedTurnTools {
+    eager_tools: Vec<Arc<dyn rpi_agent::AgentTool>>,
+    deferred_tools: Vec<Arc<dyn rpi_agent::AgentTool>>,
+    activated_tools: Option<ActivatedToolSet>,
+    read_only_tools: HashSet<String>,
+    system: String,
+}
+
+fn prepare_turn_tools(
     config: &EngineConfig,
     session_id: &str,
     signal: CancelToken,
@@ -2007,7 +2026,7 @@ fn build_tools(
     session_origin: SessionOrigin,
     output_root: Option<PathBuf>,
     artifact_receipts: Arc<Mutex<Vec<ArtifactReceipt>>>,
-) -> Vec<Arc<dyn rpi_agent::AgentTool>> {
+) -> PreparedTurnTools {
     let run_ctx = ToolRunContext {
         signal,
         agent_id: Some(session_id.to_owned()),
@@ -2018,25 +2037,79 @@ fn build_tools(
         output_root,
         artifact_delivery_available: config.delivery_committer.is_some(),
     };
-    config
-        .registry
-        .list()
-        .into_iter()
-        .filter_map(|name| {
-            let definition = config.registry.get(&name)?;
-            RegistryTool::new_with_artifact_sink(
-                config.registry.clone(),
-                definition,
-                run_ctx.clone(),
-                Some(Arc::clone(&artifact_receipts)),
-            )
-            .ok()
-            .map(|tool| {
-                let tool: Arc<dyn rpi_agent::AgentTool> = Arc::new(tool);
-                tool
+    if !config.registry.has_deferred() {
+        let eager_tools = config
+            .registry
+            .definitions()
+            .into_iter()
+            .filter_map(|definition| {
+                RegistryTool::new_with_artifact_sink(
+                    config.registry.clone(),
+                    definition,
+                    run_ctx.clone(),
+                    Some(Arc::clone(&artifact_receipts)),
+                )
+                .ok()
+                .map(|tool| -> Arc<dyn rpi_agent::AgentTool> { Arc::new(tool) })
             })
-        })
-        .collect()
+            .collect();
+        return PreparedTurnTools {
+            eager_tools,
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: config.registry.read_only_tool_names(),
+            system: config.system.clone(),
+        };
+    }
+
+    let turn_registry = config.registry.fork();
+    let activated =
+        ActivatedToolSet::new(config.pre_activated_tools.iter().cloned());
+    if turn_registry.get(TOOL_SEARCH_NAME).is_none() {
+        turn_registry.register(tool_search_definition(
+            turn_registry.clone(),
+            activated.clone(),
+        ));
+    }
+
+    let mut eager_tools = Vec::new();
+    let mut deferred_tools = Vec::new();
+    for definition in turn_registry.definitions() {
+        let is_deferred = definition.exposure() == ToolExposure::Deferred
+            && !activated.contains(&definition.name);
+        let Ok(tool) = RegistryTool::new_with_artifact_sink(
+            turn_registry.clone(),
+            definition,
+            run_ctx.clone(),
+            Some(Arc::clone(&artifact_receipts)),
+        ) else {
+            continue;
+        };
+        let boxed: Arc<dyn rpi_agent::AgentTool> = Arc::new(tool);
+        if is_deferred {
+            deferred_tools.push(boxed);
+        } else {
+            eager_tools.push(boxed);
+        }
+    }
+
+    let mut system = config.system.clone();
+    if let Some(catalog) = format_deferred_tool_catalog(&turn_registry)
+        && !system.contains("[DeferredToolsAvailable]")
+    {
+        if !system.trim().is_empty() {
+            system.push_str("\n\n");
+        }
+        system.push_str(&catalog);
+    }
+
+    PreparedTurnTools {
+        eager_tools,
+        deferred_tools,
+        activated_tools: Some(activated),
+        read_only_tools: turn_registry.read_only_tool_names(),
+        system,
+    }
 }
 
 fn status_for(outcome: LoopOutcome, error: Option<&str>) -> TurnState {

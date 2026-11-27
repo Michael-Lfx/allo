@@ -1982,8 +1982,14 @@ mod guard_tests {
         //    and any future mutating tool are blocked while read_file/verify_deck stay allowed.
         lock(&state.denied_tool_turns)
             .insert(sid.clone(), "user rejected delete".into());
-        let hook =
-            super::build_pre_tool_hook(sid, root.clone(), Arc::clone(&state));
+        let hook = super::build_pre_tool_hook(super::PreToolHookSpec {
+            session_id: sid,
+            cwd: root.clone(),
+            origin: flowy_agent_core::SessionOrigin::Home,
+            state: Arc::clone(&state),
+            registry: super::ToolRegistry::new(),
+            providers: Vec::new(),
+        });
         for blocked_tool in [
             "publish_file",
             "write_file",
