@@ -74,12 +74,10 @@ impl StudioPanel {
                     .worker_session
                     .as_deref()
                     .unwrap_or(group.session_id.as_str());
-                div()
-                    .id("board-inspector-trace-scroll")
+                theme::scroll_area("board-inspector-trace-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_board_trace"))
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(6.))
                     .child(
                         div()
                             .w_full()
@@ -516,31 +514,34 @@ impl StudioPanel {
         if let (Some(path), Some(body)) =
             (&self.drawer_preview.file, &self.drawer_preview.body)
         {
-            return div()
-                .id("board-inspector-preview-scroll")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .scrollbar_width(px(6.))
-                .child(
-                    div()
-                        .w_full()
-                        .px(self.theme.space(16.))
-                        .py(self.theme.space(12.))
-                        .child(
-                            div()
-                                .w_full()
-                                .rounded_xl()
-                                .border_1()
-                                .border_color(self.theme.line())
-                                .bg(self.theme.canvas())
-                                .overflow_hidden()
-                                .child(self.drawer_preview_view(
+            return theme::scroll_area(
+                "board-inspector-preview-scroll",
+                &self.theme,
+            )
+            .a11y_label(self.t("a11y.scroll_board_preview"))
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .w_full()
+                    .px(self.theme.space(16.))
+                    .py(self.theme.space(12.))
+                    .child(
+                        div()
+                            .w_full()
+                            .rounded_xl()
+                            .border_1()
+                            .border_color(self.theme.line())
+                            .bg(self.theme.canvas())
+                            .overflow_hidden()
+                            .child(
+                                self.drawer_preview_view(
                                     path, body, window, cx,
-                                )),
-                        ),
-                )
-                .into_any_element();
+                                ),
+                            ),
+                    ),
+            )
+            .into_any_element();
         }
 
         let mut col = div()
@@ -606,12 +607,10 @@ impl StudioPanel {
             );
         }
 
-        div()
-            .id("board-inspector-overview-scroll")
+        theme::scroll_area("board-inspector-overview-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_board_overview"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .scrollbar_width(px(6.))
             .child(col)
             .into_any_element()
     }
@@ -1525,12 +1524,10 @@ impl StudioPanel {
             .filter(|(sid, _)| sid == target_sid)
             .map_or(&[], |(_, lines)| lines.as_slice());
 
-        div()
-            .id("board-inspector-timeline-scroll")
+        theme::scroll_area("board-inspector-timeline-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_board_timeline"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .scrollbar_width(px(6.))
             .child(col.child(self.structured_steps_view(
                 target_sid,
                 cached_lines,

@@ -760,17 +760,11 @@ impl FlowyApp {
             );
         }
 
-        let mut list = div()
-            .id("quick-search-list")
-            .w_full()
-            .max_h(px(360.))
-            .overflow_y_scroll()
+        let mut list = ui::scroll_area("quick-search-list", &self.theme)
             .track_scroll(&self.quick_search.scroll)
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .px_2()
-            .py_2();
+            .max_h_viewport(px(360.))
+            .a11y_label(self.t("a11y.scroll_quick_search"))
+            .viewport_style(|v| v.flex().flex_col().gap(px(2.)).px_2().py_2());
 
         if rows.is_empty() {
             list = list.child(

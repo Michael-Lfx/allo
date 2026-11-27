@@ -201,6 +201,16 @@ impl ResolvedTheme {
     pub fn border_strong(self) -> Rgba {
         rgb(if self.dark { 0x0096_938c } else { 0x0085_8178 })
     }
+    /// Subtle overflow-only scrollbar thumb tokens derived from `ink()`.
+    pub fn scrollbar_thumb(self) -> Rgba {
+        self.ink().opacity(if self.dark { 0.24 } else { 0.20 })
+    }
+    pub fn scrollbar_thumb_hover(self) -> Rgba {
+        self.ink().opacity(if self.dark { 0.46 } else { 0.38 })
+    }
+    pub fn scrollbar_thumb_active(self) -> Rgba {
+        self.ink().opacity(if self.dark { 0.64 } else { 0.56 })
+    }
     pub(crate) fn quiet_field_border(self) -> Rgba {
         rgb(if self.dark { 0x0045_4543 } else { 0x00da_d8d3 })
     }
@@ -796,6 +806,36 @@ mod reference_tests {
                     assert_ne!(color, other);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn scrollbar_thumb_tokens_adapt_across_themes_and_states() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_ne!(light.scrollbar_thumb(), dark.scrollbar_thumb());
+        assert_ne!(light.scrollbar_thumb_hover(), dark.scrollbar_thumb_hover());
+        for theme in [light, dark] {
+            assert!(theme.scrollbar_thumb().a > 0.1);
+            assert!(
+                theme.scrollbar_thumb().a < theme.scrollbar_thumb_hover().a
+            );
+            assert!(
+                theme.scrollbar_thumb_hover().a
+                    < theme.scrollbar_thumb_active().a
+            );
         }
     }
 }

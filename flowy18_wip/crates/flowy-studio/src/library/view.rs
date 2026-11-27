@@ -1567,12 +1567,11 @@ impl Render for LibraryPanel {
                 )
             })
             .child(
-                div()
-                    .id("library-scroll")
+                theme::scroll_area("library-scroll", &t)
                     .track_scroll(&self.scroll)
+                    .a11y_label(self.t("a11y.scroll_library_list"))
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .child(
                         theme::PageColumn::new()
                             .child(self.filters(cx))

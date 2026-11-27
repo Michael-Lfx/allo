@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "工作区改动 ({count})",
   "board.status_blockers": "待拍板 {count}",
   "board.status_running": "运行中 {count}",
-  "board.status_today_done": "今日完成 {count}"
+  "board.status_today_done": "今日完成 {count}",
+  "a11y.scroll_board_queue": "任务队列滚动区",
+  "a11y.scroll_board_overview": "任务概览滚动区",
+  "a11y.scroll_board_preview": "任务成果预览滚动区",
+  "a11y.scroll_board_timeline": "步骤时间线滚动区",
+  "a11y.scroll_board_trace": "执行追踪滚动区",
+  "a11y.scroll_chat_feed": "对话消息滚动区",
+  "a11y.scroll_library_list": "资料库列表滚动区",
+  "a11y.scroll_library_preview": "文档预览滚动区",
+  "a11y.scroll_dock": "左侧导航滚动区",
+  "a11y.scroll_quick_search": "快速搜索结果滚动区",
+  "a11y.scroll_deliverables_drawer": "右侧成果抽屉滚动区"
 }

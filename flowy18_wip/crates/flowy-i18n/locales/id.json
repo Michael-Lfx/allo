@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Perubahan ruang kerja ({count})",
   "board.status_blockers": "Tinjau ({count})",
   "board.status_running": "Berjalan ({count})",
-  "board.status_today_done": "Selesai hari ini ({count})"
+  "board.status_today_done": "Selesai hari ini ({count})",
+  "a11y.scroll_board_queue": "Area gulir antrean tugas",
+  "a11y.scroll_board_overview": "Area gulir ringkasan tugas",
+  "a11y.scroll_board_preview": "Area gulir pratinjau hasil tugas",
+  "a11y.scroll_board_timeline": "Area gulir linimasa langkah",
+  "a11y.scroll_board_trace": "Area gulir jejak eksekusi",
+  "a11y.scroll_chat_feed": "Area gulir umpan percakapan",
+  "a11y.scroll_library_list": "Area gulir daftar pustaka",
+  "a11y.scroll_library_preview": "Area gulir pratinjau dokumen",
+  "a11y.scroll_dock": "Area gulir navigasi bilah samping",
+  "a11y.scroll_quick_search": "Area gulir hasil pencarian cepat",
+  "a11y.scroll_deliverables_drawer": "Area gulir laci hasil"
 }

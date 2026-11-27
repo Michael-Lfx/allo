@@ -15,6 +15,7 @@ mod controls;
 mod feedback;
 pub mod motion;
 mod overlays;
+pub mod scroll;
 mod theme;
 mod tooltip;
 mod typeface;
@@ -35,6 +36,9 @@ pub use context::*;
 pub use controls::*;
 pub use feedback::*;
 pub use overlays::*;
+pub use scroll::{
+    ScrollArea, ScrollbarAxis, ScrollbarMode, scroll_area, scroll_list_host,
+};
 pub use theme::*;
 pub use tooltip::tooltip_trigger;
 pub use typeface::{

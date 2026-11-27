@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "工作區變更 ({count})",
   "board.status_blockers": "待拍板 {count}",
   "board.status_running": "執行中 {count}",
-  "board.status_today_done": "今日完成 {count}"
+  "board.status_today_done": "今日完成 {count}",
+  "a11y.scroll_board_queue": "任務佇列捲動區",
+  "a11y.scroll_board_overview": "任務概覽捲動區",
+  "a11y.scroll_board_preview": "任務成果預覽捲動區",
+  "a11y.scroll_board_timeline": "步驟時間軸捲動區",
+  "a11y.scroll_board_trace": "執行追蹤捲動區",
+  "a11y.scroll_chat_feed": "對話訊息捲動區",
+  "a11y.scroll_library_list": "資料庫清單捲動區",
+  "a11y.scroll_library_preview": "文件預覽捲動區",
+  "a11y.scroll_dock": "左側導覽捲動區",
+  "a11y.scroll_quick_search": "快速搜尋結果捲動區",
+  "a11y.scroll_deliverables_drawer": "右側成果抽屜捲動區"
 }

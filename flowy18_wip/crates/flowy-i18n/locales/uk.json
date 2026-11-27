@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Зміни робочої області ({count})",
   "board.status_blockers": "На перевірці ({count})",
   "board.status_running": "Виконується ({count})",
-  "board.status_today_done": "Готово сьогодні ({count})"
+  "board.status_today_done": "Готово сьогодні ({count})",
+  "a11y.scroll_board_queue": "Область прокручування черги завдань",
+  "a11y.scroll_board_overview": "Область прокручування огляду завдання",
+  "a11y.scroll_board_preview": "Область прокручування перегляду результату",
+  "a11y.scroll_board_timeline": "Область прокручування шкали кроків",
+  "a11y.scroll_board_trace": "Область прокручування трасування виконання",
+  "a11y.scroll_chat_feed": "Область прокручування стрічки розмови",
+  "a11y.scroll_library_list": "Область прокручування списку бібліотеки",
+  "a11y.scroll_library_preview": "Область прокручування перегляду документа",
+  "a11y.scroll_dock": "Область прокручування бічної навігації",
+  "a11y.scroll_quick_search": "Область прокручування результатів швидкого пошуку",
+  "a11y.scroll_deliverables_drawer": "Область прокручування панелі результатів"
 }

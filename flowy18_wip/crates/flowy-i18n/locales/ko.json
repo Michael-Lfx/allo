@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "작업 공간 변경 ({count})",
   "board.status_blockers": "검토 필요 ({count})",
   "board.status_running": "실행 중 ({count})",
-  "board.status_today_done": "오늘 완료 ({count})"
+  "board.status_today_done": "오늘 완료 ({count})",
+  "a11y.scroll_board_queue": "작업 대기열 스크롤 영역",
+  "a11y.scroll_board_overview": "작업 개요 스크롤 영역",
+  "a11y.scroll_board_preview": "작업 결과 미리보기 스크롤 영역",
+  "a11y.scroll_board_timeline": "단계 타임라인 스크롤 영역",
+  "a11y.scroll_board_trace": "실행 추적 스크롤 영역",
+  "a11y.scroll_chat_feed": "대화 피드 스크롤 영역",
+  "a11y.scroll_library_list": "라이브러리 목록 스크롤 영역",
+  "a11y.scroll_library_preview": "문서 미리보기 스크롤 영역",
+  "a11y.scroll_dock": "사이드바 탐색 스크롤 영역",
+  "a11y.scroll_quick_search": "빠른 검색 결과 스크롤 영역",
+  "a11y.scroll_deliverables_drawer": "결과물 서랍 스크롤 영역"
 }

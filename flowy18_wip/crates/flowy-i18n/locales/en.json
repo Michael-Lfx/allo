@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Workspace changes ({count})",
   "board.status_blockers": "Review ({count})",
   "board.status_running": "Running ({count})",
-  "board.status_today_done": "Done today ({count})"
+  "board.status_today_done": "Done today ({count})",
+  "a11y.scroll_board_queue": "Task queue scroll area",
+  "a11y.scroll_board_overview": "Task overview scroll area",
+  "a11y.scroll_board_preview": "Task output preview scroll area",
+  "a11y.scroll_board_timeline": "Step timeline scroll area",
+  "a11y.scroll_board_trace": "Execution trace scroll area",
+  "a11y.scroll_chat_feed": "Conversation feed scroll area",
+  "a11y.scroll_library_list": "Library list scroll area",
+  "a11y.scroll_library_preview": "Document preview scroll area",
+  "a11y.scroll_dock": "Sidebar navigation scroll area",
+  "a11y.scroll_quick_search": "Quick search results scroll area",
+  "a11y.scroll_deliverables_drawer": "Deliverables drawer scroll area"
 }

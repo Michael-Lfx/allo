@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "تغييرات مساحة العمل ({count})",
   "board.status_blockers": "قيد المراجعة ({count})",
   "board.status_running": "قيد التشغيل ({count})",
-  "board.status_today_done": "مكتمل اليوم ({count})"
+  "board.status_today_done": "مكتمل اليوم ({count})",
+  "a11y.scroll_board_queue": "منطقة التمرير لقائمة انتظار المهام",
+  "a11y.scroll_board_overview": "منطقة التمرير لنظرة عامة على المهمة",
+  "a11y.scroll_board_preview": "منطقة التمرير لمعاينة مخرجات المهمة",
+  "a11y.scroll_board_timeline": "منطقة التمرير للخط الزمني للخطوات",
+  "a11y.scroll_board_trace": "منطقة التمرير لتتبع التنفيذ",
+  "a11y.scroll_chat_feed": "منطقة التمرير لسجل المحادثة",
+  "a11y.scroll_library_list": "منطقة التمرير لقائمة المكتبة",
+  "a11y.scroll_library_preview": "منطقة التمرير لمعاينة المستند",
+  "a11y.scroll_dock": "منطقة التمرير للتنقل الجانبي",
+  "a11y.scroll_quick_search": "منطقة التمرير لنتائج البحث السريع",
+  "a11y.scroll_deliverables_drawer": "منطقة التمرير لدرج المخرجات"
 }

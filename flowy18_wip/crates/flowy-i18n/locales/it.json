@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Modifiche area di lavoro ({count})",
   "board.status_blockers": "Da verificare ({count})",
   "board.status_running": "In corso ({count})",
-  "board.status_today_done": "Completati oggi ({count})"
+  "board.status_today_done": "Completati oggi ({count})",
+  "a11y.scroll_board_queue": "Area di scorrimento coda attività",
+  "a11y.scroll_board_overview": "Area di scorrimento panoramica attività",
+  "a11y.scroll_board_preview": "Area di scorrimento anteprima risultato",
+  "a11y.scroll_board_timeline": "Area di scorrimento cronologia passaggi",
+  "a11y.scroll_board_trace": "Area di scorrimento traccia di esecuzione",
+  "a11y.scroll_chat_feed": "Area di scorrimento flusso conversazione",
+  "a11y.scroll_library_list": "Area di scorrimento elenco libreria",
+  "a11y.scroll_library_preview": "Area di scorrimento anteprima documento",
+  "a11y.scroll_dock": "Area di scorrimento navigazione laterale",
+  "a11y.scroll_quick_search": "Area di scorrimento risultati ricerca rapida",
+  "a11y.scroll_deliverables_drawer": "Area di scorrimento pannello risultati"
 }

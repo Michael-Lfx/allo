@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Thay đổi không gian làm việc ({count})",
   "board.status_blockers": "Cần duyệt ({count})",
   "board.status_running": "Đang chạy ({count})",
-  "board.status_today_done": "Xong hôm nay ({count})"
+  "board.status_today_done": "Xong hôm nay ({count})",
+  "a11y.scroll_board_queue": "Vùng cuộn hàng đợi tác vụ",
+  "a11y.scroll_board_overview": "Vùng cuộn tổng quan tác vụ",
+  "a11y.scroll_board_preview": "Vùng cuộn xem trước kết quả",
+  "a11y.scroll_board_timeline": "Vùng cuộn dòng thời gian các bước",
+  "a11y.scroll_board_trace": "Vùng cuộn dấu vết thực thi",
+  "a11y.scroll_chat_feed": "Vùng cuộn luồng hội thoại",
+  "a11y.scroll_library_list": "Vùng cuộn danh sách thư viện",
+  "a11y.scroll_library_preview": "Vùng cuộn xem trước tài liệu",
+  "a11y.scroll_dock": "Vùng cuộn điều hướng thanh bên",
+  "a11y.scroll_quick_search": "Vùng cuộn kết quả tìm kiếm nhanh",
+  "a11y.scroll_deliverables_drawer": "Vùng cuộn ngăn kéo kết quả"
 }
