@@ -3,35 +3,8 @@ use crate::{InteractiveDiv, ResolvedTheme, Text, TextRole, Title, TitleLevel};
 use gpui::StatefulInteractiveElement;
 use gpui::{
     AnyElement, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
-    Role, SharedString, Stateful, Styled, div, linear, prelude::*,
+    Role, SharedString, Stateful, Styled, div, prelude::*,
 };
-use gpui_kit::component::{Icon, Sizable, Size, spinner::Spinner};
-
-pub fn loading_status(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    theme: &ResolvedTheme,
-) -> Stateful<Div> {
-    let spinner = Spinner::new()
-        .icon(
-            Icon::default()
-                .data(include_bytes!("../assets/icons/loader-circle.svg")),
-        )
-        .with_size(Size::Small)
-        .color(theme.muted().into())
-        .ease(linear);
-
-    div()
-        .id(id)
-        .role(Role::Status)
-        .flex()
-        .items_center()
-        .gap(theme.space(6.))
-        .text_size(theme.caption_size())
-        .text_color(theme.muted())
-        .child(spinner)
-        .child(label.into())
-}
 
 pub fn form_field(
     id: impl Into<ElementId>,

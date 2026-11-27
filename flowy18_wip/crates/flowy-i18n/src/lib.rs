@@ -404,37 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn my_skills_library_copy_is_localized() {
-        let mut i18n = I18n::embedded("Flowy");
-        let keys = [
-            "skills.library_installed",
-            "skills.library_explore",
-            "skills.library_no_saved",
-            "skills.library_search",
-        ];
-        for (locale, expected) in [
-            (
-                Locale::ZhCn,
-                ["已安装", "探索技能", "还没有收藏技能。", "搜索我的技能"],
-            ),
-            (
-                Locale::En,
-                [
-                    "Installed",
-                    "Explore skills",
-                    "No saved skills yet.",
-                    "Search your skills",
-                ],
-            ),
-        ] {
-            i18n.set_locale(locale);
-            for (key, value) in keys.into_iter().zip(expected) {
-                assert_eq!(i18n.t(key), value);
-            }
-        }
-    }
-
-    #[test]
     fn conversation_artifact_actions_have_chinese_and_english_copy() {
         let mut i18n = I18n::embedded("Flowy");
         for (locale, save, source, delete_body) in [

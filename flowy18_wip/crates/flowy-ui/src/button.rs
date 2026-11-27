@@ -236,7 +236,6 @@ pub struct IconButton {
     button: Button,
     icon: AnyElement,
     framed: bool,
-    extent: Option<gpui::Pixels>,
 }
 impl IconButton {
     pub fn new(
@@ -248,16 +247,7 @@ impl IconButton {
             button: Button::new(id, label).variant(ControlVariant::Ghost),
             icon: icon.into_any_element(),
             framed: false,
-            extent: None,
         }
-    }
-    /// Pins both axes of the hit target.
-    ///
-    /// Use this when [`ControlSize`] is taller than the row the button is
-    /// revealed in. A taller button grows that row on hover.
-    pub const fn extent(mut self, value: gpui::Pixels) -> Self {
-        self.extent = Some(value);
-        self
     }
     /// Draws the control's own border and square hit target.
     pub const fn framed(mut self) -> Self {
@@ -296,9 +286,7 @@ impl IconButton {
         theme: ResolvedTheme,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> (InteractiveDiv, bool, bool) {
-        let side = self
-            .extent
-            .unwrap_or_else(|| theme.control_height(self.button.size));
+        let size = self.button.size;
         let icon_id: ElementId = (self.button.id.clone(), "icon").into();
         let label = self.button.label.clone();
         let colors = theme.control_colors(self.button.variant);
@@ -324,8 +312,8 @@ impl IconButton {
         )
         .border_2()
         .border_color(colors.border)
-        .min_w(side)
-        .min_h(side)
+        .min_w(theme.control_height(size))
+        .min_h(theme.control_height(size))
         .rounded_lg()
         .flex()
         .items_center()
@@ -338,6 +326,7 @@ impl IconButton {
         })
         .when(loading, Styled::cursor_default)
         .when(self.framed, |element| {
+            let side = theme.control_height(size);
             toolbar_frame(element, theme)
                 .text_color(theme.toolbar_icon())
                 .w(side)
