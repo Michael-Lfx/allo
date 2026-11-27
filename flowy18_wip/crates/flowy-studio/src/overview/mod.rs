@@ -92,7 +92,9 @@ impl StudioPanel {
         match format {
             DeliverableFormat::Sheet => self.theme.file_kind_sheet(),
             DeliverableFormat::Slides => self.theme.file_kind_slides(),
-            DeliverableFormat::Doc => self.theme.file_kind_doc(),
+            DeliverableFormat::Doc
+            | DeliverableFormat::Pdf
+            | DeliverableFormat::Markdown => self.theme.file_kind_doc(),
             DeliverableFormat::CodeWeb => self.theme.file_kind_code(),
             DeliverableFormat::Other => self.theme.file_kind_other(),
         }
@@ -100,6 +102,8 @@ impl StudioPanel {
 
     pub(super) fn format_tag_label(&self, format: DeliverableFormat) -> String {
         match format {
+            DeliverableFormat::Pdf => "PDF".to_owned(),
+            DeliverableFormat::Markdown => "MD".to_owned(),
             DeliverableFormat::CodeWeb => self.t("deliverables.kind_code"),
             DeliverableFormat::Other => self.t("deliverables.kind_file"),
             other => other.tag().to_owned(),
