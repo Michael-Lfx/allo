@@ -18,7 +18,8 @@ use flowy_agent_core::{
     SubmissionOutcome, ToolProvider, TurnObserver, TurnState, WorkAccessMode,
     complete_text,
     tools::{
-        ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
+        ToolGuard, ToolRegistry, pi_shell_definition_for_host,
+        register_builtin_tools,
     },
     types::{
         CancelToken, ContentBlock, Message, MessageSource, Role, ToolCallArgs,
@@ -749,7 +750,7 @@ impl AgentHandle {
             return Err("notice.agent_failed");
         };
         let cwd = ensure_tool_cwd(&self.inner.state.root);
-        engine.set_config(engine_config(&config, &cwd));
+        engine.set_config(engine_config(&config, &cwd, &self.inner.state.root));
         let runnable = config.can_run_turns();
         *lock(&self.inner.config) = config;
         if runnable && self.inner.state.autonomous_drain.load(Ordering::Acquire)
@@ -2382,12 +2383,16 @@ fn append_skill_listing(base: &str, skills: &[InstalledSkill]) -> String {
     }
 }
 
-fn engine_config(config: &LlmConfig, cwd: &Path) -> EngineConfig {
+fn engine_config(
+    config: &LlmConfig,
+    cwd: &Path,
+    data_root: &Path,
+) -> EngineConfig {
     EngineConfig {
         route: model_route(config),
         api_key: config.api_key.clone(),
         system: String::new(),
-        registry: tool_registry(cwd, &[], Vec::new()),
+        registry: tool_registry(cwd, data_root, &[], Vec::new()),
         cwd: Some(cwd.display().to_string()),
         todos: None,
         delivery_committer: None,

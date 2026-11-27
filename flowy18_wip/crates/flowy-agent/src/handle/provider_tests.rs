@@ -662,7 +662,7 @@ fn provider_shadowing_reserved_tools_and_delivery_forgery_fail_closed() {
     }
 
     let dir = scratch("shadow-guard");
-    let registry = super::tool_registry(&dir.0, &[], Vec::new());
+    let registry = super::tool_registry(&dir.0, &dir.0, &[], Vec::new());
     let providers = vec![
         super::RegisteredProvider {
             registration_id: 1,
@@ -797,7 +797,7 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
             cached_router_hint: None,
         },
     ];
-    let registry = super::tool_registry(&dir.0, &[], Vec::new());
+    let registry = super::tool_registry(&dir.0, &dir.0, &[], Vec::new());
     let ctx = ToolProviderContext {
         session_id: &sid,
         cwd: &dir.0,

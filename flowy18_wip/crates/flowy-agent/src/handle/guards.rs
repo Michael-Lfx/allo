@@ -13,7 +13,7 @@ use flowy_skills::{InstalledSkill, SkillId};
 use super::{
     AgentWorkspace, Arc, Path, PathBuf, ProviderApprovalBinding,
     RegisteredProvider, ToolCallArgs, ToolGuard, ToolRegistry, lock,
-    log_storage_io_error, pi_shell_definition, register_builtin_tools,
+    log_storage_io_error, pi_shell_definition_for_host, register_builtin_tools,
 };
 
 /// Canonical host / built-in / Router tool names that extension providers may
@@ -542,13 +542,14 @@ pub(super) fn session_working_directory(
 
 pub(super) fn tool_registry(
     cwd: &Path,
+    data_root: &Path,
     skills: &[InstalledSkill],
     active_skills: Vec<SkillId>,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     register_builtin_tools(&registry);
     registry.register(crate::pptx::definition());
-    registry.register(pi_shell_definition(cwd));
+    registry.register(pi_shell_definition_for_host(cwd, data_root));
     // The app has no todo surface yet; expose only tools whose results the
     // host can satisfy instead of advertising one that always fails.
     registry.unregister("todo_write");

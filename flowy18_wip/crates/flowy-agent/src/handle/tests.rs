@@ -153,8 +153,12 @@ mod background_init_tests {
 
     #[test]
     fn the_tool_registry_advertises_the_deck_capability() {
-        let registry =
-            tool_registry(std::path::Path::new("."), &[], Vec::new());
+        let registry = tool_registry(
+            std::path::Path::new("."),
+            std::path::Path::new("."),
+            &[],
+            Vec::new(),
+        );
         assert!(
             registry.list().iter().any(|name| name == "create_deck"),
             "the deck tool is part of the capability registry"
@@ -246,8 +250,12 @@ mod background_init_tests {
             state: Arc::clone(&state),
         });
         let engine = Arc::new(
-            Engine::open(root.clone(), engine_config(&config, &root), observer)
-                .unwrap(),
+            Engine::open(
+                root.clone(),
+                engine_config(&config, &root, &root),
+                observer,
+            )
+            .unwrap(),
         );
         engine
             .create_session_with_metadata(
@@ -368,9 +376,12 @@ mod background_init_tests {
         let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
             state: Arc::new(UiState::new(root.clone(), None)),
         });
-        let engine =
-            Engine::open(root.clone(), engine_config(&config, &root), observer)
-                .unwrap();
+        let engine = Engine::open(
+            root.clone(),
+            engine_config(&config, &root, &root),
+            observer,
+        )
+        .unwrap();
         engine
             .create_session_with_metadata(
                 "home".into(),
@@ -480,9 +491,12 @@ mod background_init_tests {
         let observer: Arc<dyn TurnObserver> = Arc::new(UiObserver {
             state: Arc::clone(&state),
         });
-        let engine =
-            Engine::open(root.clone(), engine_config(&config, &root), observer)
-                .unwrap();
+        let engine = Engine::open(
+            root.clone(),
+            engine_config(&config, &root, &root),
+            observer,
+        )
+        .unwrap();
         let output = root.join("outputs").join("submission-legacy");
         std::fs::create_dir_all(&output).unwrap();
         std::fs::write(
@@ -767,7 +781,12 @@ mod guard_tests {
 
     #[test]
     fn production_registry_exposes_file_and_shell_tools_without_todos() {
-        let registry = tool_registry(Path::new("/work"), &[], Vec::new());
+        let registry = tool_registry(
+            Path::new("/work"),
+            Path::new("/work"),
+            &[],
+            Vec::new(),
+        );
         let names = registry.list();
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == shell_name()));

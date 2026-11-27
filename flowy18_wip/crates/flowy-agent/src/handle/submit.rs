@@ -458,7 +458,7 @@ impl Harness {
                     .retain(|(sid, _), _| sid != &id);
             }
         }
-        let mut run_config = engine_config(&config, &cwd);
+        let mut run_config = engine_config(&config, &cwd, &state.root);
         let mut staged_intents_for_turn: Option<
             crate::publish_tool::StagedIntentLog,
         > = None;
@@ -490,7 +490,8 @@ impl Harness {
                 &skills,
             );
         } else {
-            run_config.registry = tool_registry(&cwd, &skills, active_skills);
+            run_config.registry =
+                tool_registry(&cwd, &state.root, &skills, active_skills);
             if core_session.origin == SessionOrigin::Home
                 && let Some(submission) = submission
                 && let Some(session_workspace) = core_session.workspace.as_ref()
