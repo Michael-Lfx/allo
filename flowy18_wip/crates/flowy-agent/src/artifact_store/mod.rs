@@ -6,9 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, Write};
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use flowy_agent_core::{
@@ -24,11 +23,26 @@ pub const MAX_STORE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 pub const MAX_STORED_ITEMS: usize = 1_000;
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_SCANNED_ENTRIES: usize = 10_000;
-const COPY_BUFFER_BYTES: usize = 64 * 1024;
-const PREPARED_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
-const VIEW_COPY_RETENTION_MS: u64 = 3 * 24 * 60 * 60 * 1_000;
-const MAX_RETAINED_VIEW_COPIES: usize = 5;
+pub(in crate::artifact_store) const MAX_SCANNED_ENTRIES: usize = 10_000;
+pub(in crate::artifact_store) const PREPARED_RETENTION_MS: u64 =
+    7 * 24 * 60 * 60 * 1_000;
+pub(in crate::artifact_store) const VIEW_COPY_RETENTION_MS: u64 =
+    3 * 24 * 60 * 60 * 1_000;
+pub(in crate::artifact_store) const MAX_RETAINED_VIEW_COPIES: usize = 5;
+
+mod deletion_plan;
+mod io_helpers;
+mod views_gc;
+
+pub use deletion_plan::SessionDeletionState;
+pub use io_helpers::can_open_with_default_app;
+use io_helpers::{
+    atomic_write, copy_and_hash, hex, invalid, is_windows_reparse_point,
+    media_type, now_ms, origin_may_own_artifacts, random_id, read_limited_json,
+    read_manifest, reject_link, safe_display_name, sha256_hex, snapshot_file,
+    validate_delivery_key, validate_identifier, validate_known_header,
+    validate_relative_path, write_new_synced,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,13 +134,13 @@ pub struct PrepareArtifact {
 
 #[derive(Clone)]
 pub struct ArtifactStore {
-    inner: Arc<StoreInner>,
+    pub(in crate::artifact_store) inner: Arc<StoreInner>,
 }
 
-struct StoreInner {
-    root: PathBuf,
+pub(in crate::artifact_store) struct StoreInner {
+    pub(in crate::artifact_store) root: PathBuf,
     serial: Mutex<()>,
-    cleanup_diagnostics: Mutex<Vec<String>>,
+    pub(in crate::artifact_store) cleanup_diagnostics: Mutex<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -142,19 +156,12 @@ struct PreferencesFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ViewCopyMeta {
-    request_id: String,
-    artifact_id: String,
-    file_name: String,
-    sha256: String,
-    created_at_ms: u64,
-}
-
-#[derive(Debug)]
-struct Snapshot {
-    digest: String,
-    size: u64,
-    prefix: Vec<u8>,
+pub(in crate::artifact_store) struct ViewCopyMeta {
+    pub(in crate::artifact_store) request_id: String,
+    pub(in crate::artifact_store) artifact_id: String,
+    pub(in crate::artifact_store) file_name: String,
+    pub(in crate::artifact_store) sha256: String,
+    pub(in crate::artifact_store) created_at_ms: u64,
 }
 
 impl std::fmt::Debug for ArtifactStore {
@@ -316,164 +323,6 @@ impl ArtifactStore {
         })
     }
 
-    pub fn pending_views(&self) -> io::Result<Vec<ViewCopy>> {
-        let _guard = self.lock();
-        let scan = self.scan_with_diagnostics_locked(false)?;
-        if scan.entry_count > MAX_SCANNED_ENTRIES {
-            return Err(invalid("view scan limit exceeded"));
-        }
-        let mut copies = Vec::new();
-        for entry in fs::read_dir(self.inner.root.join("views"))? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let request_id = entry.file_name().to_string_lossy().to_string();
-            validate_identifier(&request_id)?;
-            for child in fs::read_dir(entry.path())? {
-                let child = child?;
-                if child.file_type()?.is_file() {
-                    copies.push(ViewCopy {
-                        request_id: request_id.clone(),
-                        path: child.path(),
-                    });
-                }
-            }
-        }
-        Ok(copies)
-    }
-
-    pub fn retry_pending_deletions(&self) -> io::Result<()> {
-        let pending = {
-            let _guard = self.lock();
-            self.scan_with_diagnostics_locked(false)?
-                .manifests
-                .into_iter()
-                .filter(|manifest| {
-                    matches!(
-                        manifest.publication_state,
-                        PublicationState::DeletePending
-                    )
-                })
-                .map(|manifest| manifest.receipt.artifact_id)
-                .collect::<Vec<_>>()
-        };
-        let mut failure = None;
-        for artifact_id in pending {
-            if let Err(error) = self.permanently_delete(&artifact_id) {
-                failure = Some(error);
-            }
-        }
-        failure.map_or(Ok(()), Err)
-    }
-
-    fn prune_superseded_conversation_imports(&self) -> io::Result<()> {
-        let _guard = self.lock();
-        self.prune_superseded_conversation_imports_locked()
-    }
-
-    fn prune_superseded_conversation_imports_locked(&self) -> io::Result<()> {
-        let scan = self.scan_locked()?;
-        let committed = self.committed_ids_locked()?;
-        let mut latest = BTreeMap::new();
-        for manifest in &scan.manifests {
-            if manifest.source_relative_path.is_empty()
-                || !committed.contains(&manifest.receipt.artifact_id)
-                || !matches!(
-                    manifest.publication_state,
-                    PublicationState::Committed
-                        | PublicationState::DeletePending
-                        | PublicationState::Deleted
-                )
-            {
-                continue;
-            }
-            let key = (
-                manifest.receipt.session_id.clone(),
-                manifest.source_relative_path.clone(),
-            );
-            let rank = (
-                manifest.receipt.created_at_ms,
-                manifest.receipt.artifact_id.clone(),
-            );
-            latest
-                .entry(key)
-                .and_modify(|current: &mut (u64, String)| {
-                    if rank > *current {
-                        current.clone_from(&rank);
-                    }
-                })
-                .or_insert(rank);
-        }
-
-        let mut failure = None;
-        for manifest in scan.manifests {
-            if !manifest.conversation_import
-                || !committed.contains(&manifest.receipt.artifact_id)
-                || !matches!(
-                    manifest.publication_state,
-                    PublicationState::Committed
-                        | PublicationState::DeletePending
-                )
-            {
-                continue;
-            }
-            let key = (
-                manifest.receipt.session_id.clone(),
-                manifest.source_relative_path.clone(),
-            );
-            let rank = (
-                manifest.receipt.created_at_ms,
-                manifest.receipt.artifact_id.clone(),
-            );
-            if latest.get(&key).is_some_and(|current| *current == rank) {
-                continue;
-            }
-            if let Err(error) =
-                self.retire_conversation_import_locked(&manifest)
-            {
-                failure = Some(error);
-            }
-        }
-        failure.map_or(Ok(()), Err)
-    }
-
-    fn retire_conversation_import_locked(
-        &self,
-        manifest: &ArtifactManifest,
-    ) -> io::Result<()> {
-        let path = self
-            .item_dir(&manifest.receipt.artifact_id)
-            .join("manifest.json");
-        let mut current = read_manifest(&path)?;
-        if !current.conversation_import
-            || current.receipt.artifact_id != manifest.receipt.artifact_id
-        {
-            return Ok(());
-        }
-        match current.publication_state {
-            PublicationState::Deleted => return Ok(()),
-            PublicationState::Prepared => {
-                return Err(invalid(
-                    "a prepared conversation import cannot be superseded",
-                ));
-            }
-            PublicationState::Committed => {
-                current.publication_state = PublicationState::DeletePending;
-                current.superseded = true;
-                self.write_metadata_locked(&path, &current)?;
-            }
-            PublicationState::DeletePending => {}
-        }
-        match fs::remove_file(self.payload_path(&current.receipt.artifact_id)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        current.publication_state = PublicationState::Deleted;
-        self.write_metadata_locked(&path, &current)
-    }
-
     /// Reconcile only successful durable per-turn commits. Prepared files
     /// without such a proof remain hidden and are never guessed into a result.
     pub fn recover_commits(
@@ -509,562 +358,6 @@ impl ArtifactStore {
         if diagnostics.len() < 64 {
             diagnostics.push(message);
         }
-    }
-
-    /// Run only during host startup after all successful history commits have
-    /// been recovered and before any new turn is allowed to start. Unreadable
-    /// history never authorizes cleanup, even for an apparently orphaned file.
-    pub fn cleanup_uncommitted(
-        &self,
-        history_commits: &[DeliveryCommit],
-        history_readable: bool,
-    ) -> io::Result<()> {
-        if !history_readable {
-            return Ok(());
-        }
-        let _guard = self.lock();
-        // Preflight the complete controlled tree before removing anything.
-        // Unknown/corrupt manifests and bounded-scan failures make the entire
-        // cleanup pass fail closed, rather than accepting a partial proof set.
-        self.scan_locked()?;
-        let mut protected = BTreeSet::new();
-        for commit in history_commits
-            .iter()
-            .filter(|commit| commit.completed_successfully)
-        {
-            validate_identifier(&commit.session_id)?;
-            validate_identifier(&commit.submission_id)?;
-            for artifact_id in &commit.artifact_ids {
-                validate_identifier(artifact_id)?;
-                protected.insert(artifact_id.clone());
-            }
-        }
-        for entry in fs::read_dir(self.inner.root.join("deliveries"))? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|value| value.to_str())
-                != Some("json")
-            {
-                continue;
-            }
-            let marker = self.read_delivery_marker(&entry.path())?;
-            for artifact_id in marker.commit.artifact_ids {
-                validate_identifier(&artifact_id)?;
-                protected.insert(artifact_id);
-            }
-        }
-
-        let staging = self.inner.root.join("staging");
-        let directories = self.staged_artifact_directories_locked()?;
-        let now = now_ms();
-        let mut candidates = Vec::new();
-        for directory in directories {
-            let artifact_id = directory
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    invalid("invalid staging artifact identifier")
-                })?;
-            let prepared_path = directory.join("prepared.json");
-            for child in fs::read_dir(&directory)? {
-                let child = child?;
-                let metadata = fs::symlink_metadata(child.path())?;
-                if !metadata.is_file()
-                    || metadata.file_type().is_symlink()
-                    || is_windows_reparse_point(&metadata)
-                {
-                    return Err(invalid(
-                        "unknown staging layout blocks cleanup",
-                    ));
-                }
-            }
-            let old_enough = if prepared_path.exists() {
-                let manifest = read_manifest(&prepared_path)?;
-                if !matches!(
-                    manifest.publication_state,
-                    PublicationState::Prepared
-                ) || self.staging_dir(
-                    &manifest.receipt.session_id,
-                    &manifest.receipt.submission_id,
-                    &manifest.receipt.artifact_id,
-                ) != directory
-                {
-                    return Err(invalid(
-                        "staging manifest identity does not match its path",
-                    ));
-                }
-                now.saturating_sub(manifest.receipt.created_at_ms)
-                    >= PREPARED_RETENTION_MS
-            } else {
-                if directory.join("manifest.json").exists() {
-                    return Err(invalid(
-                        "unexpected final manifest inside staging",
-                    ));
-                }
-                // A raw incomplete copy has no published receipt. Startup has
-                // no active copier, and successful proofs below still protect
-                // its ID in case a crash interrupted the last metadata write.
-                true
-            };
-            if old_enough && !protected.contains(artifact_id) {
-                candidates.push(directory);
-            }
-        }
-
-        let mut failure = None;
-        for directory in candidates {
-            reject_link(&directory)?;
-            if !fs::canonicalize(&directory)?.starts_with(&staging) {
-                return Err(invalid(
-                    "staging cleanup target escapes its managed root",
-                ));
-            }
-            match fs::remove_dir_all(&directory) {
-                Ok(()) => {
-                    let submission = directory
-                        .parent()
-                        .expect("staging artifact has parent");
-                    let session = submission
-                        .parent()
-                        .expect("staging submission has parent");
-                    for parent in [submission, session] {
-                        match fs::remove_dir(parent) {
-                            Ok(()) => {}
-                            Err(error)
-                                if matches!(
-                                    error.kind(),
-                                    io::ErrorKind::NotFound
-                                        | io::ErrorKind::DirectoryNotEmpty
-                                ) => {}
-                            Err(error) => {
-                                tracing::warn!(path = %parent.display(), %error, "empty artifact staging directory retained for cleanup retry");
-                                failure = Some(error);
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    // Occupied Windows files remain charged by the next actual
-                    // filesystem scan. No speculative quota is released.
-                    tracing::warn!(path = %directory.display(), %error, "uncommitted artifact retained for cleanup retry");
-                    failure = Some(error);
-                }
-            }
-        }
-        let mut diagnostics = self
-            .inner
-            .cleanup_diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        diagnostics.clear();
-        if let Some(error) = &failure {
-            diagnostics.push(format!(
-                "Uncommitted artifact cleanup is pending: {error}"
-            ));
-        }
-        drop(diagnostics);
-        failure.map_or(Ok(()), Err)
-    }
-
-    fn staged_artifact_directories_locked(&self) -> io::Result<Vec<PathBuf>> {
-        let mut directories = vec![self.inner.root.join("staging")];
-        let mut count = 0_usize;
-        for _ in 0..3 {
-            let mut next = Vec::new();
-            for directory in directories {
-                for entry in fs::read_dir(directory)? {
-                    let entry = entry?;
-                    count = count.saturating_add(1);
-                    if count > MAX_SCANNED_ENTRIES {
-                        return Err(invalid("staging scan limit exceeded"));
-                    }
-                    let metadata = fs::symlink_metadata(entry.path())?;
-                    if !metadata.is_dir()
-                        || metadata.file_type().is_symlink()
-                        || is_windows_reparse_point(&metadata)
-                    {
-                        return Err(invalid(
-                            "unknown staging directory layout",
-                        ));
-                    }
-                    let name = entry.file_name();
-                    validate_identifier(name.to_str().ok_or_else(|| {
-                        invalid("invalid staging identifier")
-                    })?)?;
-                    next.push(entry.path());
-                }
-            }
-            directories = next;
-        }
-        Ok(directories)
-    }
-
-    pub fn source_deleted(&self, session_id: &str) -> io::Result<bool> {
-        validate_identifier(session_id)?;
-        let path = self
-            .inner
-            .root
-            .join("sources-deleted")
-            .join(format!("{session_id}.json"));
-        if !path.exists() {
-            return Ok(false);
-        }
-        let marker =
-            read_limited_json::<SourceDeletion>(&path, MAX_MANIFEST_BYTES)?;
-        Ok(marker.schema_version == 1 && marker.session_id == session_id)
-    }
-
-    pub(crate) fn source_deleted_sessions(&self) -> io::Result<Vec<String>> {
-        let _guard = self.lock();
-        let dir = self.inner.root.join("sources-deleted");
-        let mut sessions = Vec::new();
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_symlink()
-                || !entry.file_type()?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str())
-                    != Some("json")
-            {
-                continue;
-            }
-            let session_id = entry
-                .path()
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| invalid("invalid source deletion marker name"))?
-                .to_owned();
-            validate_identifier(&session_id)?;
-            let marker = read_limited_json::<SourceDeletion>(
-                &entry.path(),
-                MAX_MANIFEST_BYTES,
-            )?;
-            if marker.schema_version == 1 && marker.session_id == session_id {
-                sessions.push(session_id);
-            }
-        }
-        sessions.sort();
-        Ok(sessions)
-    }
-
-    pub(crate) fn clear_source_deleted(
-        &self,
-        session_id: &str,
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let _guard = self.lock();
-        remove_file_if_exists(&self.source_deletion_path(session_id))
-    }
-
-    pub(crate) fn session_deletions(
-        &self,
-    ) -> io::Result<Vec<SessionDeletionPlan>> {
-        let _guard = self.lock();
-        let dir = self.inner.root.join("session-deletions");
-        let mut plans = Vec::new();
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_type()?.is_symlink()
-                || entry.file_type()?.is_dir()
-                || path.extension().and_then(|value| value.to_str())
-                    != Some("json")
-            {
-                continue;
-            }
-            let session_id = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| {
-                    invalid("invalid session deletion marker name")
-                })?;
-            plans.push(read_session_deletion_plan(&path, session_id)?);
-        }
-        plans.sort_by(|left, right| left.session_id.cmp(&right.session_id));
-        Ok(plans)
-    }
-
-    pub(crate) fn has_active_deletion_plan(&self, session_id: &str) -> bool {
-        validate_identifier(session_id).is_ok()
-            && self.session_deletion_path(session_id).exists()
-    }
-
-    pub(crate) fn prepare_session_deletion(
-        &self,
-        session_id: &str,
-        artifact_ids: &[String],
-        submission_ids: &[String],
-    ) -> io::Result<()> {
-        self.prepare_cascade_session_deletion(
-            session_id,
-            &[],
-            artifact_ids,
-            submission_ids,
-        )
-    }
-
-    pub(crate) fn prepare_cascade_session_deletion(
-        &self,
-        session_id: &str,
-        child_session_ids: &[String],
-        artifact_ids: &[String],
-        submission_ids: &[String],
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let mut children = child_session_ids
-            .iter()
-            .filter(|cid| cid.as_str() != session_id)
-            .cloned()
-            .collect::<BTreeSet<String>>();
-        for child_id in &children {
-            validate_identifier(child_id)?;
-        }
-        let mut all_sessions = BTreeSet::new();
-        all_sessions.insert(session_id.to_owned());
-        all_sessions.extend(children.iter().cloned());
-        let mut artifacts =
-            artifact_ids.iter().cloned().collect::<BTreeSet<String>>();
-        let mut submissions =
-            submission_ids.iter().cloned().collect::<BTreeSet<String>>();
-        for artifact_id in &artifacts {
-            validate_identifier(artifact_id)?;
-        }
-        for submission_id in &submissions {
-            validate_identifier(submission_id)?;
-        }
-
-        let _guard = self.lock();
-        let scan = self.scan_with_diagnostics_locked(false)?;
-        for manifest in scan.manifests {
-            if all_sessions.contains(&manifest.receipt.session_id) {
-                artifacts.insert(manifest.receipt.artifact_id);
-            }
-        }
-        for entry in fs::read_dir(self.inner.root.join("deliveries"))? {
-            let entry = entry?;
-            if entry.file_type()?.is_symlink()
-                || !entry.file_type()?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str())
-                    != Some("json")
-            {
-                continue;
-            }
-            let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
-                continue;
-            };
-            if all_sessions.contains(&marker.commit.session_id) {
-                submissions.insert(marker.commit.submission_id);
-                artifacts.extend(marker.commit.artifact_ids);
-            }
-        }
-
-        let path = self.session_deletion_path(session_id);
-        if path.exists() {
-            let mut plan = read_session_deletion_plan(&path, session_id)?;
-            if plan.state == SessionDeletionState::Committed {
-                return Ok(());
-            }
-            let before = (
-                plan.artifact_ids.clone(),
-                plan.submission_ids.clone(),
-                plan.child_session_ids.clone(),
-            );
-            plan.artifact_ids.extend(artifacts);
-            plan.submission_ids.extend(submissions);
-            plan.child_session_ids.extend(std::mem::take(&mut children));
-            plan.artifact_ids.sort();
-            plan.artifact_ids.dedup();
-            plan.submission_ids.sort();
-            plan.submission_ids.dedup();
-            plan.child_session_ids.sort();
-            plan.child_session_ids.dedup();
-            if before
-                != (
-                    plan.artifact_ids.clone(),
-                    plan.submission_ids.clone(),
-                    plan.child_session_ids.clone(),
-                )
-            {
-                self.write_metadata_locked(&path, &plan)?;
-            }
-            return Ok(());
-        }
-
-        let plan = SessionDeletionPlan {
-            schema_version: 1,
-            session_id: session_id.to_owned(),
-            state: SessionDeletionState::Prepared,
-            artifact_ids: artifacts.into_iter().collect(),
-            submission_ids: submissions.into_iter().collect(),
-            child_session_ids: children.into_iter().collect(),
-            created_at_ms: now_ms(),
-        };
-        self.write_metadata_locked(&path, &plan)
-    }
-
-    pub(crate) fn cancel_session_deletion(
-        &self,
-        session_id: &str,
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let _guard = self.lock();
-        let path = self.session_deletion_path(session_id);
-        if !path.exists() {
-            return Ok(());
-        }
-        let plan = read_session_deletion_plan(&path, session_id)?;
-        if plan.state == SessionDeletionState::Committed {
-            return Err(invalid(
-                "a committed session deletion cannot be rolled back",
-            ));
-        }
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub(crate) fn commit_session_deletion(
-        &self,
-        session_id: &str,
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let _guard = self.lock();
-        let path = self.session_deletion_path(session_id);
-        let mut plan = read_session_deletion_plan(&path, session_id)?;
-        if plan.state == SessionDeletionState::Committed {
-            return Ok(());
-        }
-        plan.state = SessionDeletionState::Committed;
-        self.write_metadata_locked(&path, &plan)
-    }
-
-    pub(crate) fn cleanup_session_deletion(
-        &self,
-        session_id: &str,
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let _guard = self.lock();
-        let path = self.session_deletion_path(session_id);
-        let plan = read_session_deletion_plan(&path, session_id)?;
-        if plan.state != SessionDeletionState::Committed {
-            return Err(invalid("session deletion is not committed"));
-        }
-        let mut all_sessions = BTreeSet::new();
-        all_sessions.insert(session_id.to_owned());
-        for child_id in &plan.child_session_ids {
-            validate_identifier(child_id)?;
-            all_sessions.insert(child_id.clone());
-        }
-        let mut artifacts =
-            plan.artifact_ids.into_iter().collect::<BTreeSet<String>>();
-        let mut submissions = plan
-            .submission_ids
-            .into_iter()
-            .collect::<BTreeSet<String>>();
-        let scan = self.scan_with_diagnostics_locked(false)?;
-        for manifest in scan.manifests {
-            if all_sessions.contains(&manifest.receipt.session_id) {
-                artifacts.insert(manifest.receipt.artifact_id);
-            }
-        }
-        for entry in fs::read_dir(self.inner.root.join("deliveries"))? {
-            let entry = entry?;
-            if entry.file_type()?.is_symlink()
-                || !entry.file_type()?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str())
-                    != Some("json")
-            {
-                continue;
-            }
-            let Ok(marker) = self.read_delivery_marker(&entry.path()) else {
-                continue;
-            };
-            if all_sessions.contains(&marker.commit.session_id) {
-                submissions.insert(marker.commit.submission_id);
-                artifacts.extend(marker.commit.artifact_ids);
-            }
-        }
-
-        for artifact_id in &artifacts {
-            validate_identifier(artifact_id)?;
-            Self::remove_managed_dir(&self.item_dir(artifact_id))?;
-        }
-        for sid in &all_sessions {
-            Self::remove_managed_dir(
-                &self.inner.root.join("staging").join(sid),
-            )?;
-            for submission_id in &submissions {
-                validate_identifier(submission_id)?;
-                remove_file_if_exists(&self.delivery_path(sid, submission_id))?;
-            }
-        }
-
-        let mut preferences = self.preferences_locked()?;
-        let before = preferences.len();
-        preferences.retain(|artifact_id, _| !artifacts.contains(artifact_id));
-        if preferences.len() != before {
-            self.save_preferences_locked(&preferences)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn complete_session_deletion(
-        &self,
-        session_id: &str,
-    ) -> io::Result<()> {
-        validate_identifier(session_id)?;
-        let _guard = self.lock();
-        let path = self.session_deletion_path(session_id);
-        if !path.exists() {
-            return Ok(());
-        }
-        let plan = read_session_deletion_plan(&path, session_id)?;
-        if plan.state != SessionDeletionState::Committed {
-            return Err(invalid("session deletion is not committed"));
-        }
-        remove_file_if_exists(&self.source_deletion_path(session_id))?;
-        remove_file_if_exists(&path)
-    }
-
-    fn session_deletion_ids_locked(&self) -> io::Result<BTreeSet<String>> {
-        let dir = self.inner.root.join("session-deletions");
-        let mut ids = BTreeSet::new();
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_symlink()
-                || !entry.file_type()?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str())
-                    != Some("json")
-            {
-                continue;
-            }
-            let session_id = entry
-                .path()
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| invalid("invalid session deletion marker name"))?
-                .to_owned();
-            validate_identifier(&session_id)?;
-            ids.insert(session_id);
-        }
-        Ok(ids)
-    }
-
-    fn remove_managed_dir(path: &Path) -> io::Result<()> {
-        let metadata = match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
-        reject_link(path)?;
-        if !metadata.is_dir() {
-            return Err(invalid(
-                "managed artifact deletion target is not a directory",
-            ));
-        }
-        fs::remove_dir_all(path)
     }
 
     /// Validate and snapshot one model-selected file under a host-owned output root.
@@ -1338,7 +631,7 @@ impl ArtifactStore {
         self.list_locked(true)
     }
 
-    fn list_locked(
+    pub(in crate::artifact_store) fn list_locked(
         &self,
         include_deleted: bool,
     ) -> io::Result<Vec<ArtifactRecord>> {
@@ -1511,7 +804,10 @@ impl ArtifactStore {
         self.read_payload_locked(artifact_id)
     }
 
-    fn read_payload_locked(&self, artifact_id: &str) -> io::Result<Vec<u8>> {
+    pub(in crate::artifact_store) fn read_payload_locked(
+        &self,
+        artifact_id: &str,
+    ) -> io::Result<Vec<u8>> {
         let manifest = self.committed_manifest_locked(artifact_id)?;
         if !matches!(manifest.publication_state, PublicationState::Committed) {
             return Err(invalid("artifact deletion is pending"));
@@ -1664,309 +960,10 @@ impl ArtifactStore {
         atomic_write(destination, &bytes)
     }
 
-    /// Create an extension-preserving private copy for a system file opener.
-    /// Callers own process lifecycle and remove it only when safe to do so.
-    pub fn create_view_copy(&self, artifact_id: &str) -> io::Result<ViewCopy> {
-        validate_identifier(artifact_id)?;
-        let _guard = self.lock();
-        let record = self
-            .list_locked(true)?
-            .into_iter()
-            .find(|record| record.manifest.receipt.artifact_id == artifact_id)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "artifact is not committed",
-                )
-            })?;
-        if !can_open_with_default_app(&record.manifest.receipt.display_name) {
-            return Err(invalid(
-                "this file type must be saved explicitly before opening",
-            ));
-        }
-        let bytes = self.read_payload_locked(artifact_id)?;
-        let scan = self.scan_locked()?;
-        if scan.payload_bytes.saturating_add(bytes.len() as u64)
-            > MAX_STORE_BYTES
-        {
-            return Err(invalid("artifact library storage limit reached"));
-        }
-        let digest = sha256_hex(&bytes);
-        let created_at_ms = self
-            .max_view_copy_timestamp_locked()
-            .map_or_else(now_ms, |previous| {
-                now_ms().max(previous.saturating_add(1))
-            });
-        let request_id = random_id()?;
-        let dir = self.inner.root.join("views").join(&request_id);
-        fs::create_dir(&dir)?;
-        let extension = Path::new(&record.manifest.receipt.display_name)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .filter(|extension| {
-                extension.len() <= 16
-                    && extension.chars().all(|c| c.is_ascii_alphanumeric())
-            })
-            .unwrap_or("bin");
-        let file_name = format!("artifact.{extension}");
-        let path = dir.join(&file_name);
-        if let Err(error) = write_new_synced(&path, &bytes) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(error);
-        }
-        let meta_dir = self.inner.root.join("views-meta");
-        if let Err(error) =
-            fs::create_dir_all(&meta_dir).and_then(|()| reject_link(&meta_dir))
-        {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(error);
-        }
-        let meta = ViewCopyMeta {
-            request_id: request_id.clone(),
-            artifact_id: artifact_id.to_owned(),
-            file_name,
-            sha256: digest,
-            created_at_ms,
-        };
-        let meta_bytes = match serde_json::to_vec(&meta) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&dir);
-                return Err(io::Error::other(error));
-            }
-        };
-        if let Err(error) =
-            atomic_write(&self.view_meta_path(&request_id), &meta_bytes)
-        {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(error);
-        }
-        if let Err(error) = self.cleanup_stale_view_copies_locked(created_at_ms)
-        {
-            tracing::warn!(%error, "stale view copy cleanup deferred");
-        }
-        Ok(ViewCopy { request_id, path })
-    }
-
-    pub fn remove_view_copy(&self, request_id: &str) -> io::Result<()> {
-        validate_identifier(request_id)?;
-        let _guard = self.lock();
-        let path = self.inner.root.join("views").join(request_id);
-        match fs::remove_dir_all(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        remove_file_if_exists(&self.view_meta_path(request_id))
-    }
-
-    /// Garbage-collect unmodified view copies outside the newest
-    /// `MAX_RETAINED_VIEW_COPIES` within `VIEW_COPY_RETENTION_MS`, along with
-    /// orphaned sidecar metadata files. Modified, legacy, or locked view
-    /// copies are preserved untouched. Returns the number of evicted view
-    /// directories.
-    pub fn cleanup_stale_view_copies(&self) -> io::Result<usize> {
-        let _guard = self.lock();
-        self.cleanup_stale_view_copies_locked(now_ms())
-    }
-
-    #[cfg(test)]
-    fn cleanup_stale_view_copies_at(&self, now_ms: u64) -> io::Result<usize> {
-        let _guard = self.lock();
-        self.cleanup_stale_view_copies_locked(now_ms)
-    }
-
-    fn cleanup_stale_view_copies_locked(
+    pub(in crate::artifact_store) fn commit_delivery(
         &self,
-        now_ms: u64,
-    ) -> io::Result<usize> {
-        let views_dir = self.inner.root.join("views");
-        let meta_dir = self.inner.root.join("views-meta");
-        reject_link(&views_dir)?;
-        if meta_dir.exists() {
-            reject_link(&meta_dir)?;
-        }
-
-        let mut managed = Vec::new();
-        for entry in fs::read_dir(&views_dir)? {
-            let entry = entry?;
-            let dir = entry.path();
-            let Ok(dir_meta) = fs::symlink_metadata(&dir) else {
-                continue;
-            };
-            if dir_meta.file_type().is_symlink()
-                || is_windows_reparse_point(&dir_meta)
-                || !dir_meta.is_dir()
-            {
-                continue;
-            }
-            let Some(dir_name) = entry.file_name().to_str().map(str::to_owned)
-            else {
-                continue;
-            };
-            if validate_identifier(&dir_name).is_err() {
-                continue;
-            }
-            let meta_path = self.view_meta_path(&dir_name);
-            let Ok(meta) = read_limited_json::<ViewCopyMeta>(
-                &meta_path,
-                MAX_MANIFEST_BYTES,
-            ) else {
-                continue;
-            };
-            if meta.request_id != dir_name
-                || validate_identifier(&meta.request_id).is_err()
-                || validate_identifier(&meta.artifact_id).is_err()
-                || !is_single_file_name(&meta.file_name)
-            {
-                continue;
-            }
-            let Some(file_path) =
-                inspect_managed_view_dir(&dir, &meta.file_name)
-            else {
-                continue;
-            };
-            managed.push(ManagedViewCopy {
-                meta,
-                dir,
-                file_path,
-                meta_path,
-            });
-        }
-
-        managed.sort_by(|a, b| {
-            b.meta
-                .created_at_ms
-                .cmp(&a.meta.created_at_ms)
-                .then_with(|| b.meta.request_id.cmp(&a.meta.request_id))
-        });
-
-        let mut removed = 0_usize;
-        for (rank, candidate) in managed.into_iter().enumerate() {
-            let within_count = rank < MAX_RETAINED_VIEW_COPIES;
-            let within_age = now_ms
-                .saturating_sub(candidate.meta.created_at_ms)
-                < VIEW_COPY_RETENTION_MS;
-            if within_count && within_age {
-                continue;
-            }
-            let Ok(file_meta) = fs::symlink_metadata(&candidate.file_path)
-            else {
-                continue;
-            };
-            if file_meta.file_type().is_symlink()
-                || is_windows_reparse_point(&file_meta)
-                || !file_meta.is_file()
-            {
-                continue;
-            }
-            let mut file = match File::open(&candidate.file_path) {
-                Ok(file) => file,
-                Err(error) => {
-                    tracing::warn!(
-                        path = %candidate.file_path.display(),
-                        %error,
-                        "stale view copy could not be opened for verification"
-                    );
-                    continue;
-                }
-            };
-            let snapshot = match snapshot_file(&mut file) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    tracing::warn!(
-                        path = %candidate.file_path.display(),
-                        %error,
-                        "stale view copy could not be hashed; preserving"
-                    );
-                    continue;
-                }
-            };
-            drop(file);
-            if snapshot.digest != candidate.meta.sha256 {
-                continue;
-            }
-            if let Err(error) = reject_link(&candidate.dir)
-                .and_then(|()| fs::remove_dir_all(&candidate.dir))
-            {
-                tracing::warn!(
-                    path = %candidate.dir.display(),
-                    %error,
-                    "stale view copy could not be removed; retaining"
-                );
-                continue;
-            }
-            if let Err(error) = remove_file_if_exists(&candidate.meta_path) {
-                tracing::warn!(
-                    path = %candidate.meta_path.display(),
-                    %error,
-                    "evicted view copy metadata could not be removed"
-                );
-            }
-            removed = removed.saturating_add(1);
-        }
-
-        if meta_dir.exists() {
-            for entry in fs::read_dir(&meta_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                let Ok(metadata) = fs::symlink_metadata(&path) else {
-                    continue;
-                };
-                if metadata.file_type().is_symlink()
-                    || is_windows_reparse_point(&metadata)
-                    || !metadata.is_file()
-                {
-                    continue;
-                }
-                let Some(file_name) =
-                    entry.file_name().to_str().map(str::to_owned)
-                else {
-                    continue;
-                };
-                let Some(request_id) = file_name.strip_suffix(".json") else {
-                    continue;
-                };
-                if validate_identifier(request_id).is_err() {
-                    continue;
-                }
-                if matches!(
-                    fs::symlink_metadata(views_dir.join(request_id)),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound
-                ) && let Err(error) = remove_file_if_exists(&path)
-                {
-                    tracing::warn!(
-                        path = %path.display(),
-                        %error,
-                        "orphaned view copy metadata could not be removed"
-                    );
-                }
-            }
-        }
-
-        Ok(removed)
-    }
-
-    fn max_view_copy_timestamp_locked(&self) -> Option<u64> {
-        let entries = fs::read_dir(self.inner.root.join("views-meta")).ok()?;
-        entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.path().extension().and_then(|ext| ext.to_str())
-                    == Some("json")
-            })
-            .filter_map(|entry| {
-                read_limited_json::<ViewCopyMeta>(
-                    &entry.path(),
-                    MAX_MANIFEST_BYTES,
-                )
-                .ok()
-                .map(|meta| meta.created_at_ms)
-            })
-            .max()
-    }
-
-    fn commit_delivery(&self, commit: &DeliveryCommit) -> io::Result<()> {
+        commit: &DeliveryCommit,
+    ) -> io::Result<()> {
         validate_identifier(&commit.session_id)?;
         validate_identifier(&commit.submission_id)?;
         if !commit.completed_successfully {
@@ -2228,7 +1225,10 @@ impl ArtifactStore {
         )
     }
 
-    fn read_delivery_marker(&self, path: &Path) -> io::Result<DeliveryMarker> {
+    pub(in crate::artifact_store) fn read_delivery_marker(
+        &self,
+        path: &Path,
+    ) -> io::Result<DeliveryMarker> {
         let marker: DeliveryMarker =
             read_limited_json(path, MAX_MANIFEST_BYTES)?;
         if marker.schema_version != 1
@@ -2263,7 +1263,9 @@ impl ArtifactStore {
         Ok(marker)
     }
 
-    fn committed_ids_locked(&self) -> io::Result<BTreeSet<String>> {
+    pub(in crate::artifact_store) fn committed_ids_locked(
+        &self,
+    ) -> io::Result<BTreeSet<String>> {
         let dir = self.inner.root.join("deliveries");
         let mut ids = BTreeSet::new();
         let mut count = 0_usize;
@@ -2300,11 +1302,14 @@ impl ArtifactStore {
         Ok(ids)
     }
 
-    fn scan_locked(&self) -> io::Result<Scan> {
+    pub(in crate::artifact_store) fn scan_locked(&self) -> io::Result<Scan> {
         self.scan_with_diagnostics_locked(true)
     }
 
-    fn scan_with_diagnostics_locked(&self, strict: bool) -> io::Result<Scan> {
+    pub(in crate::artifact_store) fn scan_with_diagnostics_locked(
+        &self,
+        strict: bool,
+    ) -> io::Result<Scan> {
         let mut scan = Scan::default();
         let mut directories = vec![self.inner.root.clone()];
         let mut manifests = BTreeMap::<PathBuf, PathBuf>::new();
@@ -2426,7 +1431,7 @@ impl ArtifactStore {
         }
         Ok(scan)
     }
-    fn preferences_locked(
+    pub(in crate::artifact_store) fn preferences_locked(
         &self,
     ) -> io::Result<BTreeMap<String, ArtifactPreference>> {
         let path = self.inner.root.join("preferences.json");
@@ -2443,7 +1448,7 @@ impl ArtifactStore {
         Ok(file.entries)
     }
 
-    fn save_preferences_locked(
+    pub(in crate::artifact_store) fn save_preferences_locked(
         &self,
         entries: &BTreeMap<String, ArtifactPreference>,
     ) -> io::Result<()> {
@@ -2476,7 +1481,7 @@ impl ArtifactStore {
         Ok(())
     }
 
-    fn write_metadata_locked(
+    pub(in crate::artifact_store) fn write_metadata_locked(
         &self,
         path: &Path,
         value: &impl Serialize,
@@ -2491,13 +1496,13 @@ impl ArtifactStore {
         atomic_write(path, &bytes)
     }
 
-    fn lock(&self) -> MutexGuard<'_, ()> {
+    pub(in crate::artifact_store) fn lock(&self) -> MutexGuard<'_, ()> {
         self.inner
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    fn staging_dir(
+    pub(in crate::artifact_store) fn staging_dir(
         &self,
         session: &str,
         submission: &str,
@@ -2510,32 +1515,51 @@ impl ArtifactStore {
             .join(submission)
             .join(artifact)
     }
-    fn item_dir(&self, artifact: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn item_dir(
+        &self,
+        artifact: &str,
+    ) -> PathBuf {
         self.inner.root.join("items").join(artifact)
     }
-    fn payload_path(&self, artifact: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn payload_path(
+        &self,
+        artifact: &str,
+    ) -> PathBuf {
         self.item_dir(artifact).join("payload")
     }
-    fn delivery_path(&self, session: &str, submission: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn delivery_path(
+        &self,
+        session: &str,
+        submission: &str,
+    ) -> PathBuf {
         let key = format!("{session}\0{submission}");
         self.inner
             .root
             .join("deliveries")
             .join(format!("{}.json", hex(&Sha256::digest(key.as_bytes()))))
     }
-    fn session_deletion_path(&self, session_id: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn session_deletion_path(
+        &self,
+        session_id: &str,
+    ) -> PathBuf {
         self.inner
             .root
             .join("session-deletions")
             .join(format!("{session_id}.json"))
     }
-    fn source_deletion_path(&self, session_id: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn source_deletion_path(
+        &self,
+        session_id: &str,
+    ) -> PathBuf {
         self.inner
             .root
             .join("sources-deleted")
             .join(format!("{session_id}.json"))
     }
-    fn view_meta_path(&self, request_id: &str) -> PathBuf {
+    pub(in crate::artifact_store) fn view_meta_path(
+        &self,
+        request_id: &str,
+    ) -> PathBuf {
         self.inner
             .root
             .join("views-meta")
@@ -2543,50 +1567,17 @@ impl ArtifactStore {
     }
 }
 
-struct ManagedViewCopy {
-    meta: ViewCopyMeta,
-    dir: PathBuf,
-    file_path: PathBuf,
-    meta_path: PathBuf,
-}
-
 #[derive(Default)]
-struct Scan {
-    manifests: Vec<ArtifactManifest>,
-    payload_bytes: u64,
-    payload_files: usize,
-    metadata_bytes: u64,
-    entry_count: usize,
-    diagnostics: Vec<String>,
-    stored_bytes: u64,
-    staging_bytes: u64,
-    view_bytes: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SourceDeletion {
-    schema_version: u32,
-    session_id: String,
-    deleted_at_ms: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionDeletionState {
-    Prepared,
-    Committed,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionDeletionPlan {
-    schema_version: u32,
-    pub session_id: String,
-    pub state: SessionDeletionState,
-    artifact_ids: Vec<String>,
-    submission_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_session_ids: Vec<String>,
-    created_at_ms: u64,
+pub(in crate::artifact_store) struct Scan {
+    pub(in crate::artifact_store) manifests: Vec<ArtifactManifest>,
+    pub(in crate::artifact_store) payload_bytes: u64,
+    pub(in crate::artifact_store) payload_files: usize,
+    pub(in crate::artifact_store) metadata_bytes: u64,
+    pub(in crate::artifact_store) entry_count: usize,
+    pub(in crate::artifact_store) diagnostics: Vec<String>,
+    pub(in crate::artifact_store) stored_bytes: u64,
+    pub(in crate::artifact_store) staging_bytes: u64,
+    pub(in crate::artifact_store) view_bytes: u64,
 }
 
 #[async_trait::async_trait]
@@ -2601,419 +1592,5 @@ impl DeliveryCommitter for ArtifactStore {
     }
 }
 
-fn snapshot_file(file: &mut File) -> io::Result<Snapshot> {
-    file.rewind()?;
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut prefix = Vec::with_capacity(16);
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        size = size.saturating_add(read as u64);
-        if size > MAX_ARTIFACT_BYTES {
-            return Err(invalid("artifact exceeds the 128 MiB per-file limit"));
-        }
-        if prefix.len() < 16 {
-            let remaining = 16 - prefix.len();
-            prefix.extend_from_slice(&buffer[..read.min(remaining)]);
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(Snapshot {
-        digest: hex(&hasher.finalize()),
-        size,
-        prefix,
-    })
-}
-
-fn copy_and_hash(
-    source: &mut File,
-    destination: &mut File,
-) -> io::Result<Snapshot> {
-    source.rewind()?;
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut prefix = Vec::with_capacity(16);
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    loop {
-        let read = source.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        size = size.saturating_add(read as u64);
-        if size > MAX_ARTIFACT_BYTES {
-            return Err(invalid("artifact exceeds the 128 MiB per-file limit"));
-        }
-        if prefix.len() < 16 {
-            let remaining = 16 - prefix.len();
-            prefix.extend_from_slice(&buffer[..read.min(remaining)]);
-        }
-        hasher.update(&buffer[..read]);
-        destination.write_all(&buffer[..read])?;
-    }
-    Ok(Snapshot {
-        digest: hex(&hasher.finalize()),
-        size,
-        prefix,
-    })
-}
-
-const fn origin_may_own_artifacts(origin: &SessionOrigin) -> bool {
-    matches!(origin, SessionOrigin::Home | SessionOrigin::Project { .. })
-}
-
-fn validate_relative_path(raw: &str) -> io::Result<PathBuf> {
-    if raw.trim().is_empty() || raw.chars().any(char::is_control) {
-        return Err(invalid("path must be a non-empty relative file path"));
-    }
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        return Err(invalid("absolute paths are not accepted"));
-    }
-    for component in path.components() {
-        if !matches!(component, Component::Normal(_)) {
-            return Err(invalid("path traversal components are not accepted"));
-        }
-    }
-    Ok(path.to_path_buf())
-}
-
-fn reject_link(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || is_windows_reparse_point(&metadata)
-    {
-        return Err(invalid(
-            "symbolic links and reparse points are not accepted",
-        ));
-    }
-    Ok(())
-}
-
-fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
-    flowy_agent_core::tools::is_windows_reparse_point(metadata)
-}
-
-fn validate_identifier(value: &str) -> io::Result<()> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value.chars().all(|char| {
-            char.is_ascii_alphanumeric() || matches!(char, '-' | '_')
-        })
-    {
-        return Err(invalid("invalid host identifier"));
-    }
-    Ok(())
-}
-
-fn validate_delivery_key(value: &str) -> io::Result<()> {
-    let length = value.chars().count();
-    if !(1..=128).contains(&length) || value.chars().any(char::is_control) {
-        return Err(invalid(
-            "delivery_key must contain 1 to 128 printable characters",
-        ));
-    }
-    Ok(())
-}
-
-fn safe_display_name(
-    provided: Option<&str>,
-    source_name: &str,
-) -> io::Result<String> {
-    let source_extension = Path::new(source_name)
-        .extension()
-        .and_then(|value| value.to_str());
-    let candidate = provided.unwrap_or(source_name);
-    if candidate.chars().count() > 255 {
-        return Err(invalid("display_name exceeds 255 Unicode scalar values"));
-    }
-    let mut safe = candidate
-        .chars()
-        .map(|character| {
-            if character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-            {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect::<String>()
-        .trim()
-        .to_owned();
-    if safe.is_empty() || safe == "." || safe == ".." {
-        return Err(invalid("display_name is empty or invalid"));
-    }
-    let provided_extension = Path::new(&safe)
-        .extension()
-        .and_then(|value| value.to_str());
-    if let Some(extension) = source_extension
-        && provided_extension
-            .is_none_or(|given| !given.eq_ignore_ascii_case(extension))
-    {
-        safe.push('.');
-        safe.push_str(extension);
-    }
-    if safe.chars().count() > 255 {
-        return Err(invalid("display_name exceeds 255 Unicode scalar values"));
-    }
-    Ok(safe)
-}
-
-fn media_type(path: &Path) -> Option<String> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    let media_type = match extension.as_str() {
-        "txt" => "text/plain",
-        "md" => "text/markdown",
-        "csv" => "text/csv",
-        "json" => "application/json",
-        "xml" => "application/xml",
-        "pdf" => "application/pdf",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "pptx" => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        }
-        "docx" => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }
-        "xlsx" => {
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        }
-        "zip" => "application/zip",
-        _ => return None,
-    };
-    Some(media_type.to_owned())
-}
-
-fn validate_known_header(path: &str, prefix: &[u8]) -> io::Result<()> {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let valid = match extension.as_str() {
-        "pdf" => prefix.starts_with(b"%PDF-"),
-        "png" => prefix.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "jpg" | "jpeg" => prefix.starts_with(&[0xff, 0xd8, 0xff]),
-        "webp" => {
-            prefix.len() >= 12
-                && &prefix[0..4] == b"RIFF"
-                && &prefix[8..12] == b"WEBP"
-        }
-        "pptx" | "docx" | "xlsx" | "zip" => prefix.starts_with(b"PK\x03\x04"),
-        _ => true,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(invalid("file content does not match its extension"))
-    }
-}
-
-fn read_session_deletion_plan(
-    path: &Path,
-    expected_session_id: &str,
-) -> io::Result<SessionDeletionPlan> {
-    let plan =
-        read_limited_json::<SessionDeletionPlan>(path, MAX_MANIFEST_BYTES)?;
-    if plan.schema_version != 1 || plan.session_id != expected_session_id {
-        return Err(invalid("unsupported session deletion marker"));
-    }
-    Ok(plan)
-}
-
-fn remove_file_if_exists(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-fn read_manifest(path: &Path) -> io::Result<ArtifactManifest> {
-    let manifest: ArtifactManifest =
-        read_limited_json(path, MAX_MANIFEST_BYTES)?;
-    if manifest.schema_version != 1 {
-        return Err(invalid("unsupported artifact manifest version"));
-    }
-    Ok(manifest)
-}
-
-fn read_limited_json<T: for<'de> Deserialize<'de>>(
-    path: &Path,
-    limit: u64,
-) -> io::Result<T> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || is_windows_reparse_point(&metadata)
-        || metadata.len() > limit
-    {
-        return Err(invalid("managed metadata file is invalid or too large"));
-    }
-    let file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(invalid("managed metadata file exceeds its read limit"));
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-fn write_new_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file =
-        OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid("metadata path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let (temporary, mut output) = loop {
-        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temporary =
-            parent.join(format!(".artifact-{}-{id}.tmp", std::process::id()));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
-            Ok(output) => break (temporary, output),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-    };
-    let result = (|| {
-        output.write_all(bytes)?;
-        output.sync_all()?;
-        drop(output);
-        replace_file(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
-}
-
-fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(source, destination)
-}
-
-fn random_id() -> io::Result<String> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(hex(&bytes))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
-}
-
-fn is_single_file_name(name: &str) -> bool {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.chars().any(char::is_control)
-        || name.contains(['/', '\\'])
-    {
-        return false;
-    }
-    let mut components = Path::new(name).components();
-    matches!(components.next(), Some(Component::Normal(_)))
-        && components.next().is_none()
-}
-
-fn inspect_managed_view_dir(
-    dir: &Path,
-    expected_file_name: &str,
-) -> Option<PathBuf> {
-    let entries = fs::read_dir(dir).ok()?;
-    let mut matched: Option<PathBuf> = None;
-    for entry in entries {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).ok()?;
-        if metadata.file_type().is_symlink()
-            || is_windows_reparse_point(&metadata)
-            || !metadata.is_file()
-        {
-            return None;
-        }
-        if entry.file_name().to_str() != Some(expected_file_name)
-            || matched.is_some()
-        {
-            return None;
-        }
-        matched = Some(path);
-    }
-    matched
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn now_ms() -> u64 {
-    crate::handle::now_ms()
-}
-
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message.into())
-}
-
-#[must_use]
-pub fn can_open_with_default_app(file_name: &str) -> bool {
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    matches!(
-        extension.as_str(),
-        "pdf"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "webp"
-            | "gif"
-            | "bmp"
-            | "tif"
-            | "tiff"
-            | "pptx"
-            | "docx"
-            | "xlsx"
-            | "csv"
-            | "tsv"
-            | "txt"
-            | "md"
-            | "json"
-            | "xml"
-            | "rtf"
-            | "odt"
-            | "ods"
-            | "odp"
-    )
-}
-
 #[cfg(test)]
-#[path = "artifact_store_tests.rs"]
 mod tests;
