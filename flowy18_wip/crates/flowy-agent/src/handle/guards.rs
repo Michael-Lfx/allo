@@ -354,28 +354,75 @@ pub(super) fn resolve_deepest_ancestor(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
-    // Walk up to the deepest existing ancestor and canonicalize it before
-    // re-appending remaining lexical components, closing symlink/junction
-    // escapes through multi-level non-existent subdirectories while staying
-    // consistent when `root` itself is a synthetic (not-yet-created) path.
-    let mut ancestor = path;
-    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor) {
-            let mut resolved = canonical_ancestor;
-            for part in suffix.into_iter().rev() {
-                resolved.push(part);
+    // Walk top-down component by component, canonicalizing every existing prefix
+    // BEFORE folding `.` / `..`. Once a non-existent segment begins
+    // (`missing_depth > 0`), track suffix depth explicitly so trailing or
+    // intermediate `..` never abort ancestor canonicalization (unlike
+    // `Path::file_name()`, which returns `None` when ending in `..`) and still
+    // re-enable canonicalization if `..` climbs back to the existing ancestor.
+    let mut current = PathBuf::new();
+    let mut missing_depth: usize = 0;
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
             }
-            return resolved;
+            std::path::Component::RootDir => {
+                current.push(component.as_os_str());
+                if missing_depth == 0
+                    && let Ok(canon) = std::fs::canonicalize(&current)
+                {
+                    current = canon;
+                }
+            }
+            std::path::Component::CurDir => {
+                if current.as_os_str().is_empty()
+                    && missing_depth == 0
+                    && let Ok(canon) = std::fs::canonicalize(".")
+                {
+                    current = canon;
+                }
+            }
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                if missing_depth == 0 {
+                    if let Ok(canon) = std::fs::canonicalize(&current) {
+                        current = canon;
+                    } else {
+                        missing_depth = 1;
+                    }
+                } else {
+                    missing_depth += 1;
+                }
+            }
+            std::path::Component::ParentDir => {
+                if missing_depth > 0 {
+                    current.pop();
+                    missing_depth -= 1;
+                } else if matches!(
+                    current.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                ) {
+                    current.pop();
+                    if let Ok(canon) = std::fs::canonicalize(&current) {
+                        current = canon;
+                    }
+                } else if !matches!(
+                    current.components().next_back(),
+                    Some(
+                        std::path::Component::Prefix(_)
+                            | std::path::Component::RootDir
+                    )
+                ) {
+                    current.push(component.as_os_str());
+                }
+            }
         }
-        let Some(name) = ancestor.file_name() else {
-            return path.to_path_buf();
-        };
-        suffix.push(name.to_os_string());
-        let Some(parent) = ancestor.parent() else {
-            return path.to_path_buf();
-        };
-        ancestor = parent;
+    }
+    if current.as_os_str().is_empty() {
+        path.to_path_buf()
+    } else {
+        current
     }
 }
 
