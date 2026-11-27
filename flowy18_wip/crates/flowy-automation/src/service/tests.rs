@@ -15,6 +15,8 @@ use crate::worker::WorkerConfig;
 #[derive(Default)]
 struct FakeExecutor {
     calls: AtomicUsize,
+    /// Conversation each run was dispatched into.
+    conversations: Mutex<Vec<String>>,
     /// `None` waits until cancelled.
     outcome: Mutex<Option<RunOutcome>>,
 }
@@ -22,8 +24,8 @@ struct FakeExecutor {
 impl FakeExecutor {
     fn returning(outcome: Option<RunOutcome>) -> Arc<Self> {
         Arc::new(Self {
-            calls: AtomicUsize::new(0),
             outcome: Mutex::new(outcome),
+            ..Self::default()
         })
     }
 }
@@ -31,12 +33,16 @@ impl FakeExecutor {
 impl RunExecutor for FakeExecutor {
     fn run<'a>(
         &'a self,
-        _automation: &'a Automation,
+        automation: &'a Automation,
         _run_id: RunId,
         cancel: CancelToken,
     ) -> RunFuture<'a> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.conversations
+                .lock()
+                .unwrap()
+                .push(automation.conversation_id.clone());
             let outcome = self.outcome.lock().unwrap().clone();
             let outcome = if let Some(outcome) = outcome {
                 outcome
@@ -45,7 +51,7 @@ impl RunExecutor for FakeExecutor {
                 RunOutcome::Cancelled
             };
             RunReport {
-                session_id: Some("session-1".to_owned()),
+                work_id: Some("w-1".to_owned()),
                 outcome,
             }
         })
@@ -56,18 +62,14 @@ struct Harness {
     service: AutomationService,
     store: Arc<AutomationStore>,
     executor: Arc<FakeExecutor>,
-    notified: Arc<Mutex<Vec<RunStatus>>>,
 }
 
 fn harness(outcome: Option<RunOutcome>, run_timeout: Duration) -> Harness {
     let store = Arc::new(AutomationStore::open_in_memory().unwrap());
     let executor = FakeExecutor::returning(outcome);
-    let notified = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&notified);
     let worker = Worker::start(
         Arc::clone(&store),
         executor.clone(),
-        Arc::new(move |_, run| sink.lock().unwrap().push(run.status)),
         WorkerConfig {
             tick: Duration::from_secs(3600),
             run_timeout,
@@ -78,19 +80,6 @@ fn harness(outcome: Option<RunOutcome>, run_timeout: Duration) -> Harness {
         service: AutomationService::new(Arc::clone(&store), worker),
         store,
         executor,
-        notified,
-    }
-}
-
-fn agent_task(trigger: TriggerSpec) -> AutomationInput {
-    AutomationInput {
-        title: " Daily summary ".to_owned(),
-        action: Action::AgentTask {
-            prompt: "summarise my inbox".to_owned(),
-        },
-        trigger,
-        cwd: None,
-        access: Access::Read,
     }
 }
 
@@ -102,187 +91,179 @@ fn daily() -> TriggerSpec {
     })
 }
 
-async fn wait_final(service: &AutomationService, run_id: RunId) -> Run {
+fn agent_task() -> AutomationInput {
+    AutomationInput {
+        title: " Daily summary ".to_owned(),
+        action: Action::AgentTask {
+            prompt: "summarise my inbox".to_owned(),
+        },
+        trigger: daily(),
+        access: Access::Read,
+    }
+}
+
+/// Makes `automation` due now, so the next tick starts it.
+fn make_due(h: &Harness, automation: &Automation) {
+    let mut due = automation.clone();
+    due.next_run_at_ms = Some(now_ms() - 3 * 86_400_000);
+    h.store.save(&due).unwrap();
+    h.service.worker.wake();
+}
+
+async fn wait_runs(
+    service: &AutomationService,
+    id: AutomationId,
+    done: impl Fn(&[Run]) -> bool,
+) -> Vec<Run> {
     for _ in 0..500 {
-        if let Some(run) = service.run(run_id).unwrap()
-            && run.status.is_final()
-        {
-            return run;
+        let runs = service.history(id, 10).unwrap();
+        if done(&runs) {
+            return runs;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("run {run_id} did not finish");
+    panic!("runs of {id} did not settle");
+}
+
+fn any_final(runs: &[Run]) -> bool {
+    runs.iter().any(|run| run.status.is_final())
 }
 
 const LONG: Duration = Duration::from_secs(60);
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_now_executes_and_records_the_session() {
+async fn create_binds_the_conversation_and_schedules_the_next_run() {
     let h = harness(Some(RunOutcome::Succeeded), LONG);
-    h.service.set_signed_in(true);
-    let automation = h.service.create(agent_task(TriggerSpec::Manual)).unwrap();
+    let automation = h.service.create("r-1", agent_task()).unwrap();
     assert_eq!(automation.title, "Daily summary");
-    assert_eq!(automation.next_run_at_ms, None);
-
-    let run = h.service.run_now(automation.id).unwrap();
-    let run = wait_final(&h.service, run.id).await;
-    assert_eq!(run.status, RunStatus::Succeeded);
-    assert_eq!(run.session_id.as_deref(), Some("session-1"));
-    assert_eq!(*h.notified.lock().unwrap(), vec![RunStatus::Succeeded]);
-    assert_eq!(h.service.history(automation.id, 10).unwrap(), vec![run]);
+    assert_eq!(automation.conversation_id, "r-1");
+    assert!(automation.next_run_at_ms.unwrap() > now_ms());
+    assert_eq!(h.service.list_for("r-1").unwrap(), vec![automation]);
+    assert_eq!(h.service.list_for("r-2").unwrap(), vec![]);
+    assert!(matches!(
+        h.service.create(" ", agent_task()),
+        Err(ServiceError::Invalid(_))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn missed_occurrences_run_once_and_advance() {
+async fn missed_occurrences_run_once_in_the_owning_conversation() {
     let h = harness(Some(RunOutcome::Succeeded), LONG);
-    let mut automation = h.service.create(agent_task(daily())).unwrap();
-    let now = now_ms();
-    assert!(automation.next_run_at_ms.unwrap() > now);
-    automation.next_run_at_ms = Some(now - 3 * 86_400_000);
-    h.store.save(&automation).unwrap();
-
+    let automation = h.service.create("r-1", agent_task()).unwrap();
+    make_due(&h, &automation);
     h.service.set_signed_in(true);
-    for _ in 0..500 {
-        let runs = h.service.history(automation.id, 10).unwrap();
-        if runs.iter().any(|run| run.status.is_final()) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let runs = h.service.history(automation.id, 10).unwrap();
+
+    let runs = wait_runs(&h.service, automation.id, any_final).await;
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].trigger, RunTrigger::Scheduled);
+    assert_eq!(runs[0].status, RunStatus::Succeeded);
+    assert_eq!(runs[0].work_id.as_deref(), Some("w-1"));
+    assert_eq!(*h.executor.conversations.lock().unwrap(), vec!["r-1"]);
     assert!(
         h.service
             .get(automation.id)
             .unwrap()
             .next_run_at_ms
             .unwrap()
-            > now
+            > now_ms()
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn signed_out_worker_leaves_runs_queued_and_queued_runs_cancel() {
+async fn signed_out_worker_starts_nothing() {
     let h = harness(Some(RunOutcome::Succeeded), LONG);
-    let automation = h.service.create(agent_task(TriggerSpec::Manual)).unwrap();
-    let first = h.service.run_now(automation.id).unwrap();
-    let second = h.service.run_now(automation.id).unwrap();
+    let automation = h.service.create("r-1", agent_task()).unwrap();
+    make_due(&h, &automation);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        h.service.run(first.id).unwrap().unwrap().status,
-        RunStatus::Queued
-    );
+    assert_eq!(h.service.history(automation.id, 10).unwrap(), vec![]);
+    assert_eq!(h.executor.calls.load(Ordering::SeqCst), 0);
 
-    assert!(h.service.cancel(second.id).unwrap());
     h.service.set_signed_in(true);
-    assert_eq!(
-        wait_final(&h.service, first.id).await.status,
-        RunStatus::Succeeded
-    );
-    assert_eq!(
-        h.service.run(second.id).unwrap().unwrap().status,
-        RunStatus::Cancelled
-    );
+    wait_runs(&h.service, automation.id, any_final).await;
     assert_eq!(h.executor.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn busy_workspace_skips_the_run() {
-    let h = harness(Some(RunOutcome::Busy), LONG);
-    h.service.set_signed_in(true);
-    let automation = h.service.create(agent_task(TriggerSpec::Manual)).unwrap();
-    let run = h.service.run_now(automation.id).unwrap();
-    let run = wait_final(&h.service, run.id).await;
-    assert_eq!(run.status, RunStatus::Skipped);
-    assert_eq!(*h.notified.lock().unwrap(), vec![RunStatus::Skipped]);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn timeout_cancels_the_turn_and_fails_the_run() {
-    let h = harness(None, Duration::from_millis(50));
-    h.service.set_signed_in(true);
-    let automation = h.service.create(agent_task(TriggerSpec::Manual)).unwrap();
-    let run = h.service.run_now(automation.id).unwrap();
-    let run = wait_final(&h.service, run.id).await;
-    assert_eq!(run.status, RunStatus::Failed);
-    assert_eq!(run.error.as_deref(), Some("timed out"));
-    assert_eq!(run.session_id.as_deref(), Some("session-1"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn cancelling_a_running_run_is_not_notified() {
+async fn cancel_and_sign_out_stop_a_running_run() {
     let h = harness(None, LONG);
     h.service.set_signed_in(true);
-    let automation = h.service.create(agent_task(TriggerSpec::Manual)).unwrap();
-    let run = h.service.run_now(automation.id).unwrap();
+    let automation = h.service.create("r-1", agent_task()).unwrap();
+    make_due(&h, &automation);
+    let runs = wait_runs(&h.service, automation.id, |runs| {
+        runs.iter().any(|run| run.status == RunStatus::Running)
+    })
+    .await;
+    // Wait until the executor has picked it up before cancelling.
     while h.executor.calls.load(Ordering::SeqCst) == 0 {
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(h.service.cancel(run.id).unwrap());
-    assert_eq!(
-        wait_final(&h.service, run.id).await.status,
-        RunStatus::Cancelled
-    );
-    assert!(h.notified.lock().unwrap().is_empty());
-    assert!(!h.service.cancel(run.id).unwrap());
+    assert!(h.service.cancel(runs[0].id));
+    let runs = wait_runs(&h.service, automation.id, any_final).await;
+    assert_eq!(runs[0].status, RunStatus::Cancelled);
+    assert!(!h.service.cancel(runs[0].id));
+
+    let second = h.service.create("r-1", agent_task()).unwrap();
+    make_due(&h, &second);
+    wait_runs(&h.service, second.id, |runs| !runs.is_empty()).await;
+    while h.executor.calls.load(Ordering::SeqCst) < 2 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    h.service.set_signed_in(false);
+    let runs = wait_runs(&h.service, second.id, any_final).await;
+    assert_eq!(runs[0].status, RunStatus::Cancelled);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reminders_notify_without_the_executor() {
+async fn a_run_that_exceeds_the_limit_fails_as_timed_out() {
+    let h = harness(None, Duration::from_millis(50));
+    h.service.set_signed_in(true);
+    let automation = h.service.create("r-1", agent_task()).unwrap();
+    make_due(&h, &automation);
+    let runs = wait_runs(&h.service, automation.id, any_final).await;
+    assert_eq!(runs[0].status, RunStatus::Failed);
+    assert_eq!(runs[0].error.as_deref(), Some("timed out"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paused_automations_are_not_due_and_resume_skips_missed_runs() {
     let h = harness(Some(RunOutcome::Succeeded), LONG);
     h.service.set_signed_in(true);
-    let automation = h
-        .service
-        .create(AutomationInput {
-            action: Action::Reminder {
-                text: "stand up".to_owned(),
-            },
-            ..agent_task(TriggerSpec::Manual)
-        })
-        .unwrap();
-    let run = h.service.run_now(automation.id).unwrap();
-    assert_eq!(
-        wait_final(&h.service, run.id).await.status,
-        RunStatus::Succeeded
-    );
-    assert_eq!(h.executor.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(*h.notified.lock().unwrap(), vec![RunStatus::Succeeded]);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn validation_pause_resume_update_and_delete() {
-    let h = harness(Some(RunOutcome::Succeeded), LONG);
-    assert!(matches!(
-        h.service.create(AutomationInput {
-            title: "  ".to_owned(),
-            ..agent_task(daily())
-        }),
-        Err(ServiceError::Invalid(_))
-    ));
-
-    let automation = h.service.create(agent_task(daily())).unwrap();
+    let automation = h.service.create("r-1", agent_task()).unwrap();
     let paused = h.service.pause(automation.id).unwrap();
     assert!(!paused.enabled);
     assert_eq!(paused.next_run_at_ms, None);
     let resumed = h.service.resume(automation.id).unwrap();
-    assert!(resumed.enabled);
-    assert!(resumed.next_run_at_ms.is_some());
+    assert!(resumed.next_run_at_ms.unwrap() > now_ms());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.executor.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_keeps_the_conversation_and_delete_conversation_removes_all() {
+    let h = harness(Some(RunOutcome::Succeeded), LONG);
+    let first = h.service.create("r-1", agent_task()).unwrap();
+    h.service.create("r-1", agent_task()).unwrap();
+    let other = h.service.create("r-2", agent_task()).unwrap();
 
     let updated = h
         .service
-        .update(automation.id, agent_task(TriggerSpec::Manual))
+        .update(
+            first.id,
+            AutomationInput {
+                title: "Stand-up".to_owned(),
+                action: Action::Reminder {
+                    text: "Stand-up in 5 minutes".to_owned(),
+                },
+                ..agent_task()
+            },
+        )
         .unwrap();
-    assert_eq!(updated.next_run_at_ms, None);
-    assert_eq!(updated.created_at_ms, automation.created_at_ms);
+    assert_eq!(updated.conversation_id, "r-1");
+    assert_eq!(updated.title, "Stand-up");
 
-    h.service.delete(automation.id).unwrap();
+    h.service.delete_conversation("r-1").unwrap();
+    assert_eq!(h.service.list().unwrap(), vec![other]);
     assert!(matches!(
-        h.service.get(automation.id),
-        Err(ServiceError::NotFound)
-    ));
-    assert!(matches!(
-        h.service.delete(automation.id),
+        h.service.delete(first.id),
         Err(ServiceError::NotFound)
     ));
 }

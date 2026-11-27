@@ -13,21 +13,23 @@ pub type RunFuture<'a> = Pin<Box<dyn Future<Output = RunReport> + Send + 'a>>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOutcome {
     Succeeded,
-    /// The workspace was locked by another turn; the run is skipped.
-    Busy,
     Failed(String),
     Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunReport {
-    /// Kept on failure too, so the user can open the session and see why.
-    pub session_id: Option<String>,
+    /// Worker dispatched in the owning conversation, if one was created.
+    pub work_id: Option<String>,
     pub outcome: RunOutcome,
 }
 
-/// Runs one `AgentTask` automation as a background agent turn. The executor
-/// watches `cancel` and stops the turn when it fires.
+/// Runs one automation inside its owning conversation.
+///
+/// An `AgentTask` dispatches a Worker under that conversation's Router, a
+/// `Reminder` posts to it. The conversation announces the result itself, so
+/// the worker never builds notifications. The executor watches `cancel` and
+/// stops the Worker when it fires.
 pub trait RunExecutor: Send + Sync {
     fn run<'a>(
         &'a self,

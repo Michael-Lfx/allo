@@ -1,5 +1,6 @@
-//! Background loop: turns due automations into queued runs and starts queued
-//! runs. Starts paused; the app resumes it after sign-in.
+//! Background loop: turns due automations into runs and hands each run to the
+//! executor, which works inside the automation's own conversation. Starts
+//! paused; the app resumes it after sign-in.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,14 +11,8 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
 use crate::executor::{CancelToken, RunExecutor, RunOutcome, RunReport};
-use crate::model::{
-    Action, Automation, AutomationId, Run, RunId, RunStatus, RunTrigger, now_ms,
-};
+use crate::model::{Automation, AutomationId, Run, RunId, RunStatus, now_ms};
 use crate::store::{AutomationStore, StoreError};
-
-/// Called when a run ends (not when the user cancelled it). The app turns
-/// this into a system notification.
-pub type RunListener = Arc<dyn Fn(&Automation, &Run) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct WorkerConfig {
@@ -47,7 +42,6 @@ impl std::fmt::Debug for Worker {
 struct Inner {
     store: Arc<AutomationStore>,
     executor: Arc<dyn RunExecutor>,
-    on_finished: RunListener,
     config: WorkerConfig,
     runtime: Handle,
     active: AtomicBool,
@@ -60,14 +54,12 @@ impl Worker {
     pub fn start(
         store: Arc<AutomationStore>,
         executor: Arc<dyn RunExecutor>,
-        on_finished: RunListener,
         config: WorkerConfig,
         runtime: Handle,
     ) -> Self {
         let inner = Arc::new(Inner {
             store,
             executor,
-            on_finished,
             config,
             runtime: runtime.clone(),
             active: AtomicBool::new(false),
@@ -110,18 +102,15 @@ impl Worker {
         self.cancel_inflight(|automation| automation == id);
     }
 
-    /// Cancels a running or queued run. Returns false if it already ended.
-    pub fn cancel(&self, run_id: RunId) -> Result<bool, StoreError> {
-        if let Some((_, token)) = self.inner.inflight().get(&run_id) {
-            token.cancel();
-            return Ok(true);
-        }
-        self.inner.store.transition(
-            run_id,
-            RunStatus::Queued,
-            RunStatus::Cancelled,
-            now_ms(),
-        )
+    /// Cancels a running run. Returns false if it already ended.
+    pub fn cancel(&self, run_id: RunId) -> bool {
+        self.inner
+            .inflight()
+            .get(&run_id)
+            .is_some_and(|(_, token)| {
+                token.cancel();
+                true
+            })
     }
 
     fn cancel_inflight(&self, matches: impl Fn(AutomationId) -> bool) {
@@ -148,46 +137,21 @@ impl Inner {
     }
 
     fn tick(self: &Arc<Self>) {
-        if let Err(error) =
-            self.enqueue_due().and_then(|()| self.start_queued())
-        {
+        if let Err(error) = self.start_due() {
             tracing::warn!(%error, "automation tick failed");
         }
     }
 
     /// However many occurrences were missed, each due automation gets one run
     /// and its next run moves past now.
-    fn enqueue_due(&self) -> Result<(), StoreError> {
+    fn start_due(self: &Arc<Self>) -> Result<(), StoreError> {
         let now = now_ms();
         for mut automation in self.store.due(now)? {
             automation.next_run_at_ms =
                 automation.trigger.next_after(now).ok().flatten();
             self.store.save(&automation)?;
-            self.store.save_run(&Run::queued(
-                automation.id,
-                RunTrigger::Scheduled,
-                now,
-            ))?;
-        }
-        Ok(())
-    }
-
-    fn start_queued(self: &Arc<Self>) -> Result<(), StoreError> {
-        for mut run in self.store.queued_runs()? {
-            let Some(automation) = self.store.get(run.automation_id)? else {
-                continue;
-            };
-            let now = now_ms();
-            if !self.store.transition(
-                run.id,
-                RunStatus::Queued,
-                RunStatus::Running,
-                now,
-            )? {
-                continue;
-            }
-            run.status = RunStatus::Running;
-            run.started_at_ms = Some(now);
+            let run = Run::started(automation.id, now);
+            self.store.save_run(&run)?;
             let cancel = CancelToken::default();
             self.inflight()
                 .insert(run.id, (automation.id, cancel.clone()));
@@ -205,37 +169,23 @@ impl Inner {
         mut run: Run,
         cancel: CancelToken,
     ) {
-        let report = match &automation.action {
-            Action::Reminder { .. } => RunReport {
-                session_id: None,
-                outcome: RunOutcome::Succeeded,
-            },
-            Action::AgentTask { .. } => {
-                self.run_with_timeout(&automation, run.id, cancel).await
-            }
-        };
+        let report = self.run_with_timeout(&automation, run.id, cancel).await;
         self.inflight().remove(&run.id);
 
-        run.session_id = report.session_id;
+        run.work_id = report.work_id;
         run.finished_at_ms = Some(now_ms());
         (run.status, run.error) = match report.outcome {
             RunOutcome::Succeeded => (RunStatus::Succeeded, None),
-            RunOutcome::Busy => {
-                (RunStatus::Skipped, Some("workspace is busy".to_owned()))
-            }
             RunOutcome::Failed(message) => (RunStatus::Failed, Some(message)),
             RunOutcome::Cancelled => (RunStatus::Cancelled, None),
         };
         if let Err(error) = self.store.save_run(&run) {
             tracing::warn!(%error, run = %run.id, "saving automation run failed");
         }
-        if run.status != RunStatus::Cancelled {
-            (self.on_finished)(&automation, &run);
-        }
     }
 
-    /// On timeout the turn is cancelled through the same token, so the
-    /// executor still stops the agent before returning.
+    /// On timeout the run is cancelled through the same token, so the
+    /// executor still stops the Worker before returning.
     async fn run_with_timeout(
         &self,
         automation: &Automation,

@@ -1,7 +1,6 @@
 //! Automation definitions and run records.
 
 use std::fmt;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -49,9 +48,9 @@ id_type!(RunId);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
-    /// Runs one background agent turn with this prompt.
+    /// Dispatches one Worker in the owning conversation with this prompt.
     AgentTask { prompt: String },
-    /// Only shows a notification.
+    /// Tells the user in the owning conversation.
     Reminder { text: String },
 }
 
@@ -82,15 +81,12 @@ impl Access {
     }
 }
 
-/// What the UI editor and the model tools submit.
+/// What the model tools and the page editor submit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutomationInput {
     pub title: String,
     pub action: Action,
-    #[serde(default)]
     pub trigger: TriggerSpec,
-    #[serde(default)]
-    pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub access: Access,
 }
@@ -98,10 +94,12 @@ pub struct AutomationInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Automation {
     pub id: AutomationId,
+    /// The Router conversation that created it. Runs are dispatched there and
+    /// report back there.
+    pub conversation_id: String,
     pub title: String,
     pub action: Action,
     pub trigger: TriggerSpec,
-    pub cwd: Option<PathBuf>,
     pub access: Access,
     pub enabled: bool,
     pub next_run_at_ms: Option<i64>,
@@ -115,7 +113,6 @@ impl Automation {
             title: self.title.clone(),
             action: self.action.clone(),
             trigger: self.trigger,
-            cwd: self.cwd.clone(),
             access: self.access,
         }
     }
@@ -124,38 +121,31 @@ impl Automation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
-    Queued,
     Running,
     Succeeded,
     Failed,
     /// The app stopped while the run was in progress. Not retried.
     Interrupted,
-    /// The workspace was busy when the run started.
-    Skipped,
     Cancelled,
 }
 
 impl RunStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Queued => "queued",
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Interrupted => "interrupted",
-            Self::Skipped => "skipped",
             Self::Cancelled => "cancelled",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         [
-            Self::Queued,
             Self::Running,
             Self::Succeeded,
             Self::Failed,
             Self::Interrupted,
-            Self::Skipped,
             Self::Cancelled,
         ]
         .into_iter()
@@ -163,31 +153,7 @@ impl RunStatus {
     }
 
     pub const fn is_final(self) -> bool {
-        !matches!(self, Self::Queued | Self::Running)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunTrigger {
-    Manual,
-    Scheduled,
-}
-
-impl RunTrigger {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Manual => "manual",
-            Self::Scheduled => "scheduled",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "manual" => Some(Self::Manual),
-            "scheduled" => Some(Self::Scheduled),
-            _ => None,
-        }
+        !matches!(self, Self::Running)
     }
 }
 
@@ -196,9 +162,8 @@ pub struct Run {
     pub id: RunId,
     pub automation_id: AutomationId,
     pub status: RunStatus,
-    pub trigger: RunTrigger,
-    /// Background session that ran the turn; open it to see the result.
-    pub session_id: Option<String>,
+    /// Worker dispatched in the owning conversation; `None` for reminders.
+    pub work_id: Option<String>,
     pub created_at_ms: i64,
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
@@ -206,19 +171,15 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn queued(
-        automation_id: AutomationId,
-        trigger: RunTrigger,
-        now_ms: i64,
-    ) -> Self {
+    /// A run starts as soon as it is created.
+    pub fn started(automation_id: AutomationId, now_ms: i64) -> Self {
         Self {
             id: RunId::generate(),
             automation_id,
-            status: RunStatus::Queued,
-            trigger,
-            session_id: None,
+            status: RunStatus::Running,
+            work_id: None,
             created_at_ms: now_ms,
-            started_at_ms: None,
+            started_at_ms: Some(now_ms),
             finished_at_ms: None,
             error: None,
         }

@@ -26,7 +26,6 @@ fn one_time_triggers_are_exclusive_on_the_lower_bound() {
         Ok(Some(scheduled_at_ms))
     );
     assert_eq!(trigger.next_after(scheduled_at_ms), Ok(None));
-    assert_eq!(TriggerSpec::Manual.next_after(scheduled_at_ms), Ok(None));
 }
 
 #[test]
@@ -138,8 +137,9 @@ fn timestamps_and_local_times_are_checked() {
         invalid.next_after(0),
         Err(ScheduleError::TimestampOutOfRange)
     );
+    let daily = calendar("Etc/UTC", 9, 0, CalendarFrequency::Daily);
     assert_eq!(
-        TriggerSpec::Manual.next_after(i64::MIN),
+        daily.next_after(i64::MIN),
         Err(ScheduleError::TimestampOutOfRange)
     );
     let leap_second = TriggerSpec::Calendar(CalendarRule {

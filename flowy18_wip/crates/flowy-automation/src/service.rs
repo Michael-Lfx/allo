@@ -1,11 +1,10 @@
-//! The single entry point used by both the automation page and the model
-//! tools.
+//! The single entry point used by the model tools (create and manage) and the
+//! automation page (view, edit, pause, delete).
 
 use std::sync::Arc;
 
 use crate::model::{
-    Action, Automation, AutomationId, AutomationInput, Run, RunId, RunTrigger,
-    now_ms,
+    Action, Automation, AutomationId, AutomationInput, Run, RunId, now_ms,
 };
 use crate::schedule::ScheduleError;
 use crate::store::{AutomationStore, StoreError};
@@ -49,18 +48,23 @@ impl AutomationService {
         }
     }
 
+    /// Only the agent creates automations, from inside `conversation_id`.
     pub fn create(
         &self,
+        conversation_id: &str,
         input: AutomationInput,
     ) -> Result<Automation, ServiceError> {
         validate(&input)?;
+        if conversation_id.trim().is_empty() {
+            return Err(ServiceError::Invalid("conversation is missing"));
+        }
         let now = now_ms();
         let automation = Automation {
             id: AutomationId::generate(),
+            conversation_id: conversation_id.to_owned(),
             title: input.title.trim().to_owned(),
             action: input.action,
             trigger: input.trigger,
-            cwd: input.cwd,
             access: input.access,
             enabled: true,
             next_run_at_ms: None,
@@ -80,7 +84,6 @@ impl AutomationService {
             title: input.title.trim().to_owned(),
             action: input.action,
             trigger: input.trigger,
-            cwd: input.cwd,
             access: input.access,
             ..self.get(id)?
         };
@@ -133,21 +136,32 @@ impl AutomationService {
         }
     }
 
-    pub fn run_now(&self, id: AutomationId) -> Result<Run, ServiceError> {
-        self.get(id)?;
-        let run = Run::queued(id, RunTrigger::Manual, now_ms());
-        self.store.save_run(&run)?;
-        self.worker.wake();
-        Ok(run)
+    /// Removes every automation of a deleted conversation.
+    pub fn delete_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), ServiceError> {
+        for automation in self.list_for(conversation_id)? {
+            self.delete(automation.id)?;
+        }
+        Ok(())
     }
 
     /// Returns false if the run had already ended.
-    pub fn cancel(&self, run_id: RunId) -> Result<bool, ServiceError> {
-        Ok(self.worker.cancel(run_id)?)
+    pub fn cancel(&self, run_id: RunId) -> bool {
+        self.worker.cancel(run_id)
     }
 
     pub fn list(&self) -> Result<Vec<Automation>, ServiceError> {
         Ok(self.store.list()?)
+    }
+
+    /// Automations created in `conversation_id`.
+    pub fn list_for(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<Automation>, ServiceError> {
+        Ok(self.store.list_for(conversation_id)?)
     }
 
     pub fn get(&self, id: AutomationId) -> Result<Automation, ServiceError> {

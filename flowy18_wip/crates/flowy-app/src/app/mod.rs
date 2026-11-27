@@ -3,9 +3,9 @@
 mod appearance;
 mod artifact_cleanup;
 mod artifact_preview;
+mod automation;
 mod bootstrap;
 mod cloud_sync;
-mod automation;
 mod conversation_actions;
 mod dock;
 mod flex;

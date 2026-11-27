@@ -1,5 +1,6 @@
-//! Local automations: definitions, schedule, a two-table SQLite store, the
-//! background worker and the service shared by the UI and the model tools.
+//! Local automations owned by conversations: definitions, schedule, a
+//! two-table SQLite store, the background worker and the service shared by
+//! the model tools and the automation page.
 
 pub mod executor;
 pub mod model;
@@ -13,8 +14,8 @@ pub use executor::{
 };
 pub use model::{
     Access, Action, Automation, AutomationId, AutomationInput, Run, RunId,
-    RunStatus, RunTrigger, now_ms,
+    RunStatus, now_ms,
 };
 pub use service::{AutomationService, ServiceError};
 pub use store::{AutomationStore, StoreError};
-pub use worker::{RunListener, Worker, WorkerConfig};
+pub use worker::{Worker, WorkerConfig};
