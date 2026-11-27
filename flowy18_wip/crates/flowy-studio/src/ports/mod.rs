@@ -13,12 +13,12 @@ mod router_projection;
 mod trace;
 
 pub use board::{
-    BoardDataSource, BoardKpiSummary, BranchPhase, DailyActivityBucket,
-    DeliverableFormat, LocalDateKey, SessionBoardGroup, SkillChip, SkillLabel,
-    UNASSIGNED_QUEUE_SESSION_ID, WorkBoardSnapshot, WorkBranchSummary,
-    WorkContractProgress, civil_month_day_in_tz, compute_daily_7d_in_tz,
-    is_older_than_7d_in_tz, local_days_ago, local_tz_offset_secs,
-    matches_day_filter, normalize_epoch_ms, now_epoch_ms,
+    BoardDataSource, BoardKpiSummary, BranchPhase, ChildWorkDelegation,
+    DailyActivityBucket, DeliverableFormat, LocalDateKey, SessionBoardGroup,
+    SkillChip, SkillLabel, UNASSIGNED_QUEUE_SESSION_ID, WorkBoardSnapshot,
+    WorkBranchSummary, WorkContractProgress, civil_month_day_in_tz,
+    compute_daily_7d_in_tz, is_older_than_7d_in_tz, local_days_ago,
+    local_tz_offset_secs, matches_day_filter, normalize_epoch_ms, now_epoch_ms,
 };
 pub use local_env::{
     EnvSeverity, LocalEnvCheck, LocalEnvDetail, LocalEnvSnapshot,

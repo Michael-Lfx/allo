@@ -119,8 +119,8 @@ impl StudioPanel {
     )]
     pub(crate) fn icon_tooltip_button(
         &self,
-        id: &'static str,
-        tip_id: &'static str,
+        id: impl Into<gpui::ElementId>,
+        tip_id: impl Into<gpui::SharedString>,
         label: String,
         icon: theme::icons::Icon,
         variant: theme::ControlVariant,

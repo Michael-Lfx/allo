@@ -59,24 +59,9 @@ impl StudioPanel {
         }
     }
 
-    pub(crate) fn contract_progress_block(
-        &self,
-        progress: &WorkContractProgress,
-    ) -> AnyElement {
-        self.render_contract_progress(progress, false)
-    }
-
     pub(crate) fn contract_progress_checklist(
         &self,
         progress: &WorkContractProgress,
-    ) -> AnyElement {
-        self.render_contract_progress(progress, true)
-    }
-
-    fn render_contract_progress(
-        &self,
-        progress: &WorkContractProgress,
-        show_checklist: bool,
     ) -> AnyElement {
         let total = progress
             .required_labels
@@ -103,7 +88,9 @@ impl StudioPanel {
             .map(|item| item.trim().to_ascii_lowercase())
             .collect();
         let checklist_rows: Vec<(String, bool, bool)> =
-            if show_checklist && !progress.required_labels.is_empty() {
+            if progress.required_labels.is_empty() {
+                Vec::new()
+            } else {
                 let settled_known = progress.outcome.is_some()
                     || progress.delivered_count > 0
                     || !progress.missing_items.is_empty();
@@ -125,22 +112,16 @@ impl StudioPanel {
                         (label.clone(), verified, is_missing)
                     })
                     .collect()
-            } else {
-                Vec::new()
             };
-        let remaining_missing: Vec<String> = if show_checklist {
-            progress
-                .missing_items
-                .iter()
-                .filter(|item| {
-                    let norm = item.trim().to_ascii_lowercase();
-                    missing_pool.contains(&norm)
-                })
-                .cloned()
-                .collect()
-        } else {
-            progress.missing_items.clone()
-        };
+        let remaining_missing: Vec<String> = progress
+            .missing_items
+            .iter()
+            .filter(|item| {
+                let norm = item.trim().to_ascii_lowercase();
+                missing_pool.contains(&norm)
+            })
+            .cloned()
+            .collect();
         let missing_line = (!remaining_missing.is_empty()).then(|| {
             self.tf(
                 "board.contract_missing",

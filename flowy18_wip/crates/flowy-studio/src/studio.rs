@@ -64,7 +64,7 @@ impl crate::panel::StudioPanel {
         } else if self.surface == crate::panel::StudioSurface::Chat {
             self.chat_canvas(cx).into_any_element()
         } else if is_board {
-            self.board_canvas(cx)
+            self.board_canvas(window, cx)
         } else if self.surface == crate::panel::StudioSurface::Automation {
             self.automation_canvas(cx).into_any_element()
         } else {
@@ -81,7 +81,7 @@ impl crate::panel::StudioPanel {
                 .child(content)
                 .children(drawer),
         );
-        if chrome && !self.has_flow_modal() {
+        if chrome && !self.has_board_drawer() {
             let rtl = self.i18n.locale().is_rtl();
             match self.popover {
                 ActivePopover::None => {}

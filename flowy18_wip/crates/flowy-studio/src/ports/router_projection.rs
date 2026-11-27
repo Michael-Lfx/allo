@@ -11,14 +11,15 @@ use flowy_agent::{
 };
 
 use super::board::{
-    BranchPhase, DeliverableFormat, SkillLabel, WorkBranchSummary,
-    WorkContractProgress, project_session_branches,
+    BranchPhase, ChildWorkDelegation, DeliverableFormat, SkillLabel,
+    WorkBranchSummary, WorkContractProgress, project_session_branches,
 };
-use super::{clip_label, short_id};
+use super::{clip_label, redact_trace_text, short_id};
 
 /// Project all owned child Workers of a `SessionRole::Router` conversation into
-/// deduplicated [`WorkBranchSummary`] lanes.
-pub fn project_router_child_branches<FLines, FReceipts, FContract>(
+/// deduplicated [`WorkBranchSummary`] lanes and concise [`ChildWorkDelegation`]
+/// hierarchy summaries.
+pub fn project_router_children<FLines, FReceipts, FContract>(
     parent: &SessionSummary,
     child_works: &[ChildWorkSummary],
     overridden_hashes: &BTreeSet<String>,
@@ -26,13 +27,14 @@ pub fn project_router_child_branches<FLines, FReceipts, FContract>(
     mut lines_for: FLines,
     mut receipts_for: FReceipts,
     contract_for: FContract,
-) -> Vec<WorkBranchSummary>
+) -> (Vec<WorkBranchSummary>, Vec<ChildWorkDelegation>)
 where
     FLines: FnMut(&str) -> Vec<ChatLine>,
     FReceipts: FnMut(&str) -> Vec<(AcceptedMessage, ReceiptState)>,
     FContract: Fn(&str) -> Option<WorkStatus>,
 {
     let mut out = Vec::new();
+    let mut delegations = Vec::new();
     let mut seen_work_ids = HashSet::new();
 
     for work in child_works {
@@ -77,20 +79,19 @@ where
         if !work.pending_cards.is_empty()
             && !child_branches.iter().any(|b| b.phase.is_blocker())
         {
-            let card_detail = match &work.pending_cards[0] {
+            let raw_detail = match &work.pending_cards[0] {
                 PendingCard::ToolApproval {
                     tool_name,
                     risk_reason,
                     ..
-                } => clip_label(&format!("{tool_name}: {risk_reason}"), 96),
-                PendingCard::Disambiguation { prompt, .. } => {
-                    clip_label(prompt, 96)
-                }
+                } => format!("{tool_name}: {risk_reason}"),
+                PendingCard::Disambiguation { prompt, .. } => prompt.clone(),
             };
-            let title = if work.title.trim().is_empty() {
+            let card_detail = clip_label(&redact_trace_text(&raw_detail), 96);
+            let branch_title = if work.title.trim().is_empty() {
                 short_id(&work.work_id)
             } else {
-                clip_label(&work.title, 48)
+                clip_label(&redact_trace_text(&work.title), 48)
             };
             child_branches.retain(|b| !matches!(b.phase, BranchPhase::Idle));
             child_branches.push(WorkBranchSummary {
@@ -105,14 +106,53 @@ where
                     semantic_hint: None,
                     provenance_warnings: Vec::new(),
                 },
-                deliverable_name: title,
+                deliverable_name: branch_title,
                 deliverable_path: None,
                 format: DeliverableFormat::Other,
+                is_workspace_change: false,
                 progress_pct: 60.0,
                 detail: card_detail,
                 work_progress: child_contract,
             });
         }
+
+        let worker_is_running =
+            is_busy || child_branches.iter().any(|b| b.phase.is_running());
+        let worker_has_blocker =
+            child_branches.iter().any(|b| b.phase.is_blocker())
+                || !work.pending_cards.is_empty()
+                || work.state == "awaiting_approval";
+        let branch_deliverables = child_branches
+            .iter()
+            .filter(|b| {
+                !b.is_workspace_change
+                    && b.deliverable_path.is_some()
+                    && matches!(b.phase, BranchPhase::Delivered { .. })
+            })
+            .count();
+        let deliverable_count =
+            branch_deliverables.max(work.delivered_artifact_ids.len());
+        let worker_title = if work.title.trim().is_empty() {
+            short_id(&work.work_id)
+        } else {
+            clip_label(&redact_trace_text(&work.title), 72)
+        };
+        let status_hint = build_child_status_hint(
+            work,
+            &child_branches,
+            worker_is_running,
+            worker_has_blocker,
+            deliverable_count,
+            localize,
+        );
+        delegations.push(ChildWorkDelegation {
+            session_id: work.work_id.clone(),
+            title: worker_title,
+            is_running: worker_is_running,
+            has_blocker: worker_has_blocker,
+            deliverable_count,
+            status_hint,
+        });
 
         // Prefix branch IDs with `work:<worker_id>:` so sibling Workers never
         // collide on branch IDs inside the parent Router's board group, and
@@ -126,5 +166,62 @@ where
         }
     }
 
-    out
+    (out, delegations)
+}
+
+fn build_child_status_hint(
+    work: &ChildWorkSummary,
+    branches: &[WorkBranchSummary],
+    is_running: bool,
+    has_blocker: bool,
+    deliverable_count: usize,
+    localize: &dyn Fn(&str) -> String,
+) -> String {
+    if has_blocker {
+        if let Some(detail) = branches.iter().find_map(|b| match &b.phase {
+            BranchPhase::NeedsApproval { summary, .. }
+                if !summary.trim().is_empty() =>
+            {
+                Some(clip_label(&redact_trace_text(summary), 96))
+            }
+            _ => None,
+        }) {
+            return detail;
+        }
+        if matches!(work.turn_status, TurnStatus::DeliveryFailed) {
+            return localize("chat.status_delivery_failed");
+        }
+        return localize("board.state_needs_approval");
+    }
+    if is_running {
+        if let Some(hb_text) = work.heartbeat.as_ref().and_then(|hb| {
+            crate::pending_card::format_heartbeat_line_localized(hb, localize)
+        }) {
+            let safe = clip_label(&redact_trace_text(&hb_text), 96);
+            if !safe.is_empty() {
+                return safe;
+            }
+        }
+        if let Some(detail) = branches
+            .iter()
+            .find(|b| b.phase.is_running())
+            .map(|b| clip_label(&redact_trace_text(&b.detail), 96))
+            .filter(|s| !s.is_empty())
+        {
+            return detail;
+        }
+        return localize(work.turn_status.key());
+    }
+    match work.state.as_str() {
+        "failed" => localize("chat.status_error"),
+        "stopped" => localize("chat.status_stopped"),
+        "partial" if !work.missing_items.is_empty() => {
+            clip_label(&redact_trace_text(&work.missing_items.join(", ")), 96)
+        }
+        "delivered" => localize("verify.card.passed"),
+        "completed" if deliverable_count > 0 => localize("verify.card.passed"),
+        "completed" => localize("chat.status_completed"),
+        _ if deliverable_count > 0 => localize("verify.card.passed"),
+        _ => localize(work.turn_status.key()),
+    }
 }

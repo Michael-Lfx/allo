@@ -347,7 +347,7 @@ impl FlowyApp {
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
             panel.close_all_popovers();
-            panel.close_flow_modal(cx);
+            panel.close_board_drawer(cx);
         });
         self.active_dialog = dialog;
         cx.notify();
@@ -548,7 +548,10 @@ impl FlowyApp {
                     app.close_overlay(scope.as_ref(), cx);
                 },
             ),
-            cx.observe(&studio, |_, _, cx| cx.notify()),
+            cx.observe(&studio, |app, _, cx| {
+                app.sync_section_from_studio(cx);
+                cx.notify();
+            }),
             cx.observe(&library, |_, _, cx| cx.notify()),
             cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
             cx.observe(&ui.theme, |app, _, cx| {
@@ -1739,7 +1742,7 @@ impl FlowyApp {
                         StudioSurface::Home
                     };
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(surface, cx);
                     panel.set_notice(notice, cx);
                 });
@@ -1753,7 +1756,7 @@ impl FlowyApp {
             Section::Automation => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
@@ -1761,14 +1764,14 @@ impl FlowyApp {
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Create => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.create",
@@ -1782,11 +1785,29 @@ impl FlowyApp {
             Section::More => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_notice(notice, cx);
                 });
             }
         }
+    }
+
+    /// Reconciles `FlowyApp.section` when `StudioPanel` leaves
+    /// `StudioSurface::Board` (e.g. Board "Open chat" or "New task"), keeping
+    /// sidebar selection and Back/Forward history synchronized.
+    pub(super) fn sync_section_from_studio(
+        &mut self,
+        cx: &Context<'_, Self>,
+    ) -> bool {
+        if self.section == Section::Board
+            && self.studio.read(cx).surface != StudioSurface::Board
+        {
+            self.nav_back.push(Section::Board);
+            self.nav_forward.clear();
+            self.section = Section::Studio;
+            return true;
+        }
+        false
     }
 
     fn on_studio_event(
@@ -1794,6 +1815,7 @@ impl FlowyApp {
         event: &StudioEvent,
         cx: &mut Context<'_, Self>,
     ) {
+        let section_synced = self.sync_section_from_studio(cx);
         match event {
             StudioEvent::Notice(notice) => {
                 // Events are delivered after the current action. Reconcile the
@@ -1860,13 +1882,6 @@ impl FlowyApp {
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
-                if self.section == Section::Board
-                    && self.studio.read(cx).surface != StudioSurface::Board
-                {
-                    self.nav_back.push(Section::Board);
-                    self.nav_forward.clear();
-                    self.section = Section::Studio;
-                }
                 self.load_library(cx);
                 cx.notify();
             }
@@ -1891,6 +1906,9 @@ impl FlowyApp {
                     cx,
                 );
             }
+        }
+        if section_synced {
+            cx.notify();
         }
     }
 
@@ -2072,8 +2090,8 @@ impl Render for FlowyApp {
                 (self.screen == Screen::Main
                     && self.section != Section::More
                     && self.section != Section::Library
-                    && self.studio.read(cx).has_flow_modal())
-                .then(|| gpui::SharedString::from("flow-modal-panel"))
+                    && self.studio.read(cx).has_board_drawer())
+                .then(|| gpui::SharedString::from("board-inspector-drawer"))
             });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
@@ -2094,7 +2112,7 @@ impl Render for FlowyApp {
                     && self.screen == Screen::Main
                     && self.section != Section::More
                     && self.section != Section::Library
-                    && !self.studio.read(cx).has_flow_modal()
+                    && !self.studio.read(cx).has_board_drawer()
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation =>
             {
@@ -2263,16 +2281,6 @@ impl Render for FlowyApp {
                 root.child(self.artifact_cleanup_layer(window, cx))
             }
         };
-        if self.active_dialog == state::ActiveDialog::None
-            && self.screen == Screen::Main
-            && self.section != Section::More
-            && self.section != Section::Library
-            && let Some(modal) = self
-                .studio
-                .update(cx, |panel, cx| panel.flow_modal_overlay(window, cx))
-        {
-            root = root.child(modal);
-        }
         let menu = match self.settings.picker {
             settings::Picker::Language => Some((
                 "language-menu",

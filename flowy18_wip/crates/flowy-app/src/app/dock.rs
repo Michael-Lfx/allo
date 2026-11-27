@@ -95,6 +95,7 @@ impl FlowyApp {
             active_work,
             board_blockers,
             board_active,
+            board_selected,
             chief_selected,
             new_task_selected,
             chief_preview,
@@ -135,6 +136,8 @@ impl FlowyApp {
                 studio.total_active_work_count(),
                 studio.board_blocker_count(),
                 studio.board_active_count(),
+                self.section == Section::Board
+                    && studio.surface == flowy_studio::StudioSurface::Board,
                 in_chat && studio.active_project_id.is_none(),
                 self.section == Section::Studio && !in_chat,
                 default_preview,
@@ -145,11 +148,11 @@ impl FlowyApp {
             self.theme,
             "board",
             self.t("dock.board"),
-            self.section == Section::Board,
+            board_selected,
             DockIcon::Board,
         )
         .when(board_blockers > 0, |row| {
-            row.child(
+            row.child(div().flex_1().min_w_0()).child(
                 div()
                     .flex_none()
                     .px(px(6.))
@@ -163,7 +166,7 @@ impl FlowyApp {
             )
         })
         .when(board_blockers == 0 && board_active > 0, |row| {
-            row.child(
+            row.child(div().flex_1().min_w_0()).child(
                 div()
                     .flex_none()
                     .px(px(6.))
@@ -441,7 +444,7 @@ impl FlowyApp {
             })
             .on_click(cx.listener(|app, _event, _window, cx| {
                 app.user_menu = false;
-                app.section = Section::Studio;
+                app.push_section(Section::Studio, cx);
                 app.studio.update(
                     cx,
                     flowy_studio::StudioPanel::open_chief_assistant,
@@ -970,7 +973,7 @@ impl FlowyApp {
             )
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.user_menu = false;
-                app.section = Section::Studio;
+                app.push_section(Section::Studio, cx);
                 app.studio.update(cx, |panel, cx| {
                     panel.open_session(&open_id, cx);
                 });

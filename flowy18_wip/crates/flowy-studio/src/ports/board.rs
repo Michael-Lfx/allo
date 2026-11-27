@@ -22,10 +22,6 @@ pub const UNASSIGNED_QUEUE_SESSION_ID: &str = "unassigned-queue";
 /// Milliseconds in one 24-hour day.
 pub const DAY_MS: u64 = 86_400_000;
 
-/// Maximum branches retained for visual display per session card/modal.
-/// KPI totals are always accumulated across all branches before truncation.
-const MAX_DISPLAY_BRANCHES: usize = 6;
-
 /// Normalizes Unix timestamps to epoch milliseconds.
 ///
 /// Legacy fixtures or older records may store Unix seconds (`< 10^10`); modern
@@ -160,6 +156,8 @@ pub enum DeliverableFormat {
     Sheet,
     Slides,
     Doc,
+    Pdf,
+    Markdown,
     CodeWeb,
     #[default]
     Other,
@@ -175,9 +173,9 @@ impl DeliverableFormat {
         match ext.as_deref() {
             Some("xlsx" | "xls" | "csv" | "tsv" | "ods") => Self::Sheet,
             Some("pptx" | "ppt" | "key" | "odp") => Self::Slides,
-            Some("docx" | "doc" | "pdf" | "md" | "txt" | "rtf" | "odt") => {
-                Self::Doc
-            }
+            Some("docx" | "doc" | "rtf" | "odt") => Self::Doc,
+            Some("pdf") => Self::Pdf,
+            Some("md" | "markdown" | "txt") => Self::Markdown,
             Some(
                 "html" | "htm" | "css" | "scss" | "less" | "js" | "mjs" | "cjs"
                 | "ts" | "tsx" | "jsx" | "py" | "rs" | "go" | "java" | "kt"
@@ -195,6 +193,8 @@ impl DeliverableFormat {
             Self::Sheet => "XLSX",
             Self::Slides => "PPTX",
             Self::Doc => "DOCX",
+            Self::Pdf => "PDF",
+            Self::Markdown => "MD",
             Self::CodeWeb => "CODE",
             Self::Other => "FILE",
         }
@@ -325,6 +325,17 @@ impl WorkContractProgress {
     }
 }
 
+/// Concise delegation summary for one child Worker owned by a Router session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildWorkDelegation {
+    pub session_id: String,
+    pub title: String,
+    pub is_running: bool,
+    pub has_blocker: bool,
+    pub deliverable_count: usize,
+    pub status_hint: String,
+}
+
 /// One visual flow branch inside a session swimlane / modal flowchart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkBranchSummary {
@@ -337,6 +348,9 @@ pub struct WorkBranchSummary {
     pub deliverable_name: String,
     pub deliverable_path: Option<String>,
     pub format: DeliverableFormat,
+    /// True for unverified/uncontracted intermediate workspace file changes
+    /// (`CodeWeb` or `Other`) moved into `SessionBoardGroup::workspace_changes`.
+    pub is_workspace_change: bool,
     pub progress_pct: f32,
     pub detail: String,
     pub work_progress: Option<WorkContractProgress>,
@@ -354,11 +368,13 @@ pub struct SessionBoardGroup {
     pub pinned: bool,
     pub archived: bool,
     pub preview: Option<String>,
+    pub assistant_summary: Option<String>,
     pub branches: Vec<WorkBranchSummary>,
-    /// Total branch count before visual truncation (`MAX_DISPLAY_BRANCHES`).
+    pub workspace_changes: Vec<WorkBranchSummary>,
+    pub child_workers: Vec<ChildWorkDelegation>,
+    /// Total formal branch count (retained without visual truncation).
     pub total_branch_count: usize,
-    /// Total non-idle / file deliverable count before visual truncation so
-    /// compact row `+N` badges never under-report sessions with >6 files.
+    /// Total non-idle / file deliverable count across formal branches.
     pub total_file_count: usize,
     pub session_contract: Option<WorkContractProgress>,
     pub has_blocker: bool,
@@ -375,6 +391,26 @@ impl SessionBoardGroup {
     #[must_use]
     pub fn is_synthetic(&self) -> bool {
         self.session_id == UNASSIGNED_QUEUE_SESSION_ID
+    }
+
+    /// True when the session is non-archived, settled (neither blocked nor
+    /// running), and has at least one formal delivered branch.
+    #[must_use]
+    pub const fn is_delivered_settled(&self) -> bool {
+        !self.archived
+            && !self.has_blocker
+            && !self.is_running
+            && self.has_delivered
+    }
+
+    /// True when any formal branch carries a deliverable file of format `fmt`.
+    #[must_use]
+    pub fn has_formal_format(&self, fmt: DeliverableFormat) -> bool {
+        self.branches.iter().any(|b| {
+            !b.is_workspace_change
+                && b.deliverable_path.is_some()
+                && b.format == fmt
+        })
     }
 }
 
@@ -460,19 +496,40 @@ pub struct BoardKpiSummary {
     pub sheet_count: usize,
     pub slides_count: usize,
     pub doc_count: usize,
+    pub pdf_count: usize,
+    pub markdown_count: usize,
     pub code_count: usize,
     pub other_count: usize,
+    pub formal_deliverable_count: usize,
+    pub workspace_change_count: usize,
     pub active_sessions: usize,
     pub total_sessions: usize,
     pub archived_sessions: usize,
+    pub blocker_sessions: usize,
+    pub running_sessions: usize,
+    pub delivered_sessions: usize,
+    pub today_completed_sessions: usize,
 }
 
 impl BoardKpiSummary {
     /// Aggregates KPI totals across a filtered slice of session groups using
-    /// each group's pre-truncation counts. Archived sessions are excluded from
+    /// each group's pre-computed counts. Archived sessions are excluded from
     /// active/delivered KPI totals and tallied separately in `archived_sessions`.
     #[must_use]
     pub fn from_groups(groups: &[&SessionBoardGroup]) -> Self {
+        Self::from_groups_in_tz(groups, now_epoch_ms(), local_tz_offset_secs())
+    }
+
+    /// Aggregates KPI totals across `groups` using explicit `now_ms` and
+    /// `tz_offset_secs` so `today_completed_sessions` matches the local
+    /// calendar Today bucket.
+    #[must_use]
+    pub fn from_groups_in_tz(
+        groups: &[&SessionBoardGroup],
+        now_ms: u64,
+        tz_offset_secs: i32,
+    ) -> Self {
+        let today_key = bucket_date_for_session(now_ms, now_ms, tz_offset_secs);
         let mut out = Self::default();
         for group in groups {
             if group.archived {
@@ -483,6 +540,27 @@ impl BoardKpiSummary {
             if group.is_active {
                 out.active_sessions += 1;
             }
+            if group.has_blocker {
+                out.blocker_sessions += 1;
+            }
+            if group.is_running {
+                out.running_sessions += 1;
+            }
+            if group.is_delivered_settled() {
+                out.delivered_sessions += 1;
+            }
+            if !group.is_active
+                && today_key.is_some_and(|key| {
+                    matches_day_filter(
+                        group.updated_at,
+                        now_ms,
+                        tz_offset_secs,
+                        key,
+                    )
+                })
+            {
+                out.today_completed_sessions += 1;
+            }
             out.total_branches += group.group_kpi.total_branches;
             out.approval_count += group.group_kpi.approval_count;
             out.running_count += group.group_kpi.running_count;
@@ -490,8 +568,14 @@ impl BoardKpiSummary {
             out.sheet_count += group.group_kpi.sheet_count;
             out.slides_count += group.group_kpi.slides_count;
             out.doc_count += group.group_kpi.doc_count;
+            out.pdf_count += group.group_kpi.pdf_count;
+            out.markdown_count += group.group_kpi.markdown_count;
             out.code_count += group.group_kpi.code_count;
             out.other_count += group.group_kpi.other_count;
+            out.formal_deliverable_count +=
+                group.group_kpi.formal_deliverable_count;
+            out.workspace_change_count +=
+                group.group_kpi.workspace_change_count;
         }
         out
     }
@@ -536,6 +620,45 @@ const fn receipt_progress_pct(state: ReceiptState) -> f32 {
     }
 }
 
+const fn branch_sort_rank(phase: &BranchPhase) -> u8 {
+    if phase.is_blocker() {
+        0
+    } else if phase.is_running() {
+        1
+    } else if matches!(phase, BranchPhase::Delivered { .. }) {
+        2
+    } else {
+        3
+    }
+}
+
+/// Extracts and redacts the latest non-empty `ChatLine::Assistant` reply,
+/// clipped cleanly to at most 480 characters for board Q&A / summary previews.
+#[must_use]
+fn extract_assistant_summary(lines: &[ChatLine]) -> Option<String> {
+    lines.iter().rev().find_map(|line| match line {
+        ChatLine::Assistant { text } => {
+            let stripped = flowy_agent::strip_markdown_inline(text);
+            let trimmed = stripped.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let safe = redact_trace_text(trimmed);
+            let collapsed: String =
+                safe.split_whitespace().collect::<Vec<_>>().join(" ");
+            if collapsed.is_empty() {
+                return None;
+            }
+            if collapsed.chars().count() <= 480 {
+                Some(collapsed)
+            } else {
+                Some(clip_label(&collapsed, 479))
+            }
+        }
+        _ => None,
+    })
+}
+
 /// Folds a Router conversation's `updated_at` with all owned child Workers'
 /// `updated_at` timestamps so PR #497's 7-day local calendar buckets and day
 /// drill-down include today's child-work activity on older Routers.
@@ -549,6 +672,108 @@ fn fold_group_updated_at(
         .fold(normalize_epoch_ms(parent_updated_at), |acc, work| {
             acc.max(normalize_epoch_ms(work.updated_at))
         })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pure snapshot assembly helper shared by BoardDataSource and unit tests"
+)]
+fn finalize_session_group(
+    summary: &SessionSummary,
+    lines: &[ChatLine],
+    mut all_branches: Vec<WorkBranchSummary>,
+    child_works: &[flowy_agent::ChildWorkSummary],
+    child_workers: Vec<ChildWorkDelegation>,
+    is_busy: bool,
+    session_contract: Option<WorkContractProgress>,
+    raw_preview: Option<String>,
+    project: Option<&Project>,
+    default_space_label: &str,
+) -> SessionBoardGroup {
+    if !child_works.is_empty() {
+        disambiguate_deliverable_names(&mut all_branches);
+    }
+
+    let mut branches = Vec::new();
+    let mut workspace_changes = Vec::new();
+    for branch in all_branches {
+        if branch.is_workspace_change {
+            workspace_changes.push(branch);
+        } else {
+            branches.push(branch);
+        }
+    }
+
+    if branches.is_empty() {
+        branches.push(build_idle_branch(summary, lines));
+    }
+
+    let has_blocker = branches.iter().any(|branch| branch.phase.is_blocker());
+    let has_delivered = branches
+        .iter()
+        .any(|branch| matches!(branch.phase, BranchPhase::Delivered { .. }));
+    let is_running =
+        is_busy || branches.iter().any(|branch| branch.phase.is_running());
+    let is_active = has_blocker || is_running;
+
+    let mut group_kpi = BoardKpiSummary::default();
+    for branch in &branches {
+        accumulate_kpi(&mut group_kpi, branch);
+    }
+    for change in &workspace_changes {
+        accumulate_kpi(&mut group_kpi, change);
+    }
+
+    branches.sort_by_key(|branch| branch_sort_rank(&branch.phase));
+    let total_branch_count = branches.len();
+    let total_file_count = branches
+        .iter()
+        .filter(|b| {
+            b.deliverable_path.is_some()
+                || !matches!(b.phase, BranchPhase::Idle)
+        })
+        .count();
+
+    let raw_title = if summary.title.trim().is_empty() {
+        raw_preview.clone().unwrap_or_else(|| short_id(&summary.id))
+    } else {
+        summary.title.clone()
+    };
+    let title = redact_trace_text(&raw_title);
+    let preview = raw_preview
+        .map(|text| clip_label(&redact_trace_text(&text), 72))
+        .filter(|text| !text.is_empty() && !is_redundant_preview(&title, text));
+    let assistant_summary = extract_assistant_summary(lines);
+    let workspace_display = project.map_or_else(
+        || default_space_label.to_owned(),
+        |proj| display_path(&proj.root),
+    );
+    let latest_updated_at =
+        fold_group_updated_at(summary.updated_at, child_works);
+
+    SessionBoardGroup {
+        session_id: summary.id.clone(),
+        title,
+        project_id: summary.project_id.clone(),
+        project_name: project.map(|proj| proj.name.clone()),
+        workspace_display,
+        updated_at: latest_updated_at,
+        pinned: summary.pinned,
+        archived: summary.archived,
+        preview,
+        assistant_summary,
+        branches,
+        workspace_changes,
+        child_workers,
+        total_branch_count,
+        total_file_count,
+        session_contract,
+        has_blocker,
+        has_delivered,
+        is_running,
+        is_active,
+        group_kpi,
+    }
 }
 
 impl BoardDataSource for AgentHandle {
@@ -599,7 +824,6 @@ impl BoardDataSource for AgentHandle {
         }
 
         let mut groups = Vec::with_capacity(sessions.len());
-        let mut kpi = BoardKpiSummary::default();
 
         for summary in &sessions {
             let lines = self.session_lines(&summary.id);
@@ -629,12 +853,8 @@ impl BoardDataSource for AgentHandle {
                 .project_id
                 .as_deref()
                 .and_then(|id| project_map.get(id).copied());
-            let workspace_display = project.map_or_else(
-                || default_space_label.to_owned(),
-                |proj| display_path(&proj.root),
-            );
 
-            let mut branches = project_session_branches(
+            let mut all_branches = project_session_branches(
                 summary,
                 &lines,
                 busy_ids.contains(&summary.id),
@@ -647,9 +867,11 @@ impl BoardDataSource for AgentHandle {
                 |work_id| work_contracts.get(work_id).cloned(),
             );
 
-            if !child_works.is_empty() {
-                let child_branches =
-                    super::router_projection::project_router_child_branches(
+            let child_workers = if child_works.is_empty() {
+                Vec::new()
+            } else {
+                let (child_branches, child_workers) =
+                    super::router_projection::project_router_children(
                         summary,
                         &child_works,
                         &overridden_hashes,
@@ -669,93 +891,26 @@ impl BoardDataSource for AgentHandle {
                         },
                     );
                 if !child_branches.is_empty() {
-                    branches.retain(|b| !matches!(b.phase, BranchPhase::Idle));
-                    branches.extend(child_branches);
+                    all_branches
+                        .retain(|b| !matches!(b.phase, BranchPhase::Idle));
+                    all_branches.extend(child_branches);
                 }
-            }
-
-            let has_blocker =
-                branches.iter().any(|branch| branch.phase.is_blocker());
-            let has_delivered = branches.iter().any(|branch| {
-                matches!(branch.phase, BranchPhase::Delivered { .. })
-            });
-            let is_running = is_busy
-                || branches.iter().any(|branch| branch.phase.is_running());
-            let is_active = has_blocker || is_running;
-
-            // Accumulate KPIs across every branch BEFORE visual truncation so
-            // sessions with >6 branches never under-report counts. Archived
-            // sessions stay out of active KPIs and tally into `archived_sessions`.
-            let mut group_kpi = BoardKpiSummary::default();
-            for branch in &branches {
-                accumulate_kpi(&mut group_kpi, branch);
-                if !summary.archived {
-                    accumulate_kpi(&mut kpi, branch);
-                }
-            }
-            if summary.archived {
-                kpi.archived_sessions += 1;
-            } else {
-                kpi.total_sessions += 1;
-                if is_active {
-                    kpi.active_sessions += 1;
-                }
-            }
-            let total_branch_count = branches.len();
-            let total_file_count = branches
-                .iter()
-                .filter(|b| {
-                    b.deliverable_path.is_some()
-                        || !matches!(b.phase, BranchPhase::Idle)
-                })
-                .count();
-            branches.sort_by_key(|branch| {
-                if branch.phase.is_blocker() {
-                    0_u8
-                } else if branch.phase.is_running() {
-                    1
-                } else {
-                    2
-                }
-            });
-            branches.truncate(MAX_DISPLAY_BRANCHES);
+                child_workers
+            };
 
             let raw_preview = self.session_preview(&summary.id);
-            let raw_title = if summary.title.trim().is_empty() {
-                raw_preview.clone().unwrap_or_else(|| short_id(&summary.id))
-            } else {
-                summary.title.clone()
-            };
-            let title = redact_trace_text(&raw_title);
-            let preview = raw_preview
-                .map(|text| clip_label(&redact_trace_text(&text), 72))
-                .filter(|text| {
-                    !text.is_empty() && !is_redundant_preview(&title, text)
-                });
-
-            let latest_updated_at =
-                fold_group_updated_at(summary.updated_at, &child_works);
-
-            groups.push(SessionBoardGroup {
-                session_id: summary.id.clone(),
-                title,
-                project_id: summary.project_id.clone(),
-                project_name: project.map(|proj| proj.name.clone()),
-                workspace_display,
-                updated_at: latest_updated_at,
-                pinned: summary.pinned,
-                archived: summary.archived,
-                preview,
-                branches,
-                total_branch_count,
-                total_file_count,
+            groups.push(finalize_session_group(
+                summary,
+                &lines,
+                all_branches,
+                &child_works,
+                child_workers,
+                is_busy,
                 session_contract,
-                has_blocker,
-                has_delivered,
-                is_running,
-                is_active,
-                group_kpi,
-            });
+                raw_preview,
+                project,
+                default_space_label,
+            ));
         }
 
         // Surface all remaining unassigned or orphaned receipts (no session
@@ -783,6 +938,7 @@ impl BoardDataSource for AgentHandle {
                         deliverable_name: clip_label(&safe_text, 28),
                         deliverable_path: None,
                         format: DeliverableFormat::Other,
+                        is_workspace_change: false,
                         progress_pct: receipt_progress_pct(*state),
                         detail: clip_label(&safe_text, 96),
                         work_progress,
@@ -796,24 +952,10 @@ impl BoardDataSource for AgentHandle {
             let is_active = has_blocker || is_running;
             let mut group_kpi = BoardKpiSummary::default();
             for branch in &branches {
-                accumulate_kpi(&mut kpi, branch);
                 accumulate_kpi(&mut group_kpi, branch);
             }
+            branches.sort_by_key(|branch| branch_sort_rank(&branch.phase));
             let total_branch_count = branches.len();
-            branches.sort_by_key(|branch| {
-                if branch.phase.is_blocker() {
-                    0_u8
-                } else if branch.phase.is_running() {
-                    1
-                } else {
-                    2
-                }
-            });
-            branches.truncate(MAX_DISPLAY_BRANCHES);
-            if is_active {
-                kpi.active_sessions += 1;
-            }
-            kpi.total_sessions += 1;
             groups.insert(
                 0,
                 SessionBoardGroup {
@@ -830,7 +972,10 @@ impl BoardDataSource for AgentHandle {
                     pinned: false,
                     archived: false,
                     preview: None,
+                    assistant_summary: None,
                     branches,
+                    workspace_changes: Vec::new(),
+                    child_workers: Vec::new(),
                     total_branch_count,
                     total_file_count: total_branch_count,
                     session_contract: None,
@@ -855,6 +1000,11 @@ impl BoardDataSource for AgentHandle {
         let generated_at_ms = now_epoch_ms();
         let tz_offset_secs = local_tz_offset_secs();
         let group_refs: Vec<&SessionBoardGroup> = groups.iter().collect();
+        let kpi = BoardKpiSummary::from_groups_in_tz(
+            &group_refs,
+            generated_at_ms,
+            tz_offset_secs,
+        );
         let daily_7d = compute_daily_7d_in_tz(
             &group_refs,
             generated_at_ms,
@@ -873,6 +1023,10 @@ impl BoardDataSource for AgentHandle {
 }
 
 const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
+    if branch.is_workspace_change {
+        kpi.workspace_change_count += 1;
+        return;
+    }
     match &branch.phase {
         BranchPhase::NeedsApproval { .. }
         | BranchPhase::DeliveryFailed
@@ -897,10 +1051,13 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
         BranchPhase::Delivered { .. } => {
             kpi.total_branches += 1;
             kpi.delivered_count += 1;
+            kpi.formal_deliverable_count += 1;
             match branch.format {
                 DeliverableFormat::Sheet => kpi.sheet_count += 1,
                 DeliverableFormat::Slides => kpi.slides_count += 1,
                 DeliverableFormat::Doc => kpi.doc_count += 1,
+                DeliverableFormat::Pdf => kpi.pdf_count += 1,
+                DeliverableFormat::Markdown => kpi.markdown_count += 1,
                 DeliverableFormat::CodeWeb => kpi.code_count += 1,
                 DeliverableFormat::Other => kpi.other_count += 1,
             }
@@ -910,6 +1067,63 @@ const fn accumulate_kpi(kpi: &mut BoardKpiSummary, branch: &WorkBranchSummary) {
             ..
         }
         | BranchPhase::Idle => {}
+    }
+}
+
+fn matches_required_label(
+    file_name: &str,
+    contract: Option<&WorkContractProgress>,
+) -> bool {
+    let Some(contract) = contract else {
+        return false;
+    };
+    contract.required_labels.iter().any(|label| {
+        let label = label.trim();
+        if label.is_empty() {
+            return false;
+        }
+        if let Some(ext) = label.strip_prefix("*.") {
+            Path::new(file_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        } else {
+            basename(label).eq_ignore_ascii_case(file_name)
+        }
+    })
+}
+
+fn build_idle_branch(
+    summary: &SessionSummary,
+    lines: &[ChatLine],
+) -> WorkBranchSummary {
+    let preview = lines
+        .iter()
+        .rev()
+        .find_map(|line| match line {
+            ChatLine::Assistant { text } | ChatLine::User { text } => {
+                let stripped = flowy_agent::strip_markdown_inline(text);
+                let trimmed = stripped.trim();
+                (!trimmed.is_empty()).then(|| {
+                    let safe = redact_trace_text(trimmed);
+                    clip_label(&safe, 48)
+                })
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| redact_trace_text(&summary.title));
+    WorkBranchSummary {
+        id: format!("{}-idle", summary.id),
+        owner_session_id: None,
+        skill_label: SkillLabel::Key("chat.router_name"),
+        phase: BranchPhase::Idle,
+        deliverable_name: clip_label(&redact_trace_text(&summary.title), 24),
+        deliverable_path: None,
+        format: DeliverableFormat::Other,
+        is_workspace_change: false,
+        progress_pct: 100.0,
+        detail: preview,
+        work_progress: None,
     }
 }
 
@@ -998,6 +1212,7 @@ where
                 deliverable_name: name,
                 deliverable_path: Some(artifact_path.clone()),
                 format,
+                is_workspace_change: false,
                 progress_pct,
                 detail,
                 work_progress: None,
@@ -1014,7 +1229,15 @@ where
                     if !seen_paths.insert(norm_path.clone()) {
                         continue;
                     }
+                    let file_name = basename(&file.path);
                     let format = DeliverableFormat::from_path(&file.path);
+                    let is_workspace_change = matches!(
+                        format,
+                        DeliverableFormat::CodeWeb | DeliverableFormat::Other
+                    ) && !matches_required_label(
+                        &file_name,
+                        session_contract.as_ref(),
+                    );
                     branches.push(WorkBranchSummary {
                         id: format!("{}-fc-{idx}-{f_ix}", summary.id),
                         owner_session_id: None,
@@ -1024,9 +1247,10 @@ where
                             hash_short: String::new(),
                             provenance_warnings: Vec::new(),
                         },
-                        deliverable_name: basename(&file.path),
+                        deliverable_name: file_name,
                         deliverable_path: Some(file.path.clone()),
                         format,
+                        is_workspace_change,
                         progress_pct: 100.0,
                         detail: redact_trace_text(&norm_path),
                         work_progress: None,
@@ -1036,7 +1260,15 @@ where
             ChatLine::FileChange { path, .. } => {
                 let norm_path = display_path_str(path);
                 if seen_paths.insert(norm_path.clone()) {
+                    let file_name = basename(path);
                     let format = DeliverableFormat::from_path(path);
+                    let is_workspace_change = matches!(
+                        format,
+                        DeliverableFormat::CodeWeb | DeliverableFormat::Other
+                    ) && !matches_required_label(
+                        &file_name,
+                        session_contract.as_ref(),
+                    );
                     branches.push(WorkBranchSummary {
                         id: format!("{}-f-{idx}", summary.id),
                         owner_session_id: None,
@@ -1046,9 +1278,10 @@ where
                             hash_short: String::new(),
                             provenance_warnings: Vec::new(),
                         },
-                        deliverable_name: basename(path),
+                        deliverable_name: file_name,
                         deliverable_path: Some(path.clone()),
                         format,
+                        is_workspace_change,
                         progress_pct: 100.0,
                         detail: redact_trace_text(&norm_path),
                         work_progress: None,
@@ -1074,6 +1307,7 @@ where
                 deliverable_name: clip_label(&safe_title, 28),
                 deliverable_path: None,
                 format: DeliverableFormat::Other,
+                is_workspace_change: false,
                 progress_pct: 90.0,
                 detail: clip_label(&safe_title, 96),
                 work_progress: None,
@@ -1082,6 +1316,8 @@ where
     }
 
     // 3. Running live turn (surface latest tool call / reasoning step).
+    // Also absorb any ReceiptState::Running receipt's work_progress onto `-live`
+    // so busy queued runs never emit duplicate running branches (P0-4).
     if is_busy {
         let last_user = lines
             .iter()
@@ -1134,6 +1370,13 @@ where
                     heartbeat_detail.unwrap_or_else(|| safe_title.clone()),
                 )
             };
+        let absorbed_work_progress = queued_receipts
+            .iter()
+            .filter(|(_, state)| *state == ReceiptState::Running)
+            .find_map(|(receipt, _)| {
+                work_status_fn(&receipt.id)
+                    .and_then(|s| WorkContractProgress::from_status(&s))
+            });
         branches.insert(
             0,
             WorkBranchSummary {
@@ -1151,15 +1394,19 @@ where
                 },
                 deliverable_path: None,
                 format: DeliverableFormat::Other,
+                is_workspace_change: false,
                 progress_pct: pct,
                 detail,
-                work_progress: None,
+                work_progress: absorbed_work_progress,
             },
         );
     }
 
     // 4. Deferred / retrying / dead receipts associated with this session.
     for (receipt, state) in queued_receipts {
+        if is_busy && *state == ReceiptState::Running {
+            continue;
+        }
         let work_progress = work_status_fn(&receipt.id)
             .and_then(|s| WorkContractProgress::from_status(&s));
         let safe_text = super::redact_trace_text(&receipt.text);
@@ -1174,6 +1421,7 @@ where
             deliverable_name: clip_label(&safe_text, 24),
             deliverable_path: None,
             format: DeliverableFormat::Other,
+            is_workspace_change: false,
             progress_pct: receipt_progress_pct(*state),
             detail: clip_label(&safe_text, 96),
             work_progress,
@@ -1182,36 +1430,7 @@ where
 
     // 5. Fallback single idle branch if the session had pure Q&A without files.
     if branches.is_empty() {
-        let preview = lines
-            .iter()
-            .rev()
-            .find_map(|line| match line {
-                ChatLine::Assistant { text } | ChatLine::User { text } => {
-                    let stripped = flowy_agent::strip_markdown_inline(text);
-                    let trimmed = stripped.trim();
-                    (!trimmed.is_empty()).then(|| {
-                        let safe = super::redact_trace_text(trimmed);
-                        clip_label(&safe, 48)
-                    })
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| super::redact_trace_text(&summary.title));
-        branches.push(WorkBranchSummary {
-            id: format!("{}-idle", summary.id),
-            owner_session_id: None,
-            skill_label: SkillLabel::Key("chat.router_name"),
-            phase: BranchPhase::Idle,
-            deliverable_name: clip_label(
-                &super::redact_trace_text(&summary.title),
-                24,
-            ),
-            deliverable_path: None,
-            format: DeliverableFormat::Other,
-            progress_pct: 100.0,
-            detail: preview,
-            work_progress: None,
-        });
+        branches.push(build_idle_branch(summary, lines));
     }
 
     if let Some(contract) = session_contract {
@@ -1337,7 +1556,11 @@ fn infer_skill_label(
     match format {
         DeliverableFormat::Sheet => SkillLabel::Key("deliverables.kind_data"),
         DeliverableFormat::Slides => SkillLabel::Key("library.category.slides"),
-        DeliverableFormat::Doc => SkillLabel::Key("deliverables.kind_document"),
+        DeliverableFormat::Doc
+        | DeliverableFormat::Pdf
+        | DeliverableFormat::Markdown => {
+            SkillLabel::Key("deliverables.kind_document")
+        }
         DeliverableFormat::CodeWeb => SkillLabel::Key("deliverables.kind_code"),
         DeliverableFormat::Other => SkillLabel::Key("board.skill_work"),
     }
@@ -1578,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn kpi_counts_all_branches_before_six_branch_display_truncation() {
+    fn kpi_counts_all_branches_and_retains_more_than_six_formal_deliverables() {
         let summary = SessionSummary {
             id: "many-1".into(),
             title: "Bulk Deliverables".into(),
@@ -1611,7 +1834,7 @@ mod tests {
             provenance_warnings: Vec::new(),
             source_session_id: None,
         });
-        let mut branches = project_session_branches(
+        let all_branches = project_session_branches(
             &summary,
             &lines,
             false,
@@ -1623,28 +1846,29 @@ mod tests {
             &|k| k.to_owned(),
             |_| None,
         );
-        let mut kpi = BoardKpiSummary::default();
-        for branch in &branches {
-            accumulate_kpi(&mut kpi, branch);
-        }
-        branches.sort_by_key(|branch| {
-            if branch.phase.is_blocker() {
-                0_u8
-            } else if branch.phase.is_running() {
-                1
-            } else {
-                2
-            }
-        });
-        branches.truncate(MAX_DISPLAY_BRANCHES);
+        let group = finalize_session_group(
+            &summary,
+            &lines,
+            all_branches,
+            &[],
+            Vec::new(),
+            false,
+            None,
+            None,
+            None,
+            "Default",
+        );
 
-        assert_eq!(kpi.total_branches, 9);
-        assert_eq!(kpi.delivered_count, 8);
-        assert_eq!(kpi.approval_count, 1);
-        assert_eq!(kpi.doc_count, 8);
-        assert_eq!(branches.len(), MAX_DISPLAY_BRANCHES);
+        assert_eq!(group.group_kpi.total_branches, 9);
+        assert_eq!(group.group_kpi.delivered_count, 8);
+        assert_eq!(group.group_kpi.formal_deliverable_count, 8);
+        assert_eq!(group.group_kpi.approval_count, 1);
+        assert_eq!(group.group_kpi.doc_count, 8);
+        assert_eq!(group.branches.len(), 9);
+        assert_eq!(group.total_branch_count, 9);
+        assert_eq!(group.total_file_count, 9);
         assert!(matches!(
-            branches[0].phase,
+            group.branches[0].phase,
             BranchPhase::NeedsApproval { .. }
         ));
     }
@@ -1820,7 +2044,10 @@ mod tests {
                     pinned: false,
                     archived,
                     preview: None,
+                    assistant_summary: None,
                     branches: Vec::new(),
+                    workspace_changes: Vec::new(),
+                    child_workers: Vec::new(),
                     total_branch_count: 0,
                     total_file_count: 0,
                     session_contract: None,
@@ -1906,6 +2133,14 @@ mod tests {
                 binary: false,
             },
         ];
+        let contract = WorkContractProgress {
+            work_id: "web-contract".into(),
+            contract_revision: Some(1),
+            required_labels: vec!["tokens.css".into(), "index.html".into()],
+            delivered_count: 2,
+            missing_items: Vec::new(),
+            outcome: Some(SubmissionOutcome::Completed),
+        };
         let branches = project_session_branches(
             &summary,
             &lines,
@@ -1914,7 +2149,7 @@ mod tests {
             None,
             &[],
             &std::collections::BTreeSet::new(),
-            None,
+            Some(contract),
             &|k| k.to_owned(),
             |_| None,
         );
@@ -1935,7 +2170,8 @@ mod tests {
         assert!(
             branches
                 .iter()
-                .all(|b| b.format == DeliverableFormat::CodeWeb)
+                .all(|b| b.format == DeliverableFormat::CodeWeb
+                    && !b.is_workspace_change)
         );
 
         let mut kpi = BoardKpiSummary::default();
@@ -1943,7 +2179,32 @@ mod tests {
             accumulate_kpi(&mut kpi, b);
         }
         assert_eq!(kpi.code_count, 5);
+        assert_eq!(kpi.formal_deliverable_count, 5);
+        assert_eq!(kpi.workspace_change_count, 0);
         assert_eq!(kpi.other_count, 0);
+
+        // Without a contract, unverified CodeWeb changes still disambiguate
+        // cleanly but bucket as workspace changes.
+        let uncontracted = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            false,
+            None,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &|k| k.to_owned(),
+            |_| None,
+        );
+        assert!(uncontracted.iter().all(|b| b.is_workspace_change));
+        let mut wc_kpi = BoardKpiSummary::default();
+        for b in &uncontracted {
+            accumulate_kpi(&mut wc_kpi, b);
+        }
+        assert_eq!(wc_kpi.workspace_change_count, 5);
+        assert_eq!(wc_kpi.code_count, 0);
+        assert_eq!(wc_kpi.formal_deliverable_count, 0);
     }
 
     #[test]
@@ -1971,7 +2232,10 @@ mod tests {
                 pinned: false,
                 archived: false,
                 preview: None,
+                assistant_summary: None,
                 branches: Vec::new(),
+                workspace_changes: Vec::new(),
+                child_workers: Vec::new(),
                 total_branch_count: 0,
                 total_file_count: 0,
                 session_contract: None,
@@ -2145,8 +2409,8 @@ mod tests {
             vec![(legacy_unassigned_receipt, ReceiptState::Queued)],
         );
 
-        let child_branches =
-            crate::ports::router_projection::project_router_child_branches(
+        let (child_branches, _) =
+            crate::ports::router_projection::project_router_children(
                 &parent,
                 &child_works,
                 &std::collections::BTreeSet::new(),
@@ -2224,7 +2488,10 @@ mod tests {
             pinned: false,
             archived: false,
             preview: None,
+            assistant_summary: None,
             branches: child_branches,
+            workspace_changes: Vec::new(),
+            child_workers: Vec::new(),
             total_branch_count: 3,
             total_file_count: 1,
             session_contract: None,
@@ -2244,5 +2511,635 @@ mod tests {
             tz,
             today.date_key
         ));
+    }
+
+    #[test]
+    fn deliverable_format_splits_pdf_and_markdown_from_doc() {
+        assert_eq!(
+            DeliverableFormat::from_path(r"D:\Docs\notes_q4.md"),
+            DeliverableFormat::Markdown
+        );
+        assert_eq!(DeliverableFormat::Markdown.tag(), "MD");
+        assert_eq!(
+            DeliverableFormat::from_path("/tmp/readme.markdown"),
+            DeliverableFormat::Markdown
+        );
+        assert_eq!(
+            DeliverableFormat::from_path("/tmp/log.txt"),
+            DeliverableFormat::Markdown
+        );
+
+        assert_eq!(
+            DeliverableFormat::from_path(r"D:\Docs\brief.pdf"),
+            DeliverableFormat::Pdf
+        );
+        assert_eq!(DeliverableFormat::Pdf.tag(), "PDF");
+
+        assert_eq!(
+            DeliverableFormat::from_path(r"D:\Docs\report.docx"),
+            DeliverableFormat::Doc
+        );
+        assert_eq!(DeliverableFormat::Doc.tag(), "DOCX");
+
+        assert_eq!(
+            infer_skill_label(DeliverableFormat::Pdf, None),
+            SkillLabel::Key("deliverables.kind_document")
+        );
+        assert_eq!(
+            infer_skill_label(DeliverableFormat::Markdown, None),
+            SkillLabel::Key("deliverables.kind_document")
+        );
+    }
+
+    #[test]
+    fn busy_turn_with_running_receipt_emits_only_one_running_branch_and_absorbs_contract()
+     {
+        let root = temp_board_root("p04-running-dedup");
+        let queue = flowy_agent::AcceptanceQueue::new(root.clone());
+        let running_receipt = queue
+            .accept(Some("s-busy"), "generate quarterly sheet", 100)
+            .unwrap();
+        let queued_receipt = queue
+            .accept(Some("s-busy"), "follow-up check", 200)
+            .unwrap();
+        let dead_receipt =
+            queue.accept(Some("s-busy"), "stale failure", 300).unwrap();
+
+        let summary = SessionSummary {
+            id: "s-busy".into(),
+            title: "Busy Task".into(),
+            updated_at: 400,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let running_status = WorkStatus {
+            work_id: running_receipt.id.clone(),
+            session_id: Some("s-busy".into()),
+            submission_id: Some("sub-running".into()),
+            contract_revision: Some(1),
+            receipt_state: Some(ReceiptState::Running),
+            outcome: None,
+            required_items: vec![RequiredDeliverable {
+                filename: Some("sales_q4.xlsx".into()),
+                extension: "xlsx".into(),
+            }],
+            delivered_artifact_ids: Vec::new(),
+            missing_items: vec!["sales_q4.xlsx".into()],
+        };
+
+        let branches = project_session_branches(
+            &summary,
+            &[],
+            true,
+            false,
+            None,
+            &[
+                (running_receipt.clone(), ReceiptState::Running),
+                (queued_receipt.clone(), ReceiptState::Queued),
+                (dead_receipt.clone(), ReceiptState::Dead),
+            ],
+            &std::collections::BTreeSet::new(),
+            None,
+            &|k| k.to_owned(),
+            |wid| (wid == running_receipt.id).then(|| running_status.clone()),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        let live_running: Vec<&WorkBranchSummary> = branches
+            .iter()
+            .filter(|b| {
+                matches!(b.phase, BranchPhase::Running { .. })
+                    || matches!(
+                        b.phase,
+                        BranchPhase::Queued {
+                            state: ReceiptState::Running,
+                            ..
+                        }
+                    )
+            })
+            .collect();
+        assert_eq!(
+            live_running.len(),
+            1,
+            "busy turn + ReceiptState::Running receipt must emit ONLY 1 running branch"
+        );
+        assert_eq!(live_running[0].id, "s-busy-live");
+        assert_eq!(
+            live_running[0]
+                .work_progress
+                .as_ref()
+                .map(|wp| wp.work_id.as_str()),
+            Some(running_receipt.id.as_str()),
+            "live branch must absorb work_progress from the Running receipt"
+        );
+
+        assert!(branches.iter().any(|b| matches!(
+            &b.phase,
+            BranchPhase::Queued { receipt_id, state: ReceiptState::Queued }
+                if receipt_id == &queued_receipt.id
+        )));
+        assert!(branches.iter().any(|b| matches!(
+            &b.phase,
+            BranchPhase::Queued { receipt_id, state: ReceiptState::Dead }
+                if receipt_id == &dead_receipt.id
+        )));
+    }
+
+    #[test]
+    fn heuristic_separates_workspace_changes_from_formal_deliverables_and_preserves_over_six()
+     {
+        let summary = SessionSummary {
+            id: "s-split".into(),
+            title: "Q4 Financials".into(),
+            updated_at: 1_760_000_000_000,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let mut lines = vec![
+            ChatLine::FileChange {
+                path: r"D:\Work\_build_xlsx.py".into(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 80,
+                removed: 0,
+                binary: false,
+            },
+            ChatLine::FileChanges {
+                files: vec![
+                    flowy_agent::FileEntry {
+                        path: r"D:\Work\sales_q4.xlsx".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 1,
+                        removed: 0,
+                        binary: true,
+                    },
+                    flowy_agent::FileEntry {
+                        path: r"D:\Work\notes_q4.md".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 20,
+                        removed: 0,
+                        binary: false,
+                    },
+                    flowy_agent::FileEntry {
+                        path: r"D:\Work\brief_q4.pdf".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 1,
+                        removed: 0,
+                        binary: true,
+                    },
+                    flowy_agent::FileEntry {
+                        path: r"D:\Work\dashboard.html".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 50,
+                        removed: 0,
+                        binary: false,
+                    },
+                ],
+            },
+        ];
+        // Add 4 more formal markdown notes so total formal deliverables > 6.
+        for i in 0..4 {
+            lines.push(ChatLine::FileChange {
+                path: format!(r"D:\Work\appendix_{i}.md"),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 5,
+                removed: 0,
+                binary: false,
+            });
+        }
+        // Explicitly verified script stays formal even though it's CodeWeb.
+        lines.push(ChatLine::Verification {
+            report_id: "rep-py".into(),
+            artifact_path: r"D:\Work\verified_chart.py".into(),
+            artifact_hash: "deadbeef12345678".into(),
+            ok: true,
+            issues: Vec::new(),
+            semantic_hint: None,
+            override_used: false,
+            provenance_warnings: Vec::new(),
+            source_session_id: None,
+        });
+
+        let contract = WorkContractProgress {
+            work_id: "sub-q4".into(),
+            contract_revision: Some(1),
+            required_labels: vec![
+                "sales_q4.xlsx".into(),
+                "DASHBOARD.HTML".into(),
+            ],
+            delivered_count: 2,
+            missing_items: Vec::new(),
+            outcome: Some(SubmissionOutcome::Completed),
+        };
+
+        let all_branches = project_session_branches(
+            &summary,
+            &lines,
+            false,
+            false,
+            None,
+            &[],
+            &std::collections::BTreeSet::new(),
+            Some(contract.clone()),
+            &|k| k.to_owned(),
+            |_| None,
+        );
+        let group = finalize_session_group(
+            &summary,
+            &lines,
+            all_branches,
+            &[],
+            Vec::new(),
+            false,
+            Some(contract),
+            None,
+            None,
+            "Default",
+        );
+
+        // `_build_xlsx.py` (unverified, uncontracted CodeWeb) goes to workspace_changes.
+        assert_eq!(group.workspace_changes.len(), 1);
+        assert_eq!(
+            group.workspace_changes[0].deliverable_name,
+            "_build_xlsx.py"
+        );
+        assert!(group.workspace_changes[0].is_workspace_change);
+
+        // All 9 formal deliverables (`sales_q4.xlsx`, 5 `.md`, `brief_q4.pdf`,
+        // contracted `dashboard.html`, verified `verified_chart.py`) remain
+        // in `group.branches` without capping at 6.
+        assert_eq!(group.branches.len(), 9);
+        assert_eq!(group.total_branch_count, 9);
+        assert!(
+            group
+                .branches
+                .iter()
+                .any(|b| b.deliverable_name == "sales_q4.xlsx")
+        );
+        assert!(
+            group
+                .branches
+                .iter()
+                .any(|b| b.deliverable_name == "notes_q4.md")
+        );
+        assert!(
+            group
+                .branches
+                .iter()
+                .any(|b| b.deliverable_name == "dashboard.html")
+        );
+        assert!(
+            group
+                .branches
+                .iter()
+                .any(|b| b.deliverable_name == "verified_chart.py")
+        );
+        assert_eq!(group.group_kpi.sheet_count, 1);
+        assert_eq!(group.group_kpi.pdf_count, 1);
+        assert_eq!(group.group_kpi.markdown_count, 5);
+        assert_eq!(group.group_kpi.code_count, 2);
+        assert_eq!(group.group_kpi.formal_deliverable_count, 9);
+        assert_eq!(group.group_kpi.workspace_change_count, 1);
+        assert_eq!(group.group_kpi.delivered_count, 9);
+
+        // A session with ONLY workspace changes falls back to Idle in `branches`
+        // so Flowchart Modal stays openable without reporting false delivery.
+        let scratch_only_lines = vec![ChatLine::FileChange {
+            path: r"D:\Work\_build_xlsx.py".into(),
+            change: flowy_agent::FileChangeKind::Add,
+            added: 20,
+            removed: 0,
+            binary: false,
+        }];
+        let scratch_branches = project_session_branches(
+            &summary,
+            &scratch_only_lines,
+            false,
+            false,
+            None,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &|k| k.to_owned(),
+            |_| None,
+        );
+        let scratch_group = finalize_session_group(
+            &summary,
+            &scratch_only_lines,
+            scratch_branches,
+            &[],
+            Vec::new(),
+            false,
+            None,
+            None,
+            None,
+            "Default",
+        );
+        assert_eq!(scratch_group.workspace_changes.len(), 1);
+        assert_eq!(scratch_group.branches.len(), 1);
+        assert_eq!(scratch_group.branches[0].phase, BranchPhase::Idle);
+        assert!(!scratch_group.has_delivered);
+        assert!(!scratch_group.is_delivered_settled());
+        assert_eq!(scratch_group.total_file_count, 0);
+        assert_eq!(scratch_group.group_kpi.workspace_change_count, 1);
+        assert_eq!(scratch_group.group_kpi.formal_deliverable_count, 0);
+    }
+
+    #[test]
+    fn is_delivered_settled_and_has_formal_format_enforce_state_invariants() {
+        let formal_pdf = WorkBranchSummary {
+            id: "b-pdf".into(),
+            owner_session_id: None,
+            skill_label: SkillLabel::Key("deliverables.kind_document"),
+            phase: BranchPhase::Delivered {
+                override_used: false,
+                hash_short: "abcd1234".into(),
+                provenance_warnings: Vec::new(),
+            },
+            deliverable_name: "brief.pdf".into(),
+            deliverable_path: Some(r"D:\Docs\brief.pdf".into()),
+            format: DeliverableFormat::Pdf,
+            is_workspace_change: false,
+            progress_pct: 100.0,
+            detail: String::new(),
+            work_progress: None,
+        };
+        let scratch_py = WorkBranchSummary {
+            id: "b-py".into(),
+            owner_session_id: None,
+            skill_label: SkillLabel::Key("deliverables.kind_code"),
+            phase: BranchPhase::Delivered {
+                override_used: false,
+                hash_short: String::new(),
+                provenance_warnings: Vec::new(),
+            },
+            deliverable_name: "_helper.py".into(),
+            deliverable_path: Some(r"D:\Docs\_helper.py".into()),
+            format: DeliverableFormat::CodeWeb,
+            is_workspace_change: true,
+            progress_pct: 100.0,
+            detail: String::new(),
+            work_progress: None,
+        };
+        let mut group = SessionBoardGroup {
+            session_id: "s-settled".into(),
+            title: "Brief".into(),
+            project_id: None,
+            project_name: None,
+            workspace_display: String::new(),
+            updated_at: 1_760_000_000_000,
+            pinned: false,
+            archived: false,
+            preview: None,
+            assistant_summary: None,
+            branches: vec![formal_pdf],
+            workspace_changes: vec![scratch_py],
+            child_workers: Vec::new(),
+            total_branch_count: 1,
+            total_file_count: 1,
+            session_contract: None,
+            has_blocker: false,
+            has_delivered: true,
+            is_running: false,
+            is_active: false,
+            group_kpi: BoardKpiSummary::default(),
+        };
+
+        assert!(group.is_delivered_settled());
+        assert!(group.has_formal_format(DeliverableFormat::Pdf));
+        assert!(!group.has_formal_format(DeliverableFormat::CodeWeb));
+
+        group.has_blocker = true;
+        assert!(!group.is_delivered_settled());
+
+        group.has_blocker = false;
+        group.is_running = true;
+        assert!(!group.is_delivered_settled());
+
+        group.is_running = false;
+        group.archived = true;
+        assert!(!group.is_delivered_settled());
+    }
+
+    #[test]
+    fn router_group_populates_child_workers_assistant_summary_and_session_kpis()
+    {
+        let now_ms = 1_760_000_000_000_u64;
+        let tz = 8 * 3600;
+        let parent = SessionSummary {
+            id: "r-main".into(),
+            title: "Q4 Dispatch".into(),
+            updated_at: now_ms - 10_000,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let long_secret_reply = format!(
+            "**Summary** api_key=sk-secret-do-not-leak {}",
+            "a".repeat(520)
+        );
+        let parent_lines = vec![
+            ChatLine::User {
+                text: "Prepare Q4 pack".into(),
+            },
+            ChatLine::Assistant {
+                text: "old reply".into(),
+            },
+            ChatLine::Assistant {
+                text: long_secret_reply,
+            },
+        ];
+
+        let w1_id = "w-slides".to_owned();
+        let w2_id = "w-approval".to_owned();
+        let child_works = vec![
+            flowy_agent::ChildWorkSummary {
+                work_id: w1_id.clone(),
+                root_session_id: parent.id.clone(),
+                title: "Slides Worker".into(),
+                state: "delivered".into(),
+                access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                origin: flowy_agent::SessionOrigin::Home,
+                workspace_root: None,
+                turn_status: TurnStatus::Completed,
+                updated_at: now_ms - 5_000,
+                contract_revision: Some(1),
+                delivered_artifact_ids: vec!["art-1".into()],
+                missing_items: Vec::new(),
+                objects: Vec::new(),
+                last_stop_handoff: None,
+                heartbeat: None,
+                pending_cards: Vec::new(),
+            },
+            flowy_agent::ChildWorkSummary {
+                work_id: w2_id.clone(),
+                root_session_id: parent.id.clone(),
+                title: "Audit Worker".into(),
+                state: "awaiting_approval".into(),
+                access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                origin: flowy_agent::SessionOrigin::Home,
+                workspace_root: None,
+                turn_status: TurnStatus::WaitingForUser,
+                updated_at: now_ms - 2_000,
+                contract_revision: Some(1),
+                delivered_artifact_ids: Vec::new(),
+                missing_items: Vec::new(),
+                objects: Vec::new(),
+                last_stop_handoff: None,
+                heartbeat: None,
+                pending_cards: vec![flowy_agent::PendingCard::ToolApproval {
+                    card_id: "card-w2".into(),
+                    tool_name: "shell".into(),
+                    command_preview: "rm -rf tmp".into(),
+                    args_hash: "deadbeef".into(),
+                    risk_reason: "deletes temporary build directory".into(),
+                    target_summary: "workspace".into(),
+                    created_at_ms: now_ms - 2_000,
+                }],
+            },
+        ];
+
+        let mut child_lines: HashMap<&str, Vec<ChatLine>> = HashMap::new();
+        child_lines.insert(
+            w1_id.as_str(),
+            vec![
+                ChatLine::Verification {
+                    report_id: "rep-w1".into(),
+                    artifact_path: r"D:\Work\Q4.pptx".into(),
+                    artifact_hash: "aabbccdd11223344".into(),
+                    ok: true,
+                    issues: Vec::new(),
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                    source_session_id: Some(w1_id.clone()),
+                },
+                ChatLine::FileChange {
+                    path: r"D:\Work\_scratch.py".into(),
+                    change: flowy_agent::FileChangeKind::Add,
+                    added: 12,
+                    removed: 0,
+                    binary: false,
+                },
+            ],
+        );
+        child_lines.insert(w2_id.as_str(), Vec::new());
+
+        let (child_branches, child_workers) =
+            crate::ports::router_projection::project_router_children(
+                &parent,
+                &child_works,
+                &std::collections::BTreeSet::new(),
+                &|k| k.to_owned(),
+                |wid| child_lines.get(wid).cloned().unwrap_or_default(),
+                |_| Vec::new(),
+                |_| None,
+            );
+
+        let router_group = finalize_session_group(
+            &parent,
+            &parent_lines,
+            child_branches,
+            &child_works,
+            child_workers,
+            false,
+            None,
+            None,
+            None,
+            "Default",
+        );
+
+        let summary = router_group
+            .assistant_summary
+            .as_deref()
+            .expect("assistant summary present");
+        assert!(summary.starts_with("Summary api_key="));
+        assert!(!summary.contains("sk-secret-do-not-leak"));
+        assert!(summary.chars().count() <= 480);
+
+        assert_eq!(router_group.child_workers.len(), 2);
+        assert_eq!(router_group.child_workers[0].session_id, w1_id);
+        assert_eq!(router_group.child_workers[0].title, "Slides Worker");
+        assert!(!router_group.child_workers[0].is_running);
+        assert!(!router_group.child_workers[0].has_blocker);
+        assert_eq!(router_group.child_workers[0].deliverable_count, 1);
+        assert_eq!(
+            router_group.child_workers[0].status_hint,
+            "verify.card.passed"
+        );
+
+        assert_eq!(router_group.child_workers[1].session_id, w2_id);
+        assert_eq!(router_group.child_workers[1].title, "Audit Worker");
+        assert!(!router_group.child_workers[1].is_running);
+        assert!(router_group.child_workers[1].has_blocker);
+        assert_eq!(router_group.child_workers[1].deliverable_count, 0);
+        assert!(
+            router_group.child_workers[1]
+                .status_hint
+                .contains("deletes temporary build directory")
+        );
+
+        assert_eq!(router_group.workspace_changes.len(), 1);
+        assert_eq!(
+            router_group.workspace_changes[0].deliverable_name,
+            "_scratch.py"
+        );
+        assert!(router_group.has_formal_format(DeliverableFormat::Slides));
+
+        // Add one settled delivered group today to verify session-level KPI counts.
+        let settled_summary = SessionSummary {
+            id: "s-done".into(),
+            title: "Done Today".into(),
+            updated_at: now_ms - 30_000,
+            project_id: None,
+            pinned: false,
+            archived: false,
+        };
+        let settled_lines = vec![ChatLine::FileChange {
+            path: r"D:\Work\memo.md".into(),
+            change: flowy_agent::FileChangeKind::Add,
+            added: 5,
+            removed: 0,
+            binary: false,
+        }];
+        let settled_branches = project_session_branches(
+            &settled_summary,
+            &settled_lines,
+            false,
+            false,
+            None,
+            &[],
+            &std::collections::BTreeSet::new(),
+            None,
+            &|k| k.to_owned(),
+            |_| None,
+        );
+        let settled_group = finalize_session_group(
+            &settled_summary,
+            &settled_lines,
+            settled_branches,
+            &[],
+            Vec::new(),
+            false,
+            None,
+            None,
+            None,
+            "Default",
+        );
+        let kpi = BoardKpiSummary::from_groups_in_tz(
+            &[&router_group, &settled_group],
+            now_ms,
+            tz,
+        );
+        assert_eq!(kpi.total_sessions, 2);
+        assert_eq!(kpi.blocker_sessions, 1);
+        assert_eq!(kpi.running_sessions, 0);
+        assert_eq!(kpi.delivered_sessions, 1);
+        assert_eq!(kpi.today_completed_sessions, 1);
+        assert_eq!(kpi.slides_count, 1);
+        assert_eq!(kpi.markdown_count, 1);
+        assert_eq!(kpi.formal_deliverable_count, 2);
+        assert_eq!(kpi.workspace_change_count, 1);
     }
 }

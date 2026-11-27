@@ -87,13 +87,15 @@ impl StudioPanel {
         self.selected_skill = None;
         self.board_project_filter = None;
         self.board_day_filter = None;
+        self.board_format_filter = None;
         self.retrying_receipts.clear();
         self.pending_card_selected.clear();
         self.resolving_cards.clear();
         self.retrying_delivery = None;
         self.close_all_popovers();
-        self.flow_modal.close();
+        self.board_inspector.reset();
         self.clear_right_sheet();
+        self.cached_board_lines = None;
         self.cached_trace = None;
         // Apply disconnected config first so autonomous drain cannot claim new
         // receipts while we synchronously cancel in-flight work.
@@ -153,13 +155,18 @@ impl StudioPanel {
     }
 
     /// Resolves whichever session (or synthetic unassigned bucket) is currently
-    /// displaying the Trace tab across the Flowchart Modal or Right Drawer.
+    /// displaying the Trace tab across the Board Inspector or Chat Right Drawer.
     #[must_use]
     pub(crate) fn active_trace_session_id(&self) -> Option<String> {
-        if self.flow_modal.tab == crate::overview::FlowModalTab::Trace
-            && let Some(sid) = &self.flow_modal.session
+        if self.surface == StudioSurface::Board
+            && self.board_inspector.tab
+                == crate::overview::BoardInspectorTab::Trace
         {
-            return Some(sid.clone());
+            return self
+                .board_inspector
+                .worker_session
+                .clone()
+                .or_else(|| self.board_inspector.session.clone());
         }
         if self.right_drawer_open
             && self.drawer_tab == crate::deliverables::RightDrawerTab::Trace
@@ -183,6 +190,34 @@ impl StudioPanel {
         None
     }
 
+    /// Recomputes the dirty-cached structured chat lines for the currently
+    /// inspected Board session/worker so `Render::render` stays lock-free.
+    /// Skips cloning `Vec<ChatLine>` unless the Board `Timeline` tab is active.
+    pub(crate) fn refresh_board_lines_cache(&mut self) {
+        if self.surface != StudioSurface::Board
+            || self.board_inspector.tab
+                != crate::overview::BoardInspectorTab::Timeline
+        {
+            self.cached_board_lines = None;
+            return;
+        }
+        let Some(target_sid) = self
+            .board_inspector
+            .worker_session
+            .as_deref()
+            .or(self.board_inspector.session.as_deref())
+        else {
+            self.cached_board_lines = None;
+            return;
+        };
+        if target_sid == crate::ports::UNASSIGNED_QUEUE_SESSION_ID {
+            self.cached_board_lines = None;
+            return;
+        }
+        let lines = self.agent.session_lines(target_sid);
+        self.cached_board_lines = Some((target_sid.to_owned(), lines));
+    }
+
     /// Recomputes the dirty-cached redacted Trace rows for the open Trace tab
     /// (never called inside `Render::render`).
     pub(crate) fn refresh_trace_cache(&mut self) {
@@ -204,18 +239,18 @@ impl StudioPanel {
         self.popover.scope()
     }
 
-    /// Dismisses whichever Studio popover or Flowchart Modal matches `scope`.
+    /// Dismisses whichever Studio popover or Board narrow drawer matches `scope`.
     /// Returns `true` when state changed and notified observers.
     pub fn dismiss_overlay(
         &mut self,
         scope: &str,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        if matches!(scope, "flow-modal" | "flow-modal-panel") {
-            if !self.flow_modal.is_open() {
+        if scope == "board-inspector-drawer" {
+            if !self.has_board_drawer() {
                 return false;
             }
-            self.close_flow_modal(cx);
+            self.close_board_drawer(cx);
             return true;
         }
         if self.popover.scope() == Some(scope) {
@@ -509,26 +544,65 @@ impl StudioPanel {
         {
             self.board_day_filter = None;
         }
-        if let Some(open_sid) = self.flow_modal.session.as_deref() {
+        if let Some(selected_sid) = self.board_inspector.session.as_deref() {
             match self
                 .board_snapshot
                 .sessions
                 .iter()
-                .find(|group| group.session_id == open_sid)
+                .find(|group| group.session_id == selected_sid)
             {
-                None => self.flow_modal.close(),
+                None => self.board_inspector.reset(),
                 Some(group) => {
-                    if let Some(bid) = self.flow_modal.branch.as_deref()
+                    if let Some(bid) = self.board_inspector.branch.as_deref()
                         && !group.branches.iter().any(|b| b.id == bid)
+                        && !group.workspace_changes.iter().any(|b| b.id == bid)
                     {
-                        self.flow_modal.branch = None;
+                        self.board_inspector.branch = None;
+                    }
+                    if let Some(wid) =
+                        self.board_inspector.worker_session.as_deref()
+                        && !group
+                            .child_workers
+                            .iter()
+                            .any(|w| w.session_id == wid)
+                    {
+                        self.board_inspector.worker_session = None;
                     }
                 }
             }
         }
+        if self.surface == StudioSurface::Board {
+            self.ensure_board_selection();
+        }
         self.refresh_popover_works();
+        if self.surface == StudioSurface::Board {
+            self.refresh_board_lines_cache();
+        }
         self.refresh_trace_cache();
         self.last_board_refresh = Some(std::time::Instant::now());
+    }
+
+    fn ensure_board_selection(&mut self) {
+        if let Some(sid) = self.board_inspector.session.as_deref()
+            && self
+                .board_snapshot
+                .sessions
+                .iter()
+                .any(|g| g.session_id == sid)
+        {
+            return;
+        }
+        let proj_filter = self.board_project_filter.as_deref();
+        let next = pick_default_board_session(
+            &self.board_snapshot.sessions,
+            proj_filter,
+        )
+        .map(str::to_owned);
+        self.board_inspector.session = next;
+        self.board_inspector.branch = None;
+        self.board_inspector.worker_session = None;
+        self.board_inspector.override_ack_key = None;
+        self.board_inspector.workspace_changes_expanded = false;
     }
 
     /// Rebuilds the cached local environment health snapshot (never called per
@@ -554,11 +628,16 @@ impl StudioPanel {
     pub fn open_board(&mut self, cx: &mut Context<'_, Self>) {
         self.board_project_filter = None;
         self.board_day_filter = None;
-        self.flow_modal.close();
+        self.board_format_filter = None;
+        self.board_inspector.close_drawer();
+        self.drawer_preview.clear();
         self.clear_right_sheet();
         self.close_all_popovers();
         self.surface = StudioSurface::Board;
         self.refresh_board_snapshot();
+        self.ensure_board_selection();
+        self.refresh_board_lines_cache();
+        self.refresh_trace_cache();
         cx.notify();
     }
 
@@ -570,14 +649,20 @@ impl StudioPanel {
     ) {
         self.open_board(cx);
         self.board_project_filter = project_id;
+        self.board_inspector.session = None;
+        self.ensure_board_selection();
+        self.refresh_board_lines_cache();
+        self.refresh_trace_cache();
         cx.notify();
     }
 
-    /// Opens the centered Flowchart Modal for `session_id`.
-    pub(crate) fn open_flow_modal(
+    /// Selects a session inside the Master-Detail Board Inspector (and opens
+    /// the narrow slide drawer when `open_drawer` is true).
+    pub(crate) fn select_board_session(
         &mut self,
         session_id: String,
         branch_id: Option<String>,
+        open_drawer: bool,
         cx: &mut Context<'_, Self>,
     ) {
         self.close_all_popovers();
@@ -589,59 +674,101 @@ impl StudioPanel {
         {
             self.refresh_board_snapshot();
         }
-        self.flow_modal.session = Some(session_id);
-        self.flow_modal.branch = branch_id;
-        self.flow_modal.tab = crate::overview::FlowModalTab::Action;
-        self.flow_modal.override_ack_key = None;
-        if self.resolve_flow_modal().is_none() {
-            self.flow_modal.close();
+        let exists = self
+            .board_snapshot
+            .sessions
+            .iter()
+            .any(|g| g.session_id == session_id);
+        if !exists {
+            self.board_inspector.reset();
+            self.drawer_preview.clear();
+            self.cached_board_lines = None;
+            self.refresh_trace_cache();
+            cx.notify();
+            return;
         }
-        cx.notify();
-    }
-
-    /// Closes the centered Flowchart Modal cleanly.
-    pub fn close_flow_modal(&mut self, cx: &mut Context<'_, Self>) {
-        self.flow_modal.close();
+        let changed_session = self.board_inspector.session.as_deref()
+            != Some(session_id.as_str());
+        if changed_session {
+            self.drawer_preview.clear();
+            self.board_inspector.worker_session = None;
+            self.board_inspector.override_ack_key = None;
+            self.board_inspector.workspace_changes_expanded = false;
+        }
+        self.board_inspector.session = Some(session_id);
+        self.board_inspector.branch = branch_id;
+        if open_drawer {
+            self.board_inspector.drawer_open = true;
+        }
+        self.refresh_board_lines_cache();
         self.refresh_trace_cache();
         cx.notify();
     }
 
-    /// Single source of truth for resolving the currently open Flowchart Modal
-    /// group and selected branch so `has_flow_modal()` and `flow_modal_overlay()`
-    /// can never disagree (preventing invisible focus-trap deadlocks).
+    pub(crate) fn select_board_tab(
+        &mut self,
+        tab: crate::overview::BoardInspectorTab,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.board_inspector.tab != tab {
+            self.board_inspector.tab = tab;
+            if tab != crate::overview::BoardInspectorTab::Overview {
+                self.drawer_preview.clear();
+            }
+            self.refresh_board_lines_cache();
+            self.refresh_trace_cache();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn select_board_worker(
+        &mut self,
+        worker_session: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.board_inspector.worker_session != worker_session {
+            self.board_inspector.worker_session = worker_session;
+            self.refresh_board_lines_cache();
+            self.refresh_trace_cache();
+            cx.notify();
+        }
+    }
+
+    /// Closes the narrow-width Board slide drawer cleanly.
+    pub fn close_board_drawer(&mut self, cx: &mut Context<'_, Self>) {
+        if self.board_inspector.drawer_open {
+            self.board_inspector.close_drawer();
+            self.refresh_trace_cache();
+            cx.notify();
+        }
+    }
+
+    /// Resolves the currently selected session group for the Board Inspector.
     #[must_use]
-    pub(crate) fn resolve_flow_modal(
+    pub(crate) fn resolve_board_inspector(
         &self,
-    ) -> Option<(
-        &crate::ports::SessionBoardGroup,
-        &crate::ports::WorkBranchSummary,
-    )> {
-        let session_id = self.flow_modal.session.as_deref()?;
-        let group = self
-            .board_snapshot
+    ) -> Option<&crate::ports::SessionBoardGroup> {
+        let session_id = self.board_inspector.session.as_deref()?;
+        self.board_snapshot
             .sessions
             .iter()
-            .find(|g| g.session_id == session_id)?;
-        let selected = self
-            .flow_modal
-            .branch
-            .as_deref()
-            .and_then(|bid| group.branches.iter().find(|b| b.id == bid))
-            .or_else(|| group.branches.iter().find(|b| b.phase.is_blocker()))
-            .or_else(|| group.branches.first())?;
-        Some((group, selected))
+            .find(|g| g.session_id == session_id)
     }
 
-    /// Whether the centered Flowchart Modal is currently visible.
+    /// Whether the Board narrow-screen slide drawer is currently visible.
     #[must_use]
-    pub fn has_flow_modal(&self) -> bool {
-        self.resolve_flow_modal().is_some()
+    pub fn has_board_drawer(&self) -> bool {
+        self.surface == StudioSurface::Board
+            && self.board_width_px < crate::overview::BOARD_SPLIT_MIN_W
+            && self.board_inspector.has_drawer()
+            && self.resolve_board_inspector().is_some()
     }
 
-    /// Jumps straight into the Flowchart Modal for the first session waiting on
-    /// user approval, delivery retry, or dead/quarantined receipt recovery.
-    pub(crate) fn open_first_blocker_modal(
+    /// Jumps straight to the first session waiting on user approval, delivery
+    /// retry, or dead/quarantined receipt recovery.
+    pub(crate) fn jump_to_first_blocker(
         &mut self,
+        open_drawer: bool,
         cx: &mut Context<'_, Self>,
     ) {
         let proj_filter = self.board_project_filter.as_deref();
@@ -651,26 +778,31 @@ impl StudioPanel {
             .iter()
             .filter(|group| {
                 !group.archived
+                    && group.has_blocker
                     && proj_filter.is_none_or(|pid| {
                         group.project_id.as_deref() == Some(pid)
                     })
             })
-            .find_map(|group| {
-                group
+            .map(|group| {
+                let bid = group
                     .branches
                     .iter()
                     .find(|branch| branch.phase.is_blocker())
-                    .map(|branch| (group.session_id.clone(), branch.id.clone()))
-            });
+                    .map(|branch| branch.id.clone());
+                (group.session_id.clone(), bid)
+            })
+            .next();
         if let Some((sid, bid)) = found {
-            self.open_flow_modal(sid, Some(bid), cx);
+            self.board_inspector.tab =
+                crate::overview::BoardInspectorTab::Overview;
+            self.select_board_session(sid, bid, open_drawer, cx);
         } else {
             self.emit_notice(Some("board.no_blockers"), cx);
         }
     }
 
     /// Retries a failed durable delivery commit for `session_id` on a
-    /// background worker (callable from both Chat and Flowchart Modal).
+    /// background worker (callable from both Chat and Board Inspector).
     pub(crate) fn retry_delivery_for_session(
         &mut self,
         session_id: &str,
@@ -734,17 +866,17 @@ impl StudioPanel {
         }
     }
 
-    /// Cached count of branches waiting for explicit user approval.
+    /// Cached count of sessions waiting for explicit user approval or recovery.
     #[must_use]
     pub const fn board_blocker_count(&self) -> usize {
-        self.board_snapshot.kpi.approval_count
+        self.board_snapshot.kpi.blocker_sessions
     }
 
-    /// Cached count of active (waiting approval + running) branches for dock badge.
+    /// Cached count of running/active sessions for dock badge alignment with
+    /// `total_active_work_count`.
     #[must_use]
     pub const fn board_active_count(&self) -> usize {
-        self.board_snapshot.kpi.approval_count
-            + self.board_snapshot.kpi.running_count
+        self.board_snapshot.kpi.running_sessions
     }
 
     /// Toggles the kernel L3 semantic verification disclosure switch.
@@ -793,5 +925,78 @@ impl StudioPanel {
             }
             Err(key) => self.emit_notice(Some(key), cx),
         }
+    }
+}
+
+/// Picks the default selected session in the Board Master-Detail Inspector,
+/// preferring the first non-synthetic blocker at the top of the action queue.
+fn pick_default_board_session<'a>(
+    sessions: &'a [crate::ports::SessionBoardGroup],
+    project_filter: Option<&str>,
+) -> Option<&'a str> {
+    let matches_scope = |g: &&crate::ports::SessionBoardGroup| {
+        !g.archived
+            && project_filter
+                .is_none_or(|pid| g.project_id.as_deref() == Some(pid))
+    };
+    let preds: [fn(&crate::ports::SessionBoardGroup) -> bool; 4] = [
+        |g| !g.is_synthetic() && g.has_blocker,
+        |g| g.has_blocker,
+        |g| g.is_running,
+        |_| true,
+    ];
+    preds
+        .into_iter()
+        .find_map(|pred| {
+            sessions.iter().filter(matches_scope).find(|g| pred(g))
+        })
+        .or_else(|| sessions.first())
+        .map(|g| g.session_id.as_str())
+}
+
+#[cfg(test)]
+mod board_selection_tests {
+    use super::pick_default_board_session;
+    use crate::ports::{
+        BoardKpiSummary, SessionBoardGroup, UNASSIGNED_QUEUE_SESSION_ID,
+    };
+
+    fn group(id: &str, blocker: bool, running: bool) -> SessionBoardGroup {
+        SessionBoardGroup {
+            session_id: id.into(),
+            title: id.into(),
+            project_id: None,
+            project_name: None,
+            workspace_display: String::new(),
+            updated_at: 1_700_000_000_000,
+            pinned: false,
+            archived: false,
+            preview: None,
+            assistant_summary: None,
+            branches: Vec::new(),
+            workspace_changes: Vec::new(),
+            child_workers: Vec::new(),
+            total_branch_count: 0,
+            total_file_count: 0,
+            session_contract: None,
+            has_blocker: blocker,
+            has_delivered: false,
+            is_running: running,
+            is_active: blocker || running,
+            group_kpi: BoardKpiSummary::default(),
+        }
+    }
+
+    #[test]
+    fn default_board_selection_prefers_first_real_blocker_over_queue() {
+        let sessions = vec![
+            group("s-first-blocker", true, false),
+            group(UNASSIGNED_QUEUE_SESSION_ID, true, true),
+            group("s-second-blocker", true, false),
+        ];
+        assert_eq!(
+            pick_default_board_session(&sessions, None),
+            Some("s-first-blocker")
+        );
     }
 }
