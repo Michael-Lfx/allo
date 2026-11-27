@@ -8,15 +8,19 @@
 //! - **Windows**: `AppContainer` / restricted token (requiring classic
 //!   `WindowsPowerShell\v1.0\powershell.exe`, never MSIX-packaged shells)
 //!
-//! Linux selects Bubblewrap when its namespace probe passes. Reserved or
-//! unavailable backends report [`SandboxAvailability::Degraded`].
+//! Linux and macOS select their backends after a successful startup probe.
+//! Reserved or unavailable backends report [`SandboxAvailability::Degraded`].
 
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "linux")]
-pub(super) use linux::execution_env as linux_execution_env;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use unix::execution_env as unix_execution_env;
 
 /// Declarative sandbox boundary for one workspace turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,13 +123,7 @@ pub fn detect_sandbox_availability() -> SandboxAvailability {
     }
     #[cfg(target_os = "macos")]
     {
-        let binary_detected = Path::new("/usr/bin/sandbox-exec").is_file();
-        SandboxAvailability::Degraded {
-            platform: "macos",
-            planned_backend: SandboxBackend::MacOsSeatbelt,
-            binary_detected,
-            reason: "seatbelt_adapter_reserved_pending_macos_verification; active layers: path_guard + shell_policy + process_group_reaping",
-        }
+        macos::availability().clone()
     }
     #[cfg(target_os = "linux")]
     {
@@ -216,7 +214,7 @@ fn default_protected_paths_with(
 }
 
 fn escape_sbpl_literal(path: &Path) -> Option<String> {
-    let raw = path.to_string_lossy();
+    let raw = path.to_str()?;
     if raw.contains('\0') || raw.contains('\n') || raw.contains('\r') {
         return None;
     }
@@ -364,16 +362,13 @@ mod tests {
     #[test]
     fn availability_probe_reports_honest_status() {
         let status = detect_sandbox_availability();
-        #[cfg(not(target_os = "linux"))]
-        assert!(!status.is_enforced());
-        if status.is_enforced() {
+        if let SandboxAvailability::Enforced { backend } = &status {
             assert_eq!(status.telemetry_label(), "enforced");
-            assert_eq!(
-                status,
-                SandboxAvailability::Enforced {
-                    backend: SandboxBackend::LinuxBubblewrap,
-                }
-            );
+            assert!(matches!(
+                (std::env::consts::OS, backend),
+                ("linux", SandboxBackend::LinuxBubblewrap)
+                    | ("macos", SandboxBackend::MacOsSeatbelt)
+            ));
         } else {
             assert_eq!(status.telemetry_label(), "degraded");
         }
