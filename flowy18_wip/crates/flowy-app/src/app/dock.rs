@@ -10,7 +10,6 @@ enum DockIcon {
     Board,
     Library,
     Create,
-    Automation,
     Skills,
     Personalization,
     Task,
@@ -23,7 +22,6 @@ impl DockIcon {
             Self::Board => theme::icons::layout_grid(),
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
-            Self::Automation => theme::icons::workflow(),
             Self::Skills => theme::icons::sparkles(),
             Self::Personalization => theme::icons::sliders_horizontal(),
             Self::Task => theme::icons::list_check(),
@@ -41,12 +39,6 @@ const NAV: &[(&str, &str, Section, DockIcon)] = &[
         DockIcon::Library,
     ),
     ("create", "dock.create", Section::Create, DockIcon::Create),
-    (
-        "automation",
-        "dock.automation",
-        Section::Automation,
-        DockIcon::Automation,
-    ),
 ];
 
 /// Single-frame read snapshot sampled once per `dock_scroll` render so sidebar

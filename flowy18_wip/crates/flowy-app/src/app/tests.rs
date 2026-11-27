@@ -121,7 +121,7 @@ fn skills_and_personalization_are_direct_navigation_items(
         });
     draw(cx);
     cx.update(|window, _| {
-        for label in [&plugins, &more] {
+        for label in [&plugins, &more, &automation] {
             assert!(
                 window.find_all_by_label(label).iter().all(|node| {
                     node.role() != Some(accesskit::Role::Button)
@@ -167,14 +167,10 @@ fn skills_and_personalization_are_direct_navigation_items(
     });
     click(cx, &explore);
     cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
-    click(cx, &automation);
-    cx.read_entity(&app, |app, _| {
-        assert_eq!(app.section, Section::Automation);
-    });
     click(cx, &personalization);
     cx.read_entity(&app, |app, _| {
         assert_eq!(app.section, Section::More);
-        assert_eq!(app.nav_back.last(), Some(&Section::Automation));
+        assert_eq!(app.nav_back.last(), Some(&Section::Skills));
     });
     let _ = std::fs::remove_dir_all(root);
 }
