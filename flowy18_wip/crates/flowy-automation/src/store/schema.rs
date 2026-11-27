@@ -57,7 +57,9 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
         )?;
         inspection.busy_timeout(Duration::from_secs(5))?;
         applied = inspect_version(&inspection)?;
-        validate_database_references(&inspection)?;
+        if applied < SCHEMA_VERSION {
+            validate_database_references(&inspection)?;
+        }
         drop(inspection);
     } else {
         let parent = path
@@ -82,10 +84,15 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
         connection.pragma_update(None, "synchronous", "FULL")?;
         initialize(&mut connection)?;
     }
-    // Recheck the actual read/write connection, even though the caller's
-    // exclusive store owner normally excludes another initializer.
-    validate_version(&connection, applied)?;
-    validate_database_references(&connection)?;
+    // Recheck identity on the actual read/write connection, even though the
+    // caller's exclusive store owner normally excludes another initializer.
+    // The full integrity/structure pass already ran on the inspection handle;
+    // only migration needs a fresh full validation afterwards.
+    if exists {
+        validate_metadata(&connection, applied)?;
+    } else {
+        validate_version(&connection, applied)?;
+    }
     let journal: String =
         connection
             .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
@@ -101,8 +108,8 @@ pub(super) fn open(path: &Path) -> Result<Connection, StoreError> {
     if applied < SCHEMA_VERSION {
         migrate(&mut connection, applied)?;
         validate_live(&connection)?;
-        validate_database_references(&connection)?;
     }
+    validate_database_references(&connection)?;
     Ok(connection)
 }
 
@@ -229,23 +236,13 @@ pub(super) fn validate_live(connection: &Connection) -> Result<(), StoreError> {
     validate_version(connection, SCHEMA_VERSION)
 }
 
-fn validate_version(
+fn validate_metadata(
     connection: &Connection,
     expected: u32,
 ) -> Result<(), StoreError> {
     let expected_checksum = checksum_for(expected).ok_or(
         StoreError::Incompatible("unknown or future automation schema version"),
     )?;
-    let mut integrity =
-        connection.prepare("PRAGMA integrity_check").map_err(|_| {
-            StoreError::Corrupt("SQLite integrity check could not run")
-        })?;
-    let results = integrity
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    if results.as_slice() != ["ok"] {
-        return Err(StoreError::Corrupt("SQLite integrity check failed"));
-    }
     let version: u32 =
         connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -254,11 +251,14 @@ fn validate_version(
             "unknown or future automation schema version",
         ));
     }
-    let metadata: Option<(String, u32, String)> = connection.query_row(
-        "SELECT lineage, version, schema_sha256 FROM automation_schema WHERE singleton = 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional().map_err(|_| StoreError::Incompatible("automation schema metadata unavailable"))?;
+    let metadata: Option<(String, u32, String)> = connection
+        .query_row(
+            "SELECT lineage, version, schema_sha256 FROM automation_schema WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|_| StoreError::Incompatible("automation schema metadata unavailable"))?;
     let Some((lineage, applied_version, checksum)) = metadata else {
         return Err(StoreError::Incompatible(
             "automation schema metadata missing",
@@ -282,6 +282,22 @@ fn validate_version(
             "automation schema metadata is not singular",
         ));
     }
+    Ok(())
+}
+
+fn validate_version(
+    connection: &Connection,
+    expected: u32,
+) -> Result<(), StoreError> {
+    let mut integrity =
+        connection.prepare("PRAGMA integrity_check").map_err(|_| {
+            StoreError::Corrupt("SQLite integrity check could not run")
+        })?;
+    let results = integrity.query_map([], |row| row.get::<_, String>(0))?;
+    if results.collect::<Result<Vec<_>, _>>()?.as_slice() != ["ok"] {
+        return Err(StoreError::Corrupt("SQLite integrity check failed"));
+    }
+    validate_metadata(connection, expected)?;
     validate_structure(connection, expected)
 }
 

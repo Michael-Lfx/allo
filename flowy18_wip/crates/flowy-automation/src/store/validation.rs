@@ -2,6 +2,7 @@
 //! No persisted JSON or side-store binding can bypass its Rust value contract.
 
 use rusqlite::{Connection, Row};
+use std::collections::HashMap;
 
 use super::audit::{AuditFinding, SideRecord, SideStoreInventory};
 use super::records::{
@@ -71,12 +72,6 @@ fn validate_deletion_plan(
     attempts: &[AttemptRecord],
     findings: &mut Vec<AuditFinding>,
 ) {
-    // A syntactically valid opaque receipt does not prove which Run owns it.
-    // Retention must introduce typed, scoped artifact proof before accepting
-    // receipt targets; storage never treats arbitrary strings as permission.
-    if !plan.plan.artifact_receipts.is_empty() {
-        add(findings, "unproven_deletion_receipt_reference");
-    }
     let belongs_to_run =
         |attempt: &AttemptRecord, session: &crate::SessionRef| {
             attempt.spec.principal == plan.principal
@@ -140,6 +135,23 @@ pub(super) fn validate(
         "schedule_watermarks",
         repository::read_watermark,
     )?;
+    let revisions_by_identity: HashMap<_, _> = revisions
+        .iter()
+        .map(|revision| {
+            (
+                (
+                    revision.principal.clone(),
+                    revision.automation_id.clone(),
+                    revision.revision,
+                ),
+                revision,
+            )
+        })
+        .collect();
+    let runs_by_identity: HashMap<_, _> = runs
+        .iter()
+        .map(|run| ((run.principal.clone(), run.run_id.clone()), run))
+        .collect();
     let mut findings = Vec::new();
     for automation in &automations {
         if automation.title.expose().trim().is_empty()
@@ -147,17 +159,11 @@ pub(super) fn validate(
         {
             add(&mut findings, "invalid_automation_value");
         }
-        if let Some(revision) = revisions.iter().find(|revision| {
-            (
-                &revision.principal,
-                &revision.automation_id,
-                revision.revision,
-            ) == (
-                &automation.principal,
-                &automation.automation_id,
-                automation.current_revision,
-            )
-        }) && revision.definition.title != automation.title
+        if let Some(revision) = revisions_by_identity.get(&(
+            automation.principal.clone(),
+            automation.automation_id.clone(),
+            automation.current_revision,
+        )) && revision.definition.title != automation.title
         {
             add(&mut findings, "current_revision_title_mismatch");
         }
@@ -184,11 +190,11 @@ pub(super) fn validate(
             if !spec_matches_run(spec, run) {
                 add(&mut findings, "run_spec_binding_mismatch");
             }
-            if let Some(revision) = revisions.iter().find(|revision| {
-                revision.principal == run.principal
-                    && revision.automation_id == run.automation_id
-                    && revision.revision == run.revision
-            }) && !spec_matches_revision(spec, revision)
+            if let Some(revision) = revisions_by_identity.get(&(
+                run.principal.clone(),
+                run.automation_id.clone(),
+                run.revision,
+            )) && !spec_matches_revision(spec, revision)
             {
                 add(&mut findings, "run_revision_snapshot_mismatch");
             }
@@ -202,9 +208,9 @@ pub(super) fn validate(
         {
             add(&mut findings, "invalid_attempt_specification");
         }
-        if let Some(run) = runs.iter().find(|run| {
-            run.run_id == spec.run_id && run.principal == spec.principal
-        }) {
+        if let Some(run) =
+            runs_by_identity.get(&(spec.principal.clone(), spec.run_id.clone()))
+        {
             // An old attempt remains valid when a later attempt is selected;
             // only the immutable Run identity and revision bind every attempt.
             if spec.automation_id != run.automation_id
@@ -220,11 +226,11 @@ pub(super) fn validate(
                 add(&mut findings, "current_attempt_spec_mismatch");
             }
         }
-        if let Some(revision) = revisions.iter().find(|revision| {
-            revision.principal == spec.principal
-                && revision.automation_id == spec.automation_id
-                && revision.revision == spec.revision
-        }) && !spec_matches_revision(spec, revision)
+        if let Some(revision) = revisions_by_identity.get(&(
+            spec.principal.clone(),
+            spec.automation_id.clone(),
+            spec.revision,
+        )) && !spec_matches_revision(spec, revision)
         {
             add(&mut findings, "attempt_revision_snapshot_mismatch");
         }

@@ -7,7 +7,7 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Revision(NonZeroU64);
 

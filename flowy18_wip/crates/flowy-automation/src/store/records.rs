@@ -121,7 +121,6 @@ pub struct DeletionPlanRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletionTargets {
     pub sessions: Vec<SessionRef>,
-    pub artifact_receipts: Vec<String>,
     pub private_workspaces: Vec<SessionRef>,
 }
 

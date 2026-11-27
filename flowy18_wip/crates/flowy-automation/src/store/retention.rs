@@ -93,7 +93,7 @@ impl AutomationStore {
                         principal: owner.clone(),
                         run_id: id,
                         state: DeletionPlanState::Planned,
-                        plan: DeletionTargets { sessions, private_workspaces, artifact_receipts: vec![] },
+                        plan: DeletionTargets { sessions, private_workspaces },
                         created_at_ms: 0,
                         updated_at_ms: 0,
                     }

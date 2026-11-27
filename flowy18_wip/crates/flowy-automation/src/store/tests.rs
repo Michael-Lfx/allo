@@ -223,7 +223,6 @@ fn round_trip_all_product_records_and_side_store_audit() {
             state: DeletionPlanState::Planned,
             plan: DeletionTargets {
                 sessions: vec![attempt.spec.session_id.clone().unwrap()],
-                artifact_receipts: vec![],
                 private_workspaces: vec![],
             },
             created_at_ms: 20,

@@ -50,7 +50,6 @@ fn deletion_plan(attempt: &AttemptRecord) -> DeletionPlanRecord {
         state: DeletionPlanState::Planned,
         plan: DeletionTargets {
             sessions: vec![attempt.spec.session_id.clone().unwrap()],
-            artifact_receipts: vec![],
             private_workspaces: vec![attempt.spec.session_id.clone().unwrap()],
         },
         created_at_ms: 20,
@@ -187,38 +186,6 @@ fn side_audit_rejects_a_persisted_deletion_plan_pointing_to_another_run() {
         let report = store.audit(inventory_for(&[own, other])).await.unwrap();
         store.shutdown().await.unwrap();
         assert!(!report.is_valid(), "foreign deletion target passed audit");
-    });
-}
-
-#[test]
-fn artifact_receipt_targets_require_scoped_proof_on_commit_and_audit() {
-    runtime().block_on(async {
-        let root = TestRoot::new();
-        let store = AutomationStore::open(root.0.clone(), Arc::new(()))
-            .await
-            .unwrap();
-        let attempt = persist_run(&store, principal()).await;
-        let mut plan = deletion_plan(&attempt);
-        plan.plan.artifact_receipts = vec!["valid-but-unproven-receipt".into()];
-        let rejected = store
-            .commit(
-                principal(),
-                vec![StoreMutation::InsertDeletionPlan(plan.clone())],
-            )
-            .await
-            .is_err();
-        let missing = store
-            .deletion_plan(principal(), plan.deletion_plan_id.clone())
-            .await
-            .unwrap()
-            .is_none();
-        plan.deletion_plan_id = DeletionPlanId::generate();
-        insert_unchecked_plan(&store, plan).await;
-        let report = store.audit(inventory_for(&[attempt])).await.unwrap();
-        store.shutdown().await.unwrap();
-        assert!(rejected, "unproven receipt target was accepted");
-        assert!(missing, "rejected target did not roll back");
-        assert!(!report.is_valid(), "unproven receipt target passed audit");
     });
 }
 

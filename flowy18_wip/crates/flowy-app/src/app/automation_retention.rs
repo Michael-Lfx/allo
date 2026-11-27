@@ -84,8 +84,7 @@ fn scoped_attempts(
     plan: &DeletionPlanRecord,
     attempts: &[AttemptRecord],
 ) -> Result<Vec<RunSpec>, PortError> {
-    if !plan.plan.artifact_receipts.is_empty()
-        || attempts.len() != plan.plan.sessions.len()
+    if attempts.len() != plan.plan.sessions.len()
         || attempts.iter().any(|attempt| {
             let spec = &attempt.spec;
             spec.principal != plan.principal
