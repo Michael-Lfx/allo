@@ -34,9 +34,9 @@ pub use session::{
     WorkAccessMode, WorkContract,
 };
 pub use tools::{
-    ActivatedToolSet, TOOL_SEARCH_NAME, ToolDefinition, ToolExposure,
-    ToolPolicyContext, ToolProvider, ToolProviderContext, ToolRegistry,
-    ToolSource,
+    ActivatedToolSet, MAX_ACTIVATED_TOOLS_PER_TURN, SearchableToolEntry,
+    TOOL_SEARCH_NAME, ToolDefinition, ToolExposure, ToolPolicyContext,
+    ToolProvider, ToolProviderContext, ToolRegistry, ToolSource,
 };
 pub use transport::{
     echo_stream_fn, openai_stream_fn, openai_structured_stream_fn,

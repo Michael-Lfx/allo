@@ -26,8 +26,8 @@ pub use sandbox::{
     detect_sandbox_availability, linux_bwrap_args, macos_seatbelt_profile,
 };
 pub use search::{
-    ActivatedToolSet, TOOL_SEARCH_NAME, format_deferred_tool_catalog,
-    tool_search_definition,
+    ActivatedToolSet, MAX_ACTIVATED_TOOLS_PER_TURN, SearchableToolEntry,
+    TOOL_SEARCH_NAME, format_deferred_tool_catalog, tool_search_definition,
 };
 pub use shell_policy::{
     SHELL_CONFIRM_REQUIRED, SHELL_CREDENTIAL_ACCESS, SHELL_DESTRUCTIVE_HOST_OP,

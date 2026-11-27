@@ -28,16 +28,70 @@ const HARD_MAX_RESULTS: usize = 20;
 const MAX_CATALOG_LIST_THRESHOLD: usize = 30;
 const MAX_CATALOG_DESC_CHARS: usize = 60;
 const MAX_CATALOG_TOTAL_CHARS: usize = 1_600;
+/// Maximum total deferred tools allowed to become active within a single turn
+/// via `tool_search` (host `pre_activated_tools` are always preserved).
+pub const MAX_ACTIVATED_TOOLS_PER_TURN: usize = 32;
+
+/// Pure-value metadata snapshot of a discoverable tool captured for `tool_search`.
+/// Holds zero `ToolRegistry` or `ToolDefinition` `Arc` references so search
+/// closures can never trap tool closures or service handles in a cycle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchableToolEntry {
+    pub name: String,
+    pub description: String,
+    pub source_label: String,
+    pub tags: Vec<String>,
+    pub read_only: bool,
+    pub exposure: ToolExposure,
+}
+
+/// Snapshot searchable tool metadata from `registry` without retaining any
+/// `Arc<ToolRegistry>` or `Arc<ToolDefinition>` references.
+#[must_use]
+pub fn snapshot_searchable_catalog(
+    registry: &ToolRegistry,
+) -> Arc<[SearchableToolEntry]> {
+    let entries: Vec<SearchableToolEntry> = registry
+        .definitions()
+        .into_iter()
+        .filter(|def| def.name != TOOL_SEARCH_NAME)
+        .map(|def| SearchableToolEntry {
+            name: def.name.clone(),
+            description: def.description.clone(),
+            source_label: def.source().label().to_owned(),
+            tags: def.tags().to_vec(),
+            read_only: def.is_read_only(),
+            exposure: def.exposure(),
+        })
+        .collect();
+    Arc::from(entries)
+}
 
 /// Monotonic, thread-safe set of deferred tool names activated within a turn.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ActivatedToolSet {
     names: Arc<Mutex<BTreeSet<String>>>,
+    max_activated: usize,
+}
+
+impl Default for ActivatedToolSet {
+    fn default() -> Self {
+        Self::new(std::iter::empty::<String>())
+    }
 }
 
 impl ActivatedToolSet {
     #[must_use]
     pub fn new<I, S>(initial: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::with_limit(initial, MAX_ACTIVATED_TOOLS_PER_TURN)
+    }
+
+    #[must_use]
+    pub fn with_limit<I, S>(initial: I, max_activated: usize) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -49,12 +103,19 @@ impl ActivatedToolSet {
             .collect();
         Self {
             names: Arc::new(Mutex::new(set)),
+            max_activated,
         }
     }
 
-    /// Record `names` as active for subsequent steps of the turn, returning the
-    /// subset that became newly active (in ascending alphabetical order).
-    pub fn activate<I, S>(&self, names: I) -> Vec<String>
+    #[must_use]
+    pub const fn max_activated(&self) -> usize {
+        self.max_activated
+    }
+
+    /// Record `names` as active for subsequent steps of the turn up to
+    /// `max_activated`, returning `(newly_activated, skipped_due_to_limit)` in
+    /// ascending alphabetical order.
+    pub fn activate_bounded<I, S>(&self, names: I) -> (Vec<String>, Vec<String>)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -64,15 +125,33 @@ impl ActivatedToolSet {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut added = Vec::new();
+        let mut skipped = BTreeSet::new();
         for raw in names {
             let name = raw.into();
-            if !name.trim().is_empty() && guard.insert(name.clone()) {
+            if name.trim().is_empty() || guard.contains(&name) {
+                continue;
+            }
+            if guard.len() >= self.max_activated {
+                skipped.insert(name);
+                continue;
+            }
+            if guard.insert(name.clone()) {
                 added.push(name);
             }
         }
         drop(guard);
         added.sort();
-        added
+        (added, skipped.into_iter().collect())
+    }
+
+    /// Record `names` as active for subsequent steps of the turn, returning the
+    /// subset that became newly active (in ascending alphabetical order).
+    pub fn activate<I, S>(&self, names: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.activate_bounded(names).0
     }
 
     /// Sorted snapshot of all currently activated deferred tool names.
@@ -101,13 +180,14 @@ struct ToolSearchArgs {
     max_results: Option<usize>,
 }
 
-/// Build the host `tool_search` tool that discovers deferred tools in `registry`
-/// and activates them in `activated` for the remainder of the turn.
+/// Build the host `tool_search` tool using an immutable metadata snapshot of
+/// `registry` so the tool closure never retains an `Arc<ToolRegistry>`.
 #[must_use]
 pub fn tool_search_definition(
-    registry: ToolRegistry,
+    registry: &ToolRegistry,
     activated: ActivatedToolSet,
 ) -> Arc<ToolDefinition> {
+    let catalog = snapshot_searchable_catalog(registry);
     let parameters = json!({
         "type": "object",
         "properties": {
@@ -132,10 +212,10 @@ pub fn tool_search_definition(
             "Discover and activate deferred tools for the rest of this turn. Supports keyword search or exact `select:name1,name2` syntax.",
             parameters,
             move |args: ToolCallArgs, _ctx: ToolRunContext| {
-                let registry = registry.clone();
+                let catalog = Arc::clone(&catalog);
                 let activated = activated.clone();
                 Box::pin(async move {
-                    execute_tool_search(&registry, &activated, args.arguments)
+                    execute_tool_search(&catalog, &activated, args.arguments)
                 })
             },
         )
@@ -220,7 +300,7 @@ fn format_catalog_entry(def: &ToolDefinition) -> String {
 }
 
 fn execute_tool_search(
-    registry: &ToolRegistry,
+    catalog: &[SearchableToolEntry],
     activated: &ActivatedToolSet,
     arguments: Value,
 ) -> ToolExecutionResult {
@@ -243,19 +323,22 @@ fn execute_tool_search(
         .clamp(1, HARD_MAX_RESULTS);
 
     if let Some(select_body) = strip_select_prefix(trimmed) {
-        return execute_exact_select(registry, activated, select_body, limit);
+        return execute_exact_select(catalog, activated, select_body, limit);
     }
 
     let query_lower = trimmed.to_ascii_lowercase();
-    let deferred = registry.deferred_definitions();
-    let matched_defs: Vec<Arc<ToolDefinition>> = if trimmed == "*" {
+    let deferred: Vec<&SearchableToolEntry> = catalog
+        .iter()
+        .filter(|entry| entry.exposure == ToolExposure::Deferred)
+        .collect();
+    let matched_defs: Vec<&SearchableToolEntry> = if trimmed == "*" {
         deferred.into_iter().take(limit).collect()
     } else {
         let tokens = tokenize_query(&query_lower);
-        let mut scored: Vec<(usize, Arc<ToolDefinition>)> = deferred
+        let mut scored: Vec<(usize, &SearchableToolEntry)> = deferred
             .into_iter()
             .filter_map(|def| {
-                let score = score_tool(&def, &query_lower, &tokens);
+                let score = score_tool(def, &query_lower, &tokens);
                 (score > 0).then_some((score, def))
             })
             .collect();
@@ -266,13 +349,20 @@ fn execute_tool_search(
         scored.into_iter().take(limit).map(|(_, def)| def).collect()
     };
 
-    let newly_activated =
-        activated.activate(matched_defs.iter().map(|def| def.name.clone()));
-    build_search_response(trimmed, &matched_defs, &newly_activated, &[])
+    let (newly_activated, skipped_due_to_limit) = activated
+        .activate_bounded(matched_defs.iter().map(|def| def.name.clone()));
+    build_search_response(
+        trimmed,
+        &matched_defs,
+        &newly_activated,
+        &skipped_due_to_limit,
+        &[],
+        activated.max_activated(),
+    )
 }
 
 fn execute_exact_select(
-    registry: &ToolRegistry,
+    catalog: &[SearchableToolEntry],
     activated: &ActivatedToolSet,
     select_body: &str,
     limit: usize,
@@ -297,26 +387,36 @@ fn execute_exact_select(
         if !seen.insert(name.clone()) {
             continue;
         }
-        let Some(def) = registry.get(&name) else {
+        let Some(def) = catalog.iter().find(|entry| entry.name == name) else {
             not_found.push(name);
             continue;
         };
         if matched.len() < limit {
-            if def.exposure() == ToolExposure::Deferred {
+            if def.exposure == ToolExposure::Deferred {
                 to_activate.push(def.name.clone());
             }
             matched.push(def);
         }
     }
-    let newly_activated = activated.activate(to_activate);
-    build_search_response("select", &matched, &newly_activated, &not_found)
+    let (newly_activated, skipped_due_to_limit) =
+        activated.activate_bounded(to_activate);
+    build_search_response(
+        "select",
+        &matched,
+        &newly_activated,
+        &skipped_due_to_limit,
+        &not_found,
+        activated.max_activated(),
+    )
 }
 
 fn build_search_response(
     query: &str,
-    matched: &[Arc<ToolDefinition>],
+    matched: &[&SearchableToolEntry],
     newly_activated: &[String],
+    skipped_due_to_limit: &[String],
     not_found: &[String],
+    max_activated: usize,
 ) -> ToolExecutionResult {
     let entries: Vec<Value> = matched
         .iter()
@@ -324,33 +424,44 @@ fn build_search_response(
             json!({
                 "name": def.name,
                 "description": def.description,
-                "source": def.source().label(),
-                "tags": def.tags(),
-                "read_only": def.is_read_only(),
-                "exposure": match def.exposure() {
+                "source": def.source_label,
+                "tags": def.tags,
+                "read_only": def.read_only,
+                "exposure": match def.exposure {
                     ToolExposure::Eager => "eager",
                     ToolExposure::Deferred => "deferred",
                 },
             })
         })
         .collect();
+    let limit_reached = !skipped_due_to_limit.is_empty();
     let summary = if matched.is_empty() {
         format!("No deferred tools matched `{query}`.")
-    } else {
+    } else if newly_activated.is_empty() && limit_reached {
+        format!(
+            "Per-turn deferred tool activation limit ({max_activated}) reached; skipped: {}.",
+            skipped_due_to_limit.join(", ")
+        )
+    } else if newly_activated.is_empty() {
         let names: Vec<&str> =
             matched.iter().map(|d| d.name.as_str()).collect();
-        if newly_activated.is_empty() {
-            format!(
-                "Matched tools (already active for this turn): {}.",
-                names.join(", ")
-            )
-        } else {
-            format!(
-                "Activated {} tool(s) for the remainder of this turn: {}. You can call them in your next step.",
-                newly_activated.len(),
-                names.join(", ")
-            )
-        }
+        format!(
+            "Matched tools (already active for this turn): {}.",
+            names.join(", ")
+        )
+    } else if limit_reached {
+        format!(
+            "Activated {} tool(s) ({}); per-turn activation limit ({max_activated}) reached, skipped: {}.",
+            newly_activated.len(),
+            newly_activated.join(", "),
+            skipped_due_to_limit.join(", ")
+        )
+    } else {
+        format!(
+            "Activated {} tool(s) for the remainder of this turn: {}. You can call them in your next step.",
+            newly_activated.len(),
+            newly_activated.join(", ")
+        )
     };
     ToolExecutionResult::success_text(
         summary,
@@ -358,6 +469,9 @@ fn build_search_response(
             "query": query,
             "matched": entries,
             "newly_activated": newly_activated,
+            "skipped_due_to_limit": skipped_due_to_limit,
+            "limit_reached": limit_reached,
+            "max_activated": max_activated,
             "not_found": not_found,
         }),
     )
@@ -384,15 +498,15 @@ fn tokenize_query(query_lower: &str) -> Vec<String> {
 }
 
 fn score_tool(
-    def: &ToolDefinition,
+    def: &SearchableToolEntry,
     query_lower: &str,
     tokens: &[String],
 ) -> usize {
     let name = def.name.to_ascii_lowercase();
     let desc = def.description.to_ascii_lowercase();
-    let source = def.source().label().to_ascii_lowercase();
+    let source = def.source_label.to_ascii_lowercase();
     let tags: Vec<String> =
-        def.tags().iter().map(|t| t.to_ascii_lowercase()).collect();
+        def.tags.iter().map(|t| t.to_ascii_lowercase()).collect();
 
     let mut score = 0_usize;
     if name == query_lower {
@@ -519,10 +633,7 @@ mod tests {
         ));
 
         let activated = ActivatedToolSet::default();
-        registry.register(tool_search_definition(
-            registry.fork(),
-            activated.clone(),
-        ));
+        registry.register(tool_search_definition(&registry, activated.clone()));
 
         let res = registry
             .execute(
@@ -554,10 +665,7 @@ mod tests {
             ));
         }
         let activated = ActivatedToolSet::default();
-        registry.register(tool_search_definition(
-            registry.fork(),
-            activated.clone(),
-        ));
+        registry.register(tool_search_definition(&registry, activated.clone()));
 
         let sel = registry
             .execute(
@@ -630,5 +738,109 @@ mod tests {
         assert!(grouped.contains("mcp_srv (35 tools):"));
         assert!(grouped.contains("+30 more"));
         assert!(grouped.chars().count() <= 1_605);
+    }
+
+    #[test]
+    fn tool_search_snapshot_drops_registry_and_tool_closures() {
+        let probe = Arc::new(());
+        let weak = Arc::downgrade(&probe);
+        let registry = ToolRegistry::new();
+        let captured = Arc::clone(&probe);
+        registry.register(Arc::new(
+            ToolDefinition::new(
+                "deferred_probe",
+                "Deferred tool holding a probe Arc",
+                json!({"type": "object", "properties": {}}),
+                move |_args, _ctx| {
+                    let _keep = Arc::clone(&captured);
+                    Box::pin(async {
+                        ToolExecutionResult::success_text("ok", json!({}))
+                    })
+                },
+            )
+            .with_exposure(ToolExposure::Deferred)
+            .with_source(ToolSource::Provider("probe".into())),
+        ));
+        drop(probe);
+
+        let activated = ActivatedToolSet::default();
+        registry.register(tool_search_definition(&registry, activated));
+        drop(registry);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "tool_search must not trap ToolRegistry/ToolDefinition closures in an Arc reference cycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_search_enforces_per_turn_cumulative_activation_limit_and_preserves_pre_activated()
+     {
+        let registry = ToolRegistry::new();
+        for idx in 0..40 {
+            registry.register(deferred_def(
+                &format!("cap_tool_{idx:02}"),
+                "Capability under limit test",
+                "cap",
+                &["cap"],
+                true,
+            ));
+        }
+        registry.register(deferred_def(
+            "pre_approved_tool",
+            "Host pre-activated tool",
+            "cap",
+            &["pre"],
+            false,
+        ));
+
+        let activated = ActivatedToolSet::with_limit(
+            ["pre_approved_tool".to_owned(), "cap_tool_00".to_owned()],
+            5,
+        );
+        registry.register(tool_search_definition(&registry, activated.clone()));
+
+        let first = registry
+            .execute(
+                "lim-1".into(),
+                TOOL_SEARCH_NAME.into(),
+                json!({"query": "*", "max_results": 4}),
+                run_ctx(),
+            )
+            .await;
+        let ToolExecutionResult::Success { value: v1, .. } = first else {
+            panic!("first search failed: {first:?}");
+        };
+        assert_eq!(v1["limit_reached"], json!(false));
+        assert_eq!(
+            v1["newly_activated"],
+            json!(["cap_tool_01", "cap_tool_02", "cap_tool_03"])
+        );
+        assert!(activated.contains("pre_approved_tool"));
+
+        // Quota (5 total) is now full; activating additional tools must stop cleanly.
+        let second = registry
+            .execute(
+                "lim-2".into(),
+                TOOL_SEARCH_NAME.into(),
+                json!({"query": "select:cap_tool_20,cap_tool_21"}),
+                run_ctx(),
+            )
+            .await;
+        let ToolExecutionResult::Success { value: v2, .. } = second else {
+            panic!("second search failed: {second:?}");
+        };
+        assert_eq!(v2["limit_reached"], json!(true));
+        assert_eq!(v2["newly_activated"], json!([]));
+        assert_eq!(
+            v2["skipped_due_to_limit"],
+            json!(["cap_tool_20", "cap_tool_21"])
+        );
+        assert_eq!(activated.snapshot().len(), 5);
+        assert!(!activated.contains("cap_tool_20"));
+
+        // Default limit matches MAX_ACTIVATED_TOOLS_PER_TURN (= 32).
+        let default_set = ActivatedToolSet::default();
+        assert_eq!(default_set.max_activated(), super::MAX_ACTIVATED_TOOLS_PER_TURN);
     }
 }
