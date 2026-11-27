@@ -42,6 +42,49 @@ pub fn display_path_str(raw: &str) -> String {
     }
 }
 
+/// Pure, zero-I/O canonical comparison key for workspace deliverable and
+/// verification paths (never modifies display strings or calls `fs::canonicalize`).
+#[must_use]
+pub fn canonical_path_key(raw: &str) -> String {
+    let cleaned = display_path_str(raw.trim());
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    let slashed = cleaned.replace('\\', "/");
+    let is_unc = slashed.starts_with("//");
+    let is_drive = slashed
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+        && slashed.as_bytes().get(1) == Some(&b':')
+        && matches!(slashed.as_bytes().get(2), None | Some(b'/'));
+    let (prefix, rest) = if let Some(unc_rest) = slashed.strip_prefix("//") {
+        ("//", unc_rest)
+    } else if is_drive {
+        (&slashed[..2], slashed[2..].trim_start_matches('/'))
+    } else if let Some(root_rest) = slashed.strip_prefix('/') {
+        ("/", root_rest)
+    } else {
+        ("", slashed.as_str())
+    };
+    let segments: Vec<&str> = rest
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect();
+    let mut normalized = String::with_capacity(slashed.len());
+    normalized.push_str(prefix);
+    if is_drive {
+        normalized.push('/');
+    }
+    if !segments.is_empty() {
+        normalized.push_str(&segments.join("/"));
+    }
+    if cfg!(windows) || is_drive || is_unc {
+        normalized.make_ascii_lowercase();
+    }
+    normalized
+}
+
 /// Rejects relative paths (including Windows drive-relative `C:foo`), NUL
 /// bytes, URI schemes, UNC/verbatim-UNC/device/non-disk verbatim namespace
 /// prefixes, and Windows reserved device names BEFORE any filesystem syscall.
@@ -588,5 +631,36 @@ mod tests {
             .is_none()
         );
         assert!(strip_windows_verbatim_local(Path::new("报告")).is_none());
+    }
+
+    #[test]
+    fn canonical_path_key_normalizes_separators_prefixes_dots_and_windows_case()
+    {
+        let a = canonical_path_key(r"\\?\C:\Work\.\Report.PPTX");
+        let b = canonical_path_key("c:/work/Report.pptx");
+        let c = canonical_path_key(r"C:\Work\\Report.pptx");
+        assert_eq!(a, "c:/work/report.pptx");
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+
+        assert_eq!(canonical_path_key(r"C:\"), "c:/");
+        assert_eq!(canonical_path_key(r"C:\Work\dir\"), "c:/work/dir");
+        assert_eq!(
+            canonical_path_key(r"C:\项目\报告.md"),
+            canonical_path_key(r"\\?\c:/项目/./报告.md")
+        );
+        assert_ne!(
+            canonical_path_key(r"C:\Work\a.md"),
+            canonical_path_key(r"C:\Work\b.md")
+        );
+        assert_eq!(
+            canonical_path_key(r"\\?\UNC\Server\Share\.\Doc.md"),
+            "//server/share/doc.md"
+        );
+        assert_eq!(
+            canonical_path_key("/tmp/a/./b.md"),
+            canonical_path_key("/tmp//a/b.md")
+        );
+        assert_eq!(canonical_path_key("   "), "");
     }
 }

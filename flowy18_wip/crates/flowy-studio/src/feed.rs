@@ -28,6 +28,8 @@ pub struct ChatFeed {
     measured_heights: HashMap<u64, gpui::Entity<f32>>,
     copied_row: Option<(u64, u64)>,
     copy_epoch: u64,
+    verification_settlement: HashMap<String, bool>,
+    cached_latest_deliverables: Option<Vec<flowy_agent::FileEntry>>,
     history: ChatHistory,
     suppress_trailing_stopped: bool,
     projection: Projection,
@@ -114,12 +116,38 @@ fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
     }
 }
 
+/// Records the chronological latest verification verdict (`ok || override_used`)
+/// per normalized local path across an entire session timeline (§8.3).
+pub fn session_verification_settlement(
+    lines: &[ChatLine],
+) -> HashMap<String, bool> {
+    let mut settled = HashMap::new();
+    for line in lines {
+        if let ChatLine::Verification {
+            artifact_path,
+            ok,
+            override_used,
+            ..
+        } = line
+            && !artifact_path.trim().is_empty()
+        {
+            settled.insert(
+                crate::ports::canonical_path_key(artifact_path),
+                *ok || *override_used,
+            );
+        }
+    }
+    settled
+}
+
 /// Collects deliverable files from the most recent turn that produced any,
 /// merging file-change summaries with verified/overridden verification
-/// receipts while strictly excluding unsettled failed verifications (§8.3).
+/// receipts while strictly excluding any path whose latest session-wide
+/// verification failed without override (§8.3).
 fn collect_latest_deliverables(
     lines: &[ChatLine],
 ) -> Option<Vec<flowy_agent::FileEntry>> {
+    let latest_settled = session_verification_settlement(lines);
     let mut turn_starts: Vec<usize> = lines
         .iter()
         .enumerate()
@@ -133,34 +161,14 @@ fn collect_latest_deliverables(
     turn_starts.push(lines.len());
 
     for bounds in turn_starts.windows(2).rev() {
-        // First pass: record the latest verification state per normalized path
-        // in this turn so unsettled failed verifications are never leaked via
-        // earlier `FileChanges`/`FileChange` rows (§8.3).
-        let mut verification_settled: std::collections::HashMap<String, bool> =
-            std::collections::HashMap::new();
-        for line in &lines[bounds[0]..bounds[1]] {
-            if let ChatLine::Verification {
-                artifact_path,
-                ok,
-                override_used,
-                ..
-            } = line
-                && !artifact_path.trim().is_empty()
-            {
-                verification_settled.insert(
-                    crate::ports::display_path_str(artifact_path),
-                    *ok || *override_used,
-                );
-            }
-        }
         let mut entries: Vec<flowy_agent::FileEntry> = Vec::new();
         let mut seen = HashSet::new();
         for line in &lines[bounds[0]..bounds[1]] {
             match line {
                 ChatLine::FileChanges { files } => {
                     for file in files {
-                        let norm = crate::ports::display_path_str(&file.path);
-                        if verification_settled.get(&norm) == Some(&false) {
+                        let norm = crate::ports::canonical_path_key(&file.path);
+                        if latest_settled.get(&norm) == Some(&false) {
                             continue;
                         }
                         if seen.insert(norm) {
@@ -175,8 +183,8 @@ fn collect_latest_deliverables(
                     removed,
                     binary,
                 } => {
-                    let norm = crate::ports::display_path_str(path);
-                    if verification_settled.get(&norm) == Some(&false) {
+                    let norm = crate::ports::canonical_path_key(path);
+                    if latest_settled.get(&norm) == Some(&false) {
                         continue;
                     }
                     if seen.insert(norm) {
@@ -192,8 +200,8 @@ fn collect_latest_deliverables(
                 ChatLine::Verification { artifact_path, .. }
                     if !artifact_path.trim().is_empty() =>
                 {
-                    let norm = crate::ports::display_path_str(artifact_path);
-                    if verification_settled.get(&norm).copied() == Some(true)
+                    let norm = crate::ports::canonical_path_key(artifact_path);
+                    if latest_settled.get(&norm).copied() == Some(true)
                         && seen.insert(norm)
                     {
                         entries.push(flowy_agent::FileEntry {
@@ -282,6 +290,8 @@ impl ChatFeed {
             measured_heights: HashMap::new(),
             copied_row: None,
             copy_epoch: 0,
+            verification_settlement: HashMap::new(),
+            cached_latest_deliverables: None,
             history: ChatHistory::default(),
             suppress_trailing_stopped: false,
             projection: Projection::default(),
@@ -699,6 +709,7 @@ impl ChatFeed {
         }
         if self.lines == lines {
             if changed_session {
+                self.refresh_deliverables_cache();
                 cx.notify();
             }
             return;
@@ -762,6 +773,7 @@ impl ChatFeed {
         self.list.remeasure_items(prefix..new_end);
         self.row_ids = ids;
         self.lines = lines;
+        self.refresh_deliverables_cache();
         cx.notify();
     }
 
@@ -818,13 +830,51 @@ impl ChatFeed {
         }
     }
 
+    fn refresh_deliverables_cache(&mut self) {
+        self.verification_settlement =
+            session_verification_settlement(&self.lines);
+        self.cached_latest_deliverables =
+            collect_latest_deliverables(&self.lines);
+    }
+
     /// The most recent turn's deliverable files for the drawer toggle,
     /// combining file-change summaries with verified/overridden artifacts
     /// while excluding failed unverified verification cards (§8.3).
     pub(crate) fn latest_deliverables(
         &self,
     ) -> Option<Vec<flowy_agent::FileEntry>> {
-        collect_latest_deliverables(&self.lines)
+        self.cached_latest_deliverables.clone()
+    }
+
+    /// Cached count of current-session deliverables (O(1) for `top_bar`).
+    #[must_use]
+    pub(crate) fn latest_deliverable_count(&self) -> usize {
+        self.cached_latest_deliverables.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Returns `true` when `path` has an unsettled failed verification as its
+    /// latest chronological verdict in the active session (§8.3).
+    #[must_use]
+    pub(crate) fn is_path_failed(&self, path: &str) -> bool {
+        let key = crate::ports::canonical_path_key(path);
+        self.verification_settlement.get(&key) == Some(&false)
+    }
+
+    /// Filters a historical file list against the session's latest
+    /// verification settlement and deduplicates canonical paths (§8.3).
+    pub(crate) fn filter_settled_deliverables(
+        &self,
+        files: Vec<flowy_agent::FileEntry>,
+    ) -> Vec<flowy_agent::FileEntry> {
+        let mut seen = HashSet::new();
+        files
+            .into_iter()
+            .filter(|file| {
+                let key = crate::ports::canonical_path_key(&file.path);
+                self.verification_settlement.get(&key) != Some(&false)
+                    && seen.insert(key)
+            })
+            .collect()
     }
 
     pub(crate) fn sync_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
@@ -1691,8 +1741,10 @@ impl ChatFeed {
             } else {
                 self.tf("verify.compact.override", &[("name", &name)])
             };
-            let deliverables_for_quick_open =
-                ok.then(|| self.latest_deliverables()).flatten();
+            let deliverables_for_quick_open = (ok
+                && !self.is_path_failed(artifact_path))
+            .then(|| self.latest_deliverables())
+            .flatten();
             let status_pill = if ok {
                 div()
                     .flex_none()
@@ -1780,20 +1832,26 @@ impl ChatFeed {
                     .child(name),
             );
             if let Some(files) = deliverables_for_quick_open {
+                let open_btn = theme::Button::new(
+                    ("verify-open-deliverables", row_id),
+                    self.t("studio.view_deliverables"),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(OpenDeliverables(files.clone()));
+                    }),
+                );
                 toggle = toggle.child(
-                    theme::Button::new(
-                        ("verify-open-deliverables", row_id),
-                        self.t("studio.view_deliverables"),
-                    )
-                    .variant(theme::ControlVariant::Ghost)
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener(move |_, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.emit(OpenDeliverables(files.clone()));
-                        }),
-                    ),
+                    div()
+                        .id(("verify-open-deliverables-wrap", row_id))
+                        .debug_selector(|| {
+                            "verify-open-deliverables".to_owned()
+                        })
+                        .child(open_btn),
                 );
             }
             toggle = toggle
@@ -4072,6 +4130,296 @@ mod tests {
         assert_eq!(
             ChatFeed::contextual_action_label("引用回复".into(), "   "),
             "引用回复"
+        );
+    }
+
+    #[test]
+    fn collect_latest_deliverables_keeps_valid_deliverable_across_followup() {
+        let lines = vec![
+            ChatLine::User {
+                text: "Build deck".into(),
+            },
+            ChatLine::FileChanges {
+                files: vec![flowy_agent::FileEntry {
+                    path: r"C:\Work\deck.pptx".into(),
+                    change: flowy_agent::FileChangeKind::Add,
+                    added: 0,
+                    removed: 0,
+                    binary: true,
+                }],
+            },
+            ChatLine::Verification {
+                report_id: "rep-1".into(),
+                artifact_path: r"C:\Work\deck.pptx".into(),
+                artifact_hash: "h1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::User {
+                text: "thanks, what next?".into(),
+            },
+            ChatLine::Assistant {
+                text: "You can share the deck.".into(),
+            },
+        ];
+        let entries = collect_latest_deliverables(&lines)
+            .expect("plain follow-up keeps Turn 1 deliverable");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, r"C:\Work\deck.pptx");
+    }
+
+    #[test]
+    fn collect_latest_deliverables_hides_across_turns_when_later_turn_fails_variant_path()
+     {
+        let lines = vec![
+            ChatLine::User {
+                text: "Turn 1".into(),
+            },
+            ChatLine::FileChanges {
+                files: vec![flowy_agent::FileEntry {
+                    path: r"C:\Work\Alpha.md".into(),
+                    change: flowy_agent::FileChangeKind::Add,
+                    added: 12,
+                    removed: 0,
+                    binary: false,
+                }],
+            },
+            ChatLine::Verification {
+                report_id: "rep-1".into(),
+                artifact_path: r"C:\Work\Alpha.md".into(),
+                artifact_hash: "h1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::User {
+                text: "Turn 2 revise".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-2".into(),
+                artifact_path: r"\\?\c:/work/./alpha.md".into(),
+                artifact_hash: "h2".into(),
+                ok: false,
+                issues: vec![flowy_agent::VerificationIssue {
+                    code: "BROKEN".into(),
+                    field: "body".into(),
+                }],
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+        ];
+        assert!(
+            collect_latest_deliverables(&lines).is_none(),
+            "Turn 2 failure on variant path must hide Turn 1 deliverable"
+        );
+    }
+
+    #[test]
+    fn collect_latest_deliverables_keeps_independent_b_and_recovers_a_after_reverify()
+     {
+        let mut lines = vec![
+            ChatLine::User {
+                text: "Turn 1".into(),
+            },
+            ChatLine::FileChanges {
+                files: vec![
+                    flowy_agent::FileEntry {
+                        path: r"C:\Work\a.md".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 5,
+                        removed: 0,
+                        binary: false,
+                    },
+                    flowy_agent::FileEntry {
+                        path: r"C:\Work\b.md".into(),
+                        change: flowy_agent::FileChangeKind::Add,
+                        added: 8,
+                        removed: 0,
+                        binary: false,
+                    },
+                ],
+            },
+            ChatLine::Verification {
+                report_id: "rep-1a".into(),
+                artifact_path: r"C:\Work\a.md".into(),
+                artifact_hash: "ha1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::Verification {
+                report_id: "rep-1b".into(),
+                artifact_path: r"C:\Work\b.md".into(),
+                artifact_hash: "hb1".into(),
+                ok: true,
+                issues: Vec::new(),
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+            ChatLine::User {
+                text: "Turn 2".into(),
+            },
+            ChatLine::Verification {
+                report_id: "rep-2a".into(),
+                artifact_path: "c:/work/A.MD".into(),
+                artifact_hash: "ha2".into(),
+                ok: false,
+                issues: vec![flowy_agent::VerificationIssue {
+                    code: "BROKEN".into(),
+                    field: "body".into(),
+                }],
+                semantic_hint: None,
+                override_used: false,
+                provenance_warnings: Vec::new(),
+                source_session_id: None,
+            },
+        ];
+
+        let only_b = collect_latest_deliverables(&lines)
+            .expect("independent B remains deliverable when only A fails");
+        assert_eq!(only_b.len(), 1);
+        assert_eq!(only_b[0].path, r"C:\Work\b.md");
+
+        lines.push(ChatLine::User {
+            text: "Turn 3".into(),
+        });
+        lines.push(ChatLine::Verification {
+            report_id: "rep-3a".into(),
+            artifact_path: r"C:\Work\a.md".into(),
+            artifact_hash: "ha3".into(),
+            ok: false,
+            issues: Vec::new(),
+            semantic_hint: None,
+            override_used: true,
+            provenance_warnings: Vec::new(),
+            source_session_id: None,
+        });
+        let recovered = collect_latest_deliverables(&lines)
+            .expect("override in Turn 3 restores A");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].path, r"C:\Work\a.md");
+    }
+
+    #[gpui::test]
+    fn feed_caches_settlement_across_session_switch_and_gates_verification_quick_open(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let s1_history = ChatHistory {
+            rows: vec![
+                ChatLine::User {
+                    text: "Turn 1".into(),
+                },
+                ChatLine::Verification {
+                    report_id: "r-ok".into(),
+                    artifact_path: r"C:\Work\report.md".into(),
+                    artifact_hash: "h1".into(),
+                    ok: true,
+                    issues: Vec::new(),
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                    source_session_id: None,
+                },
+                ChatLine::User {
+                    text: "Turn 2".into(),
+                },
+                ChatLine::Verification {
+                    report_id: "r-fail".into(),
+                    artifact_path: "c:/work/REPORT.md".into(),
+                    artifact_hash: "h2".into(),
+                    ok: false,
+                    issues: vec![flowy_agent::VerificationIssue {
+                        code: "BROKEN".into(),
+                        field: "body".into(),
+                    }],
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                    source_session_id: None,
+                },
+            ],
+            streaming: None,
+            status: TurnStatus::Completed,
+        };
+        let s2_history = ChatHistory {
+            rows: vec![
+                ChatLine::User {
+                    text: "Clean session".into(),
+                },
+                ChatLine::Verification {
+                    report_id: "r-s2".into(),
+                    artifact_path: r"C:\Work\clean.md".into(),
+                    artifact_hash: "hc".into(),
+                    ok: true,
+                    issues: Vec::new(),
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                    source_session_id: None,
+                },
+            ],
+            streaming: None,
+            status: TurnStatus::Completed,
+        };
+
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            let mut feed =
+                ChatFeed::new(ui, i18n.clone(), Some("s1".into()), cx);
+            feed.sync_history(Some("s1".into()), s1_history.clone(), cx);
+            feed
+        });
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        feed.read_with(cx, |feed, _| {
+            assert!(feed.is_path_failed(r"C:\Work\report.md"));
+            assert_eq!(feed.latest_deliverable_count(), 0);
+        });
+        assert!(
+            cx.debug_bounds("verify-open-deliverables").is_none(),
+            "overturned Turn 1 passed card must not offer quick-open deliverables button"
+        );
+
+        // Switch to s2 (quick-open button must appear), then back to cached s1
+        // (triggers unchanged `stored.lines == lines` and must stay gated).
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(Some("s2".into()), s2_history.clone(), cx);
+            assert!(!feed.is_path_failed(r"C:\Work\report.md"));
+            assert_eq!(feed.latest_deliverable_count(), 1);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("verify-open-deliverables").is_some(),
+            "settled passed card in s2 must render quick-open deliverables button"
+        );
+
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(Some("s1".into()), s1_history.clone(), cx);
+            assert!(
+                feed.is_path_failed(r"C:\Work\report.md"),
+                "switching back to cached s1 must refresh verification_settlement"
+            );
+            assert_eq!(feed.latest_deliverable_count(), 0);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("verify-open-deliverables").is_none(),
+            "switching back to s1 must keep quick-open button hidden"
         );
     }
 }
