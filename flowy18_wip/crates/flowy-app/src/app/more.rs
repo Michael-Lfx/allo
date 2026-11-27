@@ -1,4 +1,4 @@
-use super::{FlowyApp, Section};
+use super::FlowyApp;
 use crate::persona::{
     ABOUT_MAX, INSTRUCTIONS_MAX, KNOWLEDGE_MAX, Knowledge, NAME_MAX, Profile,
     limited, read_patch, save,
@@ -12,12 +12,6 @@ use gpui_kit::base::input::{InputState, TextareaState};
 mod personalization;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Page {
-    Skills,
-    Personal,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tab {
     Profile,
     Knowledge,
@@ -29,38 +23,14 @@ impl FlowyApp {
         window: &mut gpui::Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut page = div()
+        div()
             .id("more-page")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
-            .flex_col();
-        page = if self.persona.page == Page::Skills {
-            page.child(self.skills_canvas(window, cx))
-        } else {
-            page.child(self.personal_canvas(window, cx))
-        };
-        page
-    }
-
-    pub(super) fn select_more_page(
-        &mut self,
-        page: Page,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let already_here = self.section == Section::More;
-        self.persona.page = page;
-        self.notice = None;
-        if already_here {
-            self.sync_studio_surface(cx);
-            cx.notify();
-            if page == Page::Skills {
-                self.refresh_skills(cx);
-            }
-        } else {
-            self.push_section(Section::More, cx);
-        }
+            .flex_col()
+            .child(self.personal_canvas(window, cx))
     }
 
     pub(super) fn more_layer(
@@ -559,7 +529,6 @@ impl FlowyApp {
         self.set_textarea_text(&self.persona.import_paste, "", cx);
         self.active_dialog = super::state::ActiveDialog::None;
         self.persona.status = None;
-        self.persona.page = Page::Personal;
         self.persona.tab = Tab::Profile;
         self.notice = Some(if wrote {
             "more.import_saved"

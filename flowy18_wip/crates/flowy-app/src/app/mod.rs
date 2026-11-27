@@ -74,6 +74,8 @@ pub enum Section {
     Create,
     Automation,
     More,
+    Skills,
+    MySkills,
 }
 
 /// One field's programmatic text, waiting for the window that `set_value` needs.
@@ -196,6 +198,13 @@ impl FlowyApp {
                     self.active_dialog = state::ActiveDialog::Skill(id);
                 }
             }
+            "skill-script-confirm"
+                if self.active_dialog
+                    == state::ActiveDialog::SkillScriptConfirm =>
+            {
+                self.skills.script_confirm = None;
+                self.active_dialog = state::ActiveDialog::None;
+            }
             "skill-docs" => {
                 if let state::ActiveDialog::SkillDocs(id) = self.active_dialog {
                     self.active_dialog = state::ActiveDialog::Skill(id);
@@ -287,6 +296,7 @@ impl FlowyApp {
         let skills_query = input_field(window, cx);
         let quick_search_query = input_field(window, cx);
         let conversation_rename_input = input_field(window, cx);
+        let mine_skills_query = input_field(window, cx);
         place(window, &nickname, &saved.nickname, cx);
         place(window, &occupation, &saved.occupation, cx);
         place(window, &about, &saved.about, cx);
@@ -499,6 +509,9 @@ impl FlowyApp {
                     }
                 })
             },
+            cx.subscribe(&mine_skills_query, |_, _, _: &InputEvent, cx| {
+                cx.notify();
+            }),
             cx.subscribe(&studio, |app, _, event: &StudioEvent, cx| {
                 app.on_studio_event(event, cx);
             }),
@@ -573,6 +586,9 @@ impl FlowyApp {
                 empty_follows: 0,
                 follow_mark: 0,
                 installed: initial_installed_skills,
+                mine_query: mine_skills_query,
+                mine_tab: state::MySkillsTab::default(),
+                mine_selected: None,
                 install: None,
                 install_task: None,
                 script_confirm: None,
@@ -598,7 +614,6 @@ impl FlowyApp {
             projects_open: true,
             tasks_open: true,
             persona: PersonaState {
-                page: more::Page::Personal,
                 tab: more::Tab::Profile,
                 status: None,
                 knowledge: saved.knowledge,
@@ -849,7 +864,7 @@ impl FlowyApp {
                     panel.set_notice(notice, cx);
                 });
             }
-            Section::More => {
+            Section::More | Section::Skills | Section::MySkills => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
                     panel.close_board_drawer(cx);
@@ -996,6 +1011,10 @@ impl FlowyApp {
         }
         canvas = if self.section == Section::More {
             canvas.child(self.more_canvas(window, cx))
+        } else if self.section == Section::Skills {
+            canvas.child(self.skills_canvas(window, cx))
+        } else if self.section == Section::MySkills {
+            canvas.child(self.my_skills_canvas(window, cx))
         } else if self.section == Section::Library {
             canvas.child(self.library.clone())
         } else {
@@ -1066,7 +1085,10 @@ impl Render for FlowyApp {
             settings::Picker::None
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
-                    && self.section != Section::More
+                    && !matches!(
+                        self.section,
+                        Section::More | Section::Skills | Section::MySkills
+                    )
                     && self.section != Section::Library
                     && !self.studio.read(cx).has_board_drawer()
                     && self.studio.read(cx).surface
@@ -1206,9 +1228,9 @@ impl Render for FlowyApp {
                 }
                 root
             }
-            state::ActiveDialog::SkillScriptConfirm => root
-                .child(self.skill_layer(window, cx))
-                .child(self.skill_script_confirm_layer(window, cx)),
+            state::ActiveDialog::SkillScriptConfirm => {
+                root.child(self.skill_script_confirm_layer(window, cx))
+            }
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
             state::ActiveDialog::ProjectCreate => {
                 root.child(self.projects_layer(window, cx))
