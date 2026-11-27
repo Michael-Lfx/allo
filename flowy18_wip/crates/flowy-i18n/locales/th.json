@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "การเปลี่ยนแปลงในพื้นที่ทำงาน ({count})",
   "board.status_blockers": "รอตรวจสอบ ({count})",
   "board.status_running": "กำลังทำงาน ({count})",
-  "board.status_today_done": "เสร็จวันนี้ ({count})"
+  "board.status_today_done": "เสร็จวันนี้ ({count})",
+  "a11y.scroll_board_queue": "พื้นที่เลื่อนคิวงาน",
+  "a11y.scroll_board_overview": "พื้นที่เลื่อนภาพรวมงาน",
+  "a11y.scroll_board_preview": "พื้นที่เลื่อนตัวอย่างผลงาน",
+  "a11y.scroll_board_timeline": "พื้นที่เลื่อนไทม์ไลน์ขั้นตอน",
+  "a11y.scroll_board_trace": "พื้นที่เลื่อนบันทึกการรัน",
+  "a11y.scroll_chat_feed": "พื้นที่เลื่อนรายการสนทนา",
+  "a11y.scroll_library_list": "พื้นที่เลื่อนรายการคลัง",
+  "a11y.scroll_library_preview": "พื้นที่เลื่อนตัวอย่างเอกสาร",
+  "a11y.scroll_dock": "พื้นที่เลื่อนแถบนำทางด้านข้าง",
+  "a11y.scroll_quick_search": "พื้นที่เลื่อนผลค้นหาด่วน",
+  "a11y.scroll_deliverables_drawer": "พื้นที่เลื่อนลิ้นชักผลงาน"
 }

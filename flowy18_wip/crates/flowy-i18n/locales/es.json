@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Cambios del espacio ({count})",
   "board.status_blockers": "Revisar ({count})",
   "board.status_running": "En ejecución ({count})",
-  "board.status_today_done": "Listo hoy ({count})"
+  "board.status_today_done": "Listo hoy ({count})",
+  "a11y.scroll_board_queue": "Área de desplazamiento de la cola de tareas",
+  "a11y.scroll_board_overview": "Área de desplazamiento del resumen de la tarea",
+  "a11y.scroll_board_preview": "Área de desplazamiento de la vista previa de resultados",
+  "a11y.scroll_board_timeline": "Área de desplazamiento de la cronología de pasos",
+  "a11y.scroll_board_trace": "Área de desplazamiento de la traza de ejecución",
+  "a11y.scroll_chat_feed": "Área de desplazamiento del historial de conversación",
+  "a11y.scroll_library_list": "Área de desplazamiento de la lista de biblioteca",
+  "a11y.scroll_library_preview": "Área de desplazamiento de la vista previa del documento",
+  "a11y.scroll_dock": "Área de desplazamiento de la navegación lateral",
+  "a11y.scroll_quick_search": "Área de desplazamiento de resultados de búsqueda rápida",
+  "a11y.scroll_deliverables_drawer": "Área de desplazamiento del cajón de entregables"
 }

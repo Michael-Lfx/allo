@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Modifications de l’espace ({count})",
   "board.status_blockers": "À valider ({count})",
   "board.status_running": "En cours ({count})",
-  "board.status_today_done": "Terminé auj. ({count})"
+  "board.status_today_done": "Terminé auj. ({count})",
+  "a11y.scroll_board_queue": "Zone de défilement de la file des tâches",
+  "a11y.scroll_board_overview": "Zone de défilement de l'aperçu de la tâche",
+  "a11y.scroll_board_preview": "Zone de défilement de l'aperçu du livrable",
+  "a11y.scroll_board_timeline": "Zone de défilement de la chronologie des étapes",
+  "a11y.scroll_board_trace": "Zone de défilement du suivi d'exécution",
+  "a11y.scroll_chat_feed": "Zone de défilement du fil de conversation",
+  "a11y.scroll_library_list": "Zone de défilement de la liste de la bibliothèque",
+  "a11y.scroll_library_preview": "Zone de défilement de l'aperçu du document",
+  "a11y.scroll_dock": "Zone de défilement de la navigation latérale",
+  "a11y.scroll_quick_search": "Zone de défilement des résultats de recherche rapide",
+  "a11y.scroll_deliverables_drawer": "Zone de défilement du panneau des livrables"
 }

@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Çalışma alanı değişiklikleri ({count})",
   "board.status_blockers": "İncele ({count})",
   "board.status_running": "Çalışıyor ({count})",
-  "board.status_today_done": "Bugün biten ({count})"
+  "board.status_today_done": "Bugün biten ({count})",
+  "a11y.scroll_board_queue": "Görev kuyruğu kaydırma alanı",
+  "a11y.scroll_board_overview": "Görev özeti kaydırma alanı",
+  "a11y.scroll_board_preview": "Görev çıktısı önizleme kaydırma alanı",
+  "a11y.scroll_board_timeline": "Adım zaman çizelgesi kaydırma alanı",
+  "a11y.scroll_board_trace": "Yürütme izi kaydırma alanı",
+  "a11y.scroll_chat_feed": "Sohbet akışı kaydırma alanı",
+  "a11y.scroll_library_list": "Kitaplık listesi kaydırma alanı",
+  "a11y.scroll_library_preview": "Belge önizleme kaydırma alanı",
+  "a11y.scroll_dock": "Kenar çubuğu gezinme kaydırma alanı",
+  "a11y.scroll_quick_search": "Hızlı arama sonuçları kaydırma alanı",
+  "a11y.scroll_deliverables_drawer": "Teslimat çekmecesi kaydırma alanı"
 }

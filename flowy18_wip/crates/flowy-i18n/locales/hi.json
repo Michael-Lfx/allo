@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "वर्कस्पेस बदलाव ({count})",
   "board.status_blockers": "समीक्षा ({count})",
   "board.status_running": "चल रहा ({count})",
-  "board.status_today_done": "आज पूर्ण ({count})"
+  "board.status_today_done": "आज पूर्ण ({count})",
+  "a11y.scroll_board_queue": "कार्य कतार स्क्रॉल क्षेत्र",
+  "a11y.scroll_board_overview": "कार्य सारांश स्क्रॉल क्षेत्र",
+  "a11y.scroll_board_preview": "कार्य परिणाम पूर्वावलोकन स्क्रॉल क्षेत्र",
+  "a11y.scroll_board_timeline": "चरण समयरेखा स्क्रॉल क्षेत्र",
+  "a11y.scroll_board_trace": "निष्पादन ट्रेस स्क्रॉल क्षेत्र",
+  "a11y.scroll_chat_feed": "वार्तालाप फ़ीड स्क्रॉल क्षेत्र",
+  "a11y.scroll_library_list": "लाइब्रेरी सूची स्क्रॉल क्षेत्र",
+  "a11y.scroll_library_preview": "दस्तावेज़ पूर्वावलोकन स्क्रॉल क्षेत्र",
+  "a11y.scroll_dock": "साइडबार नेविगेशन स्क्रॉल क्षेत्र",
+  "a11y.scroll_quick_search": "त्वरित खोज परिणाम स्क्रॉल क्षेत्र",
+  "a11y.scroll_deliverables_drawer": "निष्कर्ष दराज स्क्रॉल क्षेत्र"
 }

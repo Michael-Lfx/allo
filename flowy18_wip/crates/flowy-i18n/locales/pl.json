@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Zmiany w obszarze roboczym ({count})",
   "board.status_blockers": "Do przeglądu ({count})",
   "board.status_running": "W toku ({count})",
-  "board.status_today_done": "Gotowe dziś ({count})"
+  "board.status_today_done": "Gotowe dziś ({count})",
+  "a11y.scroll_board_queue": "Obszar przewijania kolejki zadań",
+  "a11y.scroll_board_overview": "Obszar przewijania przeglądu zadania",
+  "a11y.scroll_board_preview": "Obszar przewijania podglądu wyników",
+  "a11y.scroll_board_timeline": "Obszar przewijania osi czasu kroków",
+  "a11y.scroll_board_trace": "Obszar przewijania śladu wykonania",
+  "a11y.scroll_chat_feed": "Obszar przewijania wątku rozmowy",
+  "a11y.scroll_library_list": "Obszar przewijania listy biblioteki",
+  "a11y.scroll_library_preview": "Obszar przewijania podglądu dokumentu",
+  "a11y.scroll_dock": "Obszar przewijania nawigacji bocznej",
+  "a11y.scroll_quick_search": "Obszar przewijania wyników szybkiego wyszukiwania",
+  "a11y.scroll_deliverables_drawer": "Obszar przewijania szuflady wyników"
 }

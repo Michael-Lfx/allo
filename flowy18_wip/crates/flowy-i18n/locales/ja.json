@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "ワークスペース変更 ({count})",
   "board.status_blockers": "要確認 ({count})",
   "board.status_running": "実行中 ({count})",
-  "board.status_today_done": "今日完了 ({count})"
+  "board.status_today_done": "今日完了 ({count})",
+  "a11y.scroll_board_queue": "タスクキューのスクロール領域",
+  "a11y.scroll_board_overview": "タスク概要のスクロール領域",
+  "a11y.scroll_board_preview": "成果プレビューのスクロール領域",
+  "a11y.scroll_board_timeline": "ステップタイムラインのスクロール領域",
+  "a11y.scroll_board_trace": "実行トレースのスクロール領域",
+  "a11y.scroll_chat_feed": "会話フィードのスクロール領域",
+  "a11y.scroll_library_list": "ライブラリ一覧のスクロール領域",
+  "a11y.scroll_library_preview": "ドキュメントプレビューのスクロール領域",
+  "a11y.scroll_dock": "サイドバーナビゲーションのスクロール領域",
+  "a11y.scroll_quick_search": "クイック検索結果のスクロール領域",
+  "a11y.scroll_deliverables_drawer": "成果物ドロワーのスクロール領域"
 }

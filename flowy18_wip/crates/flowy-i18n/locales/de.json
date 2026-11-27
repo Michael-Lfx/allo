@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Arbeitsbereichs-Änderungen ({count})",
   "board.status_blockers": "Prüfen ({count})",
   "board.status_running": "Läuft ({count})",
-  "board.status_today_done": "Heute erledigt ({count})"
+  "board.status_today_done": "Heute erledigt ({count})",
+  "a11y.scroll_board_queue": "Scrollbereich Aufgabenwarteschlange",
+  "a11y.scroll_board_overview": "Scrollbereich Aufgabenübersicht",
+  "a11y.scroll_board_preview": "Scrollbereich Ergebnisvorschau",
+  "a11y.scroll_board_timeline": "Scrollbereich Schritt-Zeitleiste",
+  "a11y.scroll_board_trace": "Scrollbereich Ausführungsprotokoll",
+  "a11y.scroll_chat_feed": "Scrollbereich Unterhaltungsverlauf",
+  "a11y.scroll_library_list": "Scrollbereich Bibliotheksliste",
+  "a11y.scroll_library_preview": "Scrollbereich Dokumentvorschau",
+  "a11y.scroll_dock": "Scrollbereich Seitenleisten-Navigation",
+  "a11y.scroll_quick_search": "Scrollbereich Schnellsuche-Ergebnisse",
+  "a11y.scroll_deliverables_drawer": "Scrollbereich Ergebnisbereich"
 }

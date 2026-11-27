@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Alterações na área ({count})",
   "board.status_blockers": "Rever ({count})",
   "board.status_running": "Em execução ({count})",
-  "board.status_today_done": "Concluído hoje ({count})"
+  "board.status_today_done": "Concluído hoje ({count})",
+  "a11y.scroll_board_queue": "Área de rolagem da fila de tarefas",
+  "a11y.scroll_board_overview": "Área de rolagem do resumo da tarefa",
+  "a11y.scroll_board_preview": "Área de rolagem da pré-visualização de entregas",
+  "a11y.scroll_board_timeline": "Área de rolagem da linha temporal de passos",
+  "a11y.scroll_board_trace": "Área de rolagem do registo de execução",
+  "a11y.scroll_chat_feed": "Área de rolagem do fluxo de conversa",
+  "a11y.scroll_library_list": "Área de rolagem da lista da biblioteca",
+  "a11y.scroll_library_preview": "Área de rolagem da pré-visualização do documento",
+  "a11y.scroll_dock": "Área de rolagem da navegação lateral",
+  "a11y.scroll_quick_search": "Área de rolagem dos resultados da pesquisa rápida",
+  "a11y.scroll_deliverables_drawer": "Área de rolagem do painel de entregas"
 }

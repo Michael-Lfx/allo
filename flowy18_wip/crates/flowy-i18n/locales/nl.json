@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Werkruimtewijzigingen ({count})",
   "board.status_blockers": "Beoordelen ({count})",
   "board.status_running": "Actief ({count})",
-  "board.status_today_done": "Vandaag klaar ({count})"
+  "board.status_today_done": "Vandaag klaar ({count})",
+  "a11y.scroll_board_queue": "Scrolgebied takenwachtrij",
+  "a11y.scroll_board_overview": "Scrolgebied taakoverzicht",
+  "a11y.scroll_board_preview": "Scrolgebied resultaatvoorbeeld",
+  "a11y.scroll_board_timeline": "Scrolgebied stappentijdlijn",
+  "a11y.scroll_board_trace": "Scrolgebied uitvoeringstrace",
+  "a11y.scroll_chat_feed": "Scrolgebied gespreksstroom",
+  "a11y.scroll_library_list": "Scrolgebied bibliotheeklijst",
+  "a11y.scroll_library_preview": "Scrolgebied documentvoorbeeld",
+  "a11y.scroll_dock": "Scrolgebied zijbalknavigatie",
+  "a11y.scroll_quick_search": "Scrolgebied snelzoekresultaten",
+  "a11y.scroll_deliverables_drawer": "Scrolgebied resultatenlade"
 }

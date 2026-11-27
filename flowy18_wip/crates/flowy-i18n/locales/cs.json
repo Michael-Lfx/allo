@@ -973,5 +973,16 @@
   "board.section_workspace_changes": "Změny v pracovním prostoru ({count})",
   "board.status_blockers": "Ke kontrole ({count})",
   "board.status_running": "Běží ({count})",
-  "board.status_today_done": "Dnes hotovo ({count})"
+  "board.status_today_done": "Dnes hotovo ({count})",
+  "a11y.scroll_board_queue": "Posuvná oblast fronty úkolů",
+  "a11y.scroll_board_overview": "Posuvná oblast přehledu úkolu",
+  "a11y.scroll_board_preview": "Posuvná oblast náhledu výstupu",
+  "a11y.scroll_board_timeline": "Posuvná oblast časové osy kroků",
+  "a11y.scroll_board_trace": "Posuvná oblast záznamu běhu",
+  "a11y.scroll_chat_feed": "Posuvná oblast proudu konverzace",
+  "a11y.scroll_library_list": "Posuvná oblast seznamu knihovny",
+  "a11y.scroll_library_preview": "Posuvná oblast náhledu dokumentu",
+  "a11y.scroll_dock": "Posuvná oblast postranní navigace",
+  "a11y.scroll_quick_search": "Posuvná oblast výsledků rychlého hledání",
+  "a11y.scroll_deliverables_drawer": "Posuvná oblast panelu výstupů"
 }
