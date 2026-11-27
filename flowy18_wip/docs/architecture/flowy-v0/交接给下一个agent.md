@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.19 更新）**：**直接先读 §27（`origin/main@331e7a535` + `refactor/flowy18-split-panel`：PR #512–#527 主干账本、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 重锚完结与 worktree 状态）**，再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§26 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §27 不一致处，**一律以 §27 为准**。
+> **现役唯一入口（2026-11-27 修订 9.19 更新）**：**直接先读 §27 与 §27.1（`origin/main@3e66290a9`：PR #512 与 `#514–#528` 十六连 PR 主干全账、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 完结、`persona.rs` 暂缓与在研 worktree 协同边界）**，再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（PR #523 Router/Work 工具扩展架构规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§26 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §27–§27.1 不一致处，**一律以 §27–§27.1 为准**。
 
 ---
 
@@ -858,4 +858,14 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
   - 保留暖构建工作树：`.agents/worktrees/fix-windows-hotpatch`（本收口分支 `refactor/flowy18-split-panel`）
   - 保留在研工作树：`.agents/worktrees/feat-work-capability-seam`（`feat/flowy18-work-capability-provider`）
   - 已合主干可确认后清理候选：`.agents/worktrees/docs-router-work-arch`（PR #523 已合）、`.agents/worktrees/feat-router-kernel`（PR #525 已合）、`.agents/worktrees/feat-flowy-local-receipt`（PR #526 已合）
+
+### 27.1 修订 9.19 合流收口补正（`origin/main@3e66290a9` · PR #528 合入后全账对齐）
+
+- **PR #528 合流确认**：上文 §27 中所述 `refactor/flowy18-split-panel` 已于 `2026-11-27T04:16:54Z` 以 `3e66290a9` 正式合入 `origin/main`（成为 `PR #528`）。自修订 9.17（`c4da1ac65`）以来，主干已累计合入 **16 笔 PR**：`#512` 与 `#514–#528`（其中 `#513` `b0129f38d` 为修订 9.17 文档收口 PR）。
+- **`persona.rs` 明确暂缓边界**：§27 后续优先级 #3 中的 `persona.rs` 注入**已由需求方明确拍板暂缓（「个性化先不做」）**，后续排期勿主动开工，待需求重开后再启动。
+- **跨 Crate 最新指标与删除项补齐**：
+  - 最新单测与基准真值：`flowy-agent-core` **138 passed / 2 ignored**（`#526`）、`flowy-agent` 串行 **279 passed / 4 ignored**（`#526`）、`flowy-studio` **175 passed / 2 ignored**（`#528`）、`flowy-app --locked` **67 passed**（`#527`）、全仓 14 活跃 Crate Wave 1 基线 **846 / 846 PASS**（`#516`）；`ChatFeed::sync_history` 200-tick 流式均值降至 **`1,459 µs`**（`#521`，降幅 `-72.2%`），`[M1-BENCH]` 零克隆回执查表 **`9.11 µs/call`**（`#526`）。
+  - 23 语种纯 LF 词典（`ar.json`..`zh-TW.json`）在 `#525` 新增 Mission Control 键并裁剪 19 个退役 `board.*` 键后当前对称维持 **975 键**；`flowy-studio/src/overview/flow_modal.rs` 已于 `#525` 物理删除（由 `overview/inspector.rs` 替代）。
+  - **跨账本导航**：设计详情见 [`最终方案.md`](最终方案.md) §12.17、全量实测见 [`证据.md`](证据.md) §11.45、待裁决更新见 [`BLOCKED.md`](BLOCKED.md) §6、Router/Work 工具扩展架构见 [`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)。
+- **并线协同说明**：为避免与在研 worktree `.agents/worktrees/feat-work-capability-seam`（`feat/flowy18-work-capability-provider`）发生合并冲突，修订 9.19 全账同步未触碰 `flowy18_wip/docs/architecture/README.md`。
 
