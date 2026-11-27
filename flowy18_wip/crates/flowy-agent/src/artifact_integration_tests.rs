@@ -1041,10 +1041,12 @@ fn long_running_accepted_turn_renews_lease_past_initial_expiry() {
     use flowy_agent_core::{AcceptanceQueue, ReceiptState};
 
     let scratch = Scratch::new();
-    let provider = ProviderFixture::start_delayed_text(750, "done slowly");
+    // Margins are wide enough for a loaded CI runner: a 600ms lease renews
+    // every 200ms, so a renewal may stall up to ~400ms without expiring.
+    let provider = ProviderFixture::start_delayed_text(1_500, "done slowly");
     let handle = AgentHandle::with_config(scratch.0.clone(), provider.config());
     let _session = handle.create_home_session().unwrap();
-    handle.set_accepted_lease_ms_for_test(300);
+    handle.set_accepted_lease_ms_for_test(600);
 
     let receipt = handle
         .accept_deferred("slow turn needing heartbeat")

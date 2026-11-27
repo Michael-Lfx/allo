@@ -676,10 +676,13 @@ impl Harness {
             let hb_attempt = attempt_id.clone();
             let interval_ms = (lease_ms / 3).max(20);
             self.runtime.spawn(async move {
+                // The first tick fires at once, so the lease is renewed right
+                // away: it started at `take`, before the session setup and
+                // submit above, which can use up most of a short lease on a
+                // loaded machine.
                 let mut ticker = tokio::time::interval(
                     std::time::Duration::from_millis(interval_ms),
                 );
-                ticker.tick().await;
                 loop {
                     tokio::select! {
                         () = heartbeat_cancel.cancelled() => break,
