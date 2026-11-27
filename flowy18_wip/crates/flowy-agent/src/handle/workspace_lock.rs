@@ -591,4 +591,83 @@ mod tests {
         drop(lease);
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn nonexistent_dotdot_suffix_still_canonicalizes_ancestor_junction() {
+        let base = std::env::temp_dir()
+            .join(format!("flowy-wlock-junc-{}", next_stamp()));
+        let real = base.join("real");
+        let link = base.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .status()
+            .expect("invoke cmd mklink /J");
+        assert!(status.success(), "mklink /J must succeed");
+
+        let link_future = link
+            .join(".")
+            .join("future")
+            .join("x")
+            .join("..")
+            .join("nested");
+        let real_future = real.join("future").join("nested");
+        assert_eq!(
+            normalize_workspace_key(&link_future),
+            normalize_workspace_key(&real_future)
+        );
+
+        let table = WorkspaceLockTable::new();
+        let _lease = table
+            .try_acquire(&real_future, WorkspaceAccessMode::Write, "s-real")
+            .expect("acquire real future path");
+        assert!(
+            table.is_locked_for(&link_future, WorkspaceAccessMode::Write),
+            "dotdot suffix under ancestor junction must contend with canonical target"
+        );
+
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn nonexistent_dotdot_back_to_existing_sibling_re_enables_canonicalization()
+    {
+        let base = std::env::temp_dir()
+            .join(format!("flowy-wlock-reenter-{}", next_stamp()));
+        let sub_real = base.join("sub_real");
+        std::fs::create_dir_all(&sub_real).unwrap();
+
+        #[cfg(windows)]
+        let sub_alias = {
+            let alias = base.join("sub_link");
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&alias)
+                .arg(&sub_real)
+                .status()
+                .expect("invoke cmd mklink /J");
+            assert!(status.success(), "mklink /J must succeed");
+            alias
+        };
+        #[cfg(not(windows))]
+        let sub_alias = sub_real.clone();
+
+        let reentered = base
+            .join("nonexistent")
+            .join("..")
+            .join(sub_alias.file_name().unwrap());
+        assert_eq!(
+            normalize_workspace_key(&reentered),
+            normalize_workspace_key(&sub_real)
+        );
+
+        #[cfg(windows)]
+        let _ = std::fs::remove_dir(&sub_alias);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
