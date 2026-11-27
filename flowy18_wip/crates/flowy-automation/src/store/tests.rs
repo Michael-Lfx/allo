@@ -161,7 +161,7 @@ fn claiming_an_occurrence_preserves_concurrent_edits_and_records_it_once() {
 
     assert!(store.claim(&task, None, &run).unwrap());
     assert!(!store.claim(&task, None, &run).unwrap());
-    assert!(store.due(10).unwrap().is_empty());
+    assert_eq!(store.due(10).unwrap(), Vec::new());
     assert_eq!(store.run(run.id).unwrap(), Some(run.clone()));
 
     assert!(store.delete(task.id).unwrap());

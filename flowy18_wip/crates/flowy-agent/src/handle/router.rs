@@ -440,13 +440,17 @@ fn dispatch_work_tool(
     ))
 }
 
+/// Child Work summaries and conversation automations for `query_work_status`,
+/// or a tool error code with its message.
+type WorkStatusLists = Result<(Vec<Value>, Vec<Value>), (&'static str, String)>;
+
 fn query_work_status_tool(
     harness: Weak<Harness>,
     router_id: String,
 ) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition::new(
         "query_work_status",
-        "Read authoritative host status of child Works (state, verification, deliverables, records, pending approvals/cards, and stop handoffs).",
+        "Read authoritative host status of child Works (state, verification, deliverables, records, pending approvals/cards, and stop handoffs). `automations` lists this conversation's scheduled automations as saved by the host, each with `next_run_local` and its `last_run`.",
         json!({
             "type": "object",
             "properties": {
@@ -467,7 +471,7 @@ fn query_work_status_tool(
                 let h = Arc::clone(&harness);
                 let rid = router_id.clone();
                 let res = tokio::task::spawn_blocking(
-                    move || -> Result<Vec<Value>, (&'static str, String)> {
+                    move || -> WorkStatusLists {
                         if let Some(work_id) = filter_work_id.as_deref() {
                             let engine =
                                 lock(&h.engine).clone().ok_or_else(|| {
@@ -495,15 +499,17 @@ fn query_work_status_tool(
                                     .is_none_or(|id| w.work_id == id)
                             })
                             .map(child_work_to_json)
-                            .collect())
+                            .collect::<Vec<_>>())
+                        .map(|works| (works, h.conversation_automations(&rid)))
                     },
                 )
                 .await;
                 match res {
-                    Ok(Ok(filtered)) => {
+                    Ok(Ok((filtered, automations))) => {
                         ToolExecutionResult::success_value(json!({
                             "root_session_id": router_id,
                             "works": filtered,
+                            "automations": automations,
                         }))
                     }
                     Ok(Err((code, msg))) => {
@@ -764,8 +770,11 @@ pub(super) fn build_router_system_prompt(
     is_announcement: bool,
 ) -> String {
     let mut out = format!(
-        "{} You are Flowy's lightweight conversation Router. Follow strict turn discipline: (1) Before calling tools or `dispatch_work`, emit at most ONE short opening acknowledgement sentence — never write filler narration between tool calls (no \"已派发，我看一下结果\" / \"还在跑，稍等我再查\"). (2) Delegate file editing, document creation, shell/network commands (`curl`), and verification to Worker sessions via `dispatch_work`; note `read_only` Workers only have `read_file`/`glob`/`grep` (no shell), so shell/network queries require `read_write` with read-only constraints in the brief. (3) After dispatching background Workers, stop and yield the turn immediately so Workers run asynchronously — do NOT poll `query_work_status` repeatedly in a loop unless the user explicitly asked for an immediate status check. (4) Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing. To create, change, pause, delete or review scheduled automations, dispatch a `read_write` Worker: only it has the automation tools, and automations it creates belong to this conversation, run here on their schedule and report back here.",
+        "{} You are Flowy's lightweight conversation Router. Follow strict turn discipline: (1) Before calling tools or `dispatch_work`, emit at most ONE short opening acknowledgement sentence — never write filler narration between tool calls (no \"已派发，我看一下结果\" / \"还在跑，稍等我再查\"). (2) Delegate file editing, document creation, shell/network commands (`curl`), and verification to Worker sessions via `dispatch_work`; note `read_only` Workers only have `read_file`/`glob`/`grep` (no shell), so shell/network queries require `read_write` with read-only constraints in the brief. (3) After dispatching background Workers, stop and yield the turn immediately so Workers run asynchronously — do NOT poll `query_work_status` repeatedly in a loop unless the user explicitly asked for an immediate status check. (4) Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Scheduled automations produce no deliverable: their evidence is `query_work_status.automations`, read by the host. An entry there means it is saved; report its title, schedule and `next_run_local` exactly as given (never convert `*_ms` timestamps yourself), and use its `last_run` for test-run status. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing. To create, change, pause, delete or review scheduled automations, dispatch a `read_write` Worker: only it has the automation tools, and automations it creates belong to this conversation, run here on their schedule and report back here.",
         super::BASE_BEHAVIOR_PROMPT
+    );
+    out.push_str(
+        "\nIf the user asks to do work at a future time or on a recurring schedule, dispatch a read_write Worker to save the automation only; it must not perform the task itself. Include the schedule, requested action, and result requirements in its brief. If a time could mean either when to run or which data to look up, clarify before dispatching. If the user already asked to run or test it now, also tell that Worker to call `automation_run_now` right after saving; the test run is separate work in this conversation and is announced here when it ends. Otherwise, once `query_work_status` lists it under `automations`, confirm the schedule with its `next_run_local` and end with one short question asking whether to run it once now as a test. If the user agrees, dispatch a read_write Worker whose brief is only to call `automation_run_now` for that automation (it can find it by title with `automation_list`), not to perform the task itself.",
     );
     let works = harness.child_works(router_id);
     if is_announcement {

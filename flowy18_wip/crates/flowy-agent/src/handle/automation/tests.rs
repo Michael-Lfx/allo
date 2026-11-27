@@ -250,8 +250,61 @@ fn a_reminder_is_visible_and_survives_reopening_without_a_model_turn() {
         })
     };
     assert!(has_reminder(&handle));
-    assert!(handle.child_works(&router).is_empty());
+    assert_eq!(handle.child_works(&router), Vec::new());
 
     drop(handle);
     assert!(has_reminder(&echo_handle(&root.0)));
+}
+
+#[test]
+fn conversation_automations_report_host_state_for_the_router() {
+    let scratch = Scratch::new("status");
+    let handle = echo_handle(&scratch.0);
+    let store = Arc::new(AutomationStore::open_in_memory().unwrap());
+    let worker = Worker::start(
+        Arc::clone(&store),
+        handle.automation_executor(),
+        WorkerConfig {
+            tick: Duration::from_secs(3600),
+            run_timeout: Duration::from_secs(60),
+        },
+        handle.runtime_handle(),
+    );
+    let service = Arc::new(AutomationService::new(store, worker));
+    handle.set_automation_service(Some(Arc::clone(&service)));
+    let router_id = handle.create_router_session().unwrap();
+
+    let input = |title: &str| flowy_automation::AutomationInput {
+        title: title.to_owned(),
+        action: Action::Reminder {
+            text: "hi".to_owned(),
+        },
+        trigger: TriggerSpec::Once {
+            scheduled_at_ms: now_ms() + 3_600_000,
+        },
+        access: Access::Read,
+    };
+    let mine = service.create(&router_id, input("Daily digest")).unwrap();
+    service
+        .create("other-conversation", input("Not mine"))
+        .unwrap();
+
+    let listed = handle.inner.conversation_automations(&router_id);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["id"], mine.id.to_string());
+    assert_eq!(listed[0]["title"], "Daily digest");
+    assert_eq!(listed[0]["enabled"], true);
+    assert!(
+        listed[0]["next_run_local"]
+            .as_str()
+            .is_some_and(|label| label.ends_with("(UTC)")),
+        "{listed:?}"
+    );
+    assert!(listed[0]["last_run"].is_null(), "{listed:?}");
+
+    handle.set_automation_service(None);
+    assert_eq!(
+        handle.inner.conversation_automations(&router_id),
+        Vec::<serde_json::Value>::new()
+    );
 }

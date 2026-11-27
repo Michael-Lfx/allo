@@ -5734,3 +5734,127 @@ fn override_after_revision_preserves_original_dispatch_receipt_anchor() {
     rebuilt.select_session(&router_id).unwrap();
     assert_anchors(&rebuilt);
 }
+
+fn wait_for_router_line(
+    handle: &AgentHandle,
+    router_id: &str,
+    what: &str,
+    pred: impl Fn(&ChatLine) -> bool,
+) -> Vec<ChatLine> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let lines = handle.session_lines(router_id);
+        if lines.iter().any(&pred) {
+            return lines;
+        }
+        assert!(std::time::Instant::now() < deadline, "{what}: {lines:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn router_announcement_failure_requeues_batch_and_retries() {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    let root = temp_dir("announce-retry");
+    let gate = PromptGate::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_c = Arc::clone(&attempts);
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, _g| {
+            if is_router_req(req) {
+                if req.last_user == "run-then-retry-announce"
+                    && req.last_tool_result.is_none()
+                {
+                    return MockReply::ToolCalls(vec![(
+                        "c-1".into(),
+                        "dispatch_work".into(),
+                        json!({"brief": "bg-task", "request_id": "req-retry"}),
+                    )]);
+                }
+                if req.last_user.starts_with("[WorkEventBatch]") {
+                    if attempts_c.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                        return MockReply::Error(
+                            "transient upstream timeout".into(),
+                        );
+                    }
+                    return MockReply::Text("retried-announcement".into());
+                }
+                return MockReply::Text("任务已受理".into());
+            }
+            MockReply::Text("worker done".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    handle
+        .submit_router_message(&router_id, 10031, "run-then-retry-announce")
+        .unwrap();
+
+    let lines = wait_for_router_line(
+        &handle,
+        &router_id,
+        "failed announcement must be retried with the same batch",
+        |l| matches!(l, ChatLine::Assistant { text } if text == "retried-announcement"),
+    );
+    assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2, "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| matches!(
+            l,
+            ChatLine::Status { text } if text == "chat.status_error"
+        )),
+        "a retried announcement must not leave an error banner: {lines:?}"
+    );
+}
+
+#[test]
+fn router_announcement_retries_exhausted_post_worker_result_directly() {
+    let root = temp_dir("announce-fallback");
+    let gate = PromptGate::new();
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, _g| {
+            if is_router_req(req) {
+                if req.last_user == "run-then-always-fail-announce"
+                    && req.last_tool_result.is_none()
+                {
+                    return MockReply::ToolCalls(vec![(
+                        "c-1".into(),
+                        "dispatch_work".into(),
+                        json!({"brief": "bg-task", "request_id": "req-fallback"}),
+                    )]);
+                }
+                if req.last_user.starts_with("[WorkEventBatch]") {
+                    return MockReply::Error(
+                        "transient upstream timeout".into(),
+                    );
+                }
+                return MockReply::Text("任务已受理".into());
+            }
+            MockReply::Text("worker-final-report".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    handle
+        .submit_router_message(
+            &router_id,
+            10032,
+            "run-then-always-fail-announce",
+        )
+        .unwrap();
+
+    wait_for_router_line(
+        &handle,
+        &router_id,
+        "exhausted announcements must post the Worker result without a model turn",
+        |l| matches!(l, ChatLine::Assistant { text } if text.contains("worker-final-report")),
+    );
+}

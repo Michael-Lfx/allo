@@ -29,6 +29,17 @@ impl Default for WorkerConfig {
     }
 }
 
+/// Why a run could not be started now.
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    #[error("automations only run while the user is signed in")]
+    SignedOut,
+    #[error("this automation already has a run in progress")]
+    AlreadyRunning,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
 pub struct Worker {
     inner: Arc<Inner>,
 }
@@ -102,6 +113,12 @@ impl Worker {
         self.cancel_inflight(|automation| automation == id);
     }
 
+    /// Starts one run now, through the same executor as a scheduled run.
+    /// The schedule is left unchanged.
+    pub fn run_now(&self, automation: &Automation) -> Result<Run, StartError> {
+        self.inner.start_now(automation)
+    }
+
     /// Cancels a running run. Returns false if it already ended.
     pub fn cancel(&self, run_id: RunId) -> bool {
         self.inner
@@ -169,6 +186,33 @@ impl Inner {
             });
         }
         Ok(())
+    }
+
+    /// One run outside the schedule. `next_run_at_ms` is not touched, so the
+    /// next scheduled occurrence still happens as planned.
+    fn start_now(
+        self: &Arc<Self>,
+        automation: &Automation,
+    ) -> Result<Run, StartError> {
+        let run = Run::started(automation.id, now_ms());
+        let cancel = CancelToken::default();
+        {
+            let mut inflight = self.inflight();
+            if !self.active.load(Ordering::Acquire) {
+                return Err(StartError::SignedOut);
+            }
+            if inflight.values().any(|(id, _)| *id == automation.id) {
+                return Err(StartError::AlreadyRunning);
+            }
+            self.store.save_run(&run)?;
+            inflight.insert(run.id, (automation.id, cancel.clone()));
+        }
+        let inner = Arc::clone(self);
+        let (automation, started) = (automation.clone(), run.clone());
+        self.runtime.spawn(async move {
+            inner.execute(automation, started, cancel).await;
+        });
+        Ok(run)
     }
 
     async fn execute(

@@ -208,7 +208,15 @@ impl AutomationStore {
         next: Option<i64>,
         run: &Run,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.lock();
+        Self::claim_in(&mut self.lock(), expected, next, run)
+    }
+
+    fn claim_in(
+        conn: &mut Connection,
+        expected: &Automation,
+        next: Option<i64>,
+        run: &Run,
+    ) -> Result<bool, StoreError> {
         let tx = conn.transaction_with_behavior(
             rusqlite::TransactionBehavior::Immediate,
         )?;

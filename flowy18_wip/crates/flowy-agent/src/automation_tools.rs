@@ -10,7 +10,7 @@ use flowy_agent_core::{ToolCallArgs, ToolExecutionResult, ToolRunContext};
 use flowy_automation::schedule::TriggerSpec;
 use flowy_automation::{
     Access, Action, Automation, AutomationId, AutomationInput,
-    AutomationService, RunId, ServiceError,
+    AutomationService, RunId, ServiceError, StartError,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -29,18 +29,24 @@ enum Op {
     Delete,
     History,
     CancelRun,
+    RunNow,
 }
 
-const TOOLS: [(Op, &str, &str); 9] = [
+const TOOLS: [(Op, &str, &str); 10] = [
     (
         Op::Create,
         "create",
-        "Create a scheduled automation in this conversation. When it is due, an agent_task runs as new work in this conversation and its result is announced here; a reminder is posted here. Automations only run on their schedule.",
+        "Create a scheduled automation in this conversation. When it is due, an agent_task runs as new work in this conversation and its result is announced here; a reminder is posted here. Saving does not run it, and you must not perform the task yourself; to test it now, call automation_run_now.",
+    ),
+    (
+        Op::RunNow,
+        "run_now",
+        "Run an automation once now as a test, through the same path as a scheduled run, without changing its schedule. Call it only when the user asked to run or test it now. It returns at once with the run; the run is new work in this conversation and its result is announced here when it ends. Do not perform the task yourself; use automation_history for the run status.",
     ),
     (
         Op::List,
         "list",
-        "List this conversation's automations with their enabled state and next run time (Unix UTC milliseconds).",
+        "List this conversation's automations with their enabled state and next run time. Report `next_run_local` as given; do not convert `next_run_at_ms` (Unix UTC milliseconds) yourself.",
     ),
     (Op::Get, "get", "Read one automation."),
     (
@@ -175,7 +181,11 @@ impl Op {
                     ServiceError::NotFound => "not_found",
                     ServiceError::Invalid(_) => "invalid_request",
                     ServiceError::Schedule(_) => "invalid_schedule",
-                    ServiceError::Store(_) => "storage_error",
+                    ServiceError::Store(_)
+                    | ServiceError::Start(StartError::Store(_)) => {
+                        "storage_error"
+                    }
+                    ServiceError::Start(_) => "run_unavailable",
                 };
                 ToolExecutionResult::error(code, error.to_string())
             }
@@ -200,7 +210,9 @@ impl Op {
         Ok(match self {
             Self::Create => {
                 let Create { definition } = parse(args)?;
-                to_json(&service.create(conversation, definition.into())?)
+                automation_to_json(
+                    &service.create(conversation, definition.into())?,
+                )
             }
             Self::Update => {
                 let Update {
@@ -208,21 +220,30 @@ impl Op {
                     definition,
                 } = parse(args)?;
                 owned(automation_id)?;
-                to_json(&service.update(automation_id, definition.into())?)
+                automation_to_json(
+                    &service.update(automation_id, definition.into())?,
+                )
             }
             Self::List => {
-                json!({ "automations": service.list_for(conversation)? })
+                let automations: Vec<Value> = service
+                    .list_for(conversation)?
+                    .iter()
+                    .map(automation_to_json)
+                    .collect();
+                json!({ "automations": automations })
             }
-            Self::Get => to_json(&owned(parse::<ById>(args)?.automation_id)?),
+            Self::Get => {
+                automation_to_json(&owned(parse::<ById>(args)?.automation_id)?)
+            }
             Self::Pause => {
                 let ById { automation_id } = parse(args)?;
                 owned(automation_id)?;
-                to_json(&service.pause(automation_id)?)
+                automation_to_json(&service.pause(automation_id)?)
             }
             Self::Resume => {
                 let ById { automation_id } = parse(args)?;
                 owned(automation_id)?;
-                to_json(&service.resume(automation_id)?)
+                automation_to_json(&service.resume(automation_id)?)
             }
             Self::Delete => {
                 let ById { automation_id } = parse(args)?;
@@ -234,6 +255,15 @@ impl Op {
                 let ById { automation_id } = parse(args)?;
                 owned(automation_id)?;
                 json!({ "runs": service.history(automation_id, HISTORY_LIMIT)? })
+            }
+            Self::RunNow => {
+                let ById { automation_id } = parse(args)?;
+                owned(automation_id)?;
+                let run = service.run_now(automation_id)?;
+                json!({
+                    "run": run,
+                    "note": "The test run is new work in this conversation and its result is announced here when it ends. Do not perform the task yourself.",
+                })
             }
             Self::CancelRun => {
                 let ByRun { run_id } = parse(args)?;
@@ -278,6 +308,20 @@ fn to_json(value: &impl serde::Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
+/// An automation as the tools and `query_work_status` report it, with its
+/// next run as local wall-clock time so the model never converts
+/// `next_run_at_ms` itself.
+pub fn automation_to_json(automation: &Automation) -> Value {
+    let mut value = to_json(automation);
+    if let Some(object) = value.as_object_mut() {
+        let next_run_local = automation
+            .next_run_at_ms
+            .and_then(|at| automation.trigger.local_time_label(at));
+        object.insert("next_run_local".to_owned(), json!(next_run_local));
+    }
+    value
+}
+
 fn definition_schema() -> Value {
     json!({
         "type": "object",
@@ -291,7 +335,7 @@ fn definition_schema() -> Value {
                     "required": ["kind", "prompt"],
                     "properties": {
                         "kind": { "const": "agent_task" },
-                        "prompt": { "type": "string", "description": "Self-contained task brief for the work dispatched at each run." }
+                        "prompt": { "type": "string", "description": "Self-contained task brief for each run. Preserve the requested skill, what it should do, and constraints such as replying in chat without creating files." }
                     }
                 },
                 {
@@ -340,7 +384,7 @@ fn definition_schema() -> Value {
             },
             "access": {
                 "enum": ["read", "write"],
-                "description": "Workspace access of the work each run dispatches. Defaults to read."
+                "description": "Choose the least access that can run the requested task. Use read (the default) for local inspection with read_file, glob, or grep. Set write when the requested task needs shell, network commands, file changes, or a skill script. Inspect the skill instructions if the required tools are unclear. The user can request the outcome in plain language; do not ask them to choose an access mode. Honor explicit tool restrictions and ask only if they conflict with an operation the task requires. Write enables tools; the prompt still governs whether to create or change files. Existing skill-script permissions and approval checks still apply."
             }
         }
     })

@@ -174,11 +174,16 @@ impl FlowyApp {
         let saved = matches!(action, A::Save(..)) && result.is_ok();
         self.automations.feedback = Some(match result {
             Ok(key) => key,
-            Err(ServiceError::NotFound) => "auto.unavailable",
             Err(ServiceError::Invalid(_) | ServiceError::Schedule(_)) => {
                 "auto.invalid"
             }
-            Err(ServiceError::Store(_)) => "auto.load_error",
+            Err(
+                ServiceError::Store(_)
+                | ServiceError::Start(flowy_automation::StartError::Store(_)),
+            ) => "auto.load_error",
+            Err(ServiceError::NotFound | ServiceError::Start(_)) => {
+                "auto.unavailable"
+            }
         });
         if saved {
             self.studio

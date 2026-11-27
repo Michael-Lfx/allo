@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::schedule::ScheduleError;
 use crate::store::{AutomationStore, StoreError};
-use crate::worker::Worker;
+use crate::worker::{StartError, Worker};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
@@ -20,6 +20,8 @@ pub enum ServiceError {
     NotFound,
     #[error("{0}")]
     Invalid(&'static str),
+    #[error(transparent)]
+    Start(#[from] StartError),
 }
 
 pub struct AutomationService {
@@ -153,6 +155,13 @@ impl AutomationService {
     /// Returns false if the run had already ended.
     pub fn cancel(&self, run_id: RunId) -> bool {
         self.worker.cancel(run_id)
+    }
+
+    /// Runs the automation once now, e.g. to test it right after creating
+    /// it. Paused automations can be run too; the schedule is unchanged.
+    pub fn run_now(&self, id: AutomationId) -> Result<Run, ServiceError> {
+        let automation = self.get(id)?;
+        Ok(self.worker.run_now(&automation)?)
     }
 
     pub fn list(&self) -> Result<Vec<Automation>, ServiceError> {

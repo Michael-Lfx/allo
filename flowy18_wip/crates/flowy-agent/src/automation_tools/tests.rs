@@ -91,7 +91,7 @@ fn weekly_definition(access: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn nine_tools_are_registered_without_run_now() {
+async fn ten_tools_are_registered_including_run_now() {
     let service = service();
     let mut names: Vec<_> = registry(&service, "r-1")
         .schemas()
@@ -110,9 +110,56 @@ async fn nine_tools_are_registered_without_run_now() {
             "automation_list",
             "automation_pause",
             "automation_resume",
+            "automation_run_now",
             "automation_update",
         ]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_now_starts_a_test_run_in_this_conversation() {
+    let service = service();
+    let owner = registry(&service, "r-1");
+    let other = registry(&service, "r-2");
+    let created = call(
+        &owner,
+        "automation_create",
+        json!({ "definition": weekly_definition("write") }),
+    )
+    .await;
+    let id = created["id"].clone();
+
+    let signed_out =
+        call(&owner, "automation_run_now", json!({ "automation_id": id }))
+            .await;
+    assert_eq!(signed_out["error"], "run_unavailable");
+
+    service.set_signed_in(true);
+    let foreign =
+        call(&other, "automation_run_now", json!({ "automation_id": id }))
+            .await;
+    assert_eq!(foreign["error"], "not_found");
+    let started =
+        call(&owner, "automation_run_now", json!({ "automation_id": id }))
+            .await;
+    assert_eq!(started["run"]["automation_id"], id);
+    assert_eq!(started["run"]["status"], "running");
+
+    let mut history = json!(null);
+    for _ in 0..500 {
+        history =
+            call(&owner, "automation_history", json!({ "automation_id": id }))
+                .await;
+        if history["runs"][0]["status"] == "succeeded" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(history["runs"][0]["status"], "succeeded");
+    assert_eq!(history["runs"][0]["work_id"], "w-1");
+    let after =
+        call(&owner, "automation_get", json!({ "automation_id": id })).await;
+    assert_eq!(after["next_run_at_ms"], created["next_run_at_ms"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -128,6 +175,7 @@ async fn tools_manage_this_conversations_automations() {
     assert_eq!(created["conversation_id"], "r-1");
     assert_eq!(created["access"], "write");
     assert!(created["next_run_at_ms"].is_i64());
+    assert!(created["next_run_local"].is_string());
     let id = created["id"].clone();
 
     let listed = call(&tools, "automation_list", json!({})).await;

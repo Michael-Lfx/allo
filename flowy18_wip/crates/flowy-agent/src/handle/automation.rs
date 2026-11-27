@@ -7,7 +7,11 @@
 //!   `[WorkEventBatch]` announcement tells the user in that conversation.
 //! - A due `Reminder` is saved as a message in the conversation.
 //!
-//! No session is created outside the conversation and nothing runs manually.
+//! - `automation_run_now` starts the same kind of run immediately (a test
+//!   run). It reports in the conversation like a scheduled run and leaves
+//!   the schedule unchanged.
+//!
+//! No session is created outside the conversation.
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -111,6 +115,39 @@ impl Harness {
         .map(|result| result.work_id)
     }
 
+    /// This conversation's automations as the host stored them, each with
+    /// `next_run_local` and its most recent run, for `query_work_status`.
+    /// Empty when automations are unavailable.
+    pub(super) fn conversation_automations(
+        &self,
+        conversation: &str,
+    ) -> Vec<serde_json::Value> {
+        let Some(service) = lock(&self.state.automation).clone() else {
+            return Vec::new();
+        };
+        service
+            .list_for(conversation)
+            .unwrap_or_default()
+            .iter()
+            .map(|automation| {
+                let mut value =
+                    crate::automation_tools::automation_to_json(automation);
+                let last_run = service
+                    .history(automation.id, 1)
+                    .ok()
+                    .and_then(|runs| runs.into_iter().next());
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "last_run".to_owned(),
+                        serde_json::to_value(last_run)
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                value
+            })
+            .collect()
+    }
+
     fn work_state(&self, conversation: &str, work_id: &str) -> Option<String> {
         self.child_works(conversation)
             .into_iter()
@@ -125,16 +162,16 @@ impl Harness {
         text: &str,
     ) -> Result<(), &'static str> {
         let conversation = &automation.conversation_id;
-        {
-            let mut live = lock(&self.state.live);
-            let session = live
-                .get_mut(conversation)
-                .filter(|session| session.role == SessionRole::Router)
-                .ok_or("ROUTER_NOT_FOUND")?;
-            session.projection.lines.push(ChatLine::Assistant {
-                text: format!("**{}**\n\n{text}", automation.title),
-            });
-        }
+        let line = ChatLine::Assistant {
+            text: format!("**{}**\n\n{text}", automation.title),
+        };
+        lock(&self.state.live)
+            .get_mut(conversation)
+            .filter(|session| session.role == SessionRole::Router)
+            .ok_or("ROUTER_NOT_FOUND")?
+            .projection
+            .lines
+            .push(line);
         persist_index(&self.state)?;
         self.state.stream_changed(conversation);
         Ok(())

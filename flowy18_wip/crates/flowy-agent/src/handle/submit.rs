@@ -1065,10 +1065,22 @@ impl Harness {
                     );
                 }
             } else if session_role == SessionRole::Router {
+                let harness = weak_harness.upgrade();
                 if is_router_announcement {
-                    work_events::clear_announcement_in_flight(&state, &id);
+                    // A failed announcement keeps its batch for a retry, so a
+                    // finished Worker's result is never dropped silently.
+                    let failed =
+                        matches!(&outcome, Ok(LoopOutcome::Failed) | Err(_));
+                    match harness.as_ref() {
+                        Some(harness) => work_events::settle_announcement(
+                            harness, &id, failed,
+                        ),
+                        None => work_events::clear_announcement_in_flight(
+                            &state, &id,
+                        ),
+                    }
                 }
-                if let Some(harness) = weak_harness.upgrade() {
+                if let Some(harness) = harness {
                     work_events::schedule_router_inbox_flush(&harness, &id);
                 }
             }
