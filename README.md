@@ -535,6 +535,8 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run verify:modelscope` | 校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN） |
 | `bun run verify:voice-package` | Verify final release installers contain the voice daemon, target architecture, licenses, and bundled rg. |
 | `bun run clean` | 深度回收构建空间（debug 产物 + flycheck + 旧安装包） |
+| `bun run worktree:inspect` | 只读盘点全部 git worktree、孤儿目录、未合入提交与关联构建缓存占用 |
+| `bun run worktree:prune` | Fail-Closed 安全清理已合入/干净的过期 worktree（规避 Windows node_modules/junction 卡死） |
 | `bun run seed:dev` | 用生产数据目录播种 dev 数据目录 |
 | `bun run reset:dev` | 为 dev 数据目录写入显式 factory reset 请求（迁移校验失败无法启动时一键恢复，下次启动重建空数据集） |
 | `bun run bump` | 统一改版本号：根 Cargo.toml(真源) + package.json + ui + Cargo.lock，可选 --tag 提交并打 tag |

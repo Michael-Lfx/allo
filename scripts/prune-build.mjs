@@ -65,7 +65,7 @@
  *                                           # for this run (heavy test loop)
  */
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,11 +75,19 @@ import {
   quarantineStaleDevSession,
   readDevSessionLock,
 } from './dev-session-lock.mjs';
+import {
+  dirSizeBytes,
+  dirSizeGB,
+  dirStats,
+  fmtGB,
+  isProtectedBuildPath,
+  isWin,
+  rmDirSafe,
+} from './lib/build-fs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BUILD_DIR = join(ROOT, 'build.noindex');
 const TARGET_DIR = join(ROOT, 'target');
-const isWin = process.platform === 'win32';
 const KNOWN_TARGET_TRIPLE_RE = /^(x86_64|aarch64)-unknown-linux-gnu$|^(x86_64|aarch64)-pc-windows-msvc$|^(x86_64|aarch64|universal)-apple-darwin$/;
 // Set to '1' by the desktop build scripts once a multi-target session has
 // produced its first bundle. See removeStaleBundleDirs().
@@ -125,6 +133,36 @@ const daysValue = daysIdx >= 0 ? Number(args[daysIdx + 1]) : NaN;
 const daysIsValid = Number.isFinite(daysValue) && daysValue >= 1;
 const TEMP_MAX_AGE_DAYS = daysIsValid ? daysValue : DEFAULT_TEMP_MAX_AGE_DAYS;
 
+const ageHoursIdx = args.indexOf('--min-age-hours');
+const ageHoursVal = ageHoursIdx >= 0 ? Number(args[ageHoursIdx + 1]) : NaN;
+const MIN_AGE_HOURS = Number.isFinite(ageHoursVal) && ageHoursVal >= 0 ? ageHoursVal : 0;
+
+function readFlagValues(flag) {
+  const values = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag && args[i + 1]) {
+      values.push(
+        ...args[i + 1]
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+      i++;
+    } else if (args[i].startsWith(`${flag}=`)) {
+      values.push(
+        ...args[i]
+          .slice(flag.length + 1)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+    }
+  }
+  return values;
+}
+
+const requestedBuildDirs = readFlagValues('--build-dir').map((p) => resolve(p));
+
 const TAG = '[prune-build]';
 
 function log(msg) {
@@ -132,38 +170,6 @@ function log(msg) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Sum file sizes under a dir with a pure-Node walk. Cross-platform, no shell. */
-function dirSizeBytes(dir) {
-  let total = 0;
-  const stack = [dir];
-  while (stack.length) {
-    const d = stack.pop();
-    let ents;
-    try { ents = readdirSync(d, { withFileTypes: true }); } catch { continue; }
-    for (const ent of ents) {
-      const p = join(d, ent.name);
-      if (ent.isDirectory()) stack.push(p); // Dirent.isDirectory() is false for symlinks → no loops
-      else { try { total += statSync(p).size; } catch { /* skip */ } }
-    }
-  }
-  return total;
-}
-
-/**
- * Directory size in logical GB. Using the same file-size walk on every platform
- * avoids comparing Unix allocated blocks (`du`) with Windows logical bytes.
- */
-function dirSizeGB(dir) {
-  if (!existsSync(dir)) return 0;
-  try { return dirSizeBytes(dir) / 1024 ** 3; } catch { return 0; }
-}
-
-/** Format GB for display. */
-function fmtGB(gb) {
-  if (gb < 1) return `${(gb * 1024).toFixed(0)}M`;
-  return `${gb.toFixed(1)}G`;
-}
 
 function normalizeGuardPath(target) {
   const resolved = resolve(target);
@@ -248,6 +254,7 @@ export function discoverCheckoutBuildTargets(
   const addTarget = (label, manifestRoot, buildDir, targetDir) => {
     const key = normalizeGuardPath(buildDir || targetDir || manifestRoot);
     if (seen.has(key)) return;
+    if (isProtectedBuildPath(buildDir || '') || isProtectedBuildPath(targetDir || '')) return;
     if (!existsSync(manifestRoot)) return;
     if (!existsSync(buildDir) && !existsSync(targetDir)) return;
     seen.add(key);
@@ -406,13 +413,41 @@ function knownTargetTripleDirs() {
   return knownTripleDirs(TARGET_DIR);
 }
 
-function incrementalCacheDirsUnder(rootDir) {
-  const dirs = [join(rootDir, 'debug', 'incremental'), join(rootDir, 'release', 'incremental')];
-  for (const { dir } of knownTripleDirs(rootDir)) {
-    dirs.push(join(dir, 'debug', 'incremental'));
-    dirs.push(join(dir, 'release', 'incremental'));
+function discoverProfileDirs(rootDir) {
+  if (!existsSync(rootDir)) return [];
+  const containers = [
+    { prefix: '', dir: rootDir },
+    ...knownTripleDirs(rootDir).map(({ name, dir }) => ({ prefix: name, dir })),
+  ];
+  const profiles = [];
+  for (const { prefix, dir } of containers) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory() || ent.name === 'tmp' || KNOWN_TARGET_TRIPLE_RE.test(ent.name)) continue;
+      const p = join(dir, ent.name);
+      const looksLikeCargoProfile =
+        existsSync(join(p, 'build')) ||
+        existsSync(join(p, 'incremental')) ||
+        existsSync(join(p, 'deps')) ||
+        existsSync(join(p, '.fingerprint'));
+      if (!looksLikeCargoProfile) continue;
+      profiles.push({
+        name: prefix ? `${prefix}/${ent.name}` : ent.name,
+        profileName: ent.name,
+        dir: p,
+      });
+    }
   }
-  return dirs;
+  return profiles;
+}
+
+function incrementalCacheDirsUnder(rootDir) {
+  return discoverProfileDirs(rootDir).map((p) => join(p.dir, 'incremental'));
 }
 
 /** Incremental cache dirs across default and known target-triple profiles. */
@@ -498,35 +533,8 @@ function clearReleaseIntermediatesPreservingBundle(releaseDir, label) {
  * robocopy exit codes: 1/2/3 == SUCCESS, >=8 == failure, status null == missing.
  * Returns true iff robocopy ran without a hard error (status < 8).
  */
-function robocopyEmptyMirror(dir) {
-  let scratch;
-  try {
-    scratch = mkdtempSync(join(tmpdir(), 'nomi-empty-'));
-    const r = spawnSync(
-      'robocopy',
-      [scratch, dir, '/MIR', '/XJ', '/R:0', '/W:0', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS', '/NP'],
-      { stdio: 'ignore', timeout: 120_000 },
-    );
-    return r.status !== null && r.status < 8;
-  } catch {
-    return false;
-  } finally {
-    if (scratch) { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ } }
-  }
-}
-
-/** Remove a directory tree. Silent on failure. Lock-resilient on Windows. */
 function rmDir(dir, label) {
-  if (!existsSync(dir)) return;
-  try {
-    // Windows: empty the tree with robocopy first (fast + long-path-safe), then
-    // rmSync drops the emptied shell. If robocopy is absent, rmSync alone.
-    if (isWin) robocopyEmptyMirror(dir);
-    rmSync(dir, { recursive: true, force: true });
-    log(`  removed ${label || dir}`);
-  } catch (e) {
-    log(`  WARN: could not remove ${label || dir}: ${e.message}`);
-  }
+  rmDirSafe(dir, { label, log });
 }
 
 /**
@@ -772,6 +780,126 @@ function cargoSweepMaxsize(targetDir, maxGB, label, manifestRoot = ROOT) {
   }
 }
 
+/**
+ * Native Cargo 1.100 `build-dir` generation GC for one profile directory.
+ * Always keeps the single newest hash per crate in `<profile>/build/<crate>/<hash>/`
+ * and the single newest unit per `<crate>` prefix in `<profile>/incremental/<crate>-<hash>/`,
+ * then evicts older duplicate generations (oldest-first) until under `capBytes`.
+ */
+export function pruneBuildDirGenerations(profileDir, capBytes, { minAgeHours = 0 } = {}) {
+  const buildDir = join(profileDir, 'build');
+  const incrDir = join(profileDir, 'incremental');
+  if (!existsSync(buildDir) && !existsSync(incrDir)) {
+    return { scanned: false, totalBytes: 0, freedBytes: 0, removedCount: 0, hasLegacyDeps: existsSync(join(profileDir, 'deps')) };
+  }
+
+  let totalBytes = 0;
+  const candidates = [];
+  const now = Date.now();
+  const minAgeMs = minAgeHours * 3600 * 1000;
+
+  let topEntries = [];
+  try { topEntries = readdirSync(profileDir, { withFileTypes: true }); } catch { topEntries = []; }
+  for (const ent of topEntries) {
+    if (ent.name === 'build' || ent.name === 'incremental') continue;
+    const full = join(profileDir, ent.name);
+    if (ent.isDirectory()) totalBytes += dirStats(full).bytes;
+    else { try { totalBytes += statSync(full).size; } catch { /* ignore */ } }
+  }
+
+  if (existsSync(buildDir)) {
+    let crateEntries = [];
+    try { crateEntries = readdirSync(buildDir, { withFileTypes: true }); } catch { crateEntries = []; }
+    for (const crateEnt of crateEntries) {
+      if (!crateEnt.isDirectory()) continue;
+      const cratePath = join(buildDir, crateEnt.name);
+      let hashes = [];
+      try {
+        hashes = readdirSync(cratePath, { withFileTypes: true })
+          .filter((h) => h.isDirectory())
+          .map((h) => {
+            const hp = join(cratePath, h.name);
+            const st = dirStats(hp);
+            totalBytes += st.bytes;
+            return { path: hp, bytes: st.bytes, mtimeMs: st.maxMtimeMs };
+          });
+      } catch {
+        continue;
+      }
+      if (hashes.length <= 1) continue;
+      hashes.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (let idx = 1; idx < hashes.length; idx++) {
+        if (now - hashes[idx].mtimeMs >= minAgeMs) candidates.push(hashes[idx]);
+      }
+    }
+  }
+
+  if (existsSync(incrDir)) {
+    const groups = new Map();
+    let incrEntries = [];
+    try { incrEntries = readdirSync(incrDir, { withFileTypes: true }); } catch { incrEntries = []; }
+    for (const unitEnt of incrEntries) {
+      if (!unitEnt.isDirectory()) continue;
+      const up = join(incrDir, unitEnt.name);
+      const st = dirStats(up);
+      totalBytes += st.bytes;
+      const splitIdx = unitEnt.name.lastIndexOf('-');
+      const prefix = splitIdx > 0 ? unitEnt.name.slice(0, splitIdx) : unitEnt.name;
+      if (!groups.has(prefix)) groups.set(prefix, []);
+      groups.get(prefix).push({ path: up, bytes: st.bytes, mtimeMs: st.maxMtimeMs });
+    }
+    for (const items of groups.values()) {
+      if (items.length <= 1) continue;
+      items.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (let idx = 1; idx < items.length; idx++) {
+        if (now - items[idx].mtimeMs >= minAgeMs) candidates.push(items[idx]);
+      }
+    }
+  }
+
+  let freedBytes = 0;
+  let removedCount = 0;
+  if (totalBytes > capBytes) {
+    candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const candidate of candidates) {
+      if (totalBytes - freedBytes <= capBytes) break;
+      const res = rmDirSafe(candidate.path);
+      if (res.removed) {
+        freedBytes += candidate.bytes;
+        removedCount++;
+      }
+    }
+  }
+
+  return {
+    scanned: true,
+    totalBytes,
+    freedBytes,
+    removedCount,
+    hasLegacyDeps: existsSync(join(profileDir, 'deps')),
+  };
+}
+
+function pruneOverCapBuildDirGenerations(buildDir, capGB, label) {
+  if (!buildDir || !existsSync(buildDir) || isProtectedBuildPath(buildDir)) {
+    return { freedGB: 0, sawLegacyDeps: false };
+  }
+  const profiles = discoverProfileDirs(buildDir);
+  if (!profiles.length) return { freedGB: 0, sawLegacyDeps: false };
+  const capBytes = (capGB * 1024 ** 3) / profiles.length;
+  let freedBytes = 0;
+  let sawLegacyDeps = false;
+  for (const p of profiles) {
+    const res = pruneBuildDirGenerations(p.dir, capBytes, { minAgeHours: MIN_AGE_HOURS });
+    freedBytes += res.freedBytes;
+    if (res.removedCount > 0) {
+      log(`  [${label}/${p.name}] pruned ${res.removedCount} old crate/incremental generations (${fmtGB(res.freedBytes / 1024 ** 3)})`);
+    }
+    if (res.hasLegacyDeps) sawLegacyDeps = true;
+  }
+  return { freedGB: freedBytes / 1024 ** 3, sawLegacyDeps };
+}
+
 function boundedCleanup(initialSizes) {
   assertNoActiveDevSession(BUILD_DIR);
   for (const incrDir of incrementalCacheDirs()) {
@@ -785,17 +913,23 @@ function boundedCleanup(initialSizes) {
   rmDir(join(BUILD_DIR, 'tmp'), 'build.noindex/tmp');
 
   const haveSweep = cargoSweepInstalled();
-  const overCap = initialSizes.buildGB > BUILD_CAP_GB || initialSizes.targetGB > TARGET_MAXSIZE_GB;
+  let remainingBuildGB = initialSizes.buildGB;
+  if (remainingBuildGB > BUILD_CAP_GB) {
+    const gen = pruneOverCapBuildDirGenerations(BUILD_DIR, BUILD_CAP_GB, 'build.noindex');
+    if (gen.freedGB > 0) remainingBuildGB = dirSizeGB(BUILD_DIR);
+  }
+
+  const overCap = remainingBuildGB > BUILD_CAP_GB || initialSizes.targetGB > TARGET_MAXSIZE_GB;
   if (!haveSweep && overCap) {
     // The incremental-only fallback below is NOT a cap: it never touches deps/,
     // which is where a bloated cache lives (rlib/pdb/exe/rmeta generations).
     log('WARN: cargo-sweep is not installed — the size caps cannot be enforced.');
     log(`WARN: caps build.noindex=${BUILD_CAP_GB}G / target=${TARGET_MAXSIZE_GB}G, `
-      + `current build.noindex=${fmtGB(initialSizes.buildGB)} / target=${fmtGB(initialSizes.targetGB)}.`);
+      + `current build.noindex=${fmtGB(remainingBuildGB)} / target=${fmtGB(initialSizes.targetGB)}.`);
     log('WARN: the fallback only evicts old incremental units; deps/ (the bulk) is left untouched.');
     log('WARN: fix with `cargo install cargo-sweep --locked`, then re-run `bun run build:gc`.');
   }
-  if (initialSizes.buildGB > BUILD_CAP_GB) {
+  if (remainingBuildGB > BUILD_CAP_GB) {
     if (haveSweep) cargoSweepMaxsize(BUILD_DIR, BUILD_CAP_GB, 'build.noindex');
     else trimIncrementalUnitsToBudget(
       incrementalCacheDirsUnder(BUILD_DIR),
@@ -838,16 +972,20 @@ function gcSingleRoot(target, haveSweep, activePaths) {
   ]) {
     if (existsSync(incrDir)) pruneIncrementalSessions(incrDir);
   }
-  const buildGB = dirSizeGB(target.buildDir);
+  let buildGB = dirSizeGB(target.buildDir);
   const targetGB = dirSizeGB(target.targetDir);
   log(`  checking [${target.label}]: build.noindex=${fmtGB(buildGB)}, target=${fmtGB(targetGB)}`);
   if (buildGB > BUILD_CAP_GB) {
-    if (haveSweep) cargoSweepMaxsize(target.buildDir, BUILD_CAP_GB, `${target.label}/build.noindex`, target.manifestRoot);
-    else trimIncrementalUnitsToBudget(
-      incrementalCacheDirsUnder(target.buildDir),
-      BUILD_INCREMENTAL_BUDGET_GB,
-      `${target.label} build.noindex incremental`,
-    );
+    const gen = pruneOverCapBuildDirGenerations(target.buildDir, BUILD_CAP_GB, target.label);
+    if (gen.freedGB > 0) buildGB = dirSizeGB(target.buildDir);
+    if (buildGB > BUILD_CAP_GB) {
+      if (haveSweep) cargoSweepMaxsize(target.buildDir, BUILD_CAP_GB, `${target.label}/build.noindex`, target.manifestRoot);
+      else trimIncrementalUnitsToBudget(
+        incrementalCacheDirsUnder(target.buildDir),
+        BUILD_INCREMENTAL_BUDGET_GB,
+        `${target.label} build.noindex incremental`,
+      );
+    }
   }
   if (targetGB > TARGET_MAXSIZE_GB) {
     if (haveSweep) cargoSweepMaxsize(target.targetDir, TARGET_MAXSIZE_GB, `${target.label}/target`, target.manifestRoot);
@@ -884,12 +1022,35 @@ function gcExtendedCaches() {
       const guard = guardBuildTarget({ buildDir: entry.dir }, { activePaths, quarantineStale: true });
       const decision = shouldPruneTempEntry(entry, TEMP_MAX_AGE_DAYS, guard);
       if (!decision.prune) {
+        // Keep recent Temp build-dirs alive while trimming duplicate old crate hashes if over cap.
+        if (!guard.blocked && entry.sizeGB > BUILD_CAP_GB) {
+          pruneOverCapBuildDirGenerations(entry.dir, BUILD_CAP_GB, `temp/${entry.name}`);
+        }
         skipped++;
         log(`  SKIP [temp/${entry.name}] (${fmtGB(entry.sizeGB)}): ${decision.reason}`);
         continue;
       }
       rmDir(entry.dir, `temp/${entry.name} (${fmtGB(entry.sizeGB)}, ${entry.ageDays.toFixed(1)}d old)`);
       tempRemoved++;
+    }
+  }
+  for (const custom of requestedBuildDirs) {
+    if (isProtectedBuildPath(custom)) {
+      log(`  SKIP [custom]: protected path ${custom}`);
+      skipped++;
+      continue;
+    }
+    const guard = guardBuildTarget({ buildDir: custom }, { activePaths, quarantineStale: true });
+    if (guard.blocked) {
+      log(`  SKIP [custom:${basename(custom)}]: ${guard.reason}`);
+      skipped++;
+      continue;
+    }
+    for (const incrDir of incrementalCacheDirsUnder(custom)) {
+      if (existsSync(incrDir)) pruneIncrementalSessions(incrDir);
+    }
+    if (dirSizeGB(custom) > BUILD_CAP_GB) {
+      pruneOverCapBuildDirGenerations(custom, BUILD_CAP_GB, `custom/${basename(custom)}`);
     }
   }
   log(`extended gc summary: targets=${checked}, skipped=${skipped}, tempRemoved=${tempRemoved}`);
@@ -929,7 +1090,7 @@ if (import.meta.main || invokedPath === fileURLToPath(import.meta.url)) {
       reclaimDebugDeadWeight();
     } else {
       afterSizes = boundedCleanup(beforeSizes);
-      if (includeFlowy18 || includeWorktrees || pruneTemp) {
+      if (includeFlowy18 || includeWorktrees || pruneTemp || requestedBuildDirs.length > 0) {
         gcExtendedCaches();
       }
     }

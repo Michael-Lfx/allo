@@ -47,20 +47,18 @@ linker = "rust-lld.exe"
 # entry points deliberately leave the cargo cache alone (a preflight there
 # would invalidate the incremental graph). Reclaiming space is an explicit,
 # manual step — `bun run build:inspect` → `bun run build:gc` → (only if a cold
-# rebuild is acceptable) `bun run build:clean`. `build:gc` enforces the size cap
-# through `cargo sweep --maxsize`, so `cargo-sweep` is a hard prerequisite:
-#
-#   cargo install cargo-sweep --locked
-#
-# Without it the cap is unenforceable and only old incremental units get
-# evicted — deps/ (the rlib/pdb/exe/rmeta generations that actually bloat this
-# directory) stays untouched. Measured drift on a machine without cargo-sweep:
-# build.noindex reached 183G before anyone noticed, versus ~26G after one
-# `build:gc` pass.
+# rebuild is acceptable) `bun run build:clean` (add `--scope all` to include
+# `flowy18_wip/`, git worktrees, and Temp `flowy18-*-build` caches).
+# Cargo 1.100 `build-dir` (`<profile>/build/<crate>/<hash>/`) is pruned natively
+# per crate generation by `prune-build.mjs` (retaining the newest hash per crate);
+# legacy `target/<profile>/deps/` layouts still use `cargo sweep --maxsize` when
+# installed (`cargo install cargo-sweep --locked`).
 [build]
 build-dir = "{workspace-root}/build.noindex"
 incremental = true
-# rustc-wrapper = "sccache.exe"  # disabled locally: sccache not installed (pre-existing main regression 1fd21f41c; see config.local.toml.example for the intended opt-in)
+# Opt-in `rustc-wrapper = "sccache"` belongs in `.cargo/config.local.toml` (gitignored)
+# or `~/.cargo/config.toml`; see `.cargo/config.local.toml.example` (kept out of `[env]`
+# with `force = true` so `flowy18_wip/scripts/dev-hotpatch.ps1` can override it cleanly).
 
 
 # Profile settings are managed in the workspace Cargo.toml to keep a single
