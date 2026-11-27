@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rpi_agent::{AgentError, AgentTool, AgentToolResult, TextContentOrImage};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use rpi_tools::OsExecutionEnv;
 #[cfg(windows)]
 use rpi_tools::create_powershell_tool;
@@ -28,12 +28,12 @@ use crate::types::{ContentBlock, ToolExecutionResult};
 /// full-output spill to a temporary file.
 #[must_use]
 pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
-    #[cfg(target_os = "linux")]
-    let env = crate::tools::sandbox::linux_execution_env(
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let env = crate::tools::sandbox::unix_execution_env(
         cwd,
         crate::tools::sandbox::SandboxPolicy::for_workspace(cwd.to_path_buf()),
     );
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let env: Arc<dyn ExecutionEnv> =
         Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
     bash_definition(env)
@@ -67,21 +67,21 @@ pub fn pi_shell_definition(cwd: &Path) -> Arc<ToolDefinition> {
     }
 }
 
-/// Production shell with the host's branded data directory in the Linux
+/// Production shell with the host's branded data directory in the native Unix
 /// credential protection policy.
 #[must_use]
 pub fn pi_shell_definition_for_host(
     cwd: &Path,
     data_root: &Path,
 ) -> Arc<ToolDefinition> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        use crate::tools::sandbox::{SandboxPolicy, linux_execution_env};
+        use crate::tools::sandbox::{SandboxPolicy, unix_execution_env};
         let policy = SandboxPolicy::for_workspace(cwd.to_path_buf())
             .with_protected_path(data_root.join("auth"));
-        bash_definition(linux_execution_env(cwd, policy))
+        bash_definition(unix_execution_env(cwd, policy))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = data_root;
         pi_shell_definition(cwd)
@@ -480,13 +480,31 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires nonprivileged Bubblewrap with mount and PID namespaces"]
     async fn linux_bwrap_tool_enforces_workspace_writes() {
+        shell_tool_enforces_workspace_writes(
+            "set -e; printf inside > inside; test -d ../auth; test ! -e ../auth/fixture; if printf outside > ../outside; then exit 1; fi",
+        )
+        .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires macOS Seatbelt and a working sandbox-exec"]
+    async fn macos_seatbelt_tool_enforces_workspace_writes() {
+        shell_tool_enforces_workspace_writes(
+            "set -e; printf inside > inside; if /bin/cat ../auth/fixture; then exit 2; fi; if printf outside > ../outside; then exit 1; fi",
+        )
+        .await;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn shell_tool_enforces_workspace_writes(command: &str) {
         let salt = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("build-test")
-            .join(format!("flowy-bwrap-shell-{salt}"));
+            .join(format!("flowy-sandbox-shell-{salt}"));
         let cwd = root.join("work");
         std::fs::create_dir_all(&cwd).unwrap();
         let registry = ToolRegistry::new();
@@ -495,10 +513,10 @@ mod tests {
         registry.register(super::pi_shell_definition_for_host(&cwd, &root));
         let result = registry
             .execute(
-                "call-bwrap".into(),
+                "call-sandbox".into(),
                 "bash".into(),
                 json!({
-                    "command": "set -e; printf inside > inside; test -d ../auth; test ! -e ../auth/fixture; if printf outside > ../outside; then exit 1; fi",
+                    "command": command,
                     "timeout": 10,
                 }),
                 run_ctx(),

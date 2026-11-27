@@ -147,6 +147,43 @@ jobs:
       - name: Nonprivileged Linux sandbox integration
         run: cargo test -p flowy-agent-core --locked --lib linux_bwrap_ -- --ignored --test-threads=1
 
+  macos-sandbox:
+    name: Flowy macOS Seatbelt integration
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: flowy18_wip
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100"
+          components: clippy
+      - name: Use crates.io from GitHub
+        working-directory: .
+        run: bun scripts/ci-use-crates-io.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flowy18-macos-sandbox
+          workspaces: "flowy18_wip -> build.noindex"
+      - name: Check Seatbelt availability on the runner
+        run: |
+          test "$(id -u)" -ne 0
+          test -x /usr/bin/sandbox-exec
+      - name: Agent core and orchestration tests
+        run: cargo test -p flowy-agent-core -p flowy-agent --locked
+      - name: Nonprivileged macOS sandbox integration
+        run: cargo test -p flowy-agent-core --locked --lib macos_seatbelt_ -- --ignored --test-threads=1
+      - name: Agent core Clippy
+        run: cargo clippy -p flowy-agent-core --all-targets --locked -- -D warnings
+
   windows-core-agent:
     name: GPUI Windows core and agent tests
     runs-on: windows-latest

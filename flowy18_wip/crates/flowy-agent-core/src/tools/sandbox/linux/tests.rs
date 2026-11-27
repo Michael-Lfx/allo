@@ -1,7 +1,15 @@
-use super::*;
+use super::super::{SandboxAvailability, SandboxBackend, SandboxPolicy, unix};
+use super::availability;
+use rpi_tools::{ExecutionEnv, ExecutionErrorCode, ShellExecOptions};
+use std::collections::HashMap;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 const READY_COMMAND: &str = "sleep 60 & printf ready > ready; wait";
 const REAP_WORKSPACE: &str = "FLOWY_TEST_BWRAP_REAP_WORKSPACE";
@@ -46,7 +54,7 @@ fn active_env(
         },
         "integration tests require a working nonprivileged Bubblewrap"
     );
-    execution_env(workspace, policy)
+    unix::execution_env(workspace, policy)
 }
 
 fn collect_descendants(pid: u32, descendants: &mut Vec<u32>) {
