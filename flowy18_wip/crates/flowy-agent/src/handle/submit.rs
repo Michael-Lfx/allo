@@ -700,6 +700,15 @@ impl Harness {
                     force_reconfirm_tools,
                 }));
         }
+        if core_session.role != SessionRole::Router
+            && let Some(service) = self.automation_tools_for(&id)
+        {
+            crate::automation_tools::register(
+                &run_config.registry,
+                &service,
+                core_session.access_mode == WorkAccessMode::ReadWrite,
+            );
+        }
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)
         {

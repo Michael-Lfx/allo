@@ -13,6 +13,7 @@ chrono = { workspace = true }
 directories = { workspace = true }
 flowy-agent = { workspace = true }
 flowy-auth = { workspace = true }
+flowy-automation = { workspace = true }
 flowy-core = { workspace = true }
 flowy-i18n = { workspace = true }
 flowy-obs = { workspace = true }

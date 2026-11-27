@@ -57,7 +57,7 @@ pub use deep_link::{
     parse_with_scheme as parse_deep_link_with_scheme, take_pending,
 };
 pub use notify::{
-    NotifyKind, show_task_notification, show_update_notification,
+    NotifyKind, show_automation_notification, show_task_notification, show_update_notification,
 };
 pub use wake::{WakeSignal, signal_wake, take_wake};
 
@@ -105,8 +105,17 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
     cx.on_action(|_: &QuitApp, cx| {
         cx.quit();
     });
-    cx.on_system_notification_response(|response, cx| {
-        if response.action_id.as_deref() == Some("open") {
+    cx.on_system_notification_response(move |response, cx| {
+        if let Some(run_id) = notify::automation_response(
+            &response.tag,
+            response.action_id.as_deref(),
+        ) {
+            deep_link::enqueue(vec![format!(
+                "{}://automation-run/{run_id}",
+                brand.url_scheme
+            )]);
+            ensure_main_window(cx);
+        } else if response.action_id.as_deref() == Some("open") {
             ensure_main_window(cx);
         }
     });

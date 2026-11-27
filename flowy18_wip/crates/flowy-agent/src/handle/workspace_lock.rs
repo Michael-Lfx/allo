@@ -265,7 +265,12 @@ fn is_ancestor_key(ancestor: &str, descendant: &str) -> bool {
 /// always map to the exact same lock bucket.
 #[must_use]
 pub(super) fn normalize_workspace_key(path: &Path) -> String {
-    let resolved = resolve_deepest_ancestor(path);
+    // Windows may canonicalize `base\.` to an 8.3 short path while resolving
+    // `base` to its long spelling. Removing CurDir first keeps both inputs on
+    // the same deepest-existing-ancestor path without lexically resolving `..`
+    // across junctions or symlinks.
+    let without_cur_dir = strip_cur_dir_components(path);
+    let resolved = resolve_deepest_ancestor(&without_cur_dir);
     let folded = fold_lexical_components(&resolved);
     let raw = folded.to_string_lossy();
     #[cfg(windows)]
@@ -292,6 +297,16 @@ pub(super) fn normalize_workspace_key(path: &Path) -> String {
         }
         normalized
     }
+}
+
+fn strip_cur_dir_components(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        if !matches!(component, Component::CurDir) {
+            out.push(component.as_os_str());
+        }
+    }
+    out
 }
 
 fn fold_lexical_components(path: &Path) -> PathBuf {

@@ -1,6 +1,8 @@
 //! Studio workspace Entity: home / chat / automation.
 
 mod automation;
+mod automation_page;
+pub use automation_page::{AutomationPage, AutomationUiAction, AutomationView};
 mod chat;
 mod composer;
 mod composer_add_menu;

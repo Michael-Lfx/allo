@@ -1,5 +1,64 @@
 use gpui::{App, SharedString, SystemNotification, SystemNotificationAction};
 
+const AUTOMATION_TAG: &str = "automation-run:";
+
+pub fn automation_response<'a>(
+    tag: &'a str,
+    action: Option<&str>,
+) -> Option<&'a str> {
+    let run_id = tag.strip_prefix(AUTOMATION_TAG)?;
+    (matches!(action, None | Some("open"))
+        && super::deep_link::valid_run_route(run_id))
+    .then_some(run_id)
+}
+
+/// Submit an opaque run route. Show only generic product copy on the OS surface,
+/// which can outlive the account that was active when it was submitted.
+pub fn show_automation_notification(
+    cx: &App,
+    run_id: &str,
+    title: &str,
+    body: &str,
+    open_label: &str,
+) -> bool {
+    if !super::deep_link::valid_run_route(run_id) {
+        return false;
+    }
+    cx.show_system_notification(SystemNotification {
+        tag: format!("{AUTOMATION_TAG}{run_id}").into(),
+        title: title.to_owned().into(),
+        body: body.to_owned().into(),
+        actions: vec![SystemNotificationAction {
+            id: "open".into(),
+            label: open_label.to_owned().into(),
+        }],
+    });
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::automation_response;
+
+    #[test]
+    fn automation_tag_handles_body_and_open_but_rejects_extra_route_data() {
+        let id = "0191f3a8-fb01-73f0-8abe-fa324261fe20";
+        let tag = format!("automation-run:{id}");
+        assert_eq!(automation_response(&tag, None), Some(id));
+        assert_eq!(automation_response(&tag, Some("open")), Some(id));
+        assert_eq!(automation_response(&tag, Some("other")), None);
+        assert_eq!(
+            automation_response(&format!("{tag}/account/42"), None),
+            None
+        );
+        assert_eq!(automation_response("ota-ready", Some("open")), None);
+        assert!(matches!(
+            crate::deep_link::parse_with_scheme(&format!("flowy://automation-run/{id}"), "flowy"),
+            Some(crate::DeepLink::AutomationRun { run_id }) if run_id == id
+        ));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotifyKind {
     Available,

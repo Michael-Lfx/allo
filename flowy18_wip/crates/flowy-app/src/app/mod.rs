@@ -5,6 +5,7 @@ mod artifact_cleanup;
 mod artifact_preview;
 mod bootstrap;
 mod cloud_sync;
+mod automation;
 mod conversation_actions;
 mod dock;
 mod flex;
@@ -137,6 +138,7 @@ pub struct FlowyApp {
     credits_generation: u64,
     credits_poll: Option<Task<()>>,
     locale_watch: Option<Task<()>>,
+    automations: automation::AutomationState,
     shell_watch: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
     /// Programmatic input text waiting for a window; see [`FlowyApp::set_input_text`].
@@ -650,6 +652,7 @@ impl FlowyApp {
             credits_generation: 0,
             credits_poll: None,
             locale_watch: None,
+            automations: automation::AutomationState::default(),
             shell_watch: None,
             subscriptions,
             pending_input_text: std::cell::RefCell::new(Vec::new()),
@@ -662,6 +665,7 @@ impl FlowyApp {
         app.refresh_models(cx);
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
+        app.start_automation(cx);
         app.load_library(cx);
         app.sync_studio_skills(cx);
         tracing::debug!(
@@ -804,10 +808,6 @@ impl FlowyApp {
             .update(cx, flowy_studio::StudioPanel::clear_thread);
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI Context is forwarded to entity updates"
-    )]
     fn sync_studio_surface(&mut self, cx: &mut Context<'_, Self>) {
         let notice = self.notice;
         match self.section {
@@ -842,6 +842,7 @@ impl FlowyApp {
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
+                self.refresh_automation(cx);
             }
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
@@ -899,6 +900,9 @@ impl FlowyApp {
     ) {
         let section_synced = self.sync_section_from_studio(cx);
         match event {
+            StudioEvent::Automation(action) => {
+                self.handle_automation_action(action, cx);
+            }
             StudioEvent::Notice(notice) => {
                 // Events are delivered after the current action. Reconcile the
                 // panel again so a navigation action cannot restore stale text
