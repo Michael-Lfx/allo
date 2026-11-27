@@ -100,7 +100,7 @@ panel.set_prompt_text(..)  // 写（入队）
 | --- | --- | --- |
 | 元素 prepaint 钩子 | `.on_prepaint(..)` | 自定义 `Element` wrapper（见 `overlays.rs` 的 `PrepaintBounds`） |
 | ARIA 属性 | `.aria_live` `.aria_disabled` `.aria_modal` `.aria_hidden` | 无替代，生产代码中已删 |
-| ARIA 展开态 | 弹层/折叠触发按钮加 `.aria_expanded(...)` | **禁止添加**：`gpui-pre 0.3.14` 丢弃 AccessKit `Action::Expand`，会导致 Windows UIA 点击失效；保持普通按钮即可 |
+| ARIA 展开/选中/菜单单选态 | `.aria_expanded(...)`、`.aria_toggled(...)`、`.aria_selected(...)`、`Role::MenuItemRadio`、`Role::RadioButton` | **需点击触发的控件禁止添加**：`accesskit_consumer 0.38` 的 `is_invocable()` 要求 `!supports_toggle() && !supports_expand_collapse() && is_selected().is_none()`，而 `gpui-pre 0.3.14` 仅处理 `Click`/`Focus`/`Blur`，加上这些属性会剥夺 Windows UIA `InvokePattern` 导致点击失效。按钮、触发器、菜单项、导航项统一保持 `theme::interactive`（默认 `Role::Button`）并用主题样式传达选中态；`check-ui-contracts.mjs` 已硬拦截 `Role::MenuItemRadio` 与 `.aria_expanded(...)`，标准 `Switch`/`Tab`/`RadioGroup` 仅见 `flowy-ui/src/controls.rs` |
 | 颜色 trait | `gpui::ColorExt`（`blend` / `fade_out`） | `Hsla::from` + 手动 alpha |
 | 颜色函数 | `gpui::rgb_to_hsla(x)` | `gpui::Hsla::from(x)` |
 | Enter action | `gpui::Enter` | `gpui_kit::base::input::Enter { secondary, shift }` |

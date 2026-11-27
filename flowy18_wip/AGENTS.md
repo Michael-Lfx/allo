@@ -18,6 +18,7 @@ Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试 / `dx serve` 热补丁的�
 | `flowy-shell` | deep link / notify / autostart / 托盘 | `install(Brand, open_main)` / `configure_brand` / `tray_available`；托盘走 `gpui-tray` 的 `gpui-kit` feature（真包是 `gpui-pre`）。托盘可用时关窗最小化（`gpui-pre` 没有 `set_visible`），不可用时关窗退出；`ctrl-q` 始终可退。注意：从带标签的沙箱目录直接运行 exe，进程是低完整性，Windows 会拒绝托盘图标，表现为关窗直接退出——装好或换目录运行即正常 |
 | `flowy-agent` | UI↔core 端口；多 session / 流式投影 / 标题回退；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK 入口当前未接线（`LlmConfig::from_flex` 保留） |
 | `flowy-agent-core` | 自有 agent 内核：类型、工具注册、结构化历史、pi loop、OpenAI 兼容传输 | `Engine` / `ToolRegistry` / `run_turn` / `TurnObserver` |
+| `flowy-automation` | 本地定时/条件自动化存储、调度与后台执行 | `AutomationStore` / `AutomationService` / `Worker` |
 | `flowy-i18n` | 23 locales + `{product}` | `I18n` / `Locale` |
 | `flowy-studio` | Home / Chat / Board / Automation Entity | `StudioPanel` / `StudioEvent`（含 `OpenFlex`）/ `StudioSurface` |
 | `flowy-app` | 域状态 + 壳装配；持有 `Entity<StudioPanel>`；登录 UI 只绑 auth ViewModel；Flex 模态 + `preferences.json` | `FlowyApp` / `app::run`；`pub use` agent/i18n |
@@ -45,9 +46,14 @@ Windows 推荐启动步骤：
 - **分层验证（避免每次改几行都跑全量 8-crate 门禁）**：
   - 界面/布局/文案迭代：启动一次 `.\scripts\dev-hotpatch.ps1`，保存源码约 15–18s 原位热补丁生效。
   - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`；`flowy-agent` 日常整 crate 复验可先跑 `-- --test-threads=4`（~19s）。
-  - 仅 PR 提交前跑一次完整门禁：`bun scripts/check-ui-contracts.mjs --self-test && bun scripts/check-ui-contracts.mjs`、`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-ui` **禁带 `--lib`** 以免漏跑集成测试 `tests/anchor_measurement.rs`；`flowy-agent` 固定 `-- --test-threads=1` 规避 NTFS `fsync` 并发抖动）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`（改动 `flowy-agent-core`/`flowy-agent` 公开结构体时须同时覆盖下游 `flowy-studio`/`flowy-app`/`flowy-desktop`，防 `clippy::large_enum_variant` 与单测 `pedantic` 告警）。
+  - 仅 PR 提交前跑一次完整门禁：`bun scripts/check-ui-contracts.mjs --self-test && bun scripts/check-ui-contracts.mjs`、`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-ui` **禁带 `--lib`** 以免漏跑集成测试 `tests/anchor_measurement.rs`；`flowy-agent` 与 `flowy-automation` 固定 `-- --test-threads=1` 规避 NTFS `fsync` 与调度并发抖动）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`（改动 `flowy-agent-core`/`flowy-agent` 公开结构体时须同时覆盖下游 `flowy-studio`/`flowy-app`/`flowy-desktop`，防 `clippy::large_enum_variant` 与单测 `pedantic` 告警）。
+- **目录拆分与生产源码契约（`scripts/check-ui-contracts.mjs` 强制检查）**：
+  - 核心模块已按职责目录拆解（`flowy-agent/src/{handle,artifact_store}`、`flowy-studio/src/{feed,panel}`、`flowy-app/src/app/` 等），外置单元测试优先通过 `#[cfg(test)] mod tests;` 或 `*_tests.rs` 挂载。
+  - 全工作区 `crates/*/src/` 生产代码保持 **零私有通配符导入**（禁止非 `gpui::prelude::*` 的 `use ...::*;`，仅允许 `lib.rs` / `flowy-studio/src/motion.rs` 顶层 `pub use ...::*;` 门面重导出）与 **零 `.unwrap(`**。
+  - UI crate 生产代码禁止 `Role::MenuItemRadio` 与 `.aria_expanded(...)`（完整 UIA `InvokePattern` 边界见 [`docs/gpui-pre-and-kit.md`](docs/gpui-pre-and-kit.md)）。
 - **Windows Agent 避坑红线**：
   - 必须经 `.\scripts\dev-hotpatch.ps1` 启动热补丁，**不要**手敲裸 `dx serve --hot-patch` 或手动注入 `RUSTC_WRAPPER=sccache` / `-Clinker=...`。
   - 同一 worktree 内**严禁并发运行多个 `cargo`**（会争抢 `build.noindex` 锁）；避免在同一次调试中交替跑 `-p flowy-studio -p flowy-agent` 与单独 `-p flowy-agent`（Cargo 特征统一哈希不同，首次切换会触发一次额外依赖重编）。
+  - 若工作区目录带有 Windows `Low Mandatory Level`（例如残留沙箱 ACL），默认 `build.noindex` 会触发构建脚本 `0xc0000142`、直接运行 `target/debug/flowy-app.exe` 会被拒托盘；应为当前工作目录设置互不冲突的 `$env:CARGO_BUILD_BUILD_DIR` 指向干净的临时目录，并从无低完整性标签目录启动实测副本。
   - 不要删除 `scripts/dx-capture-wrapper/target/`（重编 `dx-capture-wrapper.exe` 会改变 Cargo 的 `RUSTC_WRAPPER` 指纹并触发 `desktop-dev` 依赖重编）。
   - 不要删掉 `crates/flowy-desktop/Cargo.toml` 中对 `flowy-i18n` / `flowy-studio` / `flowy-ui` 的直接依赖——它们用于让 `dx 0.7.10` 的 1-hop 监听器覆盖全部 UI crate。

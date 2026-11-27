@@ -173,34 +173,64 @@ function stripTestCode(source) {
   return out.join("");
 }
 
-function inspect(path, source) {
+const wildcardBarrelFiles = new Set([
+  "flowy-app/src/lib.rs",
+  "flowy-studio/src/motion.rs",
+  "flowy-ui/src/lib.rs",
+]);
+
+function scanProduction(path, source, visitor, prepared = { production: stripTestCode(source) }) {
+  const code = prepared.code ??= codeOnly(prepared.production);
+  const issues = [];
+  const add = (offset, message) => issues.push(`${path}:${prepared.production.slice(0, offset).split("\n").length}: ${message}`);
+  visitor(prepared.production, code, add);
+  return issues;
+}
+
+function inspect(path, source, prepared) {
   // Production code only. Fixtures in #[cfg(test)] items are deliberately
   // isolated from runtime contracts and are checked by Cargo instead.
-  const production = stripTestCode(source);
-  const code = codeOnly(production);
-  const issues = [];
-  const add = (offset, message) => issues.push(`${path}:${production.slice(0, offset).split("\n").length}: ${message}`);
-  const ui = path.startsWith("flowy-ui/");
-  if (ui) {
-    for (const match of code.matchAll(/\bstatic\s+(?:mut\s+)?(?:DARK|ACCENT|DENSITY)\b|\bAtomic(?:Bool|U8)\b/g)) add(match.index, "theme state must belong to the window, not a process global");
-  }
-  for (const match of code.matchAll(/\b(?:theme|flowy_ui)::(?:install|canvas|dock|card|ink|muted|line|soft|composer|on_composer|composer_muted|danger|on_ink|accent|fill|on_fill|space|swatch|scrim|scrim_blur|modal_radius|modal_size)\s*\(/g)) add(match.index, "read the explicit ResolvedTheme snapshot instead of a legacy global token");
-  for (const match of code.matchAll(/\bcredits\s*:\s*2_?500\b|\bDAILY_GRANT\b/g)) add(match.index, "production credits must come from CreditsViewState, never a fabricated default or split");
-  if (!ui) {
-    const ranges = functions(code);
-    for (const match of code.matchAll(/\b(?:rgb|rgba)\s*\(/g)) {
-      const name = ranges.find(range => range.start <= match.index && range.end >= match.index)?.name;
-      if (!authoredColors.get(path)?.has(name)) add(match.index, "raw UI color outside an explicitly named illustration/media function");
+  return scanProduction(path, source, (production, code, add) => {
+    const ui = path.startsWith("flowy-ui/");
+    if (ui) {
+      for (const match of code.matchAll(/\bstatic\s+(?:mut\s+)?(?:DARK|ACCENT|DENSITY)\b|\bAtomic(?:Bool|U8)\b/g)) add(match.index, "theme state must belong to the window, not a process global");
     }
-    for (const item of rawClickableDivs(production, code)) {
-      if (!item.id || !infrastructure.get(path)?.has(item.id)) add(item.offset, `operation controls must use flowy_ui primitives (raw div id=${item.id ?? "dynamic/absent"})`);
+    for (const match of code.matchAll(/\b(?:theme|flowy_ui)::(?:install|canvas|dock|card|ink|muted|line|soft|composer|on_composer|composer_muted|danger|on_ink|accent|fill|on_fill|space|swatch|scrim|scrim_blur|modal_radius|modal_size)\s*\(/g)) add(match.index, "read the explicit ResolvedTheme snapshot instead of a legacy global token");
+    for (const match of code.matchAll(/\bcredits\s*:\s*2_?500\b|\bDAILY_GRANT\b/g)) add(match.index, "production credits must come from CreditsViewState, never a fabricated default or split");
+    for (const match of code.matchAll(/\bRole::MenuItemRadio\b/g)) add(match.index, "Role::MenuItemRadio strips Windows UIA InvokePattern; keep clickable controls as Button");
+    for (const match of code.matchAll(/\.aria_expanded\s*\(/g)) add(match.index, ".aria_expanded strips Windows UIA InvokePattern in gpui-pre 0.3.14; convey state visually");
+    if (!ui) {
+      const ranges = functions(code);
+      for (const match of code.matchAll(/\b(?:rgb|rgba)\s*\(/g)) {
+        const name = ranges.find(range => range.start <= match.index && range.end >= match.index)?.name;
+        if (!authoredColors.get(path)?.has(name)) add(match.index, "raw UI color outside an explicitly named illustration/media function");
+      }
+      for (const item of rawClickableDivs(production, code)) {
+        if (!item.id || !infrastructure.get(path)?.has(item.id)) add(item.offset, `operation controls must use flowy_ui primitives (raw div id=${item.id ?? "dynamic/absent"})`);
+      }
+      for (const range of ranges) {
+        const body = code.slice(range.start, range.end);
+        if (/menu|flyout|popover|model_info|credit_card/.test(range.name) && /\.absolute\s*\(/.test(body) && /\.(?:top|left|right|bottom)\s*\(\s*px\s*\(/.test(body)) add(range.start, "floating menus must use measured anchors, not fixed page coordinates");
+      }
     }
-    for (const range of ranges) {
-      const body = code.slice(range.start, range.end);
-      if (/menu|flyout|popover|model_info|credit_card/.test(range.name) && /\.absolute\s*\(/.test(body) && /\.(?:top|left|right|bottom)\s*\(\s*px\s*\(/.test(body)) add(range.start, "floating menus must use measured anchors, not fixed page coordinates");
+  }, prepared);
+}
+
+/** Guard all active crates' production `src/` against unapproved wildcard imports. */
+function inspectWildcards(path, source, prepared) {
+  return scanProduction(path, source, (_production, code, add) => {
+    for (const match of code.matchAll(/\b(?:(pub(?:\s*\([^)]*\))?)\s+)?use\s+([^;]+);/g)) {
+      const [, pubVis, target] = match;
+      if (!/\*/.test(target)) continue;
+      const normalized = target.replace(/\s+/g, "");
+      const isGpuiPreludeOnly =
+        normalized === "gpui::prelude::*" ||
+        (normalized.startsWith("gpui::{") && !/\*/.test(normalized.replace(/(^|[{,])prelude::\*(?=[,}])/g, "$1")));
+      if (isGpuiPreludeOnly) continue;
+      if (pubVis === "pub" && wildcardBarrelFiles.has(path)) continue;
+      add(match.index, `avoid wildcard glob imports (${target.trim()}) in production modules`);
     }
-  }
-  return issues;
+  }, prepared);
 }
 
 /** Parses out-of-line `mod name;` and `#[path = "..."] mod name;` declarations. */
@@ -282,15 +312,12 @@ function resolveTestOnlyPaths(crateName, entries) {
 }
 
 /** Guard all active crates' production `src/` against `.unwrap()` panics. */
-function inspectUnwraps(path, source) {
-  const production = stripTestCode(source);
-  const code = codeOnly(production);
-  const issues = [];
-  for (const match of code.matchAll(/\.\s*unwrap\s*\(/g)) {
-    const line = production.slice(0, match.index).split("\n").length;
-    issues.push(`${path}:${line}: production code must handle errors instead of calling .unwrap()`);
-  }
-  return issues;
+function inspectUnwraps(path, source, prepared) {
+  return scanProduction(path, source, (_production, code, add) => {
+    for (const match of code.matchAll(/\.\s*unwrap\s*\(/g)) {
+      add(match.index, "production code must handle errors instead of calling .unwrap()");
+    }
+  }, prepared);
 }
 
 /** Flat locale contracts run without compiling the native workspace. */
@@ -384,7 +411,17 @@ function selfTest() {
   assert.equal(testOnlyTree.has("demo/src/delivery_tests.rs"), true);
   assert.equal(testOnlyTree.has("demo/src/brand_manifest.rs"), false);
   assert.equal(testOnlyTree.has("demo/src/platform_helper.rs") || testOnlyTree.has("demo/src/prod.rs"), false);
-  console.log("UI contract scanner: 42 fixture assertions passed");
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "fn item() { interactive(\"id\", \"l\", &t).role(Role::MenuItemRadio); }"), ["flowy-app/src/example.rs:1: Role::MenuItemRadio strips Windows UIA InvokePattern; keep clickable controls as Button"]);
+  assert.deepEqual(inspect("flowy-ui/src/controls.rs", "fn item() { button().aria_expanded(true); }"), ["flowy-ui/src/controls.rs:1: .aria_expanded strips Windows UIA InvokePattern in gpui-pre 0.3.14; convey state visually"]);
+  assert.deepEqual(inspectWildcards("flowy-studio/src/panel/body.rs", "use super::*;"), ["flowy-studio/src/panel/body.rs:1: avoid wildcard glob imports (super::*) in production modules"]);
+  assert.deepEqual(inspectWildcards("flowy-agent/src/handle/mod.rs", "use gpui::{div, *};"), ["flowy-agent/src/handle/mod.rs:1: avoid wildcard glob imports (gpui::{div, *}) in production modules"]);
+  assert.deepEqual(inspectWildcards("flowy-app/src/lib.rs", "pub(crate) use crate::brand::*;"), ["flowy-app/src/lib.rs:1: avoid wildcard glob imports (crate::brand::*) in production modules"]);
+  assert.deepEqual(inspectWildcards("flowy-studio/src/automation_page.rs", "use gpui::prelude::*;"), []);
+  assert.deepEqual(inspectWildcards("flowy-app/src/app/mod.rs", "use gpui::{Context, div, prelude::*, px};"), []);
+  assert.deepEqual(inspectWildcards("flowy-ui/src/lib.rs", "pub use context::*;"), []);
+  assert.deepEqual(inspectWildcards("flowy-agent/src/foo.rs", "#[cfg(test)]\nmod tests;\nuse super::*;"), ["flowy-agent/src/foo.rs:3: avoid wildcard glob imports (super::*) in production modules"]);
+  assert.deepEqual(inspectWildcards("flowy-agent/src/foo.rs", "#[cfg(test)]\nmod tests {\n    use super::*;\n}"), []);
+  console.log("UI contract scanner: 52 fixture assertions passed");
 }
 
 function rustFiles(directory) {
@@ -394,7 +431,9 @@ function rustFiles(directory) {
   });
 }
 
-function crateUnwrapIssues(crateName) {
+const uiCrates = new Set(["flowy-ui", "flowy-app", "flowy-studio"]);
+
+function crateSourceIssues(crateName) {
   const crateDir = join(root, "crates", crateName);
   const srcDir = join(crateDir, "src");
   if (!existsSync(srcDir)) return [];
@@ -406,10 +445,17 @@ function crateUnwrapIssues(crateName) {
     source: readFileSync(path, "utf8"),
   }));
   const testOnly = resolveTestOnlyPaths(crateName, entries);
+  const checkUi = uiCrates.has(crateName);
   return srcFiles.flatMap(path => {
     const relPath = relative(join(root, "crates"), path).replaceAll("\\", "/");
     if (testOnly.has(relPath)) return [];
-    return inspectUnwraps(relPath, readFileSync(path, "utf8"));
+    const source = readFileSync(path, "utf8");
+    const prepared = { production: stripTestCode(source) };
+    return [
+      ...(checkUi ? inspect(relPath, source, prepared) : []),
+      ...inspectWildcards(relPath, source, prepared),
+      ...inspectUnwraps(relPath, source, prepared),
+    ];
   });
 }
 
@@ -418,11 +464,10 @@ if (process.argv.includes("--self-test")) {
 } else {
   const crates = readdirSync(join(root, "crates"), { withFileTypes: true })
     .filter(entry => entry.isDirectory())
-    .map(entry => entry.name);
+    .map(entry => entry.name)
+    .sort();
   const issues = [
-    ...["flowy-ui", "flowy-app", "flowy-studio"].flatMap(crate =>
-      rustFiles(join(root, "crates", crate, "src")).flatMap(path => inspect(relative(join(root, "crates"), path).replaceAll("\\", "/"), readFileSync(path, "utf8")))),
-    ...crates.flatMap(crateUnwrapIssues),
+    ...crates.flatMap(crateSourceIssues),
     ...localeIssues(),
   ];
   if (issues.length) {
