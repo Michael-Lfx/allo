@@ -292,6 +292,7 @@ impl Harness {
                     model: override_model,
                     display,
                     source: prompt_source.clone(),
+                    dispatch_receipt_id: None,
                 },
             };
         } else {
@@ -303,6 +304,18 @@ impl Harness {
             }
             prompt.source = prompt_source;
         }
+        let turn_dispatch_receipt_id = pending_claim
+            .as_ref()
+            .map(|claim| claim.receipt_id.clone())
+            .or_else(|| {
+                resumed
+                    .as_ref()
+                    .and_then(|item| item.dispatch_receipt_id.clone())
+            })
+            .filter(|rid| !rid.trim().is_empty());
+        prompt
+            .dispatch_receipt_id
+            .clone_from(&turn_dispatch_receipt_id);
         let is_background_announcement = is_router_announcement
             || matches!(prompt.source, MessageSource::SystemEvent { .. });
         let is_internal_event_turn = is_background_announcement
@@ -412,12 +425,16 @@ impl Harness {
                             ..
                         } => {
                             if let PendingCard::Disambiguation {
-                                card_id, ..
+                                card_id,
+                                dispatch_receipt_id,
+                                ..
                             } = &mut card
                             {
                                 *card_id = format!(
                                     "disambig-submission-{submission:032x}"
                                 );
+                                dispatch_receipt_id
+                                    .clone_from(&turn_dispatch_receipt_id);
                             }
                             return self.park_disambiguation_locked(
                                 &engine,
@@ -582,6 +599,13 @@ impl Harness {
                 });
             session.turn_started_at = Some(now);
             session.updated_at = now;
+            if let Some(rid) = turn_dispatch_receipt_id {
+                session.active_dispatch_receipt_id = Some(rid);
+            } else if !is_internal_event_turn
+                && prompt.display.as_deref() != Some("")
+            {
+                session.active_dispatch_receipt_id = None;
+            }
             session.heartbeat = Some(BranchHeartbeat {
                 last_completed: None,
                 last_completed_at_ms: None,
@@ -901,6 +925,13 @@ impl Harness {
     ) -> Result<String, &'static str> {
         let state = &self.state;
         let now = now_ms();
+        let dispatch_receipt_id = match &card {
+            PendingCard::Disambiguation {
+                dispatch_receipt_id,
+                ..
+            } => dispatch_receipt_id.clone(),
+            PendingCard::ToolApproval { .. } => None,
+        };
         engine.park_pending_card(id, card, None).map_err(|error| {
             log_storage_io_error(
                 "park disambiguation card",
@@ -916,6 +947,7 @@ impl Harness {
             session.status = TurnStatus::WaitingForUser;
             session.turn_started_at = None;
             session.updated_at = now;
+            session.active_dispatch_receipt_id = dispatch_receipt_id;
             session.heartbeat = Some(BranchHeartbeat {
                 last_completed: session
                     .heartbeat

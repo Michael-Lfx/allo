@@ -513,6 +513,7 @@ impl AgentHandle {
                     impact_boundary,
                     options,
                     allow_multi,
+                    dispatch_receipt_id,
                     ..
                 },
                 CardSelection::Disambiguate { object_ids },
@@ -644,6 +645,7 @@ impl AgentHandle {
                         model_prompt_suffix: Some(suffix),
                         skip_push_user_line: true,
                         bypass_busy_queue: true,
+                        dispatch_receipt_id,
                         ..ResumedSubmission::default()
                     },
                     approval_grant: None,

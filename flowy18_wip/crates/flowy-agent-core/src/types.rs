@@ -180,6 +180,12 @@ pub struct Message {
     /// readable while retaining the full injected body for later turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
+    /// Acceptance queue receipt id that dispatched this user turn into a
+    /// Worker session (if any). Preserved in `history.json` so projected
+    /// Worker cards stay anchored to their originating Router turn across
+    /// revisions and cold index rebuilds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_receipt_id: Option<String>,
 }
 
 impl Message {
@@ -198,6 +204,7 @@ pub struct PromptTurn {
     pub model: String,
     pub display: Option<String>,
     pub source: MessageSource,
+    pub dispatch_receipt_id: Option<String>,
 }
 
 impl PromptTurn {
@@ -207,6 +214,7 @@ impl PromptTurn {
             model: text.into(),
             display: None,
             source: MessageSource::User,
+            dispatch_receipt_id: None,
         }
     }
 
@@ -219,6 +227,7 @@ impl PromptTurn {
             model: model.into(),
             display: Some(display.into()),
             source: MessageSource::User,
+            dispatch_receipt_id: None,
         }
     }
 
@@ -231,6 +240,7 @@ impl PromptTurn {
             model: model.into(),
             display,
             source: MessageSource::CardResume,
+            dispatch_receipt_id: None,
         }
     }
 
@@ -245,6 +255,7 @@ impl PromptTurn {
             source: MessageSource::SystemEvent {
                 event_kind: event_kind.into(),
             },
+            dispatch_receipt_id: None,
         }
     }
 }

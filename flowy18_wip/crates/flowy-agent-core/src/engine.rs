@@ -1393,6 +1393,7 @@ impl Engine {
                 content: vec![crate::types::ContentBlock::text(&prompt.model)],
                 source: prompt.source.clone(),
                 display_text: prompt.display.clone(),
+                dispatch_receipt_id: prompt.dispatch_receipt_id.clone(),
             });
             record.status = TurnState::Running;
             record.updated_at = now;

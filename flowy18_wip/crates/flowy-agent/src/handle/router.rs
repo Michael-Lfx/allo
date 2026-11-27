@@ -306,6 +306,7 @@ pub(super) fn build_router_pre_tool_hook(
             impact_boundary,
             options,
             allow_multi,
+            dispatch_receipt_id: None,
         };
         PreToolDecision::SuspendWithCard {
             card,
@@ -1045,6 +1046,8 @@ impl Harness {
                             access_mode: mode,
                             active_turn_is_internal: false,
                             active_turn_prev_status: None,
+                            card_receipts: BTreeMap::new(),
+                            active_dispatch_receipt_id: None,
                         },
                     );
                     let _ = engine.set_session_title(

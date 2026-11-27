@@ -387,6 +387,7 @@ pub fn build_disambiguation_card(
         impact_boundary: format!("只改所选对象，其余保持原值{preserved}"),
         options,
         allow_multi: true,
+        dispatch_receipt_id: None,
     }
 }
 

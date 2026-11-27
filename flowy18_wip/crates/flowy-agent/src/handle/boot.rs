@@ -276,6 +276,9 @@ impl AgentHandle {
                         access_mode: record.access_mode,
                         active_turn_is_internal: false,
                         active_turn_prev_status: None,
+                        card_receipts: record.card_receipts,
+                        active_dispatch_receipt_id: record
+                            .active_dispatch_receipt_id,
                     },
                 );
             }

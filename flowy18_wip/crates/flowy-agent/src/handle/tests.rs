@@ -319,6 +319,8 @@ mod background_init_tests {
                 access_mode: WorkAccessMode::ReadWrite,
                 active_turn_is_internal: false,
                 active_turn_prev_status: None,
+                card_receipts: std::collections::BTreeMap::new(),
+                active_dispatch_receipt_id: None,
             },
         );
 
@@ -1108,6 +1110,7 @@ mod guard_tests {
                 content: vec![ContentBlock::text("crashed after prepare")],
                 source: MessageSource::User,
                 display_text: None,
+                dispatch_receipt_id: None,
             }],
             origin: SessionOrigin::Home,
             ..SessionRecord::default()
