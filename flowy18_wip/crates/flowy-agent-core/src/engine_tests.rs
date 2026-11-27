@@ -1760,3 +1760,296 @@ fn child_projections_match_child_sessions_across_multiple_workers() {
         expected_summaries
     );
 }
+
+#[test]
+fn zero_deferred_tools_fast_path_skips_tool_search_and_catalog_overhead() {
+    let scratch = Scratch::new("no-deferred");
+    let cfg = config();
+    cfg.registry.register(Arc::new(ToolDefinition::new(
+        "alpha_tool",
+        "alpha tool",
+        serde_json::json!({"type": "object", "properties": {}}),
+        |_args, _ctx| {
+            Box::pin(async {
+                ToolExecutionResult::success_text(
+                    "ok",
+                    serde_json::json!({"ok": true}),
+                )
+            })
+        },
+    )));
+    let observed_tools = Arc::new(Mutex::new(Vec::new()));
+    let observed_system = Arc::new(Mutex::new(String::new()));
+    let tools_ref = Arc::clone(&observed_tools);
+    let sys_ref = Arc::clone(&observed_system);
+    let stream: StreamFn = rpi_agent::stream_fn(move |model, ctx, _| {
+        *tools_ref.lock().unwrap() =
+            ctx.tools.iter().map(|t| t.name.clone()).collect();
+        *sys_ref.lock().unwrap() =
+            ctx.system_prompt.clone().unwrap_or_default();
+        let mut msg = AssistantMessage::empty(
+            Api::OpenaiCompletions,
+            "flowy",
+            model.id.clone(),
+            0,
+        );
+        msg.content = vec![rpi_ai::types::Content::text("done")];
+        msg.stop_reason = StopReason::Stop;
+        let (mut producer, consumer) =
+            rpi_ai::event_stream::create_assistant_message_event_stream();
+        tokio::spawn(async move {
+            producer
+                .push(AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message: msg,
+                })
+                .await;
+        });
+        consumer
+    });
+
+    let engine = Arc::new(
+        Engine::open(
+            scratch.0.clone(),
+            cfg.clone(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap(),
+    );
+    engine.create_session("s-fast".into(), 1).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let fut = engine
+        .start_with_config(
+            "s-fast".into(),
+            crate::types::PromptTurn::plain("hi"),
+            cfg.clone(),
+            Some(stream),
+            Some(101),
+        )
+        .unwrap();
+    assert_eq!(rt.block_on(fut).unwrap(), LoopOutcome::Completed);
+    assert_eq!(*observed_tools.lock().unwrap(), vec!["alpha_tool"]);
+    assert!(
+        !observed_system
+            .lock()
+            .unwrap()
+            .contains("[DeferredToolsAvailable]")
+    );
+    assert!(cfg.registry.get(crate::tools::TOOL_SEARCH_NAME).is_none());
+}
+
+#[test]
+fn two_step_deferred_activation_appends_tools_in_turn_without_mutating_base_registry()
+ {
+    let scratch = Scratch::new("deferred-2step");
+    let cron_runs = Arc::new(AtomicUsize::new(0));
+    let cron_runs_c = Arc::clone(&cron_runs);
+    let cfg = config();
+    cfg.registry.register(Arc::new(ToolDefinition::new(
+        "eager_ping",
+        "always loaded ping",
+        serde_json::json!({"type": "object", "properties": {}}),
+        |_args, _ctx| {
+            Box::pin(async {
+                ToolExecutionResult::success_text("pong", serde_json::json!({}))
+            })
+        },
+    )));
+    cfg.registry.register(Arc::new(
+        ToolDefinition::new(
+            "deferred_cron",
+            "Schedule recurring cron task",
+            serde_json::json!({"type": "object", "properties": {}}),
+            move |_args, _ctx| {
+                cron_runs_c.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    ToolExecutionResult::success_text(
+                        "cron-ok",
+                        serde_json::json!({"scheduled": true}),
+                    )
+                })
+            },
+        )
+        .with_exposure(crate::tools::ToolExposure::Deferred)
+        .with_source(crate::tools::ToolSource::Provider("automation".into()))
+        .with_tags(["cron", "schedule"]),
+    ));
+
+    let step_tools = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let saw_deferred_catalog = Arc::new(Mutex::new(false));
+    let turn = Arc::new(AtomicUsize::new(0));
+    let steps_ref = Arc::clone(&step_tools);
+    let cat_ref = Arc::clone(&saw_deferred_catalog);
+    let stream: StreamFn = rpi_agent::stream_fn(move |model, ctx, _| {
+        let idx = turn.fetch_add(1, Ordering::SeqCst);
+        steps_ref
+            .lock()
+            .unwrap()
+            .push(ctx.tools.iter().map(|t| t.name.clone()).collect());
+        if idx == 0 {
+            let sys = ctx.system_prompt.as_deref().unwrap_or("");
+            *cat_ref.lock().unwrap() = sys.contains("[DeferredToolsAvailable]")
+                && sys.contains("deferred_cron");
+        }
+        let mut msg = AssistantMessage::empty(
+            Api::OpenaiCompletions,
+            "flowy",
+            model.id.clone(),
+            0,
+        );
+        if idx == 0 {
+            msg.content = vec![rpi_ai::types::Content::ToolCall(
+                rpi_ai::types::ToolCall {
+                    kind: rpi_ai::types::ToolCallType,
+                    id: "tc-search".into(),
+                    name: crate::tools::TOOL_SEARCH_NAME.into(),
+                    arguments: serde_json::json!({"query": "cron"}),
+                    thought_signature: None,
+                    namespace: None,
+                    recorded: None,
+                },
+            )];
+            msg.stop_reason = StopReason::ToolUse;
+        } else if idx == 1 {
+            msg.content = vec![rpi_ai::types::Content::ToolCall(
+                rpi_ai::types::ToolCall {
+                    kind: rpi_ai::types::ToolCallType,
+                    id: "tc-cron".into(),
+                    name: "deferred_cron".into(),
+                    arguments: serde_json::json!({}),
+                    thought_signature: None,
+                    namespace: None,
+                    recorded: None,
+                },
+            )];
+            msg.stop_reason = StopReason::ToolUse;
+        } else {
+            let last_ok = matches!(
+                ctx.messages.last(),
+                Some(rpi_ai::types::Message::ToolResult(tr))
+                    if !tr.is_error && tr.tool_name == "deferred_cron"
+            );
+            assert!(last_ok, "step 3 must observe deferred_cron success");
+            msg.content = vec![rpi_ai::types::Content::text("scheduled")];
+            msg.stop_reason = StopReason::Stop;
+        }
+        let (mut producer, consumer) =
+            rpi_ai::event_stream::create_assistant_message_event_stream();
+        tokio::spawn(async move {
+            producer
+                .push(AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message: msg,
+                })
+                .await;
+        });
+        consumer
+    });
+
+    let engine = Arc::new(
+        Engine::open(
+            scratch.0.clone(),
+            cfg.clone(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap(),
+    );
+    engine.create_session("s-def".into(), 1).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let fut = engine
+        .start_with_config(
+            "s-def".into(),
+            crate::types::PromptTurn::plain("schedule cron"),
+            cfg.clone(),
+            Some(stream),
+            Some(102),
+        )
+        .unwrap();
+    assert_eq!(rt.block_on(fut).unwrap(), LoopOutcome::Completed);
+    assert!(*saw_deferred_catalog.lock().unwrap());
+    assert_eq!(cron_runs.load(Ordering::SeqCst), 1);
+
+    let recorded_steps = step_tools.lock().unwrap().clone();
+    assert_eq!(recorded_steps.len(), 3);
+    assert_eq!(recorded_steps[0], vec!["eager_ping", "tool_search"]);
+    assert_eq!(
+        recorded_steps[1],
+        vec!["eager_ping", "tool_search", "deferred_cron"]
+    );
+    assert!(
+        cfg.registry.get(crate::tools::TOOL_SEARCH_NAME).is_none(),
+        "turn fork must keep shared base registry untouched"
+    );
+}
+
+#[test]
+fn pre_activated_tools_exposes_deferred_tool_immediately_at_step_one() {
+    let scratch = Scratch::new("pre-activated");
+    let mut cfg = config();
+    cfg.pre_activated_tools = vec!["deferred_job".into()];
+    cfg.registry.register(Arc::new(
+        ToolDefinition::new(
+            "deferred_job",
+            "Deferred job",
+            serde_json::json!({"type": "object", "properties": {}}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text(
+                        "ran",
+                        serde_json::json!({}),
+                    )
+                })
+            },
+        )
+        .with_exposure(crate::tools::ToolExposure::Deferred),
+    ));
+    let step0_tools = Arc::new(Mutex::new(Vec::new()));
+    let tools_ref = Arc::clone(&step0_tools);
+    let stream: StreamFn = rpi_agent::stream_fn(move |model, ctx, _| {
+        *tools_ref.lock().unwrap() =
+            ctx.tools.iter().map(|t| t.name.clone()).collect();
+        let mut msg = AssistantMessage::empty(
+            Api::OpenaiCompletions,
+            "flowy",
+            model.id.clone(),
+            0,
+        );
+        msg.content = vec![rpi_ai::types::Content::text("ok")];
+        msg.stop_reason = StopReason::Stop;
+        let (mut producer, consumer) =
+            rpi_ai::event_stream::create_assistant_message_event_stream();
+        tokio::spawn(async move {
+            producer
+                .push(AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message: msg,
+                })
+                .await;
+        });
+        consumer
+    });
+    let engine = Arc::new(
+        Engine::open(
+            scratch.0.clone(),
+            cfg.clone(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap(),
+    );
+    engine.create_session("s-pre".into(), 1).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let fut = engine
+        .start_with_config(
+            "s-pre".into(),
+            crate::types::PromptTurn::plain("resume"),
+            cfg,
+            Some(stream),
+            Some(103),
+        )
+        .unwrap();
+    assert_eq!(rt.block_on(fut).unwrap(), LoopOutcome::Completed);
+    assert_eq!(
+        *step0_tools.lock().unwrap(),
+        vec!["deferred_job", "tool_search"]
+    );
+}

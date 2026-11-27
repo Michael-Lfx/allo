@@ -59,6 +59,8 @@ mod artifacts;
 mod boot;
 mod guards;
 mod observer;
+#[cfg(test)]
+mod provider_tests;
 mod queue;
 mod router;
 #[cfg(test)]

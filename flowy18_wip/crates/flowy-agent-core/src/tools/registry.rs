@@ -552,4 +552,40 @@ mod tests {
         );
         assert!(executed.load(Ordering::SeqCst));
     }
+
+    #[test]
+    fn schemas_are_sorted_deterministically_and_fork_isolates_mutations() {
+        let registry = ToolRegistry::new();
+        for name in ["zeta", "alpha", "middle"] {
+            registry.register(Arc::new(ToolDefinition::new(
+                name,
+                format!("tool {name}"),
+                json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text("ok", json!({}))
+                    })
+                },
+            )));
+        }
+        let schema_names: Vec<String> =
+            registry.schemas().into_iter().map(|s| s.name).collect();
+        assert_eq!(schema_names, vec!["alpha", "middle", "zeta"]);
+
+        let forked = registry.fork();
+        forked.unregister("alpha");
+        forked.register(Arc::new(ToolDefinition::new(
+            "extra",
+            "extra",
+            json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text("ok", json!({}))
+                })
+            },
+        )));
+
+        assert_eq!(registry.list(), vec!["alpha", "middle", "zeta"]);
+        assert_eq!(forked.list(), vec!["extra", "middle", "zeta"]);
+    }
 }

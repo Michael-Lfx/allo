@@ -1413,3 +1413,84 @@ fn failure_detail_prefers_error_message_and_falls_back_to_plain_text() {
         Some("upstream closed stream")
     );
 }
+
+#[tokio::test]
+async fn custom_read_only_metadata_allows_one_transient_retry_while_mutating_trips_on_second()
+ {
+    let transient_tool = || {
+        make_test_tool(
+            crate::tools::ToolDefinition::new(
+                "custom_probe",
+                "custom probe returning transient 503",
+                serde_json::json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        crate::types::ToolExecutionResult::error(
+                            "REMOTE_503",
+                            "HTTP 503 service unavailable",
+                        )
+                    })
+                },
+            )
+            .with_read_only(true),
+        )
+    };
+
+    let mutating_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (emitter_m, _) = CollectorEmitter::new();
+    let res_mut = run_turn(
+        TurnRequest {
+            session_id: None,
+            system: String::new(),
+            history: Vec::new(),
+            prompt: "probe".into(),
+            route: route(),
+            tools: vec![transient_tool()],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::new(),
+            signal: CancelToken::new(),
+            pre_tool_hook: None,
+        },
+        make_tool_stream(
+            "custom_probe",
+            serde_json::json!({}),
+            Arc::clone(&mutating_calls),
+        ),
+        Arc::new(emitter_m),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res_mut.outcome, LoopOutcome::Failed);
+    assert_eq!(mutating_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    let readonly_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (emitter_r, _) = CollectorEmitter::new();
+    let res_ro = run_turn(
+        TurnRequest {
+            session_id: None,
+            system: String::new(),
+            history: Vec::new(),
+            prompt: "probe".into(),
+            route: route(),
+            tools: vec![transient_tool()],
+            deferred_tools: Vec::new(),
+            activated_tools: None,
+            read_only_tools: std::collections::HashSet::from([
+                "custom_probe".into()
+            ]),
+            signal: CancelToken::new(),
+            pre_tool_hook: None,
+        },
+        make_tool_stream(
+            "custom_probe",
+            serde_json::json!({}),
+            Arc::clone(&readonly_calls),
+        ),
+        Arc::new(emitter_r),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res_ro.outcome, LoopOutcome::Failed);
+    assert_eq!(readonly_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+}

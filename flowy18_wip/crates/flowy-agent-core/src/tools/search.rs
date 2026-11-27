@@ -431,3 +431,204 @@ fn score_tool(
     }
     score
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ActivatedToolSet, TOOL_SEARCH_NAME, format_deferred_tool_catalog,
+        tool_search_definition,
+    };
+    use crate::tools::registry::{
+        ToolDefinition, ToolExposure, ToolRegistry, ToolSource,
+    };
+    use crate::types::{CancelToken, ToolExecutionResult, ToolRunContext};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn run_ctx() -> ToolRunContext {
+        ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: Some("w-test".into()),
+            cwd: None,
+            todos: None,
+            submission_id: None,
+            session_origin: crate::session::SessionOrigin::Unknown,
+            output_root: None,
+            artifact_delivery_available: false,
+        }
+    }
+
+    fn deferred_def(
+        name: &str,
+        desc: &str,
+        source: &str,
+        tags: &[&str],
+        read_only: bool,
+    ) -> Arc<ToolDefinition> {
+        Arc::new(
+            ToolDefinition::new(
+                name,
+                desc,
+                json!({"type": "object", "properties": {}}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text("ok", json!({}))
+                    })
+                },
+            )
+            .with_exposure(ToolExposure::Deferred)
+            .with_source(ToolSource::Provider(source.to_owned()))
+            .with_tags(tags.iter().copied())
+            .with_read_only(read_only),
+        )
+    }
+
+    #[tokio::test]
+    async fn keyword_and_cjk_search_scores_and_activates_deferred_tools() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(ToolDefinition::new(
+            "eager_helper",
+            "eager cron helper that must not dominate deferred results",
+            json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text("ok", json!({}))
+                })
+            },
+        )));
+        registry.register(deferred_def(
+            "automation_list",
+            "列出所有定时任务规则与状态",
+            "automation",
+            &["cron", "定时任务"],
+            true,
+        ));
+        registry.register(deferred_def(
+            "automation_create",
+            "Create a scheduled cron job",
+            "automation",
+            &["cron", "schedule"],
+            false,
+        ));
+        registry.register(deferred_def(
+            "weather_lookup",
+            "Query forecast data",
+            "weather",
+            &["forecast"],
+            true,
+        ));
+
+        let activated = ActivatedToolSet::default();
+        registry.register(tool_search_definition(
+            registry.fork(),
+            activated.clone(),
+        ));
+
+        let res = registry
+            .execute(
+                "s1".into(),
+                TOOL_SEARCH_NAME.into(),
+                json!({"query": "定时任务"}),
+                run_ctx(),
+            )
+            .await;
+        let ToolExecutionResult::Success { value, .. } = res else {
+            panic!("expected search success, got {res:?}");
+        };
+        assert_eq!(value["newly_activated"], json!(["automation_list"]));
+        assert!(activated.contains("automation_list"));
+        assert!(!activated.contains("eager_helper"));
+        assert!(!activated.contains("weather_lookup"));
+    }
+
+    #[tokio::test]
+    async fn exact_select_and_wildcard_respect_limit_and_report_missing() {
+        let registry = ToolRegistry::new();
+        for idx in 0..5 {
+            registry.register(deferred_def(
+                &format!("auto_{idx}"),
+                "Automation action",
+                "automation",
+                &["auto"],
+                false,
+            ));
+        }
+        let activated = ActivatedToolSet::default();
+        registry.register(tool_search_definition(
+            registry.fork(),
+            activated.clone(),
+        ));
+
+        let sel = registry
+            .execute(
+                "s2".into(),
+                TOOL_SEARCH_NAME.into(),
+                json!({"query": "SELECT: auto_2, missing_tool, auto_0"}),
+                run_ctx(),
+            )
+            .await;
+        let ToolExecutionResult::Success { value, .. } = sel else {
+            panic!("select failed: {sel:?}");
+        };
+        assert_eq!(value["newly_activated"], json!(["auto_0", "auto_2"]));
+        assert_eq!(value["not_found"], json!(["missing_tool"]));
+
+        let wild = registry
+            .execute(
+                "s3".into(),
+                TOOL_SEARCH_NAME.into(),
+                json!({"query": "*", "max_results": 2}),
+                run_ctx(),
+            )
+            .await;
+        let ToolExecutionResult::Success { value, .. } = wild else {
+            panic!("wildcard failed: {wild:?}");
+        };
+        assert_eq!(value["matched"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn deferred_catalog_skips_when_empty_and_summarizes_large_sets() {
+        let eager_only = ToolRegistry::new();
+        eager_only.register(Arc::new(ToolDefinition::new(
+            "read_file",
+            "read",
+            json!({"type": "object"}),
+            |_args, _ctx| {
+                Box::pin(async {
+                    ToolExecutionResult::success_text("ok", json!({}))
+                })
+            },
+        )));
+        assert!(format_deferred_tool_catalog(&eager_only).is_none());
+
+        let small = ToolRegistry::new();
+        small.register(deferred_def(
+            "cron_create",
+            "Create recurring job",
+            "automation",
+            &[],
+            false,
+        ));
+        let catalog = format_deferred_tool_catalog(&small).unwrap();
+        assert!(catalog.contains("[DeferredToolsAvailable]"));
+        assert!(
+            catalog.contains("cron_create (automation): Create recurring job")
+        );
+
+        let large = ToolRegistry::new();
+        for idx in 0..35 {
+            large.register(deferred_def(
+                &format!("mcp_tool_{idx:02}"),
+                "Remote capability endpoint",
+                "mcp_srv",
+                &[],
+                false,
+            ));
+        }
+        let grouped = format_deferred_tool_catalog(&large).unwrap();
+        assert!(grouped.contains("mcp_srv (35 tools):"));
+        assert!(grouped.contains("+30 more"));
+        assert!(grouped.chars().count() <= 1_605);
+    }
+}
