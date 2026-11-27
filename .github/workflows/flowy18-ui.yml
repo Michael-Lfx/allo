@@ -109,6 +109,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Verify nonprivileged Bubblewrap namespace support
+        run: |
+          /usr/bin/bwrap --version
+          cat /proc/self/attr/current
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          env -i /usr/bin/bwrap --die-with-parent --new-session --unshare-pid --unshare-ipc \
+            --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run \
+            --unshare-net --chdir / -- /bin/bash -c "exit 0"
       - name: Nonprivileged Linux sandbox integration
         run: cargo test -p flowy-agent-core --locked --lib linux_bwrap_ -- --ignored --test-threads=1
 
