@@ -1,20 +1,23 @@
 //! Turn submission, tool/skill prompt assembly, and streaming execution dispatch.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use flowy_agent_core::{
     AcceptanceQueue, BranchHeartbeat, Engine, EnqueueOutcome, LoopOutcome,
     PendingCard, PendingRouterFollowup, PromptTurn, ReceiptState, RunError,
-    SessionOrigin, SessionRole, ToolProviderContext, TurnState, WorkAccessMode,
-    echo_stream_fn, log_preview,
+    SessionOrigin, SessionRecord, SessionRole, ToolProviderContext, TurnState,
+    WorkAccessMode, echo_stream_fn, log_preview,
     types::{CancelToken, MessageSource, Role},
 };
 
 use super::guards::{
-    PreToolHookSpec, build_pre_tool_hook, mount_tool_providers,
-    read_only_tool_registry, session_working_directory, tool_registry,
+    PreStagedWorkerProviders, PreToolHookSpec, build_pre_tool_hook,
+    merge_staged_providers, mount_tool_providers, normalize_cwd_key,
+    read_only_tool_registry, session_working_directory, stage_tool_providers,
+    tool_registry,
 };
 use super::observer::{
     self, capture_turn_artifacts, ensure_engine_session, persist_index,
@@ -29,9 +32,67 @@ use super::{
 };
 
 impl Harness {
+    pub(super) fn resolve_session_cwd(
+        &self,
+        session_id: &str,
+        record: &SessionRecord,
+    ) -> PathBuf {
+        let workspace = lock(&self.state.live)
+            .get(session_id)
+            .and_then(|session| session.workspace.clone());
+        record.workspace.as_ref().map_or_else(
+            || session_working_directory(&self.state.root, workspace.as_ref()),
+            |workspace| workspace.root.clone(),
+        )
+    }
+
+    /// Collect Worker `ToolProvider::register_tools()` and prompt hints
+    /// BEFORE acquiring `self.state.dispatch` so slow extension providers
+    /// cannot stall concurrent `Router` submissions.
+    pub(super) fn pre_stage_worker_providers(
+        &self,
+        explicit_session_id: Option<&str>,
+    ) -> Option<PreStagedWorkerProviders> {
+        let target_id = match explicit_session_id {
+            Some(id) => id.to_owned(),
+            None => lock(&self.state.active).clone()?,
+        };
+        let engine = lock(&self.engine).clone()?;
+        let core_session = engine.session(&target_id)?;
+        if core_session.role == SessionRole::Router
+            || core_session.access_mode == WorkAccessMode::ReadOnly
+        {
+            return None;
+        }
+        let cwd = self.resolve_session_cwd(&target_id, &core_session);
+        let cwd_key = normalize_cwd_key(&cwd);
+        let providers = self.tool_providers();
+        let provider_signatures: Vec<(String, u64)> = providers
+            .iter()
+            .map(|entry| {
+                (entry.provider.id().trim().to_owned(), entry.registration_id)
+            })
+            .collect();
+        let ctx = ToolProviderContext {
+            session_id: &target_id,
+            cwd: &cwd,
+            origin: &core_session.origin,
+            access_mode: core_session.access_mode,
+        };
+        let staged = stage_tool_providers(&providers, &ctx);
+        Some(PreStagedWorkerProviders {
+            session_id: target_id,
+            cwd_key,
+            origin: core_session.origin,
+            access_mode: core_session.access_mode,
+            provider_signatures,
+            staged,
+        })
+    }
+
     #[expect(
         clippy::too_many_arguments,
-        reason = "thin lock wrapper forwarding all dispatch arguments to submit_message_targeted_locked"
+        reason = "thin lock wrapper forwarding all dispatch arguments to submit_message_targeted_with_staged"
     )]
     pub(super) fn submit_message_targeted(
         self: &Arc<Self>,
@@ -43,8 +104,9 @@ impl Harness {
         reply_to_object_id: Option<&str>,
         resumed: Option<ResumedSubmission>,
     ) -> Result<String, &'static str> {
+        let pre_staged = self.pre_stage_worker_providers(explicit_session_id);
         let _dispatch = lock(&self.state.dispatch);
-        self.submit_message_targeted_locked(
+        self.submit_message_targeted_with_staged(
             explicit_session_id,
             text,
             submission,
@@ -52,6 +114,7 @@ impl Harness {
             pending_claim,
             reply_to_object_id,
             resumed,
+            pre_staged,
         )
     }
 
@@ -67,7 +130,36 @@ impl Harness {
         selection: Option<SubmissionSelection<'_>>,
         pending_claim: Option<AcceptedClaim>,
         reply_to_object_id: Option<&str>,
-        resumed: Option<ResumedSubmission>,
+        mut resumed: Option<ResumedSubmission>,
+    ) -> Result<String, &'static str> {
+        let pre_staged =
+            resumed.as_mut().and_then(|item| item.pre_staged.take());
+        self.submit_message_targeted_with_staged(
+            explicit_session_id,
+            text,
+            submission,
+            selection,
+            pending_claim,
+            reply_to_object_id,
+            resumed,
+            pre_staged,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal dispatch entrypoint shares one lock-validated path across direct chat, receipts, and card resume"
+    )]
+    fn submit_message_targeted_with_staged(
+        self: &Arc<Self>,
+        explicit_session_id: Option<&str>,
+        text: &str,
+        submission: Option<u128>,
+        selection: Option<SubmissionSelection<'_>>,
+        pending_claim: Option<AcceptedClaim>,
+        reply_to_object_id: Option<&str>,
+        mut resumed: Option<ResumedSubmission>,
+        pre_staged: Option<PreStagedWorkerProviders>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
         tracing::debug!(
@@ -273,6 +365,10 @@ impl Harness {
         let preserve_tool_approval = resumed
             .as_ref()
             .is_some_and(|item| item.preserve_tool_approval);
+        let force_reconfirm_tools = resumed
+            .as_mut()
+            .map(|item| std::mem::take(&mut item.force_reconfirm_tools))
+            .unwrap_or_default();
         if let Some(override_model) = resumed
             .as_ref()
             .and_then(|item| item.model_prompt_override.clone())
@@ -350,19 +446,18 @@ impl Harness {
             .api_key
             .is_none()
             .then(|| echo_stream_fn(text.to_owned()));
-        let workspace = lock(&state.live)
-            .get(&id)
-            .and_then(|session| session.workspace.clone());
         let _ = is_resumed;
-        let cwd = core_session.workspace.as_ref().map_or_else(
-            || session_working_directory(&state.root, workspace.as_ref()),
-            |workspace| workspace.root.clone(),
-        );
+        let cwd = self.resolve_session_cwd(&id, &core_session);
+        let cwd_key = normalize_cwd_key(&cwd);
         if !preserve_turn_denial {
             lock(&state.denied_tool_turns).remove(&id);
         }
         if !preserve_tool_approval {
             lock(&state.approved_tool_calls).remove(&id);
+            if !is_card_resume && core_session.pending_cards.is_empty() {
+                lock(&state.pending_provider_approvals)
+                    .retain(|(sid, _), _| sid != &id);
+            }
         }
         let mut run_config = engine_config(&config, &cwd);
         let mut staged_intents_for_turn: Option<
@@ -533,22 +628,64 @@ impl Harness {
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
             let providers = self.tool_providers();
-            let provider_ctx = ToolProviderContext {
-                session_id: &id,
-                cwd: &cwd,
-                origin: &core_session.origin,
-                access_mode: core_session.access_mode,
+            let mounted = if let Some(pre) = pre_staged.as_ref().filter(|pre| {
+                pre.matches(
+                    &id,
+                    &cwd_key,
+                    &core_session.origin,
+                    core_session.access_mode,
+                    &providers,
+                )
+            }) {
+                merge_staged_providers(&run_config.registry, &pre.staged)
+            } else {
+                let provider_ctx = ToolProviderContext {
+                    session_id: &id,
+                    cwd: &cwd,
+                    origin: &core_session.origin,
+                    access_mode: core_session.access_mode,
+                };
+                mount_tool_providers(
+                    &run_config.registry,
+                    &providers,
+                    &provider_ctx,
+                )
             };
-            let provider_hints = mount_tool_providers(
-                &run_config.registry,
-                &providers,
-                &provider_ctx,
-            );
-            if !provider_hints.is_empty() {
+            if !mounted.hints.is_empty() {
                 run_config.system.push_str("\n\n[ProviderCapabilities]");
-                for hint in provider_hints {
+                for hint in &mounted.hints {
                     run_config.system.push_str("\n- ");
-                    run_config.system.push_str(&hint);
+                    run_config.system.push_str(hint);
+                }
+            }
+            if preserve_tool_approval {
+                let mut grants_guard = lock(&state.approved_tool_calls);
+                if let Some(grants) = grants_guard.get_mut(&id) {
+                    grants.retain(|grant| match &grant.provider_binding {
+                        None => true,
+                        Some(binding) => {
+                            binding.cwd_key == cwd_key
+                                && mounted
+                                    .provenance
+                                    .get(&grant.tool_name)
+                                    .is_some_and(|prov| {
+                                        prov.provider_id == binding.provider_id
+                                            && prov.registration_id
+                                                == binding.registration_id
+                                            && prov.tool_fingerprint
+                                                == binding.tool_fingerprint
+                                    })
+                        }
+                    });
+                    let pre_activated: BTreeSet<String> = grants
+                        .iter()
+                        .map(|grant| grant.tool_name.clone())
+                        .collect();
+                    run_config.pre_activated_tools =
+                        pre_activated.into_iter().collect();
+                    if grants.is_empty() {
+                        grants_guard.remove(&id);
+                    }
                 }
             }
             run_config.pre_tool_hook =
@@ -559,17 +696,10 @@ impl Harness {
                     state: Arc::clone(state),
                     registry: run_config.registry.clone(),
                     providers,
+                    mounted_provenance: mounted.provenance,
+                    process_nonce: self.process_nonce.clone(),
+                    force_reconfirm_tools,
                 }));
-            if preserve_tool_approval
-                && let Some(grants) = lock(&state.approved_tool_calls).get(&id)
-            {
-                let pre_activated: BTreeSet<String> = grants
-                    .iter()
-                    .map(|(tool_name, _)| tool_name.clone())
-                    .collect();
-                run_config.pre_activated_tools =
-                    pre_activated.into_iter().collect();
-            }
         }
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)

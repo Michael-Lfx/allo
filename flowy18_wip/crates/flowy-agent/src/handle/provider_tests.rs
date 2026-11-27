@@ -663,9 +663,17 @@ fn provider_shadowing_reserved_tools_and_delivery_forgery_fail_closed() {
 
     let dir = scratch("shadow-guard");
     let registry = super::tool_registry(&dir.0, &[], Vec::new());
-    let providers: Vec<Arc<dyn ToolProvider>> = vec![
-        Arc::new(ShadowProvider { id: "first" }),
-        Arc::new(ShadowProvider { id: "second" }),
+    let providers = vec![
+        super::RegisteredProvider {
+            registration_id: 1,
+            provider: Arc::new(ShadowProvider { id: "first" }),
+            cached_router_hint: None,
+        },
+        super::RegisteredProvider {
+            registration_id: 2,
+            provider: Arc::new(ShadowProvider { id: "second" }),
+            cached_router_hint: None,
+        },
     ];
     let ctx = ToolProviderContext {
         session_id: "s-shadow",
@@ -673,7 +681,8 @@ fn provider_shadowing_reserved_tools_and_delivery_forgery_fail_closed() {
         origin: &SessionOrigin::Home,
         access_mode: WorkAccessMode::ReadWrite,
     };
-    super::guards::mount_tool_providers(&registry, &providers, &ctx);
+    let _mounted =
+        super::guards::mount_tool_providers(&registry, &providers, &ctx);
 
     assert_eq!(
         registry.get("read_file").unwrap().source(),
@@ -776,8 +785,18 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
         },
     );
     let sid = handle.create_home_session().unwrap();
-    let providers: Vec<Arc<dyn ToolProvider>> =
-        vec![Arc::new(DenyAllProvider), Arc::new(ProviderB)];
+    let providers = vec![
+        super::RegisteredProvider {
+            registration_id: 1,
+            provider: Arc::new(DenyAllProvider),
+            cached_router_hint: None,
+        },
+        super::RegisteredProvider {
+            registration_id: 2,
+            provider: Arc::new(ProviderB),
+            cached_router_hint: None,
+        },
+    ];
     let registry = super::tool_registry(&dir.0, &[], Vec::new());
     let ctx = ToolProviderContext {
         session_id: &sid,
@@ -785,7 +804,8 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
         origin: &SessionOrigin::Home,
         access_mode: WorkAccessMode::ReadWrite,
     };
-    super::guards::mount_tool_providers(&registry, &providers, &ctx);
+    let mounted =
+        super::guards::mount_tool_providers(&registry, &providers, &ctx);
 
     let hook =
         super::guards::build_pre_tool_hook(super::guards::PreToolHookSpec {
@@ -795,6 +815,9 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
             state: Arc::clone(&handle.inner.state),
             registry,
             providers,
+            mounted_provenance: mounted.provenance,
+            process_nonce: "test-nonce".into(),
+            force_reconfirm_tools: std::collections::BTreeSet::new(),
         });
 
     assert_eq!(hook("read_file", &json!({})), PreToolDecision::Allow);
@@ -968,4 +991,104 @@ fn register_tool_provider_hot_swap_and_unregister_are_idempotent() {
     assert!(!handle.unregister_tool_provider("mcp-a"));
     assert_eq!(handle.registered_tool_provider_ids(), vec!["mcp-b"]);
     assert!(!handle.unregister_tool_provider("   "));
+}
+
+#[test]
+fn hot_swapped_provider_cannot_consume_stale_approval_card() {
+    let dir = scratch("stale-approval-hotswap");
+    let svc_v1 = Arc::new(FakeAutomationService::default());
+    let svc_v2 = Arc::new(FakeAutomationService::default());
+
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref()
+            && last.contains("Activated 1 tool")
+        {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-1".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ToolApproved]") {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-resumed".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ApprovalInvalidated]") {
+            return MockHttpReply::Text("stale-approval-rejected".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(MockAutomationProvider {
+        service: Arc::clone(&svc_v1),
+        tool_count: 2,
+    }));
+    let sid = handle.create_home_session().unwrap();
+    handle.select_session(&sid).unwrap();
+
+    handle.submit_chat(100, "run daily automation").unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            !handle.session_status(&sid).is_busy()
+                && !handle.session_pending_cards(&sid).is_empty()
+        },
+        "v1 ToolApproval card parked",
+    );
+
+    let PendingCard::ToolApproval {
+        card_id,
+        tool_name,
+        args_hash,
+        ..
+    } = handle.session_pending_cards(&sid)[0].clone()
+    else {
+        panic!("expected ToolApproval card");
+    };
+    assert_eq!(tool_name, "automation_run");
+
+    // Hot-swap a distinct Provider instance under the same ID before approving.
+    handle.register_tool_provider(Arc::new(MockAutomationProvider {
+        service: Arc::clone(&svc_v2),
+        tool_count: 2,
+    }));
+
+    let before_resume = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id,
+            selection: CardSelection::ApproveTool { args_hash },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "stale approval resolution settled",
+    );
+
+    assert!(
+        svc_v1.executed_sessions.lock().unwrap().is_empty(),
+        "replaced v1 must execute 0 times"
+    );
+    assert!(
+        svc_v2.executed_sessions.lock().unwrap().is_empty(),
+        "replacement v2 must NOT consume stale v1 approval"
+    );
+    let resumed_first_req = &server.recorded()[before_resume];
+    assert!(
+        !resumed_first_req
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run"),
+        "stale approval must NOT pre-activate deferred tool for replacement provider"
+    );
 }

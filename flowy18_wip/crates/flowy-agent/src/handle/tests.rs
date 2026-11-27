@@ -1951,7 +1951,10 @@ mod guard_tests {
             lock(&state.approved_tool_calls)
                 .entry(sid.clone())
                 .or_default()
-                .push(("bash".into(), "f".repeat(64)));
+                .push(super::ApprovedToolGrant::host(
+                    "bash".into(),
+                    "f".repeat(64),
+                ));
             match event {
                 0 => observer
                     .finished(&sid, flowy_agent_core::LoopOutcome::Completed),
@@ -1989,6 +1992,9 @@ mod guard_tests {
             state: Arc::clone(&state),
             registry: super::ToolRegistry::new(),
             providers: Vec::new(),
+            mounted_provenance: std::collections::HashMap::new(),
+            process_nonce: "test-nonce".into(),
+            force_reconfirm_tools: std::collections::BTreeSet::new(),
         });
         for blocked_tool in [
             "publish_file",
