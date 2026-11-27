@@ -32,6 +32,7 @@ default-members = [
     "crates/flowy-obs",
     "crates/flowy-skills",
 ]
+exclude = ["patches/accesskit_windows"]
 
 [workspace.package]
 version = "1.8.0"
@@ -190,3 +191,6 @@ overflow-checks = true
 # gated on debug_assertions; enable it for the host proc-macro only.
 [profile.release.package.gpui-pre-macros]
 debug-assertions = true
+
+[patch.crates-io]
+accesskit_windows = { path = "patches/accesskit_windows" }
