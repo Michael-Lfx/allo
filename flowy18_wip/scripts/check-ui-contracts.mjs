@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-/** GPUI-specific source contracts. Run from any directory with Bun or Node. */
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+/** GPUI UI and workspace source contracts. Run from any directory with Bun or Node. */
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
@@ -203,6 +203,96 @@ function inspect(path, source) {
   return issues;
 }
 
+/** Parses out-of-line `mod name;` and `#[path = "..."] mod name;` declarations. */
+function parseModDecls(filePath, source) {
+  const masked = codeOnly(source);
+  const decls = [];
+  const attrModRe = /((?:#\s*\[[^\]]*\]\s*)*)(?:\bpub(?:\s*\([^)]*\))?\s+)?\bmod\s+(\w+)\s*;/g;
+  for (const match of masked.matchAll(attrModRe)) {
+    const attrRaw = source.slice(match.index, match.index + match[1].length);
+    const attrMasked = match[1];
+    const isCfgTest = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/.test(attrMasked);
+    const pathMatch = attrRaw.match(/#\s*\[\s*path\s*=\s*"([^"\n]+)"\s*\]/);
+    const modName = match[2];
+    const dir = posix.dirname(filePath);
+    const base = posix.basename(filePath);
+    const subDir = (base === "lib.rs" || base === "main.rs" || base === "mod.rs" || base === "build.rs")
+      ? dir
+      : posix.join(dir, base.replace(/\.rs$/, ""));
+    const targets = pathMatch
+      ? [posix.normalize(posix.join(dir, pathMatch[1]))]
+      : [posix.join(subDir, `${modName}.rs`), posix.join(subDir, modName, "mod.rs")];
+    decls.push({ isCfgTest, targets });
+  }
+  return decls;
+}
+
+/** Computes `.rs` files in a crate reachable only under `#[cfg(test)]`. */
+function resolveTestOnlyPaths(crateName, entries) {
+  const byPath = new Map(entries.map(entry => [entry.relPath, entry.source]));
+  const parsed = new Map(entries.map(entry => [entry.relPath, parseModDecls(entry.relPath, entry.source)]));
+
+  const reachableProd = new Set();
+  const prodQueue = [
+    `${crateName}/src/lib.rs`,
+    `${crateName}/src/main.rs`,
+    `${crateName}/build.rs`,
+    ...entries.map(e => e.relPath).filter(p => p.startsWith(`${crateName}/src/bin/`) && p.endsWith(".rs")),
+  ].filter(p => byPath.has(p));
+  for (const p of prodQueue) reachableProd.add(p);
+
+  while (prodQueue.length) {
+    const current = prodQueue.shift();
+    for (const decl of parsed.get(current) ?? []) {
+      if (decl.isCfgTest) continue;
+      for (const target of decl.targets) {
+        if (byPath.has(target) && !reachableProd.has(target)) {
+          reachableProd.add(target);
+          prodQueue.push(target);
+        }
+      }
+    }
+  }
+
+  const testOnly = new Set();
+  const testQueue = [];
+  for (const decls of parsed.values()) {
+    for (const decl of decls) {
+      if (!decl.isCfgTest) continue;
+      for (const target of decl.targets) {
+        if (byPath.has(target) && !reachableProd.has(target) && !testOnly.has(target)) {
+          testOnly.add(target);
+          testQueue.push(target);
+        }
+      }
+    }
+  }
+  while (testQueue.length) {
+    const current = testQueue.shift();
+    for (const decl of parsed.get(current) ?? []) {
+      for (const target of decl.targets) {
+        if (byPath.has(target) && !reachableProd.has(target) && !testOnly.has(target)) {
+          testOnly.add(target);
+          testQueue.push(target);
+        }
+      }
+    }
+  }
+  return testOnly;
+}
+
+/** Guard all active crates' production `src/` against `.unwrap()` panics. */
+function inspectUnwraps(path, source) {
+  const production = stripTestCode(source);
+  const code = codeOnly(production);
+  const issues = [];
+  for (const match of code.matchAll(/\.\s*unwrap\s*\(/g)) {
+    const line = production.slice(0, match.index).split("\n").length;
+    issues.push(`${path}:${line}: production code must handle errors instead of calling .unwrap()`);
+  }
+  return issues;
+}
+
 /** Flat locale contracts run without compiling the native workspace. */
 function compareLocale(path, messages, base) {
   const issues = [];
@@ -274,7 +364,27 @@ function selfTest() {
   assert.deepEqual(inspect("flowy-app/src/example.rs", "// #[cfg(test)]\nlet s = \"#[cfg(test)]\";\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:3: raw UI color outside an explicitly named illustration/media function"]);
   assert.deepEqual(inspect("flowy-app/src/example.rs", "#[cfg(test)]\nmod tests {\n    #[cfg(test)]\n    fn nested() { rgb(0); }\n}\nfn bad() { theme::canvas(); }"), ["flowy-app/src/example.rs:6: read the explicit ResolvedTheme snapshot instead of a legacy global token"]);
   assert.deepEqual(inspect("flowy-app/src/example.rs", "struct Tail {\n    #[cfg(test)]\n    only: usize\n}\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:5: raw UI color outside an explicitly named illustration/media function"]);
-  console.log("UI contract scanner: 32 fixture assertions passed");
+  assert.deepEqual(inspectUnwraps("flowy-agent/src/lib.rs", "fn prod() {\n    let _ = x.unwrap();\n}"), ["flowy-agent/src/lib.rs:2: production code must handle errors instead of calling .unwrap()"]);
+  assert.deepEqual(inspectUnwraps("flowy-agent/src/lib.rs", "fn prod() {\n    let _ = x\n        .unwrap();\n}"), ["flowy-agent/src/lib.rs:3: production code must handle errors instead of calling .unwrap()"]);
+  assert.deepEqual(inspectUnwraps("flowy-agent/src/lib.rs", "fn prod() { let _ = x.unwrap_or(0); let _ = y.unwrap_or_else(|| 1); let _ = z.unwrap_or_default(); let _ = w.expect(\"ok\"); }"), []);
+  assert.deepEqual(inspectUnwraps("flowy-agent/src/lib.rs", "#[cfg(test)]\nfn helper() { x.unwrap(); }\nfn prod() {\n    y.unwrap();\n}"), ["flowy-agent/src/lib.rs:4: production code must handle errors instead of calling .unwrap()"]);
+  assert.deepEqual(inspectUnwraps("flowy-net/src/proxy.rs", "#[cfg(any(test, target_os = \"linux\"))]\nfn prod_on_linux() { x.unwrap(); }"), ["flowy-net/src/proxy.rs:2: production code must handle errors instead of calling .unwrap()"]);
+  assert.deepEqual(inspectUnwraps("flowy-core/src/lib.rs", "// #[cfg(test)]\nlet s = \"#[cfg(test)]\";\nfn prod() { x.unwrap(); }"), ["flowy-core/src/lib.rs:3: production code must handle errors instead of calling .unwrap()"]);
+  const testOnlyTree = resolveTestOnlyPaths("demo", [
+    { relPath: "demo/src/lib.rs", source: "#[cfg(test)]\nmod tests;\n#[cfg(test)]\n#[path = \"delivery_tests.rs\"]\nmod delivery;\n#[cfg(test)]\nmod brand_manifest;\n#[cfg(any(test, target_os = \"linux\"))]\nmod platform_helper;\nmod prod;" },
+    { relPath: "demo/build.rs", source: "#[path = \"src/brand_manifest.rs\"]\nmod brand_manifest;" },
+    { relPath: "demo/src/prod.rs", source: "fn ok() {}" },
+    { relPath: "demo/src/platform_helper.rs", source: "fn p() {}" },
+    { relPath: "demo/src/brand_manifest.rs", source: "fn b() {}" },
+    { relPath: "demo/src/delivery_tests.rs", source: "fn dt() { x.unwrap(); }" },
+    { relPath: "demo/src/tests/mod.rs", source: "mod helpers;" },
+    { relPath: "demo/src/tests/helpers.rs", source: "fn h() { x.unwrap(); }" },
+  ]);
+  assert.equal(testOnlyTree.has("demo/src/tests/mod.rs") && testOnlyTree.has("demo/src/tests/helpers.rs"), true);
+  assert.equal(testOnlyTree.has("demo/src/delivery_tests.rs"), true);
+  assert.equal(testOnlyTree.has("demo/src/brand_manifest.rs"), false);
+  assert.equal(testOnlyTree.has("demo/src/platform_helper.rs") || testOnlyTree.has("demo/src/prod.rs"), false);
+  console.log("UI contract scanner: 42 fixture assertions passed");
 }
 
 function rustFiles(directory) {
@@ -284,12 +394,37 @@ function rustFiles(directory) {
   });
 }
 
+function crateUnwrapIssues(crateName) {
+  const crateDir = join(root, "crates", crateName);
+  const srcDir = join(crateDir, "src");
+  if (!existsSync(srcDir)) return [];
+  const srcFiles = rustFiles(srcDir);
+  const buildRs = join(crateDir, "build.rs");
+  const allFiles = existsSync(buildRs) ? [...srcFiles, buildRs] : srcFiles;
+  const entries = allFiles.map(path => ({
+    relPath: relative(join(root, "crates"), path).replaceAll("\\", "/"),
+    source: readFileSync(path, "utf8"),
+  }));
+  const testOnly = resolveTestOnlyPaths(crateName, entries);
+  return srcFiles.flatMap(path => {
+    const relPath = relative(join(root, "crates"), path).replaceAll("\\", "/");
+    if (testOnly.has(relPath)) return [];
+    return inspectUnwraps(relPath, readFileSync(path, "utf8"));
+  });
+}
+
 if (process.argv.includes("--self-test")) {
   selfTest();
 } else {
-  const issues = ["flowy-ui", "flowy-app", "flowy-studio"].flatMap(crate =>
-    rustFiles(join(root, "crates", crate, "src")).flatMap(path => inspect(relative(join(root, "crates"), path).replaceAll("\\", "/"), readFileSync(path, "utf8"))));
-  issues.push(...localeIssues());
+  const crates = readdirSync(join(root, "crates"), { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name);
+  const issues = [
+    ...["flowy-ui", "flowy-app", "flowy-studio"].flatMap(crate =>
+      rustFiles(join(root, "crates", crate, "src")).flatMap(path => inspect(relative(join(root, "crates"), path).replaceAll("\\", "/"), readFileSync(path, "utf8")))),
+    ...crates.flatMap(crateUnwrapIssues),
+    ...localeIssues(),
+  ];
   if (issues.length) {
     console.error(issues.join("\n"));
     process.exitCode = 1;
