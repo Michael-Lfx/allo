@@ -410,29 +410,23 @@ impl FlowyApp {
                 .flex()
                 .gap_3()
                 .child(
-                    // `Button::render` erases to `AnyElement`, which no longer
-                    // carries the styled surface, so the frame lives on a wrapper.
-                    div()
-                        .flex_1()
-                        .min_h(px(34.))
-                        .border_1()
-                        .border_color(self.theme.line())
-                        .bg(self.theme.canvas())
-                        .child(
-                            theme::Button::new(
-                                "cancel-project-create",
-                                self.t("more.cancel"),
-                            )
-                            .variant(theme::ControlVariant::Secondary)
-                            .full_width()
-                            .render(
-                                &self.theme,
-                                cx.listener(|app, _event, _window, cx| {
-                                    cx.stop_propagation();
-                                    app.close_project_create(cx);
-                                }),
-                            ),
+                    // The button draws its own rounded border; the wrapper only
+                    // sizes the slot so both footer buttons share the width.
+                    div().flex_1().min_h(px(34.)).child(
+                        theme::Button::new(
+                            "cancel-project-create",
+                            self.t("more.cancel"),
+                        )
+                        .variant(theme::ControlVariant::Secondary)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                cx.stop_propagation();
+                                app.close_project_create(cx);
+                            }),
                         ),
+                    ),
                 )
                 .child(
                     div().flex_1().min_h(px(34.)).child(

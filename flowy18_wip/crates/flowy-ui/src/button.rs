@@ -168,7 +168,7 @@ impl Button {
                 }
             },
         )
-        .border_2()
+        .border_1()
         .border_color(colors.border)
         .min_h(theme.control_height(self.size))
         .when(self.full_width, Styled::w_full)
@@ -322,7 +322,7 @@ impl IconButton {
                 }
             },
         )
-        .border_2()
+        .border_1()
         .border_color(colors.border)
         .min_w(side)
         .min_h(side)
