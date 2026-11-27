@@ -22,7 +22,17 @@ an explicit rationale and owner review.
 Four jobs on `ubuntu-24.04`. `changes` runs first and only decides whether the
 Rust jobs are needed; the other three use the same toolchain setup the release
 workflow uses (`oven-sh/setup-bun`, `dtolnay/rust-toolchain`, `Swatinem/rust-cache`,
-`bun scripts/ci-use-crates-io.mjs`, `bun install --frozen-lockfile`):
+`bun scripts/ci-use-crates-io.mjs`, `bun scripts/ci-apt-install.mjs`,
+`bun install --frozen-lockfile`):
+
+- **Linux APT isolation (`scripts/ci-apt-install.mjs`)** — shared by `ci.yml`
+  and `release-modelscope.yml`. Checks `dpkg-query` first so jobs whose tools
+  are already preinstalled on `ubuntu-24.04` (such as `repo-gates`'s
+  `squashfs-tools` and `7zip`) skip APT network calls while still verifying the
+  required binaries on `PATH`. When packages are missing, it builds a temporary
+  Ubuntu-only APT source config (excluding unrelated runner third-party repos
+  like `packages.microsoft.com` that intermittently return `403 Forbidden`) and
+  runs fail-closed retries (never `--fix-missing`).
 
 - **changes** — `bun scripts/ci-changed-paths.mjs` decides between "documentation
   only" and "may affect the build", running its own contract assertions
