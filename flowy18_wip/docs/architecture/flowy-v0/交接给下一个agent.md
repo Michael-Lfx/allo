@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.16 更新）**：**直接先读 §25（`feat/flowy-dot-bubbles-and-quote` 假评分下线、Dot 分阶段气泡、悬浮操作栏与单条引用 703/703 基线）**，再按需查 §24（PR #504 `fix/flowy-desktop-shell-polish` 桌面壳可靠化、类 GPT Dot 对话净化与 695/695 基线）、§23（PR #503 审查复核七项修复与 679 基线）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§23 保留 2026-11-24～26 演进底稿作历史与契约备查；凡分支/合流状态与 §24 不一致处，**一律以 §24 为准**。
+> **现役唯一入口（2026-11-27 修订 9.17 更新）**：**直接先读 §26（`origin/main@c4da1ac65` PR #505/#506/#508/#509/#510/#511 合流基线、Shell/Skills 加固、图表核验、Spill/View-GC、S5 时钟跳变/增量尾读缓存与唤醒队列）**，再按需查 §25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§25 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §26 不一致处，**一律以 §26 为准**。
 
 ---
 
@@ -810,3 +810,26 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
   - 8-Crate 串行 `cargo test --locked`：**703 / 703 PASS**（+8 新增单测/GPUI 测试，0 失败，6 ignored；`flowy-agent` `-- --test-threads=1` 为 257 PASS / 4 ignored；`flowy-studio` 为 140 PASS）。
   - 双主题真机 E2E（`ui-shot.ps1`，Dark `zh-CN` + Light `en`）：**25 / 25 步全过**（`ok=True, failures=0, screenshots=4, log_errors=0`）。
 - **接手注意事项**：当前已收敛待推分支发 PR（提交信息与 Git 作者严格使用人类身份）；`QuoteBanner` 当前有意保留引用摘录原始 Markdown 符号以保 `/skill:` 与代码文本忠实透传，若后续产品希望前端显示层剥离 `##`/`**` 标记，仅需局部调整 `feed.rs`/`composer.rs` 渲染显示函数，不影响底层存储协议。
+
+
+---
+
+## 26. 六连 PR 并行收口与主干同步基线（2026-11-27 · `origin/main@c4da1ac65`，PR #505–#511）
+
+- **主干现状**：截至 `origin/main@c4da1ac65`，Wave 1–3 五笔性能优化/安全加固 PR（`#505` / `#506` / `#508` / `#509` / `#510`）与桌面单实例唤醒修复（`#511`）已全部合入 `main`。
+
+| PR | 分支 / Merge SHA | 关键改动落点 | 合流前主要门禁 |
+| --- | --- | --- | --- |
+| `#505` | `perf/flowy18-markdown-library-trace` (`c8f183daf`) | `markdown` 块级哈希缓存、`library` 流式摘要与分块预览、`trace` 尾截脱敏 | `check-ui-contracts`、`studio` 139 PASS、CI 7/7 绿 |
+| `#506` | `fix/flowy18-shell-and-skills-hardening` (`c3e79ab70`) | `shell_policy` PS 反引号+子壳递归、`sandbox` 凭据路径、`skills` 250/20k 预算与转义 | `agent-core` 123 / `skills` 70 / `guard` 1 PASS、CI 7/7 绿 |
+| `#508` | `feat/flowy18-ooxml-chart-and-verify-polish` (`26489817d`) | PPTX 内嵌 `.xlsx` 图表核验、`finalize_report` 聚合摘要、`sha256:` 严格 64-hex | `flowy-agent` 260 PASS、4-Crate Clippy 0 告警（手动合入） |
+| `#509` | `feat/flowy18-spill-read-and-view-gc` (`58a0f6629`) | 流式行分片 `read_file`、`views-meta/` 侧车 SHA-256 防篡改 GC（3 天 5 份） | `agent-core` 131 / `agent` 263 PASS、5-Crate Clippy（手动合入） |
+| `#510` | `perf/flowy18-s5-clock-and-io-hardening` (`d7a4e48d0`) | `queue` 单调调度+5s 跳表探针+`active_claims` 跳过、`Engine` 零克隆投影、`acceptance`/`delivery` 尾读缓存与安全压缩 | `agent-core` 137 / `agent` 272 / `studio` 150 PASS、CI 6/7 绿（手动合入） |
+| `#511` | `fix/desktop-wake-queue-and-cold-deep-link` (`c4da1ac65`) | `flowy-shell::wake` 有界 FIFO `wake/` 队列、冷启动深链与登录后邀请弹窗保护 | `shell` 11 / `desktop` 1 / `app` 63 PASS + Windows 真机实测 |
+
+- **主干 `c4da1ac65` 复核（2026-11-27）**：`bun scripts/check-ui-contracts.mjs --self-test && bun scripts/check-ui-contracts.mjs`（24/24）、`cargo fmt --check`、`cargo check --locked -p flowy-desktop`（24.69s），以及 `flowy-shell` 11、`flowy-i18n` 9、`flowy-skills` 70、`flowy-ui` 47（45+2）、`flowy-agent-core` 137（2 ignored）、`flowy-studio` 150、`flowy-app` 63 实跑全绿；`flowy-desktop`（#511 已测 1/1）与 `flowy-agent`（#510 已测 272/272）按纯文档收口指令免重跑（详见 `证据.md` §11.44）。
+- **后续优先级**：
+  1. **OS 沙箱子进程真机 `Enforced` 接入**（`sandbox.rs` macOS Seatbelt / Linux `bwrap` 真机挂载与 Windows AppContainer 验证）。
+  2. **`persona.rs` 注入与跨轮 `dispatch_receipt_id` 细粒度重锚**（§24.2 遗留）。
+  3. **V6 外发通道**（仍受 [`BLOCKED.md`](BLOCKED.md) §5 🔴 硬阻塞，未经拍板不动工）。
+- **工作树提醒**：暖构建 worktree `.agents/worktrees/feat-router-kernel`（build dir `Temp\flowy18-router-build`）与 `.agents/worktrees/fix-windows-hotpatch`（build dir `Temp\flowy18-s4-build`）已保留备用，严禁双 worktree 共用同一 `CARGO_BUILD_BUILD_DIR`。

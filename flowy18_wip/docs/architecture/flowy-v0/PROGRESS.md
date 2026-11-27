@@ -1178,3 +1178,17 @@ cargo check -p flowy-app : 0 error (0 UI files touched)
   - **门禁与视觉验收**：`rg` 假评分残留为空、`cargo fmt --check` / `check-ui-contracts`（24 夹具+全仓）/ `cargo check -p flowy-desktop --locked` / 11-Crate `--all-targets` Clippy 0 告警、8-Crate 串行单测 **703/703 PASS**（相对 9.15 净增 8 项回归用例，0 失败，6 ignored）；双主题桌面 E2E（Dark `zh-CN` + Light `en`）**25/25 步全过**（`ok=True, failures=0, screenshots=4, log_errors=0`，详见 `证据.md` §11.43）。
   - **PR #503 / Track B 内核边界自查**：全程只读未触碰 `collect_work_dispatch_turns` 与 `ChatLine::Verification::source_session_id`，所有 `check-ui-contracts.mjs` 规则零放宽。
 
+
+---
+
+- **任务 29：Flowy v0 六连 PR 并行加固收口与桌面唤醒队列修复（PR #505 / #506 / #508 / #509 / #510 / #511，合入 `origin/main@c4da1ac65`，修订 9.17）** ✅
+  - **Wave 1（PR #505 @ `c8f183daf`、PR #506 @ `c3e79ab70`，GitHub Actions 7/7 CI 全绿自动合并）**：
+    - `PR #505`（`perf/flowy18-markdown-library-trace`）：`markdown.rs` 块级哈希增量缓存、`library/{model,preview,preview_view}.rs` 流式前缀摘要与分块预览、`ports/trace.rs` 诊断多编码尾截与防绕过脱敏；`check-ui-contracts.mjs`（24/24 + 全仓）+ `flowy-studio` **139 passed** + 3-Crate `--all-targets clippy` 0 告警。
+    - `PR #506`（`fix/flowy18-shell-and-skills-hardening`）：`shell_policy.rs` PowerShell 反引号去混淆 + 多层子壳递归检验（`MAX_RECURSION_DEPTH = 3`）+ Windows 提权/凭据拦截、`sandbox.rs` 凭据目录保护、`flowy-skills/registry.rs` 确定性排序 / 250 字符截断 / 20k 预算统一降级 / `<skill>` 属性转义；`flowy-agent-core` **123 passed**（2 ignored）+ `flowy-skills` **70 passed** + `shell_policy_guard` **1 passed** + 6-Crate Clippy 0 告警。
+  - **Wave 2（PR #508 @ `26489817d`、PR #509 @ `58a0f6629`，本地 Level 4 全门禁通过后由用户手动合并）**：
+    - `PR #508`（`feat/flowy18-ooxml-chart-and-verify-polish`）：`verify/ooxml.rs` 共享 `parse_xlsx_workbook` 并对 PPTX `ppt/embeddings/*.xlsx` 做有界图表核验、错误公式拦截与 pinned facts 注入、`verify/mod.rs` 按错误码分组 `summary` 聚合（§6.2）、`verify/provenance.rs` 支持 `sha256:` 前缀与严格 64-hex fail-closed（§6.8）；`flowy-agent` 串行 **260 passed**（4 ignored）+ 4-Crate Clippy 0 告警。
+    - `PR #509`（`feat/flowy18-spill-read-and-view-gc`）：`tools/builtin.rs` 64 KiB 分块流式行分片 `read_file`（§7.4 Spill）、`artifact_store.rs` 独立 `views-meta/` 侧车防篡改 `views/` GC（3 天内保最新 5 份，§5.18 #4）；`flowy-agent-core` **131 passed**（2 ignored）+ `flowy-agent` 串行 **263 passed**（4 ignored）+ 5-Crate Clippy 0 告警。
+  - **Wave 3 & 桌面并行线（PR #510 @ `d7a4e48d0`、PR #511 @ `c4da1ac65`）**：
+    - `PR #510`（`perf/flowy18-s5-clock-and-io-hardening`）：`queue.rs` 单调 `drain_sleep_until_ms` + `>= 5_000 ms` 休眠跳表探针 + `run_accepted_once` 跳过活跃 `active_claims`、`engine.rs` + `handle/{work,artifacts}.rs` 消除最后 2 处 `child_sessions()` 深拷贝、`acceptance.rs` & `delivery.rs` 有界边界切片增量尾读缓存与终态安全压缩；rebase 后本地 5-Crate Clippy 0 告警、`flowy-agent-core` **137 passed**、`flowy-agent` 串行 **272 passed**、`flowy-studio` **150 passed**，GitHub CI 6/7 绿后由用户手动合并。
+    - `PR #511`（`fix/desktop-wake-queue-and-cold-deep-link`）：`flowy-shell::wake` 将单文件覆写改为有界 FIFO `data_root/wake/` 目录队列、`flowy-desktop/main.rs` 过滤合法深链并排队冷启动邀请、`flowy-app` 保持邀请横幅并延迟到登录后弹窗；通过 `flowy-shell` **11/11**、`flowy-desktop` **1/1**、`flowy-app --lib` **63/63**、3-Crate Clippy 与独立 AppData 真机冷/热深链实测并合入 `main`。
+  - **主干合流后复核（`c4da1ac65`，用户指示免重跑剩余两 crate）**：已实跑 `check-ui-contracts.mjs`（24/24 + 全仓）、`cargo fmt --check`、`cargo check -p flowy-desktop --locked`，以及前 7 个 crate 全绿（`flowy-shell` 11、`flowy-i18n` 9、`flowy-skills` 70、`flowy-ui` 47、`flowy-agent-core` 137 / 2 ignored、`flowy-studio` 150、`flowy-app` 63），详见 `证据.md` §11.44。
