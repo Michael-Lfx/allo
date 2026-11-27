@@ -1,33 +1,41 @@
-//! Responsive Global Visual Board (`StudioSurface::Board`).
+//! Responsive Master-Detail Mission Control Progress Board (`StudioSurface::Board`).
 //!
-//! Submodules keep concerns separated without extra abstraction layers:
-//! - `overview/mod.rs`: KPI strip, filter bar, 7-day fold, and de-noised session rows.
-//! - `overview/flow_modal.rs`: centered top-level Flowchart Modal & branch actions.
-//! - `overview/trace_panel.rs`: shared redacted Trace panel, contract progress
-//!   card, and `ReceiptState` visuals.
+//! Layout contract (Direction C):
+//! - Compact two-row top control bar: interactive status/today pills + blocker CTA +
+//!   new task on Row 1; project filters + clickable format filters (`PDF`, `MD`,
+//!   `DOCX`, `XLSX`, `PPTX`, `CODE`) on Row 2.
+//! - Responsive split measured via `PrepaintBounds` (never stale `viewport_size()`):
+//!   * `>= 920px`: always-on Master-Detail split (left action-first queue +
+//!     right persistent 3-tab Inspector).
+//!   * `< 920px`: full-width action queue; selecting any session opens a full-height
+//!     right slide drawer with sticky bottom approval controls.
 
-mod flow_modal;
+mod inspector;
 mod trace_panel;
 
 use flowy_ui as theme;
-use flowy_ui::charts::{DonutSegment, donut_chart};
 use flowy_ui::status_pill;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, MouseButton, div, prelude::*,
-    px,
+    AnyElement, Context, FontWeight, IntoElement, MouseButton, Window, div,
+    prelude::*, px,
 };
 
 use crate::panel::{StudioEvent, StudioPanel};
 use crate::ports::{
-    BoardKpiSummary, BranchPhase, DailyActivityBucket, DeliverableFormat,
-    LocalDateKey, SessionBoardGroup, civil_month_day_in_tz,
-    compute_daily_7d_in_tz, is_older_than_7d_in_tz, local_days_ago,
-    local_tz_offset_secs, matches_day_filter, normalize_epoch_ms, now_epoch_ms,
+    BoardKpiSummary, BranchPhase, DeliverableFormat, LocalDateKey,
+    SessionBoardGroup, civil_month_day_in_tz, is_older_than_7d_in_tz,
+    local_days_ago, local_tz_offset_secs, matches_day_filter,
+    normalize_epoch_ms, now_epoch_ms,
 };
 
+pub use inspector::BoardInspectorTab;
 pub use trace_panel::TraceFilter;
 
-/// Top-level session filter on the Global Visual Board.
+/// Minimum content width (excluding left dock sidebar) for side-by-side
+/// Master-Detail rendering before adapting into a narrow slide-over drawer.
+pub const BOARD_SPLIT_MIN_W: f32 = 920.0;
+
+/// Top-level session filter on the Progress Board.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BoardFilter {
     #[default]
@@ -38,12 +46,51 @@ pub enum BoardFilter {
     Archived,
 }
 
-/// Active tab inside the Flowchart Modal detail footer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FlowModalTab {
-    #[default]
-    Action,
-    Trace,
+/// Pure helper deciding whether to show Master-Detail side-by-side or narrow
+/// list + slide drawer from the measured board width.
+#[must_use]
+pub fn is_wide_board_layout(board_width_px: f32) -> bool {
+    board_width_px >= BOARD_SPLIT_MIN_W
+}
+
+/// Pure filter predicate shared by Board UI rendering and unit tests.
+#[must_use]
+pub fn matches_board_filters(
+    group: &SessionBoardGroup,
+    status_filter: BoardFilter,
+    project_filter: Option<&str>,
+    format_filter: Option<DeliverableFormat>,
+    day_filter: Option<LocalDateKey>,
+    now_ms: u64,
+    tz_offset_secs: i32,
+) -> bool {
+    if project_filter
+        .is_some_and(|proj| group.project_id.as_deref() != Some(proj))
+    {
+        return false;
+    }
+    let status_ok = match status_filter {
+        BoardFilter::Archived => group.archived,
+        BoardFilter::All => !group.archived,
+        BoardFilter::Approval => !group.archived && group.has_blocker,
+        BoardFilter::Running => !group.archived && group.is_running,
+        BoardFilter::Delivered => group.is_delivered_settled(),
+    };
+    if !status_ok {
+        return false;
+    }
+    if let Some(fmt) = format_filter
+        && !group.has_formal_format(fmt)
+    {
+        return false;
+    }
+    if status_filter != BoardFilter::Archived
+        && let Some(day_key) = day_filter
+        && !matches_day_filter(group.updated_at, now_ms, tz_offset_secs, day_key)
+    {
+        return false;
+    }
+    true
 }
 
 fn trim_ellipsis(text: &str) -> &str {
@@ -54,37 +101,14 @@ fn trim_ellipsis(text: &str) -> &str {
 }
 
 /// Detects when a running branch's fallback caption merely echoes the parent
-/// session title (including `clip_label`'s trailing `…` or `...` on either side).
+/// session title (including `clip_label`'s trailing `…` or `...`).
 fn duplicates_session_title(title: &str, caption: &str) -> bool {
     let title = trim_ellipsis(title);
     let caption = trim_ellipsis(caption);
     if title.is_empty() || caption.is_empty() {
         return false;
     }
-    if title.starts_with(caption) {
-        return true;
-    }
-    caption.starts_with(title)
-}
-
-/// Returns an honest percentage only when backed by a real delivery or a
-/// concrete `WorkContract` deliverable denominator. Unbounded running/queued
-/// turns return `None` so the UI never displays fabricated percentages.
-pub fn real_contract_progress_pct(
-    branch: &crate::ports::WorkBranchSummary,
-) -> Option<f32> {
-    if matches!(branch.phase, BranchPhase::Delivered { .. }) {
-        return Some(100.0);
-    }
-    let contract = branch.work_progress.as_ref()?;
-    let total = contract.required_labels.len();
-    if total == 0 {
-        return None;
-    }
-    Some(
-        ((contract.delivered_count.min(total) as f32 / total as f32) * 100.0)
-            .clamp(0.0, 100.0),
-    )
+    title.starts_with(caption) || caption.starts_with(title)
 }
 
 impl StudioPanel {
@@ -92,9 +116,9 @@ impl StudioPanel {
         match format {
             DeliverableFormat::Sheet => self.theme.file_kind_sheet(),
             DeliverableFormat::Slides => self.theme.file_kind_slides(),
-            DeliverableFormat::Doc
-            | DeliverableFormat::Pdf
-            | DeliverableFormat::Markdown => self.theme.file_kind_doc(),
+            DeliverableFormat::Doc => self.theme.file_kind_doc(),
+            DeliverableFormat::Pdf => self.theme.file_kind_pdf(),
+            DeliverableFormat::Markdown => self.theme.file_kind_markdown(),
             DeliverableFormat::CodeWeb => self.theme.file_kind_code(),
             DeliverableFormat::Other => self.theme.file_kind_other(),
         }
@@ -102,15 +126,15 @@ impl StudioPanel {
 
     pub(super) fn format_tag_label(&self, format: DeliverableFormat) -> String {
         match format {
-            DeliverableFormat::Pdf => "PDF".to_owned(),
-            DeliverableFormat::Markdown => "MD".to_owned(),
+            DeliverableFormat::Pdf => self.t("board.format_pdf"),
+            DeliverableFormat::Markdown => self.t("board.format_md"),
             DeliverableFormat::CodeWeb => self.t("deliverables.kind_code"),
             DeliverableFormat::Other => self.t("deliverables.kind_file"),
             other => other.tag().to_owned(),
         }
     }
 
-    fn format_relative_time(
+    pub(super) fn format_relative_time(
         &self,
         updated_at: u64,
         now_ms: u64,
@@ -140,28 +164,12 @@ impl StudioPanel {
         }
     }
 
-    fn format_bucket_day_label(&self, bucket: &DailyActivityBucket) -> String {
-        if bucket.day_offset == 0 {
-            self.t("board.kpi_today")
-        } else {
-            format!("{}/{}", bucket.month, bucket.day)
-        }
-    }
-
-    fn format_bucket_summary(&self, bucket: &DailyActivityBucket) -> String {
-        let day_label = self.format_bucket_day_label(bucket);
-        self.tf(
-            "board.day_summary",
-            &[
-                ("date", &day_label),
-                ("active", &bucket.active_or_blocked.to_string()),
-                ("done", &bucket.completed_or_delivered.to_string()),
-            ],
-        )
-    }
-
     /// Global Visual Board surface (`StudioSurface::Board`).
-    pub(crate) fn board_canvas(&self, cx: &Context<'_, Self>) -> AnyElement {
+    pub(crate) fn board_canvas(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         let snapshot = &self.board_snapshot;
         let now_ms = if snapshot.generated_at_ms > 0 {
             snapshot.generated_at_ms
@@ -183,18 +191,15 @@ impl StudioPanel {
             })
             .collect();
         let scoped_kpi = if self.board_project_filter.is_some() {
-            BoardKpiSummary::from_groups(&project_filtered)
+            BoardKpiSummary::from_groups_in_tz(
+                &project_filtered,
+                now_ms,
+                tz_offset_secs,
+            )
         } else {
             snapshot.kpi.clone()
         };
-        let scoped_daily_7d = if self.board_project_filter.is_some()
-            || snapshot.daily_7d.is_empty()
-        {
-            compute_daily_7d_in_tz(&project_filtered, now_ms, tz_offset_secs)
-        } else {
-            snapshot.daily_7d.clone()
-        };
-        let today_key = scoped_daily_7d.last().map(|b| b.date_key);
+        let today_key = snapshot.daily_7d.last().map(|b| b.date_key);
         let active_day_filter = if self.board_filter == BoardFilter::Archived {
             None
         } else {
@@ -203,957 +208,419 @@ impl StudioPanel {
         let filtered: Vec<&SessionBoardGroup> = project_filtered
             .iter()
             .copied()
-            .filter(|group| match self.board_filter {
-                BoardFilter::Archived => group.archived,
-                BoardFilter::All => !group.archived,
-                BoardFilter::Approval => !group.archived && group.has_blocker,
-                BoardFilter::Running => !group.archived && group.is_running,
-                BoardFilter::Delivered => {
-                    !group.archived && group.has_delivered
-                }
-            })
             .filter(|group| {
-                active_day_filter.is_none_or(|day_key| {
-                    matches_day_filter(
-                        group.updated_at,
-                        now_ms,
-                        tz_offset_secs,
-                        day_key,
-                    )
-                })
+                matches_board_filters(
+                    group,
+                    self.board_filter,
+                    self.board_project_filter.as_deref(),
+                    self.board_format_filter,
+                    active_day_filter,
+                    now_ms,
+                    tz_offset_secs,
+                )
             })
             .collect();
 
-        let mut sessions_col =
-            div().w_full().flex().flex_col().gap(self.theme.space(8.));
+        let is_wide = is_wide_board_layout(self.board_width_px);
+        let queue_list = self.board_action_queue(
+            &filtered,
+            active_day_filter,
+            now_ms,
+            tz_offset_secs,
+            !is_wide,
+            cx,
+        );
 
-        if filtered.is_empty() {
-            sessions_col = sessions_col.child(
-                div()
-                    .w_full()
-                    .py(px(48.))
-                    .px(self.theme.space(16.))
-                    .rounded_2xl()
-                    .border_1()
-                    .border_color(self.theme.line())
-                    .bg(self.theme.card())
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.ink())
-                            .child(self.t("board.empty_title")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .child(self.t("board.empty_detail")),
-                    )
-                    .when(active_day_filter.is_some(), |empty| {
-                        empty.child(
-                            div().pt(px(4.)).child(
-                                theme::Button::new(
-                                    "board-clear-day-filter",
-                                    self.t("board.clear_day_filter"),
-                                )
-                                .variant(theme::ControlVariant::Secondary)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(|panel, _, _, cx| {
-                                        panel.board_day_filter = None;
-                                        cx.notify();
-                                    }),
-                                ),
-                            ),
-                        )
-                    }),
-            );
-        } else if self.board_filter == BoardFilter::Archived {
-            for (card_idx, group) in filtered.into_iter().enumerate() {
-                sessions_col = sessions_col.child(self.board_session_card(
-                    group,
-                    card_idx as u64,
-                    now_ms,
-                    tz_offset_secs,
-                    cx,
-                ));
-            }
-        } else {
-            let active_groups: Vec<&SessionBoardGroup> =
-                filtered.iter().copied().filter(|g| g.is_active).collect();
-            let recent_settled: Vec<&SessionBoardGroup> = filtered
-                .iter()
-                .copied()
-                .filter(|g| {
-                    !g.is_active
-                        && (active_day_filter.is_some()
-                            || g.pinned
-                            || !is_older_than_7d_in_tz(
-                                g.updated_at,
-                                now_ms,
-                                tz_offset_secs,
-                            ))
-                })
-                .collect();
-            let older_settled: Vec<&SessionBoardGroup> = filtered
-                .iter()
-                .copied()
-                .filter(|g| {
-                    active_day_filter.is_none()
-                        && !g.is_active
-                        && !g.pinned
-                        && is_older_than_7d_in_tz(
-                            g.updated_at,
-                            now_ms,
-                            tz_offset_secs,
-                        )
-                })
-                .collect();
-            let show_headers =
-                !active_groups.is_empty() && !recent_settled.is_empty();
-            let mut card_idx: u64 = 0;
-
-            if !active_groups.is_empty() {
-                if show_headers {
-                    sessions_col = sessions_col.child(
-                        div()
-                            .pt(px(2.))
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
-                            .child(self.tf(
-                                "board.group_active",
-                                &[("count", &active_groups.len().to_string())],
-                            )),
-                    );
-                }
-                for group in active_groups {
-                    sessions_col = sessions_col.child(self.board_session_card(
-                        group,
-                        card_idx,
-                        now_ms,
-                        tz_offset_secs,
-                        cx,
-                    ));
-                    card_idx += 1;
-                }
-            }
-            if !recent_settled.is_empty() {
-                if show_headers {
-                    sessions_col = sessions_col.child(
-                        div()
-                            .pt(self.theme.space(6.))
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
-                            .child(self.tf(
-                                "board.group_settled",
-                                &[("count", &recent_settled.len().to_string())],
-                            )),
-                    );
-                }
-                for group in recent_settled {
-                    sessions_col = sessions_col.child(self.board_session_card(
-                        group,
-                        card_idx,
-                        now_ms,
-                        tz_offset_secs,
-                        cx,
-                    ));
-                    card_idx += 1;
-                }
-            }
-            if !older_settled.is_empty() {
-                let older_label = self.tf(
-                    "board.group_older",
-                    &[("count", &older_settled.len().to_string())],
-                );
-                let chevron = if self.board_older_expanded {
-                    theme::icons::chevron_down()
-                } else {
-                    theme::icons::chevron_right()
-                };
-                sessions_col = sessions_col.child(
-                    theme::interactive(
-                        "board-older-divider",
-                        older_label.clone(),
-                        &self.theme,
-                    )
-                    .w_full()
-                    .mt(self.theme.space(6.))
-                    .px(self.theme.space(8.))
-                    .py(px(6.))
-                    .rounded_lg()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(self.theme.soft()))
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.board_older_expanded =
-                            !panel.board_older_expanded;
-                        cx.notify();
-                    }))
-                    .child(chevron.size(px(13.)).text_color(self.theme.muted()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.theme.muted())
-                            .whitespace_nowrap()
-                            .child(older_label),
-                    )
-                    .child(div().flex_1().h(px(1.)).bg(self.theme.line())),
-                );
-                if self.board_older_expanded {
-                    for group in older_settled {
-                        sessions_col =
-                            sessions_col.child(self.board_session_card(
-                                group,
-                                card_idx,
-                                now_ms,
-                                tz_offset_secs,
-                                cx,
-                            ));
-                        card_idx += 1;
-                    }
-                }
-            }
-        }
-
-        div()
-            .id("board-scroll")
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(self.theme.space(20.))
-            .py(self.theme.space(16.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(16.))
-            .child(self.board_kpi_strip(
-                &scoped_kpi,
-                &scoped_daily_7d,
-                active_day_filter,
-                cx,
-            ))
-            .child(self.board_filter_bar(
-                &scoped_kpi,
-                today_key,
-                active_day_filter,
-                cx,
-            ))
-            .child(sessions_col)
-            .into_any_element()
-    }
-
-    /// Expanded 3-card KPI visualization header (~148px tall):
-    /// 1. Enlarged 76px progress donut + inline blocker CTA
-    /// 2. Real 7-day daily activity & delivery bar chart
-    /// 3. Expanded 5-category deliverable composition bar
-    fn board_kpi_strip(
-        &self,
-        kpi: &BoardKpiSummary,
-        daily_7d: &[DailyActivityBucket],
-        selected_day: Option<LocalDateKey>,
-        cx: &Context<'_, Self>,
-    ) -> AnyElement {
-        let segments = vec![
-            DonutSegment::new(
-                kpi.delivered_count as f32,
-                self.theme.status_verified(),
-            ),
-            DonutSegment::new(
-                kpi.running_count as f32,
-                self.theme.status_active(),
-            ),
-            DonutSegment::new(
-                kpi.approval_count as f32,
-                self.theme.status_attention(),
-            ),
-        ];
-
-        let has_blockers = kpi.approval_count > 0;
-        let health_pill: AnyElement = if has_blockers {
-            let label = format!(
-                "{} {} \u{00b7} {}",
-                kpi.approval_count,
-                self.t("board.kpi_blockers"),
-                self.t("board.jump_blocker")
-            );
-            theme::interactive("board-kpi-blocker", label.clone(), &self.theme)
-                .px(self.theme.space(10.))
-                .py(px(5.))
-                .rounded_lg()
-                .border_1()
-                .border_color(self.theme.status_attention().opacity(0.45))
-                .bg(self.theme.status_attention_bg())
-                .cursor_pointer()
+        let body: AnyElement = if is_wide {
+            let queue_width = if self.board_width_px >= 1220.0 {
+                px(430.)
+            } else {
+                px(380.)
+            };
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .flex()
-                .items_center()
-                .gap(px(6.))
-                .on_click(cx.listener(|panel, _, _, cx| {
-                    panel.open_first_blocker_modal(cx);
-                }))
-                .child(
-                    theme::icons::circle_alert()
-                        .size(px(13.))
-                        .text_color(self.theme.status_attention()),
-                )
+                .flex_row()
+                .gap(self.theme.space(14.))
                 .child(
                     div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.status_attention())
-                        .whitespace_nowrap()
-                        .child(label),
+                        .id("board-scroll")
+                        .w(queue_width)
+                        .flex_none()
+                        .h_full()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .scrollbar_width(px(6.))
+                        .pr(self.theme.space(4.))
+                        .child(queue_list),
                 )
+                .child(self.board_inspector_panel(
+                    false,
+                    now_ms,
+                    tz_offset_secs,
+                    window,
+                    cx,
+                ))
+                .into_any_element()
+        } else if self.has_board_drawer() {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .flex_row()
+                .child(
+                    theme::interactive(
+                        "board-drawer-scrim",
+                        self.t("board.close_drawer"),
+                        &self.theme,
+                    )
+                    .w(px(56.))
+                    .flex_none()
+                    .h_full()
+                    .cursor_pointer()
+                    .bg(self.theme.soft().opacity(0.45))
+                    .hover(|s| s.bg(self.theme.soft().opacity(0.7)))
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        panel.close_board_drawer(cx);
+                    })),
+                )
+                .child(self.board_inspector_panel(
+                    true,
+                    now_ms,
+                    tz_offset_secs,
+                    window,
+                    cx,
+                ))
                 .into_any_element()
         } else {
             div()
-                .px(self.theme.space(8.))
-                .py(px(4.))
-                .rounded_lg()
-                .bg(self.theme.status_verified_bg())
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(
-                    theme::icons::check()
-                        .size(px(12.))
-                        .text_color(self.theme.status_verified()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.theme.status_verified())
-                        .whitespace_nowrap()
-                        .child(self.t("board.kpi_clear")),
-                )
-                .into_any_element()
-        };
-
-        let card_progress = div()
-            .flex_1()
-            .min_w(px(270.))
-            .min_h(px(148.))
-            .p(self.theme.space(16.))
-            .rounded_2xl()
-            .border_1()
-            .border_color(if has_blockers {
-                self.theme.status_attention().opacity(0.4)
-            } else {
-                self.theme.line()
-            })
-            .bg(self.theme.card())
-            .flex()
-            .items_center()
-            .gap(self.theme.space(16.))
-            .child(donut_chart(
-                "board-kpi-donut",
-                76.0,
-                segments,
-                kpi.total_branches.to_string(),
-                &self.theme,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .whitespace_nowrap()
-                                    .child(self.t("board.kpi_branches")),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.muted())
-                                    .whitespace_nowrap()
-                                    .child(self.tf(
-                                        "board.kpi_trend_sub",
-                                        &[(
-                                            "count",
-                                            &kpi.total_sessions.to_string(),
-                                        )],
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_x(self.theme.space(10.))
-                            .gap_y(px(4.))
-                            .text_xs()
-                            .child(self.kpi_dot_stat(
-                                self.theme.status_attention(),
-                                kpi.approval_count,
-                                self.t("board.stat_approval"),
-                            ))
-                            .child(self.kpi_dot_stat(
-                                self.theme.status_active(),
-                                kpi.running_count,
-                                self.t("board.stat_running"),
-                            ))
-                            .child(self.kpi_dot_stat(
-                                self.theme.status_verified(),
-                                kpi.delivered_count,
-                                self.t("board.filter_delivered"),
-                            )),
-                    )
-                    .child(div().flex().items_center().child(health_pill)),
-            );
-
-        // Card 2: Real 7-day local calendar-day activity & delivery bar chart.
-        let week_total: usize =
-            daily_7d.iter().map(DailyActivityBucket::total).sum();
-        let max_day = daily_7d
-            .iter()
-            .map(DailyActivityBucket::total)
-            .max()
-            .unwrap_or(0)
-            .max(1);
-        let selected_bucket = selected_day
-            .and_then(|key| daily_7d.iter().find(|b| b.date_key == key));
-        let mut chart_cols = div()
-            .w_full()
-            .h(px(88.))
-            .flex()
-            .items_end()
-            .justify_between()
-            .gap(px(4.));
-        for bucket in daily_7d {
-            let total = bucket.total();
-            let bar_max_h: f32 = 46.0;
-            let bar_track = if total > 0 {
-                let fill_h = ((total as f32 / max_day as f32) * bar_max_h)
-                    .clamp(7.0, bar_max_h);
-                let active_h = if bucket.active_or_blocked > 0 {
-                    ((bucket.active_or_blocked as f32 / total as f32) * fill_h)
-                        .clamp(3.0, fill_h)
-                } else {
-                    0.0
-                };
-                let done_h = (fill_h - active_h).max(0.0);
-                div()
-                    .w_full()
-                    .max_w(px(24.))
-                    .h(px(bar_max_h))
-                    .rounded_md()
-                    .bg(self.theme.soft())
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .justify_end()
-                    .when(active_h > 0.0, |col| {
-                        col.child(
-                            div()
-                                .w_full()
-                                .h(px(active_h))
-                                .bg(self.theme.status_active()),
-                        )
-                    })
-                    .when(done_h > 0.0, |col| {
-                        col.child(
-                            div()
-                                .w_full()
-                                .h(px(done_h))
-                                .bg(self.theme.status_verified()),
-                        )
-                    })
-            } else {
-                div()
-                    .w_full()
-                    .max_w(px(24.))
-                    .h(px(bar_max_h))
-                    .rounded_md()
-                    .bg(self.theme.soft().opacity(0.65))
-                    .flex()
-                    .flex_col()
-                    .justify_end()
-                    .child(div().w_full().h(px(3.)).bg(self.theme.line()))
-            };
-            let day_label = self.format_bucket_day_label(bucket);
-            let a11y_label = self.format_bucket_summary(bucket);
-            let is_today = bucket.day_offset == 0;
-            let is_selected = selected_day == Some(bucket.date_key);
-            let is_dimmed = selected_day.is_some() && !is_selected;
-            let date_key = bucket.date_key;
-            chart_cols = chart_cols.child(
-                theme::interactive(
-                    ("board-day-bar", u64::from(bucket.day_offset)),
-                    a11y_label,
-                    &self.theme,
-                )
+                .id("board-scroll")
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .px(px(2.))
-                .py(px(3.))
-                .rounded_lg()
-                .border_1()
-                .border_color(if is_selected {
-                    self.theme.status_active().opacity(0.7)
-                } else {
-                    gpui::transparent_black().into()
-                })
-                .bg(if is_selected {
-                    self.theme.status_active_bg()
-                } else {
-                    gpui::transparent_black().into()
-                })
-                .when(is_dimmed, |col| col.opacity(0.55))
-                .cursor_pointer()
-                .hover(|style| {
-                    if is_selected {
-                        style
-                    } else {
-                        style.bg(self.theme.soft()).opacity(1.0)
-                    }
-                })
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_end()
-                .gap(px(3.))
-                .on_click(cx.listener(move |panel, _, _, cx| {
-                    if panel.board_day_filter == Some(date_key) {
-                        panel.board_day_filter = None;
-                    } else {
-                        panel.board_day_filter = Some(date_key);
-                        if panel.board_filter == BoardFilter::Archived {
-                            panel.board_filter = BoardFilter::All;
-                        }
-                    }
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .h(px(13.))
-                        .text_xs()
-                        .font_weight(if is_selected {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::MEDIUM
-                        })
-                        .text_color(if is_selected {
-                            self.theme.status_active()
-                        } else if total > 0 {
-                            self.theme.ink()
-                        } else {
-                            self.theme.muted().opacity(0.4)
-                        })
-                        .child(if total > 0 {
-                            total.to_string()
-                        } else {
-                            String::new()
-                        }),
-                )
-                .child(bar_track)
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(if is_selected || is_today {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(if is_selected {
-                            self.theme.status_active()
-                        } else if is_today {
-                            self.theme.ink()
-                        } else {
-                            self.theme.muted()
-                        })
-                        .whitespace_nowrap()
-                        .child(day_label),
-                ),
-            );
-        }
-
-        let trend_meta = if let Some(bucket) = selected_bucket {
-            self.format_bucket_summary(bucket)
-        } else {
-            self.tf(
-                "board.kpi_trend_sub",
-                &[("count", &week_total.to_string())],
-            )
+                .min_h_0()
+                .overflow_y_scroll()
+                .scrollbar_width(px(6.))
+                .child(queue_list)
+                .into_any_element()
         };
 
-        let card_trend = div()
+        let weak_panel = cx.entity().downgrade();
+        let root = div()
+            .id("board-root")
             .flex_1()
-            .min_w(px(270.))
-            .min_h(px(148.))
-            .p(self.theme.space(16.))
-            .rounded_2xl()
-            .border_1()
-            .border_color(if selected_bucket.is_some() {
-                self.theme.status_active().opacity(0.45)
-            } else {
-                self.theme.line()
-            })
-            .bg(self.theme.card())
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .px(self.theme.space(20.))
+            .py(self.theme.space(14.))
             .flex()
             .flex_col()
-            .justify_between()
-            .gap(self.theme.space(8.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.ink())
-                            .whitespace_nowrap()
-                            .child(self.t("board.kpi_trend_7d")),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if selected_bucket.is_some() {
-                                self.theme.status_active()
-                            } else {
-                                self.theme.muted()
-                            })
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(trend_meta),
-                    ),
-            )
-            .child(chart_cols);
+            .gap(self.theme.space(12.))
+            .child(self.board_top_controls(
+                &scoped_kpi,
+                today_key,
+                active_day_filter,
+                !is_wide,
+                cx,
+            ))
+            .child(body);
 
-        // Card 3: Expanded 5-category deliverable composition bar.
-        let format_total = (kpi.sheet_count
-            + kpi.slides_count
-            + kpi.doc_count
-            + kpi.code_count
-            + kpi.other_count)
-            .max(1);
-        let raw_shares: Vec<(f32, gpui::Rgba)> = [
-            (kpi.sheet_count, self.theme.file_kind_sheet()),
-            (kpi.slides_count, self.theme.file_kind_slides()),
-            (kpi.doc_count, self.theme.file_kind_doc()),
-            (kpi.code_count, self.theme.file_kind_code()),
-            (kpi.other_count, self.theme.file_kind_other()),
-        ]
-        .into_iter()
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, color)| {
-            ((count as f32 / format_total as f32).max(0.06), color)
+        theme::PrepaintBounds::new(root, move |bounds, cx| {
+            let next_w = f32::from(bounds.size.width);
+            if next_w >= 200.0 {
+                let _ = weak_panel.update(cx, |panel, cx| {
+                    if is_wide_board_layout(next_w)
+                        && panel.board_inspector.drawer_open
+                    {
+                        panel.board_inspector.close_drawer();
+                    }
+                    if (panel.board_width_px - next_w).abs() > 2.0 {
+                        panel.board_width_px = next_w;
+                        cx.notify();
+                    }
+                });
+            }
         })
-        .collect();
-        let share_sum: f32 = raw_shares
-            .iter()
-            .map(|(share, _)| *share)
-            .sum::<f32>()
-            .max(1.0);
-        let mut bar_track = div()
-            .w_full()
-            .h(px(10.))
-            .rounded_full()
-            .overflow_hidden()
-            .bg(self.theme.soft())
-            .flex()
-            .gap(px(2.));
-        for (share, color) in raw_shares {
-            bar_track = bar_track.child(
-                div()
-                    .h_full()
-                    .bg(color)
-                    .w(gpui::relative(share / share_sum)),
-            );
-        }
+        .into_any_element()
+    }
 
-        let card_formats = div()
-            .flex_1()
-            .min_w(px(270.))
-            .min_h(px(148.))
-            .p(self.theme.space(16.))
+    fn board_top_controls(
+        &self,
+        kpi: &BoardKpiSummary,
+        today_key: Option<LocalDateKey>,
+        active_day_filter: Option<LocalDateKey>,
+        narrow_layout: bool,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let row1 = self.board_status_strip(kpi, today_key, narrow_layout, cx);
+        let row2 = self.board_secondary_filters(
+            kpi,
+            today_key,
+            active_day_filter,
+            cx,
+        );
+
+        div()
+            .w_full()
+            .flex_none()
+            .p(self.theme.space(10.))
             .rounded_2xl()
             .border_1()
             .border_color(self.theme.line())
             .bg(self.theme.card())
             .flex()
             .flex_col()
-            .justify_between()
-            .gap(self.theme.space(10.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(self.theme.space(8.))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.ink())
-                            .whitespace_nowrap()
-                            .child(self.t("board.kpi_deliverables")),
-                    )
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(self.theme.status_verified())
-                            .whitespace_nowrap()
-                            .child(kpi.delivered_count.to_string()),
-                    ),
-            )
-            .child(bar_track)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_x(self.theme.space(12.))
-                    .gap_y(px(6.))
-                    .text_xs()
-                    .child(self.format_legend_item(
-                        self.theme.file_kind_sheet(),
-                        "XLSX".to_owned(),
-                        kpi.sheet_count,
-                    ))
-                    .child(self.format_legend_item(
-                        self.theme.file_kind_slides(),
-                        "PPTX".to_owned(),
-                        kpi.slides_count,
-                    ))
-                    .child(self.format_legend_item(
-                        self.theme.file_kind_doc(),
-                        "DOCX".to_owned(),
-                        kpi.doc_count,
-                    ))
-                    .child(self.format_legend_item(
-                        self.theme.file_kind_code(),
-                        self.t("deliverables.kind_code"),
-                        kpi.code_count,
-                    ))
-                    .child(self.format_legend_item(
-                        self.theme.file_kind_other(),
-                        self.t("deliverables.kind_file"),
-                        kpi.other_count,
-                    )),
-            );
-
-        div()
-            .w_full()
-            .flex()
-            .flex_wrap()
-            .gap(self.theme.space(12.))
-            .child(card_progress)
-            .child(card_trend)
-            .child(card_formats)
+            .gap(self.theme.space(8.))
+            .child(row1)
+            .child(row2)
             .into_any_element()
     }
 
-    fn format_legend_item(
-        &self,
-        color: gpui::Rgba,
-        label: String,
-        count: usize,
-    ) -> AnyElement {
-        let dimmed = count == 0;
-        div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .whitespace_nowrap()
-            .child(div().size(px(6.)).rounded_full().bg(if dimmed {
-                color.opacity(0.4)
-            } else {
-                color
-            }))
-            .child(
-                div()
-                    .text_color(if dimmed {
-                        self.theme.muted().opacity(0.7)
-                    } else {
-                        self.theme.muted()
-                    })
-                    .child(label),
-            )
-            .child(
-                div()
-                    .font_weight(if dimmed {
-                        FontWeight::NORMAL
-                    } else {
-                        FontWeight::SEMIBOLD
-                    })
-                    .text_color(if dimmed {
-                        self.theme.muted().opacity(0.6)
-                    } else {
-                        self.theme.ink()
-                    })
-                    .child(count.to_string()),
-            )
-            .into_any_element()
-    }
-
-    fn kpi_dot_stat(
-        &self,
-        color: gpui::Rgba,
-        count: usize,
-        label: String,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .whitespace_nowrap()
-            .child(div().size(px(6.)).rounded_full().bg(color))
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.theme.ink())
-                    .child(count.to_string()),
-            )
-            .child(div().text_color(self.theme.muted()).child(label))
-            .into_any_element()
-    }
-
-    fn board_filter_bar(
+    fn board_status_strip(
         &self,
         kpi: &BoardKpiSummary,
         today_key: Option<LocalDateKey>,
-        active_day_filter: Option<LocalDateKey>,
+        narrow_layout: bool,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
+        let mut status_pills = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(self.theme.space(6.));
+
+        let all_label = self.tf(
+            "board.filter_all",
+            &[("count", &kpi.total_sessions.to_string())],
+        );
+        let blocker_label = if kpi.blocker_sessions > 0 {
+            self.tf(
+                "board.status_blockers",
+                &[("count", &kpi.blocker_sessions.to_string())],
+            )
+        } else {
+            self.t("board.filter_approval")
+        };
+        let running_label = if kpi.running_sessions > 0 {
+            self.tf(
+                "board.status_running",
+                &[("count", &kpi.running_sessions.to_string())],
+            )
+        } else {
+            self.t("board.filter_running")
+        };
+
         let mut filters = vec![
+            (BoardFilter::All, "bf-all", all_label, None),
             (
-                BoardFilter::All,
-                self.tf(
-                    "board.filter_all",
-                    &[("count", &kpi.total_sessions.to_string())],
-                ),
+                BoardFilter::Approval,
+                "bf-approval",
+                blocker_label,
+                (kpi.blocker_sessions > 0)
+                    .then(|| self.theme.status_attention()),
             ),
-            (BoardFilter::Approval, self.t("board.filter_approval")),
-            (BoardFilter::Running, self.t("board.filter_running")),
-            (BoardFilter::Delivered, self.t("board.filter_delivered")),
+            (
+                BoardFilter::Running,
+                "bf-running",
+                running_label,
+                (kpi.running_sessions > 0).then(|| self.theme.status_active()),
+            ),
+            (
+                BoardFilter::Delivered,
+                "bf-delivered",
+                self.t("board.filter_delivered"),
+                None,
+            ),
         ];
         if kpi.archived_sessions > 0
             || self.board_filter == BoardFilter::Archived
         {
             filters.push((
                 BoardFilter::Archived,
+                "bf-archived",
                 self.tf(
                     "board.filter_archived",
                     &[("count", &kpi.archived_sessions.to_string())],
                 ),
+                None,
             ));
         }
 
-        let mut pills = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(self.theme.space(6.));
-        for (idx, (filter, label)) in filters.into_iter().enumerate() {
+        for (filter, id, label, dot) in filters {
             let selected = self.board_filter == filter;
-            pills = pills.child(
+            status_pills = status_pills.child(
+                theme::interactive(id, label.clone(), &self.theme)
+                    .px(self.theme.space(10.))
+                    .py(px(4.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_xs()
+                    .font_weight(if selected {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .bg(if selected {
+                        self.theme.ink()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .text_color(if selected {
+                        self.theme.on_ink()
+                    } else {
+                        self.theme.ink()
+                    })
+                    .when_some(dot, |pill, color| {
+                        pill.child(
+                            div().size(px(6.)).rounded_full().bg(if selected {
+                                self.theme.on_ink()
+                            } else {
+                                color
+                            }),
+                        )
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if filter == BoardFilter::All
+                            && panel.board_filter == BoardFilter::All
+                        {
+                            panel.board_project_filter = None;
+                            panel.board_day_filter = None;
+                            panel.board_format_filter = None;
+                        } else if filter == BoardFilter::Archived {
+                            panel.board_day_filter = None;
+                        }
+                        panel.board_filter = filter;
+                        cx.notify();
+                    })),
+            );
+        }
+
+        if let Some(today) = today_key {
+            let active = self.board_day_filter == Some(today);
+            let today_label = self.tf(
+                "board.status_today_done",
+                &[("count", &kpi.today_completed_sessions.to_string())],
+            );
+            status_pills = status_pills.child(
                 theme::interactive(
-                    ("board-filter", idx as u64),
-                    label.clone(),
+                    "bf-today-pill",
+                    today_label.clone(),
                     &self.theme,
                 )
                 .px(self.theme.space(10.))
                 .py(px(4.))
                 .rounded_full()
                 .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(5.))
                 .text_xs()
-                .bg(if selected {
-                    self.theme.ink()
+                .bg(if active {
+                    self.theme.status_active_bg()
                 } else {
                     self.theme.soft()
                 })
-                .text_color(if selected {
-                    self.theme.on_ink()
+                .text_color(if active {
+                    self.theme.status_active()
                 } else {
-                    self.theme.ink()
+                    self.theme.muted()
                 })
-                .child(label)
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        if filter == BoardFilter::All
-                            && panel.board_filter == BoardFilter::All
-                        {
-                            panel.board_project_filter = None;
-                            panel.board_day_filter = None;
-                        } else if filter == BoardFilter::Archived {
-                            panel.board_day_filter = None;
-                        }
-                        panel.board_filter = filter;
-                        cx.notify();
+                .child(div().size(px(6.)).rounded_full().bg(
+                    if kpi.today_completed_sessions > 0 || active {
+                        self.theme.status_verified()
+                    } else {
+                        self.theme.muted().opacity(0.45)
                     },
-                )),
-            );
-        }
-
-        if let Some(day_key) = active_day_filter {
-            let day_label = if today_key == Some(day_key) {
-                self.t("board.kpi_today")
-            } else {
-                format!("{}/{}", day_key.1, day_key.2)
-            };
-            let chip_label = format!("{day_label} \u{00d7}");
-            pills = pills.child(
-                theme::interactive(
-                    "board-day-filter-chip",
-                    self.t("board.clear_day_filter"),
-                    &self.theme,
-                )
-                .px(self.theme.space(8.))
-                .py(px(4.))
-                .rounded_full()
-                .cursor_pointer()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .bg(self.theme.status_active_bg())
-                .text_color(self.theme.status_active())
-                .child(chip_label)
-                .on_click(cx.listener(|panel, _, _, cx| {
-                    panel.board_day_filter = None;
+                ))
+                .child(today_label)
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    if panel.board_day_filter == Some(today) {
+                        panel.board_day_filter = None;
+                    } else {
+                        if panel.board_filter == BoardFilter::Archived {
+                            panel.board_filter = BoardFilter::All;
+                        }
+                        panel.board_day_filter = Some(today);
+                    }
                     cx.notify();
                 })),
             );
         }
 
-        if !self.projects.is_empty() {
-            pills = pills.child(
-                div().w(px(1.)).h(px(14.)).mx(px(2.)).bg(self.theme.line()),
+        let review_cta = (kpi.blocker_sessions > 0).then(|| {
+            let label = self.tf(
+                "board.cta_review_short",
+                &[("count", &kpi.blocker_sessions.to_string())],
             );
+            theme::Button::new("board-jump-review", label)
+                .variant(theme::ControlVariant::Primary)
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        panel.jump_to_first_blocker(narrow_layout, cx);
+                    }),
+                )
+        });
+
+        div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap(self.theme.space(8.))
+            .child(status_pills)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(6.))
+                    .children(review_cta)
+                    .child(
+                        theme::Button::new(
+                            "board-new-task",
+                            self.t("dock.new_task"),
+                        )
+                        .variant(theme::ControlVariant::Ghost)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|panel, _, _, cx| {
+                                panel.new_task(cx);
+                            }),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn board_secondary_filters(
+        &self,
+        kpi: &BoardKpiSummary,
+        today_key: Option<LocalDateKey>,
+        active_day_filter: Option<LocalDateKey>,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let mut row = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(self.theme.space(6.));
+
+        if !self.projects.is_empty() {
             let mut visible_projects: Vec<&crate::projects::Project> =
                 self.projects.iter().take(4).collect();
             if let Some(active_pid) = self.board_project_filter.as_deref()
@@ -1167,20 +634,24 @@ impl StudioPanel {
                 let pid = project.id.clone();
                 let active = self.board_project_filter.as_deref()
                     == Some(project.id.as_str());
-                let label = if active {
+                let display_label = if active {
                     format!("{} \u{00d7}", project.name)
                 } else {
                     project.name.clone()
                 };
-                pills = pills.child(
+                let a11y_label = self.tf(
+                    "board.filter_project_a11y",
+                    &[("name", &project.name)],
+                );
+                row = row.child(
                     theme::interactive(
                         ("board-proj-filter", p_idx as u64),
-                        project.name.clone(),
+                        a11y_label,
                         &self.theme,
                     )
-                    .max_w(px(140.))
+                    .max_w(px(150.))
                     .px(self.theme.space(8.))
-                    .py(px(4.))
+                    .py(px(3.))
                     .rounded_full()
                     .cursor_pointer()
                     .text_xs()
@@ -1197,42 +668,404 @@ impl StudioPanel {
                     } else {
                         self.theme.muted()
                     })
+                    .child(display_label)
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if panel.board_project_filter.as_deref()
+                            == Some(pid.as_str())
+                        {
+                            panel.board_project_filter = None;
+                        } else {
+                            panel.board_project_filter = Some(pid.clone());
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            row = row.child(
+                div().w(px(1.)).h(px(14.)).mx(px(2.)).bg(self.theme.line()),
+            );
+        }
+
+        if let Some(day_key) = active_day_filter {
+            let day_label = if today_key == Some(day_key) {
+                self.t("board.kpi_today")
+            } else {
+                format!("{}/{}", day_key.1, day_key.2)
+            };
+            row = row.child(
+                theme::interactive(
+                    "board-day-filter-chip",
+                    self.t("board.clear_day_filter"),
+                    &self.theme,
+                )
+                .px(self.theme.space(8.))
+                .py(px(3.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .bg(self.theme.status_active_bg())
+                .text_color(self.theme.status_active())
+                .child(format!("{day_label} \u{00d7}"))
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.board_day_filter = None;
+                    cx.notify();
+                })),
+            );
+        }
+
+        let format_counts = [
+            (DeliverableFormat::Sheet, kpi.sheet_count),
+            (DeliverableFormat::Slides, kpi.slides_count),
+            (DeliverableFormat::Doc, kpi.doc_count),
+            (DeliverableFormat::Pdf, kpi.pdf_count),
+            (DeliverableFormat::Markdown, kpi.markdown_count),
+            (DeliverableFormat::CodeWeb, kpi.code_count),
+            (DeliverableFormat::Other, kpi.other_count),
+        ];
+        let any_formats = format_counts.iter().any(|(_, c)| *c > 0);
+        if any_formats || self.board_format_filter.is_some() {
+            let all_fmt_active = self.board_format_filter.is_none();
+            let all_fmt_label = self.t("board.format_all");
+            row = row.child(
+                theme::interactive(
+                    "bf-fmt-all",
+                    all_fmt_label.clone(),
+                    &self.theme,
+                )
+                .px(self.theme.space(8.))
+                .py(px(3.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_xs()
+                .bg(if all_fmt_active {
+                    self.theme.ink()
+                } else {
+                    self.theme.soft()
+                })
+                .text_color(if all_fmt_active {
+                    self.theme.on_ink()
+                } else {
+                    self.theme.muted()
+                })
+                .child(all_fmt_label)
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.board_format_filter = None;
+                    cx.notify();
+                })),
+            );
+            for (ix, (fmt, count)) in format_counts.into_iter().enumerate() {
+                let active = self.board_format_filter == Some(fmt);
+                if count == 0 && !active {
+                    continue;
+                }
+                let tag = self.format_tag_label(fmt);
+                let label = format!("{tag} {count}");
+                let color = self.format_color(fmt);
+                row = row.child(
+                    theme::interactive(
+                        ("bf-fmt", ix as u64),
+                        label.clone(),
+                        &self.theme,
+                    )
+                    .px(self.theme.space(8.))
+                    .py(px(3.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_xs()
+                    .bg(if active {
+                        self.theme.ink()
+                    } else {
+                        self.theme.soft()
+                    })
+                    .text_color(if active {
+                        self.theme.on_ink()
+                    } else {
+                        self.theme.ink()
+                    })
+                    .child(div().size(px(6.)).rounded_full().bg(color))
                     .child(label)
-                    .on_click(cx.listener(
-                        move |panel, _, _, cx| {
-                            if panel.board_project_filter.as_deref()
-                                == Some(pid.as_str())
-                            {
-                                panel.board_project_filter = None;
-                            } else {
-                                panel.board_project_filter = Some(pid.clone());
-                            }
-                            cx.notify();
-                        },
-                    )),
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if panel.board_format_filter == Some(fmt) {
+                            panel.board_format_filter = None;
+                        } else {
+                            panel.board_format_filter = Some(fmt);
+                        }
+                        cx.notify();
+                    })),
                 );
             }
         }
 
+        row.into_any_element()
+    }
+
+    fn board_action_queue(
+        &self,
+        filtered: &[&SessionBoardGroup],
+        active_day_filter: Option<LocalDateKey>,
+        now_ms: u64,
+        tz_offset_secs: i32,
+        narrow_layout: bool,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let mut sessions_col =
+            div().w_full().flex().flex_col().gap(self.theme.space(8.));
+
+        if filtered.is_empty() {
+            return sessions_col
+                .child(self.board_empty_card(active_day_filter, cx))
+                .into_any_element();
+        }
+
+        if self.board_filter == BoardFilter::Archived {
+            for (card_idx, group) in filtered.iter().enumerate() {
+                sessions_col = sessions_col.child(self.board_session_card(
+                    group,
+                    card_idx as u64,
+                    now_ms,
+                    tz_offset_secs,
+                    narrow_layout,
+                    cx,
+                ));
+            }
+            return sessions_col.into_any_element();
+        }
+
+        let blockers: Vec<&SessionBoardGroup> =
+            filtered.iter().copied().filter(|g| g.has_blocker).collect();
+        let running: Vec<&SessionBoardGroup> = filtered
+            .iter()
+            .copied()
+            .filter(|g| !g.has_blocker && g.is_running)
+            .collect();
+        let recent_settled: Vec<&SessionBoardGroup> = filtered
+            .iter()
+            .copied()
+            .filter(|g| {
+                !g.is_active
+                    && (active_day_filter.is_some()
+                        || g.pinned
+                        || !is_older_than_7d_in_tz(
+                            g.updated_at,
+                            now_ms,
+                            tz_offset_secs,
+                        ))
+            })
+            .collect();
+        let older_settled: Vec<&SessionBoardGroup> = filtered
+            .iter()
+            .copied()
+            .filter(|g| {
+                active_day_filter.is_none()
+                    && !g.is_active
+                    && !g.pinned
+                    && is_older_than_7d_in_tz(
+                        g.updated_at,
+                        now_ms,
+                        tz_offset_secs,
+                    )
+            })
+            .collect();
+
+        let mut card_idx: u64 = 0;
+        if !blockers.is_empty() {
+            sessions_col = sessions_col.child(self.queue_section_heading(
+                self.tf(
+                    "board.group_blockers",
+                    &[("count", &blockers.len().to_string())],
+                ),
+                Some(self.theme.status_attention()),
+            ));
+            for group in blockers {
+                sessions_col = sessions_col.child(self.board_session_card(
+                    group,
+                    card_idx,
+                    now_ms,
+                    tz_offset_secs,
+                    narrow_layout,
+                    cx,
+                ));
+                card_idx += 1;
+            }
+        }
+
+        if !running.is_empty() {
+            sessions_col = sessions_col.child(self.queue_section_heading(
+                self.tf(
+                    "board.group_running",
+                    &[("count", &running.len().to_string())],
+                ),
+                Some(self.theme.status_active()),
+            ));
+            for group in running {
+                sessions_col = sessions_col.child(self.board_session_card(
+                    group,
+                    card_idx,
+                    now_ms,
+                    tz_offset_secs,
+                    narrow_layout,
+                    cx,
+                ));
+                card_idx += 1;
+            }
+        }
+
+        if !recent_settled.is_empty() {
+            sessions_col = sessions_col.child(self.queue_section_heading(
+                self.tf(
+                    "board.group_settled",
+                    &[("count", &recent_settled.len().to_string())],
+                ),
+                None,
+            ));
+            for group in recent_settled {
+                sessions_col = sessions_col.child(self.board_session_card(
+                    group,
+                    card_idx,
+                    now_ms,
+                    tz_offset_secs,
+                    narrow_layout,
+                    cx,
+                ));
+                card_idx += 1;
+            }
+        }
+
+        if !older_settled.is_empty() {
+            let older_label = self.tf(
+                "board.group_older",
+                &[("count", &older_settled.len().to_string())],
+            );
+            let chevron = if self.board_older_expanded {
+                theme::icons::chevron_down()
+            } else {
+                theme::icons::chevron_right()
+            };
+            sessions_col = sessions_col.child(
+                theme::interactive(
+                    "board-older-divider",
+                    older_label.clone(),
+                    &self.theme,
+                )
+                .w_full()
+                .mt(self.theme.space(4.))
+                .px(self.theme.space(8.))
+                .py(px(6.))
+                .rounded_lg()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.board_older_expanded = !panel.board_older_expanded;
+                    cx.notify();
+                }))
+                .child(chevron.size(px(13.)).text_color(self.theme.muted()))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(self.theme.muted())
+                        .whitespace_nowrap()
+                        .child(older_label),
+                )
+                .child(div().flex_1().h(px(1.)).bg(self.theme.line())),
+            );
+            if self.board_older_expanded {
+                for group in older_settled {
+                    sessions_col = sessions_col.child(self.board_session_card(
+                        group,
+                        card_idx,
+                        now_ms,
+                        tz_offset_secs,
+                        narrow_layout,
+                        cx,
+                    ));
+                    card_idx += 1;
+                }
+            }
+        }
+
+        sessions_col.into_any_element()
+    }
+
+    fn queue_section_heading(
+        &self,
+        label: String,
+        tint: Option<gpui::Rgba>,
+    ) -> AnyElement {
+        div()
+            .pt(px(2.))
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(tint.unwrap_or_else(|| self.theme.muted()))
+            .child(label)
+            .into_any_element()
+    }
+
+    fn board_empty_card(
+        &self,
+        active_day_filter: Option<LocalDateKey>,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let has_any_filter = active_day_filter.is_some()
+            || self.board_format_filter.is_some()
+            || self.board_project_filter.is_some()
+            || self.board_filter != BoardFilter::All;
+
         div()
             .w_full()
+            .py(px(40.))
+            .px(self.theme.space(16.))
+            .rounded_2xl()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
             .flex()
-            .flex_wrap()
+            .flex_col()
             .items_center()
-            .justify_between()
             .gap(self.theme.space(8.))
-            .child(pills)
             .child(
-                theme::Button::new("board-new-task", self.t("dock.new_task"))
-                    .variant(theme::ControlVariant::Ghost)
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener(|panel, _, _, cx| {
-                            panel.new_task(cx);
-                        }),
-                    ),
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(self.theme.ink())
+                    .child(self.t("board.empty_title")),
             )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("board.empty_detail")),
+            )
+            .when(has_any_filter, |empty| {
+                empty.child(
+                    div().pt(px(4.)).child(
+                        theme::Button::new(
+                            "board-clear-filters",
+                            self.t("board.clear_day_filter"),
+                        )
+                        .variant(theme::ControlVariant::Secondary)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|panel, _, _, cx| {
+                                panel.board_filter = BoardFilter::All;
+                                panel.board_day_filter = None;
+                                panel.board_format_filter = None;
+                                panel.board_project_filter = None;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+                )
+            })
             .into_any_element()
     }
 
@@ -1241,16 +1074,12 @@ impl StudioPanel {
         session_id: &str,
         row_title: &str,
         index: u64,
-        include_flow_icon: bool,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let sid_chat = session_id.to_owned();
-        let sid_flow = session_id.to_owned();
         let sid_menu = session_id.to_owned();
         let open_chat_label =
             format!("{row_title} \u{00b7} {}", self.t("board.open_chat"));
-        let open_flow_label =
-            format!("{row_title} \u{00b7} {}", self.t("board.open_flow"));
         let more_label =
             format!("{row_title} \u{00b7} {}", self.t("library.more"));
 
@@ -1277,35 +1106,11 @@ impl StudioPanel {
                 })
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     cx.stop_propagation();
+                    panel.close_board_drawer(cx);
                     panel.open_session(&sid_chat, cx);
                 }))
                 .child(theme::icons::arrow_up_right().size(px(13.))),
             )
-            .when(include_flow_icon, |row| {
-                row.child(
-                    theme::interactive(
-                        ("board-row-flow", index),
-                        open_flow_label,
-                        &self.theme,
-                    )
-                    .size(px(24.))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(self.theme.muted())
-                    .hover(|s| {
-                        s.bg(self.theme.dock_hover())
-                            .text_color(self.theme.ink())
-                    })
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        cx.stop_propagation();
-                        panel.open_flow_modal(sid_flow.clone(), None, cx);
-                    }))
-                    .child(theme::icons::workflow().size(px(13.))),
-                )
-            })
             .child({
                 let anchor_id = format!("board-row-menu-{sid_menu}");
                 let anchor_emit = anchor_id.clone();
@@ -1347,440 +1152,160 @@ impl StudioPanel {
         index: u64,
         now_ms: u64,
         tz_offset_secs: i32,
+        narrow_layout: bool,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let sid_card = group.session_id.clone();
         let sid_right = group.session_id.clone();
         let is_real_session = !group.is_synthetic();
+        let is_selected = self.board_inspector.session.as_deref()
+            == Some(group.session_id.as_str());
         let rel_time =
             self.format_relative_time(group.updated_at, now_ms, tz_offset_secs);
 
-        if !group.is_active {
-            let all_file_branches: Vec<_> = group
-                .branches
-                .iter()
-                .filter(|b| {
-                    b.deliverable_path.is_some()
-                        || !matches!(b.phase, BranchPhase::Idle)
-                })
-                .collect();
-            let total_files =
-                group.total_file_count.max(all_file_branches.len());
-            let shown_files: Vec<_> =
-                all_file_branches.into_iter().take(3).collect();
-            let overflow_files = total_files.saturating_sub(shown_files.len());
-            let has_deliverables = !shown_files.is_empty();
+        let a11y_label =
+            self.tf("board.card_a11y", &[("title", &group.title)]);
 
-            let mut file_chips =
-                div().flex().flex_wrap().items_center().gap(px(5.));
-            for branch in shown_files {
-                let color = self.format_color(branch.format);
-                file_chips = file_chips.child(
-                    div()
-                        .max_w(px(200.))
-                        .px(px(7.))
-                        .py(px(2.))
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .text_xs()
-                        .text_color(self.theme.ink())
-                        .child(
-                            div()
-                                .size(px(6.))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(color),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .truncate()
-                                .child(branch.deliverable_name.clone()),
-                        ),
-                );
-            }
-            if overflow_files > 0 {
-                file_chips = file_chips.child(
-                    div()
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .child(format!("+{overflow_files}")),
-                );
-            }
+        let formal_files: Vec<_> = group
+            .branches
+            .iter()
+            .filter(|b| b.deliverable_path.is_some())
+            .collect();
+        let shown_files: Vec<_> = formal_files.iter().copied().take(3).collect();
+        let overflow_files = formal_files.len().saturating_sub(shown_files.len());
 
-            let preview_snippet =
-                (!has_deliverables).then(|| group.preview.clone()).flatten();
-
-            return theme::interactive(
-                ("board-session-compact", index),
-                group.title.clone(),
-                &self.theme,
-            )
-            .w_full()
-            .px(self.theme.space(14.))
-            .py(self.theme.space(10.))
-            .rounded_xl()
-            .border_1()
-            .border_color(self.theme.line())
-            .bg(self.theme.card())
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.soft().opacity(0.6)))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap(self.theme.space(10.))
-            .on_click(cx.listener(move |panel, _, _, cx| {
-                panel.open_flow_modal(sid_card.clone(), None, cx);
-            }))
-            .when(is_real_session, |row| {
-                row.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(
-                        move |_panel, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            cx.emit(StudioEvent::OpenSessionMenu {
-                                session_id: sid_right.clone(),
-                                position: event.position,
-                            });
-                        },
-                    ),
-                )
-            })
-            .child(
+        let mut file_chips = div().flex().flex_wrap().items_center().gap(px(5.));
+        for branch in &shown_files {
+            let color = self.format_color(branch.format);
+            let tag = self.format_tag_label(branch.format);
+            file_chips = file_chips.child(
                 div()
-                    .flex_1()
-                    .min_w(px(200.))
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(
-                        if has_deliverables {
-                            self.theme.status_verified()
-                        } else {
-                            self.theme.muted().opacity(0.5)
-                        },
-                    ))
-                    .when(group.pinned, |row| {
-                        row.child(
-                            theme::icons::pin()
-                                .size(px(12.))
-                                .flex_none()
-                                .text_color(self.theme.accent()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.theme.ink())
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(group.title.clone()),
-                    )
-                    .when_some(group.project_name.clone(), |row, project| {
-                        row.child(status_pill(
-                            self.theme.soft(),
-                            self.theme.muted(),
-                            project,
-                            None,
-                        ))
-                    })
-                    .when(group.archived, |row| {
-                        row.child(status_pill(
-                            self.theme.soft(),
-                            self.theme.muted(),
-                            self.t("chat.archived_badge"),
-                            None,
-                        ))
-                    }),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(8.))
-                    .when(has_deliverables, |right| right.child(file_chips))
-                    .when_some(preview_snippet, |right, snippet| {
-                        right.child(
-                            div()
-                                .max_w(px(260.))
-                                .text_xs()
-                                .text_color(self.theme.muted())
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .truncate()
-                                .child(snippet),
-                        )
-                    })
-                    .when(!rel_time.is_empty(), |right| {
-                        right.child(
-                            div()
-                                .text_xs()
-                                .text_color(self.theme.muted().opacity(0.8))
-                                .whitespace_nowrap()
-                                .child(rel_time),
-                        )
-                    })
-                    .when(is_real_session, |right| {
-                        right.child(self.board_row_actions(
-                            &group.session_id,
-                            &group.title,
-                            index,
-                            false,
-                            cx,
-                        ))
-                    }),
-            )
-            .into_any_element();
-        }
-
-        let (badge_bg, badge_fg, badge_text) = if group.has_blocker {
-            (
-                self.theme.status_attention_bg(),
-                self.theme.status_attention(),
-                self.t("board.badge_approval"),
-            )
-        } else {
-            (
-                self.theme.status_active_bg(),
-                self.theme.status_active(),
-                self.t("board.badge_running"),
-            )
-        };
-
-        let mut branches_col = div().w_full().flex().flex_col().gap(px(6.));
-        for branch in &group.branches {
-            let sid_branch = group.session_id.clone();
-            let bid = branch.id.clone();
-            let real_pct = real_contract_progress_pct(branch);
-            let (dot_color, state_label, live) = match &branch.phase {
-                BranchPhase::NeedsApproval { .. } => (
-                    self.theme.status_attention(),
-                    self.t("board.state_needs_approval"),
-                    false,
-                ),
-                BranchPhase::DeliveryFailed => (
-                    self.theme.status_attention(),
-                    self.t("chat.status_delivery_failed"),
-                    false,
-                ),
-                BranchPhase::Running { step_label, .. } => {
-                    let step = if step_label.is_empty() {
-                        self.t("chat.status_running")
-                    } else {
-                        step_label.clone()
-                    };
-                    let label = if let Some(pct) = real_pct {
-                        format!("{}% \u{00b7} {step}", pct.round() as u32)
-                    } else {
-                        step
-                    };
-                    (self.theme.status_active(), label, true)
-                }
-                BranchPhase::Queued { state, .. } => {
-                    self.receipt_state_visual(*state)
-                }
-                BranchPhase::Delivered { override_used, .. } => (
-                    self.theme.status_verified(),
-                    if *override_used {
-                        self.t("verify.override.badge")
-                    } else {
-                        self.t("verify.card.passed")
-                    },
-                    false,
-                ),
-                BranchPhase::Idle => {
-                    (self.theme.muted(), self.t("chat.status_idle"), false)
-                }
-            };
-            let format_color = self.format_color(branch.format);
-            let dot_id = gpui::SharedString::from(format!(
-                "board-branch-dot-{}",
-                branch.id
-            ));
-            let row_id = gpui::SharedString::from(format!(
-                "board-branch-row-{}",
-                branch.id
-            ));
-            let dot = if live {
-                crate::motion::live_dot(
-                    dot_id,
-                    dot_color,
-                    self.theme.motion_policy(),
-                )
-            } else {
-                div()
-                    .size(px(6.))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(dot_color)
-                    .into_any_element()
-            };
-            let has_file_deliverable = branch.deliverable_path.is_some();
-            let bar_ratio = real_pct.map_or(0.0, |pct| {
-                if pct <= 0.0 {
-                    0.0
-                } else {
-                    (pct / 100.0).clamp(0.08, 1.0)
-                }
-            });
-            let branch_caption = if !has_file_deliverable
-                && matches!(branch.phase, BranchPhase::Running { .. })
-                && duplicates_session_title(
-                    &group.title,
-                    &branch.deliverable_name,
-                ) {
-                self.t("chat.thinking")
-            } else {
-                branch.deliverable_name.clone()
-            };
-
-            branches_col = branches_col.child(
-                theme::interactive(row_id, branch_caption.clone(), &self.theme)
-                    .w_full()
-                    .px(self.theme.space(10.))
-                    .py(self.theme.space(6.))
-                    .rounded_lg()
+                    .max_w(px(190.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded_md()
                     .bg(self.theme.soft())
-                    .cursor_pointer()
-                    .hover(|style| style.bg(self.theme.dock_hover()))
                     .flex()
-                    .flex_wrap()
                     .items_center()
-                    .justify_between()
-                    .gap(self.theme.space(8.))
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        cx.stop_propagation();
-                        panel.open_flow_modal(
-                            sid_branch.clone(),
-                            Some(bid.clone()),
-                            cx,
-                        );
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.))
-                            .flex()
-                            .items_center()
-                            .gap(self.theme.space(6.))
-                            .child(dot)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.theme.ink())
-                                    .whitespace_nowrap()
-                                    .child(
-                                        branch
-                                            .skill_label
-                                            .resolve(|k| self.t(k)),
-                                    ),
-                            )
-                            .when(has_file_deliverable, |row| {
-                                row.child(
-                                    div()
-                                        .px(px(5.))
-                                        .py(px(1.))
-                                        .rounded_sm()
-                                        .bg(format_color)
-                                        .text_xs()
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(self.theme.on_ink())
-                                        .child(
-                                            self.format_tag_label(
-                                                branch.format,
-                                            ),
-                                        ),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(self.theme.muted())
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .truncate()
-                                    .child(branch_caption),
-                            ),
-                    )
+                    .gap(px(4.))
+                    .text_xs()
+                    .text_color(self.theme.ink())
                     .child(
                         div()
                             .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(self.theme.space(8.))
-                            .when(real_pct.is_some(), |right| {
-                                right.child(
-                                    div()
-                                        .w(px(56.))
-                                        .h(px(5.))
-                                        .rounded_full()
-                                        .overflow_hidden()
-                                        .bg(self.theme.card())
-                                        .when(bar_ratio > 0.0, |track| {
-                                            track.child(
-                                                div()
-                                                    .h_full()
-                                                    .rounded_full()
-                                                    .bg(dot_color)
-                                                    .w(gpui::relative(
-                                                        bar_ratio,
-                                                    )),
-                                            )
-                                        }),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(dot_color)
-                                    .whitespace_nowrap()
-                                    .child(state_label),
-                            ),
+                            .px(px(4.))
+                            .rounded_sm()
+                            .bg(color)
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(self.theme.on_ink())
+                            .child(tag),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(branch.deliverable_name.clone()),
                     ),
             );
         }
+        if overflow_files > 0 {
+            file_chips = file_chips.child(
+                div()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded_md()
+                    .bg(self.theme.soft())
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .child(format!("+{overflow_files}")),
+            );
+        }
 
-        theme::interactive(
-            ("board-session-active", index),
-            group.title.clone(),
+        let live_hint = group.branches.iter().find_map(|b| match &b.phase {
+            BranchPhase::NeedsApproval { summary, .. } => Some(summary.clone()),
+            BranchPhase::DeliveryFailed => {
+                Some(self.t("chat.status_delivery_failed"))
+            }
+            BranchPhase::Running { step_label, .. } => {
+                let caption = if !step_label.is_empty() {
+                    step_label.clone()
+                } else if !duplicates_session_title(
+                    &group.title,
+                    &b.deliverable_name,
+                ) {
+                    b.deliverable_name.clone()
+                } else {
+                    self.t("chat.thinking")
+                };
+                Some(caption)
+            }
+            BranchPhase::Queued { state, .. } => {
+                let (_, label, _) = self.receipt_state_visual(*state);
+                Some(label)
+            }
+            BranchPhase::Delivered { .. } | BranchPhase::Idle => None,
+        });
+
+        let summary_line = if !shown_files.is_empty() {
+            None
+        } else {
+            live_hint.or_else(|| group.preview.clone())
+        };
+
+        let status_dot_color = if group.has_blocker {
+            self.theme.status_attention()
+        } else if group.is_running {
+            self.theme.status_active()
+        } else if !formal_files.is_empty() {
+            self.theme.status_verified()
+        } else {
+            self.theme.muted().opacity(0.5)
+        };
+
+        let border_color = if is_selected {
+            self.theme.accent()
+        } else if group.has_blocker {
+            self.theme.status_attention().opacity(0.45)
+        } else if group.is_running {
+            self.theme.status_active().opacity(0.4)
+        } else {
+            self.theme.line()
+        };
+
+        let mut card = theme::interactive(
+            ("board-session-card", index),
+            a11y_label,
             &self.theme,
         )
         .w_full()
-        .p(self.theme.space(14.))
-        .rounded_2xl()
+        .p(self.theme.space(12.))
+        .rounded_xl()
         .border_1()
-        .border_color(if group.has_blocker {
-            self.theme.status_attention().opacity(0.45)
+        .border_color(border_color)
+        .bg(if is_selected {
+            self.theme.soft().opacity(0.65)
         } else {
-            self.theme.line()
+            self.theme.card()
         })
-        .bg(self.theme.card())
         .cursor_pointer()
+        .hover(|style| style.bg(self.theme.soft().opacity(0.6)))
         .flex()
         .flex_col()
-        .gap(self.theme.space(10.))
+        .gap(self.theme.space(6.))
         .on_click(cx.listener(move |panel, _, _, cx| {
-            panel.open_flow_modal(sid_card.clone(), None, cx);
-        }))
-        .when(is_real_session, |card| {
-            card.on_mouse_down(
+            panel.select_board_session(
+                sid_card.clone(),
+                None,
+                narrow_layout,
+                cx,
+            );
+        }));
+
+        if is_real_session {
+            card = card.on_mouse_down(
                 MouseButton::Right,
                 cx.listener(
                     move |_panel, event: &gpui::MouseDownEvent, _, cx| {
@@ -1791,92 +1316,64 @@ impl StudioPanel {
                         });
                     },
                 ),
-            )
-        })
-        .child(
+            );
+        }
+
+        card.child(
             div()
                 .w_full()
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .items_start()
                 .justify_between()
                 .gap(self.theme.space(8.))
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(180.))
+                        .min_w_0()
                         .flex()
-                        .items_center()
-                        .gap(self.theme.space(8.))
+                        .items_start()
+                        .gap(self.theme.space(7.))
                         .child(
                             div()
-                                .size(px(24.))
+                                .mt(px(5.))
+                                .size(px(7.))
                                 .flex_none()
-                                .rounded_lg()
-                                .bg(self.theme.assistant_badge_bg())
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    theme::icons::sparkles()
-                                        .size(px(12.))
-                                        .text_color(
-                                            self.theme.assistant_badge_fg(),
-                                        ),
-                                ),
+                                .rounded_full()
+                                .bg(status_dot_color),
                         )
                         .when(group.pinned, |row| {
                             row.child(
                                 theme::icons::pin()
                                     .size(px(12.))
                                     .flex_none()
+                                    .mt(px(3.))
                                     .text_color(self.theme.accent()),
                             )
                         })
                         .child(
                             div()
-                                .text_sm()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(self.theme.ink())
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .truncate()
+                                .whitespace_normal()
                                 .child(group.title.clone()),
-                        )
-                        .when_some(
-                            group.project_name.clone(),
-                            |row, project| {
-                                row.child(status_pill(
-                                    self.theme.soft(),
-                                    self.theme.muted(),
-                                    project,
-                                    None,
-                                ))
-                            },
-                        )
-                        .when(group.archived, |row| {
-                            row.child(status_pill(
-                                self.theme.soft(),
-                                self.theme.muted(),
-                                self.t("chat.archived_badge"),
-                                None,
-                            ))
-                        })
-                        .child(status_pill(
-                            badge_bg, badge_fg, badge_text, None,
-                        )),
+                        ),
                 )
                 .child(
                     div()
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(self.theme.space(8.))
+                        .gap(self.theme.space(6.))
                         .when(!rel_time.is_empty(), |right| {
                             right.child(
                                 div()
                                     .text_xs()
-                                    .text_color(self.theme.muted().opacity(0.8))
+                                    .text_color(
+                                        self.theme.muted().opacity(0.85),
+                                    )
                                     .whitespace_nowrap()
                                     .child(rel_time),
                             )
@@ -1886,13 +1383,200 @@ impl StudioPanel {
                                 &group.session_id,
                                 &group.title,
                                 index,
-                                true,
                                 cx,
                             ))
                         }),
                 ),
         )
-        .child(branches_col)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(self.theme.space(6.))
+                .when_some(group.project_name.clone(), |row, project| {
+                    row.child(status_pill(
+                        self.theme.soft(),
+                        self.theme.muted(),
+                        project,
+                        None,
+                    ))
+                })
+                .when(group.has_blocker, |row| {
+                    row.child(status_pill(
+                        self.theme.status_attention_bg(),
+                        self.theme.status_attention(),
+                        self.t("board.badge_approval"),
+                        None,
+                    ))
+                })
+                .when(!group.has_blocker && group.is_running, |row| {
+                    row.child(status_pill(
+                        self.theme.status_active_bg(),
+                        self.theme.status_active(),
+                        self.t("board.badge_running"),
+                        None,
+                    ))
+                })
+                .when(group.archived, |row| {
+                    row.child(status_pill(
+                        self.theme.soft(),
+                        self.theme.muted(),
+                        self.t("chat.archived_badge"),
+                        None,
+                    ))
+                })
+                .when(!group.child_workers.is_empty(), |row| {
+                    row.child(status_pill(
+                        self.theme.soft(),
+                        self.theme.ink(),
+                        self.tf(
+                            "board.section_delegated_workers",
+                            &[(
+                                "count",
+                                &group.child_workers.len().to_string(),
+                            )],
+                        ),
+                        None,
+                    ))
+                }),
+        )
+        .when(!shown_files.is_empty(), |c| c.child(file_chips))
+        .when_some(summary_line, |c, snippet| {
+            c.child(
+                div()
+                    .w_full()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .child(snippet),
+            )
+        })
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::{DeliverableFormat, SkillLabel, WorkBranchSummary};
+
+    fn demo_group(id: &str) -> SessionBoardGroup {
+        SessionBoardGroup {
+            session_id: id.into(),
+            title: "Demo".into(),
+            project_id: None,
+            project_name: None,
+            workspace_display: String::new(),
+            updated_at: 1_700_000_000_000,
+            pinned: false,
+            archived: false,
+            preview: None,
+            assistant_summary: None,
+            branches: vec![WorkBranchSummary {
+                id: "b1".into(),
+                owner_session_id: None,
+                skill_label: SkillLabel::Key("board.skill_work"),
+                phase: BranchPhase::Delivered {
+                    override_used: false,
+                    hash_short: String::new(),
+                    provenance_warnings: Vec::new(),
+                },
+                deliverable_name: "notes.md".into(),
+                deliverable_path: Some("/tmp/notes.md".into()),
+                format: DeliverableFormat::Markdown,
+                is_workspace_change: false,
+                progress_pct: 100.0,
+                detail: String::new(),
+                work_progress: None,
+            }],
+            workspace_changes: Vec::new(),
+            child_workers: Vec::new(),
+            total_branch_count: 1,
+            total_file_count: 1,
+            session_contract: None,
+            has_blocker: false,
+            has_delivered: true,
+            is_running: false,
+            is_active: false,
+            group_kpi: BoardKpiSummary::default(),
+        }
+    }
+
+    #[test]
+    fn responsive_split_breakpoint_matches_contract() {
+        assert!(!is_wide_board_layout(660.0));
+        assert!(!is_wide_board_layout(840.0));
+        assert!(is_wide_board_layout(920.0));
+        assert!(is_wide_board_layout(1040.0));
+        assert!(is_wide_board_layout(1440.0));
+    }
+
+    #[test]
+    fn delivered_filter_excludes_blocked_and_running_groups() {
+        let now = 1_700_000_000_000;
+        let settled = demo_group("s-ok");
+        assert!(matches_board_filters(
+            &settled,
+            BoardFilter::Delivered,
+            None,
+            None,
+            None,
+            now,
+            0
+        ));
+
+        let mut blocked = demo_group("s-block");
+        blocked.has_blocker = true;
+        blocked.is_active = true;
+        assert!(!matches_board_filters(
+            &blocked,
+            BoardFilter::Delivered,
+            None,
+            None,
+            None,
+            now,
+            0
+        ));
+
+        let mut running = demo_group("s-run");
+        running.is_running = true;
+        running.is_active = true;
+        assert!(!matches_board_filters(
+            &running,
+            BoardFilter::Delivered,
+            None,
+            None,
+            None,
+            now,
+            0
+        ));
+    }
+
+    #[test]
+    fn format_filter_matches_formal_deliverables_only() {
+        let now = 1_700_000_000_000;
+        let group = demo_group("s-md");
+        assert!(matches_board_filters(
+            &group,
+            BoardFilter::All,
+            None,
+            Some(DeliverableFormat::Markdown),
+            None,
+            now,
+            0
+        ));
+        assert!(!matches_board_filters(
+            &group,
+            BoardFilter::All,
+            None,
+            Some(DeliverableFormat::Pdf),
+            None,
+            now,
+            0
+        ));
     }
 }

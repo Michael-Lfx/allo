@@ -347,7 +347,7 @@ impl FlowyApp {
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
             panel.close_all_popovers();
-            panel.close_flow_modal(cx);
+            panel.close_board_drawer(cx);
         });
         self.active_dialog = dialog;
         cx.notify();
@@ -1742,7 +1742,7 @@ impl FlowyApp {
                         StudioSurface::Home
                     };
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(surface, cx);
                     panel.set_notice(notice, cx);
                 });
@@ -1756,7 +1756,7 @@ impl FlowyApp {
             Section::Automation => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
@@ -1764,14 +1764,14 @@ impl FlowyApp {
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_notice(notice, cx);
                 });
             }
             Section::Create => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_surface(
                         StudioSurface::Placeholder {
                             title_key: "dock.create",
@@ -1785,7 +1785,7 @@ impl FlowyApp {
             Section::More => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
-                    panel.close_flow_modal(cx);
+                    panel.close_board_drawer(cx);
                     panel.set_notice(notice, cx);
                 });
             }
@@ -2090,8 +2090,8 @@ impl Render for FlowyApp {
                 (self.screen == Screen::Main
                     && self.section != Section::More
                     && self.section != Section::Library
-                    && self.studio.read(cx).has_flow_modal())
-                .then(|| gpui::SharedString::from("flow-modal-panel"))
+                    && self.studio.read(cx).has_board_drawer())
+                .then(|| gpui::SharedString::from("board-inspector-drawer"))
             });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
@@ -2112,7 +2112,7 @@ impl Render for FlowyApp {
                     && self.screen == Screen::Main
                     && self.section != Section::More
                     && self.section != Section::Library
-                    && !self.studio.read(cx).has_flow_modal()
+                    && !self.studio.read(cx).has_board_drawer()
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation =>
             {
@@ -2281,16 +2281,6 @@ impl Render for FlowyApp {
                 root.child(self.artifact_cleanup_layer(window, cx))
             }
         };
-        if self.active_dialog == state::ActiveDialog::None
-            && self.screen == Screen::Main
-            && self.section != Section::More
-            && self.section != Section::Library
-            && let Some(modal) = self
-                .studio
-                .update(cx, |panel, cx| panel.flow_modal_overlay(window, cx))
-        {
-            root = root.child(modal);
-        }
         let menu = match self.settings.picker {
             settings::Picker::Language => Some((
                 "language-menu",

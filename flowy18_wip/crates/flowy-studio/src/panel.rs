@@ -183,28 +183,33 @@ impl ActivePopover {
     }
 }
 
-/// Self-contained UI state for the centered Flowchart Modal.
+/// Self-contained UI state for the Master-Detail Board Inspector / narrow slide drawer.
 #[derive(Clone, Debug, Default)]
-pub struct FlowModalState {
+pub struct BoardInspectorState {
     pub session: Option<String>,
     pub branch: Option<String>,
-    pub tab: crate::overview::FlowModalTab,
+    pub worker_session: Option<String>,
+    pub tab: crate::overview::BoardInspectorTab,
+    pub drawer_open: bool,
+    pub workspace_changes_expanded: bool,
     /// Bound to `"{report_id}:{artifact_path}"` so background snapshot refreshes
     /// that switch branches never carry an override acknowledgement onto another
     /// artifact (§8.3).
     pub override_ack_key: Option<String>,
 }
 
-impl FlowModalState {
-    pub fn close(&mut self) {
-        self.session = None;
-        self.branch = None;
-        self.override_ack_key = None;
+impl BoardInspectorState {
+    pub fn close_drawer(&mut self) {
+        self.drawer_open = false;
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 
     #[must_use]
-    pub const fn is_open(&self) -> bool {
-        self.session.is_some()
+    pub const fn has_drawer(&self) -> bool {
+        self.drawer_open && self.session.is_some()
     }
 }
 
@@ -271,9 +276,14 @@ pub struct StudioPanel {
     pub(crate) board_filter: crate::overview::BoardFilter,
     pub(crate) board_project_filter: Option<String>,
     pub(crate) board_day_filter: Option<crate::ports::LocalDateKey>,
+    pub(crate) board_format_filter: Option<crate::ports::DeliverableFormat>,
     pub(crate) board_older_expanded: bool,
-    pub(crate) flow_modal: FlowModalState,
+    pub(crate) board_width_px: f32,
+    pub(crate) board_inspector: BoardInspectorState,
     pub(crate) trace_filter: crate::overview::TraceFilter,
+    /// Dirty-cached structured chat lines for the currently inspected Board
+    /// session/worker so `Render::render` never scans `AgentHandle` locks.
+    pub(crate) cached_board_lines: Option<(String, Vec<flowy_agent::ChatLine>)>,
     /// Dirty-cached redacted traces for the currently open Trace tab so
     /// `Render::render` never touches kernel journal files on disk.
     pub(crate) cached_trace:
@@ -659,9 +669,12 @@ impl StudioPanel {
             board_filter: crate::overview::BoardFilter::All,
             board_project_filter: None,
             board_day_filter: None,
+            board_format_filter: None,
             board_older_expanded: false,
-            flow_modal: FlowModalState::default(),
+            board_width_px: 1040.0,
+            board_inspector: BoardInspectorState::default(),
             trace_filter: crate::overview::TraceFilter::All,
+            cached_board_lines: None,
             cached_trace: None,
             drawer_tab: crate::deliverables::RightDrawerTab::Deliverables,
             right_drawer_open: false,
@@ -1241,7 +1254,7 @@ impl StudioPanel {
         self.quote_session = None;
         self.invalidate_submission(cx);
         self.close_all_popovers();
-        self.flow_modal.close();
+        self.board_inspector.close_drawer();
         self.clear_right_sheet();
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
@@ -1264,7 +1277,7 @@ impl StudioPanel {
             Ok(()) => {
                 self.invalidate_submission(cx);
                 self.close_all_popovers();
-                self.flow_modal.close();
+                self.board_inspector.close_drawer();
                 self.clear_right_sheet();
                 self.apply_draft_project(inherited_project.as_ref());
                 self.surface = StudioSurface::Home;
@@ -1284,7 +1297,7 @@ impl StudioPanel {
     pub fn show_new_home(&mut self, cx: &mut Context<'_, Self>) {
         self.invalidate_submission(cx);
         self.close_all_popovers();
-        self.flow_modal.close();
+        self.board_inspector.close_drawer();
         self.clear_right_sheet();
         self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
@@ -1611,7 +1624,7 @@ impl StudioPanel {
                 panel.process_agent_updates(updates, cx);
                 match result {
                     Ok(_) => {
-                        panel.flow_modal.override_ack_key = None;
+                        panel.board_inspector.override_ack_key = None;
                         panel.refresh_chat(cx);
                         panel.refresh_board_snapshot();
                         panel.emit_notice(None, cx);
@@ -1721,7 +1734,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.session_opened_by_user = true;
         self.surface = StudioSurface::Chat;
-        self.flow_modal.close();
+        self.board_inspector.close_drawer();
         self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
@@ -1748,7 +1761,7 @@ impl StudioPanel {
             .map(|workspace| workspace.project_id);
         self.session_opened_by_user = true;
         self.surface = StudioSurface::Chat;
-        self.flow_modal.close();
+        self.board_inspector.close_drawer();
         self.clear_right_sheet();
         self.refresh_trace_cache();
         self.emit_notice(None, cx);
@@ -2736,7 +2749,7 @@ impl StudioPanel {
             let _ = self.agent.clear_active();
             self.agent.set_workspace_for_new_sessions(None);
             self.surface = StudioSurface::Home;
-            self.flow_modal.close();
+            self.board_inspector.close_drawer();
             self.clear_right_sheet();
             self.refresh_chat(cx);
             self.emit_notice(None, cx);
@@ -2801,7 +2814,7 @@ impl StudioPanel {
         }
         let clear_error = self.agent.clear_active().err();
         self.invalidate_submission(cx);
-        self.flow_modal.close();
+        self.board_inspector.close_drawer();
         self.clear_right_sheet();
         self.apply_draft_project(Some(&project));
         self.surface = StudioSurface::Home;
@@ -4425,11 +4438,14 @@ mod tests {
             assert!(panel.dismiss_overlay("bg-tasks-popover", cx));
             assert_eq!(panel.active_popup_scope(), None);
 
-            // Opening a missing session must not leave a ghost modal focus trap.
-            panel.open_flow_modal("s-missing".into(), None, cx);
-            assert!(!panel.has_flow_modal());
+            // Opening a missing session must not leave a ghost inspector/drawer.
+            panel.select_board_session("s-missing".into(), None, true, cx);
+            assert_eq!(panel.board_inspector.session, None);
+            assert!(!panel.has_board_drawer());
 
-            // A resolvable session opens cleanly and dismisses via overlay scope.
+            // A resolvable session selects cleanly and narrow drawer dismisses via overlay scope.
+            panel.surface = StudioSurface::Board;
+            panel.board_width_px = 680.0;
             panel.board_snapshot.sessions.push(
                 crate::ports::SessionBoardGroup {
                     session_id: "s-demo".into(),
@@ -4469,10 +4485,11 @@ mod tests {
                     group_kpi: crate::ports::BoardKpiSummary::default(),
                 },
             );
-            panel.open_flow_modal("s-demo".into(), None, cx);
-            assert!(panel.has_flow_modal());
-            assert!(panel.dismiss_overlay("flow-modal-panel", cx));
-            assert!(!panel.has_flow_modal());
+            panel.select_board_session("s-demo".into(), None, true, cx);
+            assert_eq!(panel.board_inspector.session.as_deref(), Some("s-demo"));
+            assert!(panel.has_board_drawer());
+            assert!(panel.dismiss_overlay("board-inspector-drawer", cx));
+            assert!(!panel.has_board_drawer());
         });
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
