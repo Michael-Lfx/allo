@@ -86,7 +86,12 @@ pub fn matches_board_filters(
     }
     if status_filter != BoardFilter::Archived
         && let Some(day_key) = day_filter
-        && !matches_day_filter(group.updated_at, now_ms, tz_offset_secs, day_key)
+        && !matches_day_filter(
+            group.updated_at,
+            now_ms,
+            tz_offset_secs,
+            day_key,
+        )
     {
         return false;
     }
@@ -283,9 +288,11 @@ impl StudioPanel {
                     .cursor_pointer()
                     .bg(self.theme.soft().opacity(0.45))
                     .hover(|s| s.bg(self.theme.soft().opacity(0.7)))
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.close_board_drawer(cx);
-                    })),
+                    .on_click(cx.listener(
+                        |panel, _, _, cx| {
+                            panel.close_board_drawer(cx);
+                        },
+                    )),
                 )
                 .child(self.board_inspector_panel(
                     true,
@@ -357,12 +364,8 @@ impl StudioPanel {
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let row1 = self.board_status_strip(kpi, today_key, narrow_layout, cx);
-        let row2 = self.board_secondary_filters(
-            kpi,
-            today_key,
-            active_day_filter,
-            cx,
-        );
+        let row2 =
+            self.board_secondary_filters(kpi, today_key, active_day_filter, cx);
 
         div()
             .w_full()
@@ -480,13 +483,9 @@ impl StudioPanel {
                         self.theme.ink()
                     })
                     .when_some(dot, |pill, color| {
-                        pill.child(
-                            div().size(px(6.)).rounded_full().bg(if selected {
-                                self.theme.on_ink()
-                            } else {
-                                color
-                            }),
-                        )
+                        pill.child(div().size(px(6.)).rounded_full().bg(
+                            if selected { self.theme.on_ink() } else { color },
+                        ))
                     })
                     .child(label)
                     .on_click(cx.listener(move |panel, _, _, cx| {
@@ -543,17 +542,19 @@ impl StudioPanel {
                     },
                 ))
                 .child(today_label)
-                .on_click(cx.listener(move |panel, _, _, cx| {
-                    if panel.board_day_filter == Some(today) {
-                        panel.board_day_filter = None;
-                    } else {
-                        if panel.board_filter == BoardFilter::Archived {
-                            panel.board_filter = BoardFilter::All;
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        if panel.board_day_filter == Some(today) {
+                            panel.board_day_filter = None;
+                        } else {
+                            if panel.board_filter == BoardFilter::Archived {
+                                panel.board_filter = BoardFilter::All;
+                            }
+                            panel.board_day_filter = Some(today);
                         }
-                        panel.board_day_filter = Some(today);
-                    }
-                    cx.notify();
-                })),
+                        cx.notify();
+                    },
+                )),
             );
         }
 
@@ -669,16 +670,18 @@ impl StudioPanel {
                         self.theme.muted()
                     })
                     .child(display_label)
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        if panel.board_project_filter.as_deref()
-                            == Some(pid.as_str())
-                        {
-                            panel.board_project_filter = None;
-                        } else {
-                            panel.board_project_filter = Some(pid.clone());
-                        }
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            if panel.board_project_filter.as_deref()
+                                == Some(pid.as_str())
+                            {
+                                panel.board_project_filter = None;
+                            } else {
+                                panel.board_project_filter = Some(pid.clone());
+                            }
+                            cx.notify();
+                        },
+                    )),
                 );
             }
             row = row.child(
@@ -788,14 +791,16 @@ impl StudioPanel {
                     })
                     .child(div().size(px(6.)).rounded_full().bg(color))
                     .child(label)
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        if panel.board_format_filter == Some(fmt) {
-                            panel.board_format_filter = None;
-                        } else {
-                            panel.board_format_filter = Some(fmt);
-                        }
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            if panel.board_format_filter == Some(fmt) {
+                                panel.board_format_filter = None;
+                            } else {
+                                panel.board_format_filter = Some(fmt);
+                            }
+                            cx.notify();
+                        },
+                    )),
                 );
             }
         }
@@ -1163,18 +1168,20 @@ impl StudioPanel {
         let rel_time =
             self.format_relative_time(group.updated_at, now_ms, tz_offset_secs);
 
-        let a11y_label =
-            self.tf("board.card_a11y", &[("title", &group.title)]);
+        let a11y_label = self.tf("board.card_a11y", &[("title", &group.title)]);
 
         let formal_files: Vec<_> = group
             .branches
             .iter()
             .filter(|b| b.deliverable_path.is_some())
             .collect();
-        let shown_files: Vec<_> = formal_files.iter().copied().take(3).collect();
-        let overflow_files = formal_files.len().saturating_sub(shown_files.len());
+        let shown_files: Vec<_> =
+            formal_files.iter().copied().take(3).collect();
+        let overflow_files =
+            formal_files.len().saturating_sub(shown_files.len());
 
-        let mut file_chips = div().flex().flex_wrap().items_center().gap(px(5.));
+        let mut file_chips =
+            div().flex().flex_wrap().items_center().gap(px(5.));
         for branch in &shown_files {
             let color = self.format_color(branch.format);
             let tag = self.format_tag_label(branch.format);
@@ -1249,10 +1256,10 @@ impl StudioPanel {
             BranchPhase::Delivered { .. } | BranchPhase::Idle => None,
         });
 
-        let summary_line = if !shown_files.is_empty() {
-            None
-        } else {
+        let summary_line = if shown_files.is_empty() {
             live_hint.or_else(|| group.preview.clone())
+        } else {
+            None
         };
 
         let status_dot_color = if group.has_blocker {

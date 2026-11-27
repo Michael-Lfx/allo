@@ -88,7 +88,9 @@ impl StudioPanel {
             .map(|item| item.trim().to_ascii_lowercase())
             .collect();
         let checklist_rows: Vec<(String, bool, bool)> =
-            if !progress.required_labels.is_empty() {
+            if progress.required_labels.is_empty() {
+                Vec::new()
+            } else {
                 let settled_known = progress.outcome.is_some()
                     || progress.delivered_count > 0
                     || !progress.missing_items.is_empty();
@@ -110,8 +112,6 @@ impl StudioPanel {
                         (label.clone(), verified, is_missing)
                     })
                     .collect()
-            } else {
-                Vec::new()
             };
         let remaining_missing: Vec<String> = progress
             .missing_items

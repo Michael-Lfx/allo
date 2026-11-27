@@ -62,12 +62,9 @@ impl StudioPanel {
         let sticky_action = Self::sticky_footer_action(group, active_branch);
 
         let body: AnyElement = match self.board_inspector.tab {
-            BoardInspectorTab::Overview => self.inspector_overview_tab(
-                group,
-                active_branch,
-                window,
-                cx,
-            ),
+            BoardInspectorTab::Overview => {
+                self.inspector_overview_tab(group, active_branch, window, cx)
+            }
             BoardInspectorTab::Timeline => {
                 self.inspector_timeline_tab(group, window, cx)
             }
@@ -163,10 +160,9 @@ impl StudioPanel {
         let approval = selected_branch
             .filter(|b| matches!(b.phase, BranchPhase::NeedsApproval { .. }))
             .or_else(|| {
-                group
-                    .branches
-                    .iter()
-                    .find(|b| matches!(b.phase, BranchPhase::NeedsApproval { .. }))
+                group.branches.iter().find(|b| {
+                    matches!(b.phase, BranchPhase::NeedsApproval { .. })
+                })
             });
         if let Some(branch) = approval
             && let BranchPhase::NeedsApproval {
@@ -357,14 +353,17 @@ impl StudioPanel {
                                     None,
                                 ))
                             })
-                            .when(!group.has_blocker && group.is_running, |row| {
-                                row.child(status_pill(
-                                    self.theme.status_active_bg(),
-                                    self.theme.status_active(),
-                                    self.t("board.badge_running"),
-                                    None,
-                                ))
-                            })
+                            .when(
+                                !group.has_blocker && group.is_running,
+                                |row| {
+                                    row.child(status_pill(
+                                        self.theme.status_active_bg(),
+                                        self.theme.status_active(),
+                                        self.t("board.badge_running"),
+                                        None,
+                                    ))
+                                },
+                            )
                             .when(formal_count > 0, |row| {
                                 row.child(
                                     div()
@@ -549,8 +548,10 @@ impl StudioPanel {
         if !formal.is_empty() {
             col = col.child(self.inspector_deliverables_section(
                 "board-formal-deliverables",
-                self.t("board.section_formal_deliverables")
-                    .replace("{count}", &formal.len().to_string()),
+                self.tf(
+                    "board.section_formal_deliverables",
+                    &[("count", &formal.len().to_string())],
+                ),
                 &formal,
                 window,
                 cx,
@@ -627,17 +628,19 @@ impl StudioPanel {
         for branch in &group.branches {
             match &branch.phase {
                 BranchPhase::DeliveryFailed => {
-                    cards.push(self.inspector_delivery_failed_banner(
-                        group, branch,
-                    ));
+                    cards.push(
+                        self.inspector_delivery_failed_banner(group, branch),
+                    );
                 }
                 BranchPhase::Running { .. } => {
                     cards.push(self.inspector_running_card(group, branch, cx));
                 }
                 BranchPhase::Queued { receipt_id, state } => {
-                    cards.push(self.inspector_queued_card(
-                        branch, receipt_id, *state, cx,
-                    ));
+                    cards.push(
+                        self.inspector_queued_card(
+                            branch, receipt_id, *state, cx,
+                        ),
+                    );
                 }
                 BranchPhase::NeedsApproval { .. }
                 | BranchPhase::Delivered { .. }
@@ -792,8 +795,10 @@ impl StudioPanel {
                     .whitespace_normal()
                     .child(branch.detail.clone()),
             );
-        if let Some(prog) =
-            branch.work_progress.as_ref().or(group.session_contract.as_ref())
+        if let Some(prog) = branch
+            .work_progress
+            .as_ref()
+            .or(group.session_contract.as_ref())
         {
             card = card.child(self.contract_progress_checklist(prog));
         }
@@ -1020,11 +1025,7 @@ impl StudioPanel {
 
         for (ix, branch) in items.iter().enumerate() {
             section = section.child(self.inspector_deliverable_row(
-                id_prefix,
-                ix as u64,
-                branch,
-                window,
-                cx,
+                id_prefix, ix as u64, branch, window, cx,
             ));
         }
         section.into_any_element()
@@ -1047,8 +1048,12 @@ impl StudioPanel {
             theme::icons::chevron_right()
         };
 
-        let mut section =
-            div().w_full().flex().flex_col().gap(self.theme.space(6.)).child(
+        let mut section = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(6.))
+            .child(
                 theme::interactive(
                     "board-workspace-changes-toggle",
                     heading.clone(),
@@ -1117,7 +1122,8 @@ impl StudioPanel {
         let open_path = path.clone();
         let reveal_path = path.clone();
         let can_open = flowy_agent::can_open_with_default_app(path);
-        let can_preview = !matches!(branch.phase, BranchPhase::NeedsApproval { .. });
+        let can_preview =
+            !matches!(branch.phase, BranchPhase::NeedsApproval { .. });
         let is_previewing =
             self.drawer_preview.file.as_deref() == Some(path.as_str());
 
@@ -1187,6 +1193,7 @@ impl StudioPanel {
                 theme::icons::external_link().size(px(14.)),
                 theme::ControlVariant::Ghost,
                 move |panel, _, cx| {
+                    cx.stop_propagation();
                     panel.open_file_externally(&open_path, cx);
                 },
                 window,
@@ -1205,6 +1212,7 @@ impl StudioPanel {
             theme::icons::folder_open().size(px(14.)),
             theme::ControlVariant::Ghost,
             move |panel, _, cx| {
+                cx.stop_propagation();
                 panel.reveal_file(&reveal_path, cx);
             },
             window,
@@ -1393,9 +1401,8 @@ impl StudioPanel {
 
             for (ix, worker) in group.child_workers.iter().enumerate() {
                 let wid = worker.session_id.clone();
-                let selected =
-                    self.board_inspector.worker_session.as_deref()
-                        == Some(wid.as_str());
+                let selected = self.board_inspector.worker_session.as_deref()
+                    == Some(wid.as_str());
                 let badge = if worker.has_blocker {
                     self.t("board.badge_approval")
                 } else if worker.is_running {
@@ -1453,9 +1460,11 @@ impl StudioPanel {
                             })
                             .child(badge),
                     )
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        panel.select_board_worker(Some(wid.clone()), cx);
-                    })),
+                    .on_click(cx.listener(
+                        move |panel, _, _, cx| {
+                            panel.select_board_worker(Some(wid.clone()), cx);
+                        },
+                    )),
                 );
             }
 
@@ -1481,16 +1490,17 @@ impl StudioPanel {
             .worker_session
             .as_deref()
             .unwrap_or(group.session_id.as_str());
-        let target_running = self.board_inspector.worker_session.as_deref().map_or(
-            group.is_running,
-            |wid| {
+        let target_running = self
+            .board_inspector
+            .worker_session
+            .as_deref()
+            .map_or(group.is_running, |wid| {
                 group
                     .child_workers
                     .iter()
                     .find(|w| w.session_id == wid)
                     .is_some_and(|w| w.is_running)
-            },
-        );
+            });
         let cached_lines: &[ChatLine] = self
             .cached_board_lines
             .as_ref()
@@ -1623,8 +1633,8 @@ impl StudioPanel {
                     .into_any_element()
             }
             StickyFooterAction::DeliveryFailed { retry_sid } => {
-                let retrying =
-                    self.retrying_delivery.as_deref() == Some(retry_sid.as_str());
+                let retrying = self.retrying_delivery.as_deref()
+                    == Some(retry_sid.as_str());
                 footer
                     .child(
                         div()
@@ -1643,9 +1653,8 @@ impl StudioPanel {
                         .render(
                             &self.theme,
                             cx.listener(move |panel, _, _, cx| {
-                                panel.retry_delivery_for_session(
-                                    &retry_sid, cx,
-                                );
+                                panel
+                                    .retry_delivery_for_session(&retry_sid, cx);
                             }),
                         ),
                     )
@@ -1665,9 +1674,7 @@ impl StudioPanel {
                     )
                     .variant(theme::ControlVariant::Primary)
                     .size(theme::ControlSize::Small)
-                    .trailing_icon(
-                        theme::icons::arrow_up_right().size(px(12.)),
-                    )
+                    .trailing_icon(theme::icons::arrow_up_right().size(px(12.)))
                     .render(
                         &self.theme,
                         cx.listener(move |panel, _, _, cx| {

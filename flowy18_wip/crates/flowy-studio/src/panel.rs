@@ -199,7 +199,7 @@ pub struct BoardInspectorState {
 }
 
 impl BoardInspectorState {
-    pub fn close_drawer(&mut self) {
+    pub const fn close_drawer(&mut self) {
         self.drawer_open = false;
     }
 
@@ -4486,7 +4486,10 @@ mod tests {
                 },
             );
             panel.select_board_session("s-demo".into(), None, true, cx);
-            assert_eq!(panel.board_inspector.session.as_deref(), Some("s-demo"));
+            assert_eq!(
+                panel.board_inspector.session.as_deref(),
+                Some("s-demo")
+            );
             assert!(panel.has_board_drawer());
             assert!(panel.dismiss_overlay("board-inspector-drawer", cx));
             assert!(!panel.has_board_drawer());

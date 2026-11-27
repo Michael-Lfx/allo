@@ -159,7 +159,8 @@ impl StudioPanel {
     #[must_use]
     pub(crate) fn active_trace_session_id(&self) -> Option<String> {
         if self.surface == StudioSurface::Board
-            && self.board_inspector.tab == crate::overview::BoardInspectorTab::Trace
+            && self.board_inspector.tab
+                == crate::overview::BoardInspectorTab::Trace
         {
             return self
                 .board_inspector
@@ -693,8 +694,8 @@ impl StudioPanel {
             cx.notify();
             return;
         }
-        let changed_session =
-            self.board_inspector.session.as_deref() != Some(session_id.as_str());
+        let changed_session = self.board_inspector.session.as_deref()
+            != Some(session_id.as_str());
         if changed_session {
             self.drawer_preview.clear();
             self.board_inspector.worker_session = None;
@@ -789,16 +790,18 @@ impl StudioPanel {
                         group.project_id.as_deref() == Some(pid)
                     })
             })
-            .find_map(|group| {
+            .map(|group| {
                 let bid = group
                     .branches
                     .iter()
                     .find(|branch| branch.phase.is_blocker())
                     .map(|branch| branch.id.clone());
-                Some((group.session_id.clone(), bid))
-            });
+                (group.session_id.clone(), bid)
+            })
+            .next();
         if let Some((sid, bid)) = found {
-            self.board_inspector.tab = crate::overview::BoardInspectorTab::Overview;
+            self.board_inspector.tab =
+                crate::overview::BoardInspectorTab::Overview;
             self.select_board_session(sid, bid, open_drawer, cx);
         } else {
             self.emit_notice(Some("board.no_blockers"), cx);
@@ -806,7 +809,7 @@ impl StudioPanel {
     }
 
     /// Retries a failed durable delivery commit for `session_id` on a
-    /// background worker (callable from both Chat and Flowchart Modal).
+    /// background worker (callable from both Chat and Board Inspector).
     pub(crate) fn retry_delivery_for_session(
         &mut self,
         session_id: &str,
