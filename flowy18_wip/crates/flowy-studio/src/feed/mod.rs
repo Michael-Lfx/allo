@@ -825,49 +825,48 @@ impl Render for ChatFeed {
             focus.focus(window, cx);
         }
         let weak = cx.weak_entity();
-        div()
-            .id(SharedString::from(format!("chat-feed-{}", self.session)))
-            .flex_1()
-            .min_h_0()
-            .size_full()
-            .child(
-                list(self.list.clone(), move |index, _, cx| {
-                    weak.update(cx, |feed, cx| {
-                        #[cfg(test)]
-                        {
-                            feed.rendered += 1;
-                            feed.rendered_rows.insert(feed.row_ids[index]);
-                        }
-                        div()
-                            .id(("chat-row", feed.row_ids[index]))
-                            .when(
-                                !matches!(
-                                    feed.lines[index],
-                                    ChatLine::Artifact { .. }
-                                ),
-                                |row| {
-                                    row.track_focus(
-                                        &feed.row_focus[&feed.row_ids[index]],
-                                    )
-                                },
-                            )
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .max_w(px(crate::STAGE_MAX_W))
-                                    .px(feed.theme.space(32.))
-                                    .py(feed.theme.space(4.))
-                                    .child(feed.history_line(index, cx)),
-                            )
-                            .into_any_element()
-                    })
-                    .unwrap_or_else(|_| div().into_any_element())
+        flowy_ui::scroll_list_host(
+            SharedString::from(format!("chat-feed-{}", self.session)),
+            &self.list,
+            &self.theme,
+            self.t("a11y.scroll_chat_feed"),
+            list(self.list.clone(), move |index, _, cx| {
+                weak.update(cx, |feed, cx| {
+                    #[cfg(test)]
+                    {
+                        feed.rendered += 1;
+                        feed.rendered_rows.insert(feed.row_ids[index]);
+                    }
+                    div()
+                        .id(("chat-row", feed.row_ids[index]))
+                        .when(
+                            !matches!(
+                                feed.lines[index],
+                                ChatLine::Artifact { .. }
+                            ),
+                            |row| {
+                                row.track_focus(
+                                    &feed.row_focus[&feed.row_ids[index]],
+                                )
+                            },
+                        )
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .max_w(px(crate::STAGE_MAX_W))
+                                .px(feed.theme.space(32.))
+                                .py(feed.theme.space(4.))
+                                .child(feed.history_line(index, cx)),
+                        )
+                        .into_any_element()
                 })
-                .size_full(),
-            )
+                .unwrap_or_else(|_| div().into_any_element())
+            })
+            .size_full(),
+        )
     }
 }

@@ -253,15 +253,11 @@ impl FlowyApp {
             cx,
         ));
 
-        div()
-            .id("dock-scroll")
+        theme::scroll_area("dock-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_dock"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .pt_3()
-            .pb_3()
+            .viewport_style(|v| v.flex().flex_col().pt_3().pb_3())
             .child(self.chief_assistant_card(
                 active_work,
                 chief_selected,

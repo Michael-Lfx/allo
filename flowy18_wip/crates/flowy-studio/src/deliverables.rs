@@ -472,11 +472,10 @@ impl StudioPanel {
                     ),
             )
             .child(
-                div()
-                    .id("deliverables-scroll")
+                theme::scroll_area("deliverables-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_deliverables_drawer"))
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .child(body),
             );
 

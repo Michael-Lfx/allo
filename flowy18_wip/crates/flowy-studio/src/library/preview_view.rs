@@ -689,16 +689,16 @@ impl Render for PreviewPanel {
             );
         }
         header = header.child(close);
-        let mut body = div()
-            .id("preview-scroll")
+        let mut body = ui::scroll_area("preview-scroll", &t)
+            .both_axes()
             .track_scroll(&self.scroll)
-            .overflow_scroll()
+            .a11y_label(self.t("a11y.scroll_library_preview"))
             .flex_1()
             .min_h_0()
             .min_w_0()
             .bg(t.soft());
         if !paginated {
-            body = body.rounded_b(t.modal_radius());
+            body = body.scrollbar_inset(px(8.)).rounded_b(t.modal_radius());
         }
         if let Some(error) = self.error {
             body = body.child(

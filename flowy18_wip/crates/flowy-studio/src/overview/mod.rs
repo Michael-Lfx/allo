@@ -250,15 +250,16 @@ impl StudioPanel {
                 .flex_row()
                 .gap(self.theme.space(14.))
                 .child(
-                    div()
-                        .id("board-scroll")
+                    theme::scroll_area("board-scroll", &self.theme)
+                        .a11y_label(self.t("a11y.scroll_board_queue"))
                         .w(queue_width)
                         .flex_none()
                         .h_full()
                         .min_h_0()
-                        .overflow_y_scroll()
-                        .scrollbar_width(px(6.))
-                        .pr(self.theme.space(4.))
+                        .viewport_style({
+                            let pr = self.theme.space(4.);
+                            move |v| v.pr(pr)
+                        })
                         .child(queue_list),
                 )
                 .child(self.board_inspector_panel(
@@ -303,14 +304,12 @@ impl StudioPanel {
                 ))
                 .into_any_element()
         } else {
-            div()
-                .id("board-scroll")
+            theme::scroll_area("board-scroll", &self.theme)
+                .a11y_label(self.t("a11y.scroll_board_queue"))
                 .flex_1()
                 .min_w_0()
                 .h_full()
                 .min_h_0()
-                .overflow_y_scroll()
-                .scrollbar_width(px(6.))
                 .child(queue_list)
                 .into_any_element()
         };
