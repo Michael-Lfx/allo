@@ -362,6 +362,95 @@ pub fn resolve_safe_local_file(raw: &str) -> Option<PathBuf> {
     resolve_safe_local(Path::new(raw), false)
 }
 
+/// Validates, canonicalizes, and safely opens a regular local file.
+///
+/// Re-runs path validation, opens without following swapped leaf reparse points
+/// (or verifies non-link identity on cloud placeholders / Unix handles), and
+/// verifies `symlink_metadata` post-open to close TOCTOU swaps.
+pub fn open_safe_local_regular_file(
+    path: &Path,
+) -> std::io::Result<(PathBuf, std::fs::File, std::fs::Metadata)> {
+    let not_found = || {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "unsafe or missing local file",
+        )
+    };
+    let safe_path = resolve_safe_local(path, false).ok_or_else(not_found)?;
+    let pre_meta = std::fs::symlink_metadata(&safe_path)?;
+    let kind = classify_reparse(&safe_path, &pre_meta);
+    if !pre_meta.is_file()
+        || matches!(kind, ReparseKind::Link(_) | ReparseKind::Unsafe)
+    {
+        return Err(not_found());
+    }
+
+    #[cfg(windows)]
+    let (file, handle_meta) = {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_SHARE_ALL: u32 = 1 | 2 | 4;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).share_mode(FILE_SHARE_ALL);
+        if matches!(kind, ReparseKind::Regular) {
+            opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = opts.open(&safe_path)?;
+        let handle_meta = file.metadata()?;
+        if !handle_meta.is_file()
+            || (matches!(kind, ReparseKind::Regular)
+                && flowy_agent::is_windows_reparse_point(&handle_meta))
+        {
+            return Err(not_found());
+        }
+        (file, handle_meta)
+    };
+
+    #[cfg(unix)]
+    let (file, handle_meta) = {
+        use std::os::unix::fs::MetadataExt;
+
+        let file = std::fs::File::open(&safe_path)?;
+        let handle_meta = file.metadata()?;
+        if !handle_meta.is_file()
+            || (pre_meta.dev(), pre_meta.ino())
+                != (handle_meta.dev(), handle_meta.ino())
+        {
+            return Err(not_found());
+        }
+        (file, handle_meta)
+    };
+
+    #[cfg(not(any(windows, unix)))]
+    let (file, handle_meta) = {
+        let file = std::fs::File::open(&safe_path)?;
+        let handle_meta = file.metadata()?;
+        if !handle_meta.is_file() {
+            return Err(not_found());
+        }
+        (file, handle_meta)
+    };
+
+    let post_meta = std::fs::symlink_metadata(&safe_path)?;
+    if !post_meta.is_file() || is_link_or_unsafe_reparse(&safe_path, &post_meta)
+    {
+        return Err(not_found());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if (handle_meta.dev(), handle_meta.ino())
+            != (post_meta.dev(), post_meta.ino())
+        {
+            return Err(not_found());
+        }
+    }
+
+    Ok((safe_path, file, handle_meta))
+}
+
 /// Validates and canonicalizes a local directory path for OS reveal or project
 /// registration, rejecting executables, URIs, UNC shares, device namespaces,
 /// unsafe ancestor reparse targets, and leaf symlinks / NTFS junctions.
@@ -663,5 +752,109 @@ mod tests {
             canonical_path_key("/tmp//a/b.md")
         );
         assert_eq!(canonical_path_key("   "), "");
+    }
+
+    #[test]
+    fn open_safe_local_regular_file_validates_reparse_and_non_files() {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = format!(
+            "flowy-safe-open-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let base = std::env::temp_dir().join(unique);
+        let real_dir = base.join("real");
+        let file_path = real_dir.join("note.md");
+        std::fs::create_dir_all(&real_dir).expect("create test dir");
+        std::fs::write(&file_path, b"hello").expect("write test file");
+
+        let (safe, mut file, meta) =
+            open_safe_local_regular_file(&file_path).expect("open regular");
+        assert!(meta.is_file());
+        assert_eq!(safe.file_name().and_then(|n| n.to_str()), Some("note.md"));
+        let mut buf = String::new();
+        file.read_to_string(&mut buf).expect("read content");
+        assert_eq!(buf, "hello");
+
+        // Rejects directory, relative path, and UNC path with NotFound.
+        assert_eq!(
+            open_safe_local_regular_file(&real_dir)
+                .expect_err("dir")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            open_safe_local_regular_file(Path::new("relative/note.md"))
+                .expect_err("relative")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            open_safe_local_regular_file(Path::new(r"\\server\share\a.txt"))
+                .expect_err("unc")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        #[cfg(windows)]
+        {
+            // Ancestor NTFS junction still resolves cleanly; leaf junction is
+            // rejected.
+            let ancestor_junction = base.join("ancestor_j");
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&ancestor_junction)
+                .arg(&real_dir)
+                .output()
+                .expect("invoke mklink /J");
+            assert!(status.status.success());
+            assert!(
+                open_safe_local_regular_file(
+                    &ancestor_junction.join("note.md")
+                )
+                .is_ok()
+            );
+            assert_eq!(
+                open_safe_local_regular_file(&ancestor_junction)
+                    .expect_err("leaf junction")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+
+            // File symlink rejection when OS permits unprivileged symlink
+            // creation.
+            let file_link = base.join("link.md");
+            if std::os::windows::fs::symlink_file(&file_path, &file_link)
+                .is_ok()
+            {
+                assert_eq!(
+                    open_safe_local_regular_file(&file_link)
+                        .expect_err("leaf file symlink")
+                        .kind(),
+                    std::io::ErrorKind::NotFound
+                );
+                let _ = std::fs::remove_file(&file_link);
+            }
+            let _ = std::fs::remove_dir(&ancestor_junction);
+        }
+
+        #[cfg(unix)]
+        {
+            let file_link = base.join("link.md");
+            std::os::unix::fs::symlink(&file_path, &file_link)
+                .expect("create unix symlink");
+            assert_eq!(
+                open_safe_local_regular_file(&file_link)
+                    .expect_err("leaf unix symlink")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let _ = std::fs::remove_file(&file_link);
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

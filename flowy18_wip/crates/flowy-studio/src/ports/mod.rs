@@ -30,7 +30,7 @@ pub(crate) use local_path::{
 };
 pub use local_path::{
     display_path, display_path_str, is_link_or_unsafe_reparse,
-    resolve_safe_local_file,
+    open_safe_local_regular_file, resolve_safe_local_file,
 };
 pub use trace::{
     RedactedTraceEntry, TraceLevel, collect_session_traces,

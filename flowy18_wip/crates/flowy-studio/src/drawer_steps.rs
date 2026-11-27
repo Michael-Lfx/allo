@@ -1335,4 +1335,173 @@ mod tests {
             StepKind::Verification { ok: false, .. }
         ));
     }
+
+    fn bench_history_rows(turn_count: usize) -> Vec<ChatLine> {
+        let mut rows = Vec::with_capacity(turn_count * 8 + 4);
+        for t in 0..turn_count {
+            rows.push(ChatLine::User {
+                text: format!("Build deliverable iteration {t}"),
+            });
+            rows.push(ChatLine::Reasoning {
+                text: format!("Evaluating steps for turn {t}"),
+                duration_secs: 2,
+                live: false,
+            });
+            rows.push(ChatLine::ToolCall {
+                name: "read_file".into(),
+                target: format!("/workspace/inputs/data_{t}.csv"),
+                call_id: format!("call-{t}-a"),
+                running: false,
+            });
+            rows.push(ChatLine::ToolResult {
+                text: format!("loaded 120 rows from data_{t}.csv"),
+                is_error: false,
+            });
+            if t % 2 == 0 {
+                let path = format!("/workspace/outputs/report_{t}.pptx");
+                rows.push(ChatLine::FileChanges {
+                    files: vec![FileEntry {
+                        path: path.clone(),
+                        change: FileChangeKind::Update,
+                        added: 24,
+                        removed: 6,
+                        binary: false,
+                    }],
+                });
+                rows.push(ChatLine::Verification {
+                    report_id: format!("rep-{t}"),
+                    artifact_path: path,
+                    artifact_hash: format!("hash-{t:08x}"),
+                    ok: t % 10 != 8,
+                    issues: if t % 10 == 8 {
+                        vec![VerificationIssue {
+                            code: "missing_total".into(),
+                            field: "Sheet1!B2".into(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    semantic_hint: None,
+                    override_used: false,
+                    provenance_warnings: Vec::new(),
+                    source_session_id: Some(format!("worker-{}", t % 4)),
+                });
+            }
+            if t % 5 == 0 {
+                rows.push(ChatLine::Artifact {
+                    artifact_id: format!("art-{t}"),
+                });
+            }
+            rows.push(ChatLine::Assistant {
+                text: format!(
+                    "### Turn {t} Summary\n\n- Processed **120** rows.\n\n```json\n{{\"turn\": {t}, \"status\": \"ok\"}}\n```"
+                ),
+            });
+        }
+        rows.push(ChatLine::User {
+            text: "Stream live update now".into(),
+        });
+        rows.push(ChatLine::Assistant {
+            text: "Streaming initial prefix".into(),
+        });
+        rows
+    }
+
+    fn summarize_us(samples: &mut [u128]) -> (u128, u128, u128, u128) {
+        samples.sort_unstable();
+        let len = samples.len().max(1);
+        let p50 = samples[len / 2];
+        let p95 = samples[(len * 95) / 100];
+        let max = samples[len - 1];
+        let avg = samples.iter().sum::<u128>() / (len as u128);
+        (avg, p50, p95, max)
+    }
+
+    #[test]
+    #[ignore = "manual A2 drawer steps benchmark"]
+    fn bench_a2_collect_step_turns_50_turns() {
+        let rows = bench_history_rows(50);
+        let mut samples = Vec::with_capacity(100);
+        let mut total_turns = 0;
+        for _ in 0..100 {
+            let start = std::time::Instant::now();
+            let turns = collect_step_turns(&rows, &TurnStatus::Running);
+            samples.push(start.elapsed().as_micros());
+            total_turns = turns.len();
+        }
+        let (avg, p50, p95, max) = summarize_us(&mut samples);
+        eprintln!(
+            "A2_BENCH collect_step_turns: rows={} turns={total_turns} iters=100 avg_us={avg} p50_us={p50} p95_us={p95} max_us={max}",
+            rows.len()
+        );
+        assert_eq!(total_turns, 51);
+    }
+
+    #[gpui::test]
+    #[ignore = "manual A2 streaming feed sync benchmark"]
+    fn bench_a2_streaming_feed_sync_50_turns(cx: &mut gpui::TestAppContext) {
+        use crate::feed::ChatFeed;
+        use flowy_agent::ChatHistory;
+        use flowy_i18n::I18n;
+        use flowy_ui::{ThemeOptions, UiContext};
+
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(ThemeOptions::default(), false, cx);
+            ChatFeed::new(ui, I18n::embedded("Flowy"), Some("bench".into()), cx)
+        });
+        let mut rows = bench_history_rows(50);
+        let stream_ix = rows.len() - 1;
+        let cold_start = std::time::Instant::now();
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(
+                Some("bench".into()),
+                ChatHistory {
+                    rows: rows.clone(),
+                    streaming: Some(stream_ix),
+                    status: TurnStatus::Running,
+                },
+                cx,
+            );
+        });
+        let cold_us = cold_start.elapsed().as_micros();
+
+        let mut sync_samples = Vec::with_capacity(200);
+        let mut read_samples = Vec::with_capacity(200);
+        for tick in 0..200_usize {
+            if let Some(ChatLine::Assistant { text }) = rows.get_mut(stream_ix)
+            {
+                use std::fmt::Write;
+                let _ = write!(text, " delta_{tick} **bold** `val={tick}`");
+            }
+            let history = ChatHistory {
+                rows: rows.clone(),
+                streaming: Some(stream_ix),
+                status: TurnStatus::Running,
+            };
+            let t0 = std::time::Instant::now();
+            feed.update(cx, |feed, cx| {
+                feed.sync_history(Some("bench".into()), history, cx);
+            });
+            sync_samples.push(t0.elapsed().as_micros());
+
+            let t1 = std::time::Instant::now();
+            feed.read_with(cx, |feed, _| {
+                let latest =
+                    feed.latest_deliverable_items().map_or(0, |v| v.len());
+                let all = feed.all_deliverable_items().map_or(0, |v| v.len());
+                let failed = feed.failed_verifications().len();
+                std::hint::black_box((latest, all, failed));
+            });
+            read_samples.push(t1.elapsed().as_micros());
+        }
+        let (s_avg, s_p50, s_p95, s_max) = summarize_us(&mut sync_samples);
+        let (r_avg, r_p50, r_p95, r_max) = summarize_us(&mut read_samples);
+        eprintln!(
+            "A2_BENCH sync_history: rows={} cold_us={cold_us} iters=200 avg_us={s_avg} p50_us={s_p50} p95_us={s_p95} max_us={s_max}",
+            rows.len()
+        );
+        eprintln!(
+            "A2_BENCH cached_deliverables_read: iters=200 avg_us={r_avg} p50_us={r_p50} p95_us={r_p95} max_us={r_max}"
+        );
+    }
 }
