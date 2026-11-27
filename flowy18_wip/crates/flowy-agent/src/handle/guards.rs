@@ -489,13 +489,10 @@ pub(super) fn build_pre_tool_hook(
                     );
                 }
                 Some(
-                    other @ flowy_agent_core::PreToolDecision::Deny { .. },
-                )
-                | Some(
-                    other
-                    @ flowy_agent_core::PreToolDecision::SuspendWithCard {
+                    other @ (flowy_agent_core::PreToolDecision::Deny { .. }
+                    | flowy_agent_core::PreToolDecision::SuspendWithCard {
                         ..
-                    },
+                    }),
                 ) => return other,
                 Some(flowy_agent_core::PreToolDecision::Allow) | None => {
                     if force_reconfirm_tools.contains(tool_name) {

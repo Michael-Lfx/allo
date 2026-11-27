@@ -641,7 +641,7 @@ mod tests {
         let default_reg = ToolRegistry::new();
         default_reg.register(make_tool("first"));
         default_reg.register(make_tool("second"));
-        assert!(default_reg.duplicate_tool_names().is_empty());
+        assert_eq!(default_reg.duplicate_tool_names(), Vec::<String>::new());
         assert_eq!(default_reg.get("dup").unwrap().description, "second");
 
         let strict_reg = ToolRegistry::new_rejecting_duplicates();

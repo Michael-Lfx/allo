@@ -1557,7 +1557,10 @@ fn same_provider_version_bump_invalidates_parked_approval_without_preactivation(
     let bump_req = &server.recorded()[before_bump];
     assert!(bump_req.last_user.contains("[ApprovalInvalidated]"));
     assert!(!bump_req.tool_names.iter().any(|n| n == "automation_run"));
-    assert!(handle.session_pending_cards(&sid).is_empty());
+    assert_eq!(
+        handle.session_pending_cards(&sid),
+        Vec::<PendingCard>::new()
+    );
 }
 
 #[test]
@@ -1720,7 +1723,10 @@ fn restarted_handle_invalidates_persisted_provider_approval_card() {
         executions: Arc::clone(&execs),
     }));
     handle2.select_session(&sid).unwrap();
-    assert!(!handle2.session_pending_cards(&sid).is_empty());
+    assert_ne!(
+        handle2.session_pending_cards(&sid),
+        Vec::<PendingCard>::new()
+    );
 
     let before_restart_approve = server.recorded().len();
     handle2

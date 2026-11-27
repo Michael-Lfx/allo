@@ -284,14 +284,14 @@ impl Default for ResumedSubmission {
 }
 
 #[derive(Clone)]
-pub(super) struct RegisteredProvider {
+pub struct RegisteredProvider {
     pub(super) registration_id: u64,
     pub(super) provider: Arc<dyn ToolProvider>,
     pub(super) cached_router_hint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ProviderApprovalBinding {
+pub struct ProviderApprovalBinding {
     pub(super) provider_id: String,
     pub(super) registration_id: u64,
     pub(super) tool_name: String,
@@ -300,7 +300,7 @@ pub(super) struct ProviderApprovalBinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ApprovedToolGrant {
+pub struct ApprovedToolGrant {
     pub(super) tool_name: String,
     pub(super) args_hash: String,
     pub(super) provider_binding: Option<ProviderApprovalBinding>,

@@ -365,10 +365,9 @@ impl Harness {
         let preserve_tool_approval = resumed
             .as_ref()
             .is_some_and(|item| item.preserve_tool_approval);
-        let force_reconfirm_tools = resumed
-            .as_mut()
-            .map(|item| std::mem::take(&mut item.force_reconfirm_tools))
-            .unwrap_or_default();
+        let force_reconfirm_tools = resumed.as_mut().map_or_default(|item| {
+            std::mem::take(&mut item.force_reconfirm_tools)
+        });
         if let Some(override_model) = resumed
             .as_ref()
             .and_then(|item| item.model_prompt_override.clone())

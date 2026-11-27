@@ -33,6 +33,7 @@ const MAX_CATALOG_TOTAL_CHARS: usize = 1_600;
 pub const MAX_ACTIVATED_TOOLS_PER_TURN: usize = 32;
 
 /// Pure-value metadata snapshot of a discoverable tool captured for `tool_search`.
+///
 /// Holds zero `ToolRegistry` or `ToolDefinition` `Arc` references so search
 /// closures can never trap tool closures or service handles in a cycle.
 #[derive(Clone, Debug, PartialEq, Eq)]
