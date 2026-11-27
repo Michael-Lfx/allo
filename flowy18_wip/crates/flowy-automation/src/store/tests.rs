@@ -143,3 +143,28 @@ fn prune_keeps_the_newest_finished_runs_and_all_active_ones() {
         .collect();
     assert_eq!(kept, vec![runs[4].id, runs[3].id, running.id]);
 }
+
+#[test]
+fn claiming_an_occurrence_preserves_concurrent_edits_and_records_it_once() {
+    let store = AutomationStore::open_in_memory().unwrap();
+    let mut task = automation("before", "r-1", 1);
+    task.next_run_at_ms = Some(10);
+    store.save(&task).unwrap();
+    let stale = task.clone();
+    task.title = "after".to_owned();
+    store.save(&task).unwrap();
+
+    let run = Run::started(task.id, 10);
+    assert!(!store.claim(&stale, None, &run).unwrap());
+    assert_eq!(store.get(task.id).unwrap(), Some(task.clone()));
+    assert_eq!(store.run(run.id).unwrap(), None);
+
+    assert!(store.claim(&task, None, &run).unwrap());
+    assert!(!store.claim(&task, None, &run).unwrap());
+    assert_eq!(store.due(10).unwrap(), Vec::new());
+    assert_eq!(store.run(run.id).unwrap(), Some(run.clone()));
+
+    assert!(store.delete(task.id).unwrap());
+    assert!(!store.claim(&task, None, &run).unwrap());
+    assert_eq!(store.get(task.id).unwrap(), None);
+}

@@ -5,23 +5,26 @@
 //! - A due `AgentTask` dispatches a new Worker under the conversation's Router,
 //!   exactly like `dispatch_work`. When it ends, the Router's usual
 //!   `[WorkEventBatch]` announcement tells the user in that conversation.
-//! - A due `Reminder` becomes a system-event turn in the conversation.
+//! - A due `Reminder` is saved as a message in the conversation.
 //!
-//! No session is created outside the conversation and nothing runs manually.
+//! - `automation_run_now` starts the same kind of run immediately (a test
+//!   run). It reports in the conversation like a scheduled run and leaves
+//!   the schedule unchanged.
+//!
+//! No session is created outside the conversation.
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use flowy_agent_core::{
-    MessageSource, SessionRecord, SessionRole, WorkAccessMode,
-};
+use flowy_agent_core::{SessionRecord, SessionRole, WorkAccessMode};
 use flowy_automation::{
     Access, Action, Automation, AutomationService, CancelToken as RunCancel,
     RunExecutor, RunFuture, RunId, RunOutcome, RunReport,
 };
 
+use super::observer::persist_index;
 use super::router::DispatchWorkRequest;
-use super::{AgentHandle, Harness, ResumedSubmission, lock};
+use super::{AgentHandle, ChatLine, Harness, lock};
 
 const POLL: Duration = Duration::from_millis(500);
 /// How long a cancelled Worker may take to stop before the run is closed.
@@ -112,6 +115,39 @@ impl Harness {
         .map(|result| result.work_id)
     }
 
+    /// This conversation's automations as the host stored them, each with
+    /// `next_run_local` and its most recent run, for `query_work_status`.
+    /// Empty when automations are unavailable.
+    pub(super) fn conversation_automations(
+        &self,
+        conversation: &str,
+    ) -> Vec<serde_json::Value> {
+        let Some(service) = lock(&self.state.automation).clone() else {
+            return Vec::new();
+        };
+        service
+            .list_for(conversation)
+            .unwrap_or_default()
+            .iter()
+            .map(|automation| {
+                let mut value =
+                    crate::automation_tools::automation_to_json(automation);
+                let last_run = service
+                    .history(automation.id, 1)
+                    .ok()
+                    .and_then(|runs| runs.into_iter().next());
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "last_run".to_owned(),
+                        serde_json::to_value(last_run)
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                value
+            })
+            .collect()
+    }
+
     fn work_state(&self, conversation: &str, work_id: &str) -> Option<String> {
         self.child_works(conversation)
             .into_iter()
@@ -119,42 +155,26 @@ impl Harness {
             .map(|work| work.state)
     }
 
-    /// Tells the user in the owning conversation through a system-event turn.
+    /// Saves the fixed reminder in the conversation without a model turn.
     fn post_reminder(
-        self: &Arc<Self>,
+        &self,
         automation: &Automation,
         text: &str,
     ) -> Result<(), &'static str> {
-        if self.session_role(&automation.conversation_id) != SessionRole::Router
-        {
-            return Err("ROUTER_NOT_FOUND");
-        }
-        let prompt = format!(
-            "[AutomationReminder] The automation \"{}\" is due. Remind the user: {text}\nDo not dispatch work for this reminder.",
-            automation.title
-        );
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes).map_err(|_| "notice.agent_failed")?;
-        self.submit_message_targeted(
-            Some(&automation.conversation_id),
-            &prompt,
-            Some(u128::from_le_bytes(bytes)),
-            None,
-            None,
-            None,
-            Some(ResumedSubmission {
-                skip_contract_evolve: true,
-                model_prompt_override: Some(prompt.clone()),
-                display_text_override: Some(String::new()),
-                skip_push_user_line: true,
-                prompt_source: MessageSource::SystemEvent {
-                    event_kind: "automation_reminder".to_owned(),
-                },
-                bypass_busy_queue: true,
-                ..ResumedSubmission::default()
-            }),
-        )
-        .map(|_| ())
+        let conversation = &automation.conversation_id;
+        let line = ChatLine::Assistant {
+            text: format!("**{}**\n\n{text}", automation.title),
+        };
+        lock(&self.state.live)
+            .get_mut(conversation)
+            .filter(|session| session.role == SessionRole::Router)
+            .ok_or("ROUTER_NOT_FOUND")?
+            .projection
+            .lines
+            .push(line);
+        persist_index(&self.state)?;
+        self.state.stream_changed(conversation);
+        Ok(())
     }
 }
 
@@ -164,6 +184,15 @@ struct AgentRunExecutor {
 }
 
 impl RunExecutor for AgentRunExecutor {
+    fn is_ready(&self, automation: &Automation) -> bool {
+        self.harness.upgrade().is_some_and(|harness| {
+            let engine_ready = lock(&harness.engine).is_some();
+            engine_ready
+                && (matches!(automation.action, Action::Reminder { .. })
+                    || harness.can_run_turns())
+        })
+    }
+
     fn run<'a>(
         &'a self,
         automation: &'a Automation,
@@ -199,33 +228,27 @@ impl AgentRunExecutor {
         .flatten()
     }
 
-    /// Waits while the conversation is busy or showing a card.
     async fn remind(
         &self,
         automation: &Automation,
         text: &str,
         cancel: &RunCancel,
     ) -> RunReport {
-        loop {
-            let (automation, text) = (automation.clone(), text.to_owned());
-            match self
-                .blocking(move |harness| {
-                    harness.post_reminder(&automation, &text)
-                })
-                .await
-            {
-                None => return report(None, failed("agent unavailable")),
-                Some(Ok(())) => return report(None, RunOutcome::Succeeded),
-                Some(Err("notice.agent_busy" | "notice.card_pending")) => {}
-                Some(Err(key)) => return report(None, failed(key)),
-            }
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    return report(None, RunOutcome::Cancelled);
+        let (automation, text, cancel) =
+            (automation.clone(), text.to_owned(), cancel.clone());
+        let outcome = self
+            .blocking(move |harness| {
+                if cancel.is_cancelled() {
+                    return RunOutcome::Cancelled;
                 }
-                () = tokio::time::sleep(POLL) => {}
-            }
-        }
+                match harness.post_reminder(&automation, &text) {
+                    Ok(()) => RunOutcome::Succeeded,
+                    Err(key) => failed(key),
+                }
+            })
+            .await
+            .unwrap_or_else(|| failed("agent unavailable"));
+        report(None, outcome)
     }
 
     async fn dispatch(
@@ -236,15 +259,18 @@ impl AgentRunExecutor {
         cancel: &RunCancel,
     ) -> RunReport {
         let (owned, prompt) = (automation.clone(), prompt.to_owned());
+        let dispatch_cancel = cancel.clone();
         let work_id = match self
             .blocking(move |harness| {
-                harness.dispatch_run(&owned, run_id, &prompt)
+                (!dispatch_cancel.is_cancelled())
+                    .then(|| harness.dispatch_run(&owned, run_id, &prompt))
             })
             .await
         {
             None => return report(None, failed("agent unavailable")),
-            Some(Err(code)) => return report(None, failed(code)),
-            Some(Ok(work_id)) => work_id,
+            Some(None) => return report(None, RunOutcome::Cancelled),
+            Some(Some(Err(code))) => return report(None, failed(code)),
+            Some(Some(Ok(work_id))) => work_id,
         };
         let outcome = self
             .wait(&automation.conversation_id, &work_id, cancel)
@@ -270,7 +296,7 @@ impl AgentRunExecutor {
             let Some(state) = state else {
                 return failed("the run's work was removed");
             };
-            if let Some(outcome) = settled(&state, cancel_deadline.is_some()) {
+            if let Some(outcome) = settled(&state) {
                 return outcome;
             }
             if let Some(deadline) = cancel_deadline {
@@ -298,14 +324,12 @@ impl AgentRunExecutor {
 
 /// Maps a child Work state to the run outcome, or `None` while it is still
 /// queued or running.
-fn settled(state: &str, cancelling: bool) -> Option<RunOutcome> {
+fn settled(state: &str) -> Option<RunOutcome> {
     Some(match state {
         "completed" | "delivered" | "partial" => RunOutcome::Succeeded,
         "failed" => failed("the work failed"),
         "stopped" => RunOutcome::Cancelled,
-        "awaiting_approval" if !cancelling => {
-            failed("waiting for the user in the conversation")
-        }
+
         _ => return None,
     })
 }

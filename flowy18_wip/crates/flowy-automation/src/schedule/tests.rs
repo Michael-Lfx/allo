@@ -18,6 +18,23 @@ fn calendar(
 }
 
 #[test]
+fn local_time_labels_use_the_rule_time_zone() {
+    let at = ms("2026-11-28T00:00:00Z");
+    let daily = calendar("Asia/Singapore", 8, 0, CalendarFrequency::Daily);
+    assert_eq!(
+        daily.local_time_label(at).as_deref(),
+        Some("2026-11-28 08:00:00 Sat (Asia/Singapore)")
+    );
+    let once = TriggerSpec::Once {
+        scheduled_at_ms: at,
+    };
+    assert_eq!(
+        once.local_time_label(at).as_deref(),
+        Some("2026-11-28 00:00:00 Sat (UTC)")
+    );
+}
+
+#[test]
 fn one_time_triggers_are_exclusive_on_the_lower_bound() {
     let scheduled_at_ms = ms("2026-01-01T00:00:00.123Z");
     let trigger = TriggerSpec::Once { scheduled_at_ms };

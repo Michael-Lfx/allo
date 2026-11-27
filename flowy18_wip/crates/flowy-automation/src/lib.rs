@@ -18,4 +18,4 @@ pub use model::{
 };
 pub use service::{AutomationService, ServiceError};
 pub use store::{AutomationStore, StoreError};
-pub use worker::{Worker, WorkerConfig};
+pub use worker::{StartError, Worker, WorkerConfig};

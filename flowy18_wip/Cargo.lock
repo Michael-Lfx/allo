@@ -2318,10 +2318,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowy-chat"
-version = "1.8.0"
-
-[[package]]
 name = "flowy-core"
 version = "1.8.0"
 dependencies = [

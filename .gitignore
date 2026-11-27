@@ -6,6 +6,7 @@
 /build.noindex/
 /flowy18_wip/build.noindex/
 /flowy18_wip/build-test/
+/flowy18_wip/crates/*/build-test/
 /flowy18_wip/.cargo/
 .cargo/config.local.toml
 /build.*.noindex/

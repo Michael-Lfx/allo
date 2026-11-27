@@ -7,7 +7,9 @@ use chrono::{
 pub use chrono_tz::Tz as IanaTimeZone;
 use serde::{Deserialize, Serialize};
 
-/// Automations only run on a schedule; there is no manual trigger.
+/// When an automation is due. There is no manual trigger kind: a one-off
+/// test run is started with `AutomationService::run_now` and leaves the
+/// schedule unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerSpec {
@@ -56,6 +58,24 @@ impl TriggerSpec {
             }
             Self::Calendar(rule) => rule.next_after(after),
         }
+    }
+}
+
+impl TriggerSpec {
+    /// `at_ms` as wall-clock time in the rule's own time zone (UTC for a
+    /// one-time trigger), e.g. `2026-11-28 08:00:00 Sat (Asia/Singapore)`,
+    /// so callers never convert the millisecond timestamp themselves.
+    pub fn local_time_label(&self, at_ms: i64) -> Option<String> {
+        const FORMAT: &str = "%Y-%m-%d %H:%M:%S %a";
+        let at = DateTime::from_timestamp_millis(at_ms)?;
+        Some(match self {
+            Self::Once { .. } => format!("{} (UTC)", at.format(FORMAT)),
+            Self::Calendar(rule) => format!(
+                "{} ({})",
+                at.with_timezone(&rule.time_zone).format(FORMAT),
+                rule.time_zone.name()
+            ),
+        })
     }
 }
 

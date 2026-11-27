@@ -267,3 +267,60 @@ async fn update_keeps_the_conversation_and_delete_conversation_removes_all() {
         Err(ServiceError::NotFound)
     ));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_now_starts_one_run_and_keeps_the_schedule() {
+    let h = harness(None, LONG);
+    let automation = h.service.create("r-1", agent_task()).unwrap();
+    assert!(matches!(
+        h.service.run_now(automation.id),
+        Err(ServiceError::Start(StartError::SignedOut))
+    ));
+
+    h.service.set_signed_in(true);
+    let run = h.service.run_now(automation.id).unwrap();
+    assert_eq!(run.status, RunStatus::Running);
+    assert!(matches!(
+        h.service.run_now(automation.id),
+        Err(ServiceError::Start(StartError::AlreadyRunning))
+    ));
+    while h.executor.calls.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(*h.executor.conversations.lock().unwrap(), vec!["r-1"]);
+    assert_eq!(
+        h.service.get(automation.id).unwrap().next_run_at_ms,
+        automation.next_run_at_ms
+    );
+
+    assert!(h.service.cancel(run.id));
+    let runs = wait_runs(&h.service, automation.id, any_final).await;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, run.id);
+    assert_eq!(runs[0].status, RunStatus::Cancelled);
+    assert!(matches!(
+        h.service.run_now(AutomationId::generate()),
+        Err(ServiceError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn expired_one_time_schedules_are_rejected_on_create_and_update() {
+    let h = harness(Some(RunOutcome::Succeeded), Duration::from_secs(1));
+    let expired = AutomationInput {
+        trigger: TriggerSpec::Once {
+            scheduled_at_ms: now_ms() - 1_000,
+        },
+        ..agent_task()
+    };
+    assert!(matches!(
+        h.service.create("r-1", expired.clone()),
+        Err(ServiceError::Invalid(_))
+    ));
+    let original = h.service.create("r-1", agent_task()).unwrap();
+    assert!(matches!(
+        h.service.update(original.id, expired),
+        Err(ServiceError::Invalid(_))
+    ));
+    assert_eq!(h.service.get(original.id).unwrap(), original);
+}

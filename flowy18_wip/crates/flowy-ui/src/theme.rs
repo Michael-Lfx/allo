@@ -340,7 +340,7 @@ impl ResolvedTheme {
             ControlVariant::Secondary => ControlColors {
                 background: self.soft(),
                 foreground: self.ink(),
-                border: self.border_strong(),
+                border: self.line(),
                 hover: self.line(),
             },
             ControlVariant::Ghost => ControlColors {

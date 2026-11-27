@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::schedule::ScheduleError;
 use crate::store::{AutomationStore, StoreError};
-use crate::worker::Worker;
+use crate::worker::{StartError, Worker};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
@@ -20,6 +20,8 @@ pub enum ServiceError {
     NotFound,
     #[error("{0}")]
     Invalid(&'static str),
+    #[error(transparent)]
+    Start(#[from] StartError),
 }
 
 pub struct AutomationService {
@@ -59,6 +61,7 @@ impl AutomationService {
             return Err(ServiceError::Invalid("conversation is missing"));
         }
         let now = now_ms();
+        validate_trigger(input.trigger, now)?;
         let automation = Automation {
             id: AutomationId::generate(),
             conversation_id: conversation_id.to_owned(),
@@ -80,6 +83,8 @@ impl AutomationService {
         input: AutomationInput,
     ) -> Result<Automation, ServiceError> {
         validate(&input)?;
+        let now = now_ms();
+        validate_trigger(input.trigger, now)?;
         let automation = Automation {
             title: input.title.trim().to_owned(),
             action: input.action,
@@ -87,7 +92,7 @@ impl AutomationService {
             access: input.access,
             ..self.get(id)?
         };
-        self.save(automation, now_ms())
+        self.save(automation, now)
     }
 
     pub fn pause(&self, id: AutomationId) -> Result<Automation, ServiceError> {
@@ -128,8 +133,8 @@ impl AutomationService {
     }
 
     pub fn delete(&self, id: AutomationId) -> Result<(), ServiceError> {
-        self.worker.cancel_automation(id);
         if self.store.delete(id)? {
+            self.worker.cancel_automation(id);
             Ok(())
         } else {
             Err(ServiceError::NotFound)
@@ -150,6 +155,13 @@ impl AutomationService {
     /// Returns false if the run had already ended.
     pub fn cancel(&self, run_id: RunId) -> bool {
         self.worker.cancel(run_id)
+    }
+
+    /// Runs the automation once now, e.g. to test it right after creating
+    /// it. Paused automations can be run too; the schedule is unchanged.
+    pub fn run_now(&self, id: AutomationId) -> Result<Run, ServiceError> {
+        let automation = self.get(id)?;
+        Ok(self.worker.run_now(&automation)?)
     }
 
     pub fn list(&self) -> Result<Vec<Automation>, ServiceError> {
@@ -180,6 +192,16 @@ impl AutomationService {
     pub fn run(&self, run_id: RunId) -> Result<Option<Run>, ServiceError> {
         Ok(self.store.run(run_id)?)
     }
+}
+
+fn validate_trigger(
+    trigger: crate::schedule::TriggerSpec,
+    now: i64,
+) -> Result<(), ServiceError> {
+    if trigger.next_after(now)?.is_none() {
+        return Err(ServiceError::Invalid("schedule has no future occurrence"));
+    }
+    Ok(())
 }
 
 fn validate(input: &AutomationInput) -> Result<(), ServiceError> {
