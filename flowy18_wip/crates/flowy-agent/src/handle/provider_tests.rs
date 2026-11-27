@@ -663,9 +663,17 @@ fn provider_shadowing_reserved_tools_and_delivery_forgery_fail_closed() {
 
     let dir = scratch("shadow-guard");
     let registry = super::tool_registry(&dir.0, &[], Vec::new());
-    let providers: Vec<Arc<dyn ToolProvider>> = vec![
-        Arc::new(ShadowProvider { id: "first" }),
-        Arc::new(ShadowProvider { id: "second" }),
+    let providers = vec![
+        super::RegisteredProvider {
+            registration_id: 1,
+            provider: Arc::new(ShadowProvider { id: "first" }),
+            cached_router_hint: None,
+        },
+        super::RegisteredProvider {
+            registration_id: 2,
+            provider: Arc::new(ShadowProvider { id: "second" }),
+            cached_router_hint: None,
+        },
     ];
     let ctx = ToolProviderContext {
         session_id: "s-shadow",
@@ -673,7 +681,8 @@ fn provider_shadowing_reserved_tools_and_delivery_forgery_fail_closed() {
         origin: &SessionOrigin::Home,
         access_mode: WorkAccessMode::ReadWrite,
     };
-    super::guards::mount_tool_providers(&registry, &providers, &ctx);
+    let _mounted =
+        super::guards::mount_tool_providers(&registry, &providers, &ctx);
 
     assert_eq!(
         registry.get("read_file").unwrap().source(),
@@ -776,8 +785,18 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
         },
     );
     let sid = handle.create_home_session().unwrap();
-    let providers: Vec<Arc<dyn ToolProvider>> =
-        vec![Arc::new(DenyAllProvider), Arc::new(ProviderB)];
+    let providers = vec![
+        super::RegisteredProvider {
+            registration_id: 1,
+            provider: Arc::new(DenyAllProvider),
+            cached_router_hint: None,
+        },
+        super::RegisteredProvider {
+            registration_id: 2,
+            provider: Arc::new(ProviderB),
+            cached_router_hint: None,
+        },
+    ];
     let registry = super::tool_registry(&dir.0, &[], Vec::new());
     let ctx = ToolProviderContext {
         session_id: &sid,
@@ -785,7 +804,8 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
         origin: &SessionOrigin::Home,
         access_mode: WorkAccessMode::ReadWrite,
     };
-    super::guards::mount_tool_providers(&registry, &providers, &ctx);
+    let mounted =
+        super::guards::mount_tool_providers(&registry, &providers, &ctx);
 
     let hook =
         super::guards::build_pre_tool_hook(super::guards::PreToolHookSpec {
@@ -795,6 +815,9 @@ fn cross_provider_pre_tool_policy_isolation_and_user_denied_anti_bypass() {
             state: Arc::clone(&handle.inner.state),
             registry,
             providers,
+            mounted_provenance: mounted.provenance,
+            process_nonce: "test-nonce".into(),
+            force_reconfirm_tools: std::collections::BTreeSet::new(),
         });
 
     assert_eq!(hook("read_file", &json!({})), PreToolDecision::Allow);
@@ -968,4 +991,980 @@ fn register_tool_provider_hot_swap_and_unregister_are_idempotent() {
     assert!(!handle.unregister_tool_provider("mcp-a"));
     assert_eq!(handle.registered_tool_provider_ids(), vec!["mcp-b"]);
     assert!(!handle.unregister_tool_provider("   "));
+}
+
+#[test]
+fn hot_swapped_provider_cannot_consume_stale_approval_card() {
+    let dir = scratch("stale-approval-hotswap");
+    let svc_v1 = Arc::new(FakeAutomationService::default());
+    let svc_v2 = Arc::new(FakeAutomationService::default());
+
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref()
+            && last.contains("Activated 1 tool")
+        {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-1".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ToolApproved]") {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-resumed".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ApprovalInvalidated]") {
+            return MockHttpReply::Text("stale-approval-rejected".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(MockAutomationProvider {
+        service: Arc::clone(&svc_v1),
+        tool_count: 2,
+    }));
+    let sid = handle.create_home_session().unwrap();
+    handle.select_session(&sid).unwrap();
+
+    handle.submit_chat(100, "run daily automation").unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            !handle.session_status(&sid).is_busy()
+                && !handle.session_pending_cards(&sid).is_empty()
+        },
+        "v1 ToolApproval card parked",
+    );
+
+    let PendingCard::ToolApproval {
+        card_id,
+        tool_name,
+        args_hash,
+        ..
+    } = handle.session_pending_cards(&sid)[0].clone()
+    else {
+        panic!("expected ToolApproval card");
+    };
+    assert_eq!(tool_name, "automation_run");
+
+    // Hot-swap a distinct Provider instance under the same ID before approving.
+    handle.register_tool_provider(Arc::new(MockAutomationProvider {
+        service: Arc::clone(&svc_v2),
+        tool_count: 2,
+    }));
+
+    let before_resume = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id,
+            selection: CardSelection::ApproveTool { args_hash },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "stale approval resolution settled",
+    );
+
+    assert!(
+        svc_v1.executed_sessions.lock().unwrap().is_empty(),
+        "replaced v1 must execute 0 times"
+    );
+    assert!(
+        svc_v2.executed_sessions.lock().unwrap().is_empty(),
+        "replacement v2 must NOT consume stale v1 approval"
+    );
+    let resumed_first_req = &server.recorded()[before_resume];
+    assert!(
+        !resumed_first_req
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run"),
+        "stale approval must NOT pre-activate deferred tool for replacement provider"
+    );
+}
+
+struct DropMarker(Arc<AtomicBool>);
+
+impl Drop for DropMarker {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+struct DropSpyProvider {
+    markers: Mutex<Vec<(std::sync::Weak<DropMarker>, Arc<AtomicBool>)>>,
+}
+
+impl DropSpyProvider {
+    fn new() -> Self {
+        Self {
+            markers: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn all_dropped(&self) -> bool {
+        let guard = self.markers.lock().unwrap();
+        !guard.is_empty()
+            && guard.iter().all(|(weak, flag)| {
+                weak.strong_count() == 0 && flag.load(Ordering::SeqCst)
+            })
+    }
+}
+
+impl ToolProvider for DropSpyProvider {
+    fn id(&self) -> &'static str {
+        "drop-spy"
+    }
+
+    fn register_tools(
+        &self,
+        _ctx: &ToolProviderContext<'_>,
+        registry: &ToolRegistry,
+    ) {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let marker = Arc::new(DropMarker(Arc::clone(&dropped)));
+        self.markers
+            .lock()
+            .unwrap()
+            .push((Arc::downgrade(&marker), Arc::clone(&dropped)));
+        let def = ToolDefinition::new(
+            "probe_deferred",
+            "Deferred closure lifetime probe",
+            json!({"type": "object"}),
+            move |_args, _ctx| {
+                let _hold = Arc::clone(&marker);
+                Box::pin(async {
+                    ToolExecutionResult::success_text("probe-ok", json!({}))
+                })
+            },
+        )
+        .with_exposure(ToolExposure::Deferred);
+        registry.register(Arc::new(def));
+    }
+}
+
+struct VersionedRunProvider {
+    id: &'static str,
+    version: Option<&'static str>,
+    ask: bool,
+    executions: Arc<AtomicUsize>,
+}
+
+impl ToolProvider for VersionedRunProvider {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    fn version(&self) -> Option<&str> {
+        self.version
+    }
+
+    fn register_tools(
+        &self,
+        _ctx: &ToolProviderContext<'_>,
+        registry: &ToolRegistry,
+    ) {
+        let execs = Arc::clone(&self.executions);
+        let def = ToolDefinition::new(
+            "automation_run",
+            "Run automation job",
+            json!({
+                "type": "object",
+                "properties": {"job": {"type": "string"}}
+            }),
+            move |_args, _ctx| {
+                execs.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    ToolExecutionResult::success_text(
+                        "ran automation_run",
+                        json!({"ok": true}),
+                    )
+                })
+            },
+        )
+        .with_exposure(ToolExposure::Deferred);
+        registry.register(Arc::new(def));
+    }
+
+    fn evaluate_pre_tool(
+        &self,
+        tool_name: &str,
+        _args: &Value,
+        _ctx: &ToolPolicyContext<'_>,
+    ) -> Option<PreToolDecision> {
+        (self.ask && tool_name == "automation_run").then(|| {
+            PreToolDecision::Ask {
+                target_summary: "automation_run".into(),
+                args_hash: String::new(),
+                risk_reason: "runs external automation job".into(),
+                command_preview: "run daily job".into(),
+            }
+        })
+    }
+}
+
+struct GateReset(Arc<AtomicBool>);
+
+impl Drop for GateReset {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+fn park_automation_run_card(
+    handle: &AgentHandle,
+    sid: &str,
+    submit_id: u128,
+) -> (String, String) {
+    handle.select_session(sid).unwrap();
+    handle
+        .submit_chat(submit_id, "run daily automation")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            !handle.session_status(sid).is_busy()
+                && !handle.session_pending_cards(sid).is_empty()
+        },
+        "ToolApproval card parked",
+    );
+    let PendingCard::ToolApproval {
+        card_id,
+        tool_name,
+        args_hash,
+        ..
+    } = handle.session_pending_cards(sid)[0].clone()
+    else {
+        panic!("expected ToolApproval card");
+    };
+    assert_eq!(tool_name, "automation_run");
+    (card_id, args_hash)
+}
+
+#[test]
+fn deferred_provider_releases_tool_closures_after_normal_completion() {
+    let dir = scratch("arc-drop-complete");
+    let provider = Arc::new(DropSpyProvider::new());
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref() {
+            if last.contains("Activated 1 tool") {
+                return MockHttpReply::ToolCalls(vec![(
+                    "call-probe".into(),
+                    "probe_deferred".into(),
+                    json!({}),
+                )]);
+            }
+            if last.contains("probe-ok") {
+                return MockHttpReply::Text("probe-completed".into());
+            }
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:probe_deferred"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    let reg_provider: Arc<DropSpyProvider> = Arc::clone(&provider);
+    handle.register_tool_provider(reg_provider);
+    let sid = handle.create_home_session().unwrap();
+    handle.select_session(&sid).unwrap();
+    handle.submit_chat(1, "run probe").unwrap();
+
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "normal completion turn settles",
+    );
+    wait_until(
+        Duration::from_secs(5),
+        || provider.all_dropped(),
+        "deferred tool closures drop after normal completion even while handle remains alive",
+    );
+}
+
+#[test]
+fn deferred_provider_releases_tool_closures_after_cancel() {
+    let dir = scratch("arc-drop-cancel");
+    let provider = Arc::new(DropSpyProvider::new());
+    let second_llm_entered = Arc::new(AtomicBool::new(false));
+    let release_http = Arc::new(AtomicBool::new(false));
+    let _reset = GateReset(Arc::clone(&release_http));
+
+    let entered_c = Arc::clone(&second_llm_entered);
+    let release_c = Arc::clone(&release_http);
+    let server = MockLlmServer::start(Arc::new(move |req| {
+        if req.last_tool_result.is_some() {
+            entered_c.store(true, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !release_c.load(Ordering::SeqCst) && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            return MockHttpReply::Text("late-after-cancel".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:probe_deferred"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    let reg_provider: Arc<DropSpyProvider> = Arc::clone(&provider);
+    handle.register_tool_provider(reg_provider);
+    let sid = handle.create_home_session().unwrap();
+    handle.select_session(&sid).unwrap();
+    handle.submit_chat(2, "start then cancel").unwrap();
+
+    wait_until(
+        Duration::from_secs(5),
+        || second_llm_entered.load(Ordering::SeqCst),
+        "second LLM request in flight after tool_search",
+    );
+    assert!(matches!(
+        handle.cancel_task(super::TaskTarget::Session(sid.clone())),
+        Ok(super::CancelOutcome::Cancelled)
+    ));
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "cancelled session settles",
+    );
+    release_http.store(true, Ordering::SeqCst);
+
+    wait_until(
+        Duration::from_secs(5),
+        || provider.all_dropped(),
+        "deferred tool closures drop after task cancellation",
+    );
+}
+
+#[test]
+fn hot_swapped_provider_without_ask_still_forced_to_reconfirm_after_stale_approval()
+ {
+    let dir = scratch("stale-noask-reconfirm");
+    let v1_execs = Arc::new(AtomicUsize::new(0));
+    let v2_execs = Arc::new(AtomicUsize::new(0));
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref() {
+            if last.contains("Activated 1 tool") {
+                return MockHttpReply::ToolCalls(vec![(
+                    "call-run-activated".into(),
+                    "automation_run".into(),
+                    json!({"job": "daily"}),
+                )]);
+            }
+            if last.contains("ran automation_run") {
+                return MockHttpReply::Text("executed-after-reconfirm".into());
+            }
+        }
+        if req.tool_names.iter().any(|n| n == "automation_run") {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-direct".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "ext",
+        version: Some("1.0.0"),
+        ask: true,
+        executions: Arc::clone(&v1_execs),
+    }));
+    let sid = handle.create_home_session().unwrap();
+    let (card_1, hash_1) = park_automation_run_card(&handle, &sid, 10);
+
+    // Swap in v2 whose `evaluate_pre_tool` returns `None` (no Ask).
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "ext",
+        version: Some("2.0.0"),
+        ask: false,
+        executions: Arc::clone(&v2_execs),
+    }));
+
+    let before_stale = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_1.clone(),
+            selection: CardSelection::ApproveTool { args_hash: hash_1 },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            !handle.session_status(&sid).is_busy()
+                && !handle.session_pending_cards(&sid).is_empty()
+        },
+        "replacement provider forced to emit fresh confirmation card",
+    );
+
+    assert_eq!(v1_execs.load(Ordering::SeqCst), 0);
+    assert_eq!(v2_execs.load(Ordering::SeqCst), 0);
+    let resumed_first = &server.recorded()[before_stale];
+    assert!(resumed_first.last_user.contains("[ApprovalInvalidated]"));
+    assert!(
+        !resumed_first
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run")
+    );
+
+    let PendingCard::ToolApproval {
+        card_id: card_2,
+        args_hash: hash_2,
+        ..
+    } = handle.session_pending_cards(&sid)[0].clone()
+    else {
+        panic!("expected fresh ToolApproval card from force_reconfirm_tools");
+    };
+    assert_ne!(card_2, card_1);
+
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_2,
+            selection: CardSelection::ApproveTool { args_hash: hash_2 },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "re-confirmed replacement turn finishes",
+    );
+    assert_eq!(v1_execs.load(Ordering::SeqCst), 0);
+    assert_eq!(v2_execs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn same_provider_version_bump_invalidates_parked_approval_without_preactivation()
+ {
+    let dir = scratch("version-bump-approval");
+    let v1_execs = Arc::new(AtomicUsize::new(0));
+    let v2_execs = Arc::new(AtomicUsize::new(0));
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref() {
+            if last.contains("Activated 1 tool") {
+                return MockHttpReply::ToolCalls(vec![(
+                    "call-run-1".into(),
+                    "automation_run".into(),
+                    json!({"job": "daily"}),
+                )]);
+            }
+            if last.contains("ran automation_run") {
+                return MockHttpReply::Text("same-version-executed".into());
+            }
+        }
+        if req.last_user.contains("[ToolApproved]") {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-approved".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ApprovalInvalidated]") {
+            return MockHttpReply::Text("version-bumped-rejected".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "versioned",
+        version: Some("1.0.0"),
+        ask: true,
+        executions: Arc::clone(&v1_execs),
+    }));
+    let sid = handle.create_home_session().unwrap();
+
+    // Positive control: identical version ("1.0.0") recovers and executes once.
+    let (card_ok, hash_ok) = park_automation_run_card(&handle, &sid, 20);
+    let before_ok = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_ok,
+            selection: CardSelection::ApproveTool { args_hash: hash_ok },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "same version approval succeeds",
+    );
+    assert_eq!(v1_execs.load(Ordering::SeqCst), 1);
+    assert!(
+        server.recorded()[before_ok]
+            .last_user
+            .contains("[ToolApproved]")
+    );
+    assert!(
+        server.recorded()[before_ok]
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run")
+    );
+
+    // Now park again on 1.0.0, bump only `version()` to 1.0.1, then approve.
+    let (card_bump, hash_bump) = park_automation_run_card(&handle, &sid, 21);
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "versioned",
+        version: Some("1.0.1"),
+        ask: true,
+        executions: Arc::clone(&v2_execs),
+    }));
+    let before_bump = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_bump,
+            selection: CardSelection::ApproveTool {
+                args_hash: hash_bump,
+            },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "version-bumped approval invalidated",
+    );
+    assert_eq!(v1_execs.load(Ordering::SeqCst), 1);
+    assert_eq!(v2_execs.load(Ordering::SeqCst), 0);
+    let bump_req = &server.recorded()[before_bump];
+    assert!(bump_req.last_user.contains("[ApprovalInvalidated]"));
+    assert!(!bump_req.tool_names.iter().any(|n| n == "automation_run"));
+    assert_eq!(
+        handle.session_pending_cards(&sid),
+        Vec::<PendingCard>::new()
+    );
+}
+
+#[test]
+fn unregistered_provider_and_rebound_different_provider_cannot_consume_stale_approval()
+ {
+    let dir = scratch("unreg-rebind-approval");
+    let alpha_execs = Arc::new(AtomicUsize::new(0));
+    let beta_execs = Arc::new(AtomicUsize::new(0));
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref()
+            && last.contains("Activated 1 tool")
+        {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-1".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ApprovalInvalidated]") {
+            return MockHttpReply::Text("rejected-after-unregister".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "ext-alpha",
+        version: Some("1.0.0"),
+        ask: true,
+        executions: Arc::clone(&alpha_execs),
+    }));
+    let sid = handle.create_home_session().unwrap();
+
+    // Case A: unregister before ApproveTool.
+    let (card_unreg, hash_unreg) = park_automation_run_card(&handle, &sid, 30);
+    assert!(handle.unregister_tool_provider("ext-alpha"));
+    let before_unreg = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_unreg,
+            selection: CardSelection::ApproveTool {
+                args_hash: hash_unreg,
+            },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "unregistered provider card settled",
+    );
+    assert_eq!(alpha_execs.load(Ordering::SeqCst), 0);
+    assert!(
+        server.recorded()[before_unreg]
+            .last_user
+            .contains("[ApprovalInvalidated]")
+    );
+    assert!(
+        !server.recorded()[before_unreg]
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run")
+    );
+
+    // Case B: park on alpha, unregister alpha, bind different provider beta with same tool name.
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "ext-alpha",
+        version: Some("1.0.0"),
+        ask: true,
+        executions: Arc::clone(&alpha_execs),
+    }));
+    let (card_rebind, hash_rebind) =
+        park_automation_run_card(&handle, &sid, 31);
+    assert!(handle.unregister_tool_provider("ext-alpha"));
+    handle.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "ext-beta",
+        version: Some("1.0.0"),
+        ask: false,
+        executions: Arc::clone(&beta_execs),
+    }));
+    let before_rebind = server.recorded().len();
+    handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id: card_rebind,
+            selection: CardSelection::ApproveTool {
+                args_hash: hash_rebind,
+            },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "rebound different provider card settled",
+    );
+    assert_eq!(alpha_execs.load(Ordering::SeqCst), 0);
+    assert_eq!(beta_execs.load(Ordering::SeqCst), 0);
+    assert!(
+        server.recorded()[before_rebind]
+            .last_user
+            .contains("[ApprovalInvalidated]")
+    );
+    assert!(
+        !server.recorded()[before_rebind]
+            .tool_names
+            .iter()
+            .any(|n| n == "automation_run")
+    );
+}
+
+#[test]
+fn restarted_handle_invalidates_persisted_provider_approval_card() {
+    let dir = scratch("restart-invalidates-card");
+    let execs = Arc::new(AtomicUsize::new(0));
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref()
+            && last.contains("Activated 1 tool")
+        {
+            return MockHttpReply::ToolCalls(vec![(
+                "call-run-1".into(),
+                "automation_run".into(),
+                json!({"job": "daily"}),
+            )]);
+        }
+        if req.last_user.contains("[ApprovalInvalidated]") {
+            return MockHttpReply::Text("restart-invalidated".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-search".into(),
+            TOOL_SEARCH_NAME.into(),
+            json!({"query": "select:automation_run"}),
+        )])
+    }));
+
+    let sid;
+    let card_id;
+    let args_hash;
+    {
+        let handle1 = AgentHandle::with_config(dir.0.clone(), server.config());
+        handle1.register_tool_provider(Arc::new(VersionedRunProvider {
+            id: "persist-prov",
+            version: Some("1.0.0"),
+            ask: true,
+            executions: Arc::clone(&execs),
+        }));
+        sid = handle1.create_home_session().unwrap();
+        (card_id, args_hash) = park_automation_run_card(&handle1, &sid, 40);
+    }
+
+    // New AgentHandle instance has a fresh `process_nonce` and empty live bindings.
+    let handle2 = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle2.register_tool_provider(Arc::new(VersionedRunProvider {
+        id: "persist-prov",
+        version: Some("1.0.0"),
+        ask: true,
+        executions: Arc::clone(&execs),
+    }));
+    handle2.select_session(&sid).unwrap();
+    assert_ne!(
+        handle2.session_pending_cards(&sid),
+        Vec::<PendingCard>::new()
+    );
+
+    let before_restart_approve = server.recorded().len();
+    handle2
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: sid.clone(),
+            card_id,
+            selection: CardSelection::ApproveTool { args_hash },
+        })
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || !handle2.session_status(&sid).is_busy(),
+        "restarted handle invalidated persisted card",
+    );
+
+    assert_eq!(execs.load(Ordering::SeqCst), 0);
+    let resumed_req = &server.recorded()[before_restart_approve];
+    assert!(resumed_req.last_user.contains("[ApprovalInvalidated]"));
+    assert!(!resumed_req.tool_names.iter().any(|n| n == "automation_run"));
+}
+
+#[test]
+fn slow_worker_provider_registration_does_not_block_concurrent_router_submit() {
+    struct SlowProvider {
+        entered: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+        hint_calls: Arc<AtomicUsize>,
+    }
+    impl ToolProvider for SlowProvider {
+        fn id(&self) -> &'static str {
+            "slow-prov"
+        }
+        fn router_capability_hint(&self) -> Option<String> {
+            self.hint_calls.fetch_add(1, Ordering::SeqCst);
+            Some("slow background worker capability".into())
+        }
+        fn register_tools(
+            &self,
+            _ctx: &ToolProviderContext<'_>,
+            registry: &ToolRegistry,
+        ) {
+            self.entered.store(true, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !self.release.load(Ordering::SeqCst)
+                && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            registry.register(Arc::new(ToolDefinition::new(
+                "slow_worker_op",
+                "Slow op",
+                json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text(
+                            "slow-op-done",
+                            json!({}),
+                        )
+                    })
+                },
+            )));
+        }
+    }
+
+    let dir = scratch("slow-worker-lock");
+    let proj_a = dir.0.join("proj-a");
+    let proj_b = dir.0.join("proj-b");
+    std::fs::create_dir_all(&proj_a).unwrap();
+    std::fs::create_dir_all(&proj_b).unwrap();
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let hint_calls = Arc::new(AtomicUsize::new(0));
+    let _reset = GateReset(Arc::clone(&release));
+
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if req.tool_names.iter().any(|n| n == "query_work_status") {
+            if req.last_user.contains("dispatch-slow")
+                && req.last_tool_result.is_none()
+            {
+                return MockHttpReply::ToolCalls(vec![(
+                    "disp-slow".into(),
+                    "dispatch_work".into(),
+                    json!({
+                        "brief": "run slow worker",
+                        "mode": "read_write"
+                    }),
+                )]);
+            }
+            if req.last_user.contains("fast-hello") {
+                return MockHttpReply::Text("router-b-fast-reply".into());
+            }
+            return MockHttpReply::Text("router-a-dispatched".into());
+        }
+        MockHttpReply::Text("slow-worker-done".into())
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(SlowProvider {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        hint_calls: Arc::clone(&hint_calls),
+    }));
+    assert_eq!(hint_calls.load(Ordering::SeqCst), 1);
+
+    let router_a = handle
+        .create_router_project_session(AgentWorkspace {
+            project_id: "pa".into(),
+            root: proj_a,
+        })
+        .unwrap();
+    let router_b = handle
+        .create_router_project_session(AgentWorkspace {
+            project_id: "pb".into(),
+            root: proj_b,
+        })
+        .unwrap();
+    handle.set_autonomous_drain(true);
+    handle
+        .submit_router_message(&router_a, 50, "dispatch-slow")
+        .unwrap();
+
+    wait_until(
+        Duration::from_secs(5),
+        || entered.load(Ordering::SeqCst),
+        "slow worker entered register_tools outside dispatch lock",
+    );
+
+    // While Worker A blocks inside `register_tools`, Router B must accept & finish cleanly.
+    let start = Instant::now();
+    handle
+        .submit_router_message(&router_b, 51, "fast-hello")
+        .unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "concurrent router submit blocked behind slow worker provider"
+    );
+    wait_until(
+        Duration::from_secs(3),
+        || !handle.session_status(&router_b).is_busy(),
+        "router B completed while slow worker still blocked",
+    );
+    assert!(!release.load(Ordering::SeqCst));
+    assert_eq!(
+        hint_calls.load(Ordering::SeqCst),
+        1,
+        "router_capability_hint must be cached at registration, not re-invoked per submit"
+    );
+
+    release.store(true, Ordering::SeqCst);
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            handle
+                .child_works(&router_a)
+                .first()
+                .is_some_and(|w| w.state == "completed")
+        },
+        "slow worker completes once released",
+    );
+}
+
+#[test]
+fn intra_provider_duplicate_tool_name_is_rejected_fail_closed() {
+    struct DuplicateToolProvider;
+    impl ToolProvider for DuplicateToolProvider {
+        fn id(&self) -> &'static str {
+            "dup-provider"
+        }
+        fn register_tools(
+            &self,
+            _ctx: &ToolProviderContext<'_>,
+            registry: &ToolRegistry,
+        ) {
+            for desc in ["first-def", "second-def"] {
+                registry.register(Arc::new(ToolDefinition::new(
+                    "dup_tool",
+                    desc,
+                    json!({"type": "object"}),
+                    |_args, _ctx| {
+                        Box::pin(async {
+                            ToolExecutionResult::success_text(
+                                "dup-ran",
+                                json!({}),
+                            )
+                        })
+                    },
+                )));
+            }
+            registry.register(Arc::new(ToolDefinition::new(
+                "unique_ok",
+                "Non-conflicting tool",
+                json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text(
+                            "unique-ran",
+                            json!({}),
+                        )
+                    })
+                },
+            )));
+        }
+    }
+
+    let dir = scratch("dup-fail-closed");
+    let server = MockLlmServer::start(Arc::new(|req| {
+        if let Some(last) = req.last_tool_result.as_deref()
+            && last.contains("unique-ran")
+        {
+            return MockHttpReply::Text("unique-finished".into());
+        }
+        MockHttpReply::ToolCalls(vec![(
+            "call-unique".into(),
+            "unique_ok".into(),
+            json!({}),
+        )])
+    }));
+
+    let handle = AgentHandle::with_config(dir.0.clone(), server.config());
+    handle.register_tool_provider(Arc::new(DuplicateToolProvider));
+    let sid = handle.create_home_session().unwrap();
+    handle.select_session(&sid).unwrap();
+    handle.submit_chat(60, "test duplicate staging").unwrap();
+
+    wait_until(
+        Duration::from_secs(5),
+        || !handle.session_status(&sid).is_busy(),
+        "duplicate provider session finishes",
+    );
+
+    let first_req = &server.recorded()[0];
+    assert!(
+        first_req.tool_names.iter().any(|n| n == "unique_ok"),
+        "non-duplicate tool must remain mounted"
+    );
+    assert!(
+        !first_req.tool_names.iter().any(|n| n == "dup_tool"),
+        "intra-provider duplicate tool name must be rejected fail-closed"
+    );
 }

@@ -35,6 +35,12 @@ pub trait ToolProvider: Send + Sync {
     /// removal, source tagging, and scoped `evaluate_pre_tool` dispatch).
     fn id(&self) -> &str;
 
+    /// Optional explicit version identifier mixed into host approval bindings
+    /// so a version bump invalidates parked approvals even when schemas match.
+    fn version(&self) -> Option<&str> {
+        None
+    }
+
     /// Register tools into the Worker turn's staged [`ToolRegistry`].
     ///
     /// Called only for `Worker (ReadWrite)` and legacy `Standard` sessions.

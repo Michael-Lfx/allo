@@ -11,18 +11,18 @@
 | --- | --- |
 | `一页纸.md` | **3 分钟了解全貌。** 它是什么、交什么、不做什么 |
 | `实现对照.md` | **每个重要环节：我们选了什么 / 对比方案是什么 / 为什么不选 / 证据在哪。** 想挑刺先读这份 |
-| `最终方案.md` | **结论稿（修订 9.21）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.18 演进与落地账本、**§12.19 可视细滚动条滑块与 Windows UIA `ScrollPattern` 暴露收口账本（`PR #531` @ `768bbd155`，修订 9.21）** |
-| `证据.md` | **全部实测记录（§11.1–§11.47）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.46 实测总账、**§11.47 可视细滚动条滑块与 Windows UIA `ScrollPattern` 暴露实测（`PR #531` @ `768bbd155`）**及被推翻的结论 |
+| `最终方案.md` | **结论稿（修订 9.22）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.19 演进与落地账本（含 PR #530 `ToolProvider` 底座 §12.18 与 PR #531 细滚条/UIA §12.19）、**§12.20 PR #530 扩展底座硬化与异步 Drain 隔离收口账本（`fix/flowy18-provider-seam-hardening`，基于 `origin/main@0fdeb69d6`，修订 9.22）** |
+| `证据.md` | **全部实测记录（§11.1–§11.48）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.47 实测总账、**§11.48 PR #530 扩展底座硬化与 Level 4 全绿复核实测（`fix/flowy18-provider-seam-hardening`）**及被推翻的结论 |
 | `跨平台沙箱与进程回收预留方案.md` | **【跨平台预留蓝图】** Windows 优先通用层（`RunFence` 两阶段回收 + MIT 净室 `shell_policy` + 诚实 `SandboxAvailability`）与 macOS Seatbelt / Linux `bwrap` / Windows AppContainer 接入规格与验收矩阵 |
 | `参照.md` | 五款工作台横评、AutoLoop 借鉴分级、sub agent 与 super agent 的区别、**§10.5 OpenAI Dot 四轮实测对照与老爷爷对抗审查分级** |
 | `先记.md` | 六件暂时不做的事，每件写明「什么时候该回来看」 |
 | `审查交接.md` | **【历史快照】** 2026-11-23 交给外部审查者的材料，含审查结论与修正清单 |
 | `V0-执行计划.md` | **【现役执行计划】** 经 2026-11-25 需求方拍板与真机巡检重订的 Phase 1–Phase 4 收口计划（文末完整归档首轮底稿） |
-| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §29（`origin/main@768bbd155` · `PR #530–#531` 合流、可视细滚动条与 Windows UIA `ScrollPattern` 契约，修订 9.21）与 §28 / §27（`ToolProvider` 扩展底座与 PR #512–#529 主干全账）。** 唯一现役状态、模块速查、踩坑清单与实施指引 |
+| `交接给下一个agent.md` | **【现役交接主入口】接手先读 §30（`origin/main@0fdeb69d6` + `fix/flowy18-provider-seam-hardening` PR #530 扩展底座硬化契约，修订 9.22），并对照 §29（PR #531 细滚条与 Windows UIA `ScrollPattern`）与 §28 / §27（`ToolProvider` 扩展底座与 PR #512–#529 主干全账）。** 唯一现役状态、模块速查、踩坑清单与实施指引 |
 
 ## 现状一句话
 
-**方案修订至 9.21（保留 9.1–9.20 全部正文），实测覆盖 §11.1–§11.47。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
+**方案修订至 9.22（保留 9.1–9.21 全部正文），实测覆盖 §11.1–§11.48。** 需求方已拍板确认目标锁定 `flowy18_wip/` 并采用显式豁免表方案 A；已删除历史冗余备份分支。
 
 **代码侧（2026-11-25 · `feat/flowy-v0-rc@f47804a9d`）**：工作树 `.agents/worktrees/feat-flowy-local-receipt` 已合流 `feat/flowy-super-ui` 并完成 10 轮纯内核可靠性加固与路线 1 v2 收口（`f8fb6b491`..`f47804a9d`，0 碰 UI）：拆解 `handle/` 与 `verify/` 目录、补齐 `RunFence` 两阶段取消回收、MIT 净室跨平台 Shell 静态安全策略 + 诚实沙箱能力层、单次 HTTP 工具调用 `complete_structured`（真云端 L3 实测提速 3.26×）与 §6.8 `PROVENANCE_INVALID` 溯源拦截（`flowy-agent-core` 90 / `flowy-agent` 168 / 真云端 L3 1 全绿，`clippy -D warnings` 0 警告，`cargo check -p flowy-app` 通过）；仅剩 V6 外发通道按 `BLOCKED.md` §5 停等拍板。
 
@@ -53,6 +53,8 @@
 **Work 能力扩展底座、通用审批与延迟工具搜索（2026-11-27 · `PR #530` @ `58f88471a` · 修订 9.20）**：在零改动 `flowy-studio` / `flowy-app` / `flowy-i18n` 与兼容 PR #525–#529 边界内落地有状态扩展底座——① `flowy-agent-core` 新增 `ToolProvider` / `ToolProviderContext` / `ToolPolicyContext`、`ToolSource`、`ToolExposure::{Eager, Deferred}`、`with_read_only`、`fork()`、`schemas()` 升序确定性输出、`tool_search` 工具与 `ActivatedToolSet`、`EngineConfig::pre_activated_tools` 及 `loop_runner` 轮内尾端追加式工具激活与元数据只读熔断；② `flowy-agent` 在 `Harness.providers`（叶级锁）提供 `AgentHandle::register_tool_provider` 幂等热插拔，`guards.rs` 落地 `mount_tool_providers` fail-closed 防阴影与交付权限剥离、统一 SHA-256 `consume_or_request_approval`，`submit.rs` 物理限定仅 `Worker (ReadWrite)` / `Standard` 挂载（`Router` 与 `ReadOnly` 保持零 Provider 调用）并在批准恢复保留 PR #526 `active_dispatch_receipt_id` 同时预激活 `Deferred` 工具，`router.rs` 注入有界 `[WorkerCapabilities]`；③ 同步更新 [`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（含 PR #523 初版草案归档、PR #525/`#528` `panel/submit.rs` 与 `board.rs` 偏移修复）及 [`../README.md`](../README.md)，通过全部 Level 4 门禁（`flowy-agent-core` 146 / `flowy-agent` 285 / `flowy-studio` 175 / `flowy-ui` 46+2 / `flowy-desktop --locked` / 5-Crate Clippy 0 告警；详见 `最终方案.md` §12.18、`证据.md` §11.46、`PROGRESS.md` 任务 32 与 `交接给下一个agent.md` §28）。
 
 **可视细滚动条滑块与 Windows UIA `ScrollPattern` 暴露（2026-11-27 · `PR #531` @ `768bbd155` · 修订 9.21）**：保持 `gpui-pre 0.3.14` 零补丁，通过三段式结构闭环解决滚动视觉与桌面无障碍缺失——① 新增局部覆盖 `patches/accesskit_windows`（`0.34.0`，`[patch.crates-io]` + workspace `exclude`）为 Windows UIA `PlatformNode` 实现 `IScrollProvider`（6 属性 + `Scroll`/`SetScrollPercent`）及 COM 单测；② `flowy-ui` 新增双主题细滚条 token（`theme.rs`）与 `ScrollArea` / `scroll_list_host`（`scroll.rs`：4px→6px 仅溢出细胶囊滑块、正常流 `scrollbar_inset` 包装、AccessKit `Role::ScrollView` + 合成 `Role::ScrollBar`、`StatefulInteractiveElement::on_a11y_action` 分发与未溢出轴动作裁剪）；③ 23 语种 pure-LF 对称新增 11 个无碰撞 `a11y.scroll_*` 键（总 **986 键**），首批接入 12 处高频视口（看板 6 处 + 聊天流 + 资料库列表/预览 + 成果抽屉 + Dock + 全局快搜，其余 ~26 处低频容器留后）；在 rebase 至 `origin/main@58f88471a` 后通过全量门禁（6-Crate 单测与 `--workspace --all-targets clippy -D warnings` 0 告警、`accesskit_windows` COM 单测 `1/1`、`check-ui-contracts` 与 `cargo fmt` 全绿）及 `ui-shot.ps1` 真机 E2E（高压看板 `30/30` 含无头 `agent-desktop scroll` 与 4 分辨率暗亮双主题 + 空看板 `5/5` 负向检查；详见 `最终方案.md` §12.19、`证据.md` §11.47、`PROGRESS.md` 任务 33、`BLOCKED.md` §6 与 `交接给下一个agent.md` §29）。
+
+**PR #530 Work 扩展底座硬化收口（2026-11-27 · `fix/flowy18-provider-seam-hardening` · 基于 `origin/main@0fdeb69d6` 含 PR #530–#532 · 修订 9.22）**：复现并根除 PR #530 扩展底座的审计隐患与 Tokio 调度锁竞态——① `flowy-agent-core` 新增 `SearchableToolEntry` / `snapshot_searchable_catalog` 彻底打断 `tool_search` -> `ToolRegistry` `Arc` 环，加入每轮累计激活上限 `MAX_ACTIVATED_TOOLS_PER_TURN = 32`（宿主 `pre_activated_tools` 豁免）、opt-in 拒绝同 Provider 重名的 `ToolRegistry::new_rejecting_duplicates()` 与 `ToolProvider::version()`；② `flowy-agent` 将 Provider 审批绑定到当前 `process_nonce`、`provider_id`、`registration_id`、`tool_name`、`tool_fingerprint`（含 Schema/暴露度/只读/标签/`version()`）、规范 `cwd_key` 与规范参数，失效时清空授权并下发 `[ApprovalInvalidated]` + `force_reconfirm_tools` 防绕过（同时兼容保留 `bash`/`powershell` 审批卡）；③ `register_tool_provider` 预缓存 `cached_router_hint`（Router 零同步 Provider 回调），`submit.rs`/`work.rs` 通过 `pre_stage_worker_providers` 在 `dispatch` 锁外完成 `stage_tool_providers` 并整名拒绝单 Provider 重名，`queue.rs` 将 `run_accepted_once` 与持领单 `finish_accepted_if_owned` 放入 `spawn_blocking` 并经 `has_owned_claim` 使非认领回合跳过 `accept_drain`；全套 Level 4 门禁串行通过（`check-ui-contracts` / `fmt` / `flowy-agent-core` 149/0/2 / `flowy-agent` 294/0/4 含 `provider_tests` 15/15 / `flowy-studio` 175/0/2 / `flowy-ui` 50+2/0 / `flowy-desktop --locked` / 5-Crate `--all-targets clippy` 0 告警；详见 `最终方案.md` §12.20、`证据.md` §11.48、`PROGRESS.md` 任务 34 与 `交接给下一个agent.md` §30）。
 
 ## 三条最容易踩的
 

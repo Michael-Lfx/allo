@@ -2067,7 +2067,7 @@ fn prepare_turn_tools(
         ActivatedToolSet::new(config.pre_activated_tools.iter().cloned());
     if turn_registry.get(TOOL_SEARCH_NAME).is_none() {
         turn_registry.register(tool_search_definition(
-            turn_registry.clone(),
+            &turn_registry,
             activated.clone(),
         ));
     }

@@ -507,6 +507,10 @@ impl UiObserver {
     ) {
         if clear_denials {
             lock(&self.state.denied_tool_turns).remove(session);
+            if !matches!(staged_status, Some(TurnStatus::WaitingForUser)) {
+                lock(&self.state.pending_provider_approvals)
+                    .retain(|(sid, _), _| sid != session);
+            }
         }
         lock(&self.state.approved_tool_calls).remove(session);
         lock(&self.state.tool_args)

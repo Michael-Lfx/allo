@@ -221,6 +221,10 @@ impl AgentHandle {
                 std::iter::once(session_id),
             );
             lock(&self.inner.state.router_inboxes).remove(session_id);
+            lock(&self.inner.state.approved_tool_calls).remove(session_id);
+            lock(&self.inner.state.denied_tool_turns).remove(session_id);
+            lock(&self.inner.state.pending_provider_approvals)
+                .retain(|(sid, _), _| sid != session_id);
         } else {
             super::observer::cancel_receipts_for_sessions(
                 &self.inner.state,
@@ -274,6 +278,23 @@ impl AgentHandle {
                 drop(live);
             }
             lock(&self.inner.state.router_inboxes).remove(session_id);
+            {
+                let mut grants = lock(&self.inner.state.approved_tool_calls);
+                grants.remove(session_id);
+                for cid in &child_ids {
+                    grants.remove(cid);
+                }
+            }
+            {
+                let mut denials = lock(&self.inner.state.denied_tool_turns);
+                denials.remove(session_id);
+                for cid in &child_ids {
+                    denials.remove(cid);
+                }
+            }
+            lock(&self.inner.state.pending_provider_approvals).retain(
+                |(sid, _), _| sid != session_id && !child_ids.contains(sid),
+            );
             let previous_active = lock(&self.inner.state.active).clone();
             if previous_active.as_deref() == Some(session_id)
                 || previous_active

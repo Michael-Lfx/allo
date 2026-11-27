@@ -258,6 +258,8 @@ struct ResumedSubmission {
     pub(super) is_router_announcement: bool,
     pub(super) bypass_busy_queue: bool,
     pub(super) dispatch_receipt_id: Option<String>,
+    pub(super) force_reconfirm_tools: BTreeSet<String>,
+    pub(super) pre_staged: Option<guards::PreStagedWorkerProviders>,
 }
 
 impl Default for ResumedSubmission {
@@ -275,6 +277,53 @@ impl Default for ResumedSubmission {
             is_router_announcement: false,
             bypass_busy_queue: false,
             dispatch_receipt_id: None,
+            force_reconfirm_tools: BTreeSet::new(),
+            pre_staged: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RegisteredProvider {
+    pub(super) registration_id: u64,
+    pub(super) provider: Arc<dyn ToolProvider>,
+    pub(super) cached_router_hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderApprovalBinding {
+    pub(super) provider_id: String,
+    pub(super) registration_id: u64,
+    pub(super) tool_name: String,
+    pub(super) tool_fingerprint: String,
+    pub(super) cwd_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovedToolGrant {
+    pub(super) tool_name: String,
+    pub(super) args_hash: String,
+    pub(super) provider_binding: Option<ProviderApprovalBinding>,
+}
+
+impl ApprovedToolGrant {
+    pub(super) const fn host(tool_name: String, args_hash: String) -> Self {
+        Self {
+            tool_name,
+            args_hash,
+            provider_binding: None,
+        }
+    }
+
+    pub(super) const fn provider(
+        tool_name: String,
+        args_hash: String,
+        binding: ProviderApprovalBinding,
+    ) -> Self {
+        Self {
+            tool_name,
+            args_hash,
+            provider_binding: Some(binding),
         }
     }
 }
@@ -302,9 +351,14 @@ struct UiState {
     /// File-tool arguments held between `tool_start` and `tool_end`, keyed by
     /// session and call id, so the change card never re-reads the file.
     tool_args: Mutex<HashMap<String, serde_json::Value>>,
-    /// One-shot pre-tool approval grants pinned to exact `(tool_name, args_hash)`
-    /// per session, consumed upon execution.
-    approved_tool_calls: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// One-shot pre-tool approval grants pinned to exact invocation + live
+    /// provider identity per session, consumed upon execution.
+    approved_tool_calls: Mutex<HashMap<String, Vec<ApprovedToolGrant>>>,
+    /// In-memory live binding recorded when a provider `PreToolDecision::Ask`
+    /// parks `PendingCard::ToolApproval`, keyed by `(session_id, args_hash)`.
+    /// Cleared on provider swap/unregister, turn settle, and process restart.
+    pending_provider_approvals:
+        Mutex<HashMap<(String, String), ProviderApprovalBinding>>,
     /// Turn-scoped `UserDenied` anti-bypass guard per session; cleared once the
     /// resumed denial turn completes or a brand-new user turn starts.
     denied_tool_turns: Mutex<HashMap<String, String>>,
@@ -370,6 +424,7 @@ impl UiState {
             live: Mutex::new(HashMap::new()),
             tool_args: Mutex::new(HashMap::new()),
             approved_tool_calls: Mutex::new(HashMap::new()),
+            pending_provider_approvals: Mutex::new(HashMap::new()),
             denied_tool_turns: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             active_claims: Mutex::new(HashMap::new()),
@@ -459,6 +514,7 @@ impl Drop for RuntimeOwner {
 /// `accept_drain` -> `dispatch` -> `engine` (clone & release) ->
 /// `index_write` -> `live` -> leaf locks (`active`, `active_claims`,
 /// `workspace_locks`, `router_inboxes`, `updates`, `tool_args`,
+/// `approved_tool_calls`, `pending_provider_approvals`, `denied_tool_turns`,
 /// `notified_quarantined`, `providers`).
 ///
 /// `providers` is strictly a leaf lock: callers must clone the `Vec` snapshot
@@ -469,7 +525,9 @@ struct Harness {
     engine: Arc<Mutex<Option<Arc<Engine>>>>,
     config: Mutex<LlmConfig>,
     skills: Mutex<Vec<InstalledSkill>>,
-    providers: Mutex<Vec<Arc<dyn ToolProvider>>>,
+    process_nonce: String,
+    next_provider_registration_id: AtomicU64,
+    providers: Mutex<Vec<RegisteredProvider>>,
 }
 
 struct SubmissionSelection<'a> {
@@ -557,6 +615,18 @@ impl AgentHandle {
             engine: Arc::clone(&engine),
             _runtime: runtime,
         });
+        let mut nonce_bytes = [0_u8; 16];
+        let process_nonce = if getrandom::fill(&mut nonce_bytes).is_ok() {
+            nonce_bytes
+                .iter()
+                .fold(String::with_capacity(32), |mut out, b| {
+                    use std::fmt::Write as _;
+                    let _ = write!(out, "{b:02x}");
+                    out
+                })
+        } else {
+            format!("fallback-{}-{}", std::process::id(), next_stamp())
+        };
         Self {
             inner: Arc::new(Harness {
                 runtime: rt_handle,
@@ -564,6 +634,8 @@ impl AgentHandle {
                 engine,
                 config: Mutex::new(config),
                 skills: Mutex::new(Vec::new()),
+                process_nonce,
+                next_provider_registration_id: AtomicU64::new(1),
                 providers: Mutex::new(Vec::new()),
             }),
             _runtime: owner,
@@ -578,21 +650,44 @@ impl AgentHandle {
     /// Register or idempotently replace (by [`ToolProvider::id`]) a stateful
     /// Worker capability provider.
     ///
-    /// Providers are mounted ONLY into `Worker (ReadWrite)` and legacy
-    /// `Standard` sessions — never `Router` or `Worker (ReadOnly)`. Empty
-    /// provider IDs are ignored.
+    /// Allocates a fresh process-local registration ID, pre-caches
+    /// `router_capability_hint()` outside any lock (so Router prompt builds
+    /// perform zero provider callbacks), and invalidates any pending approvals
+    /// belonging to a replaced provider instance.
     pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
-        let id = provider.id().trim();
+        let id = provider.id().trim().to_owned();
         if id.is_empty() {
             return;
         }
-        let mut guard = lock(&self.inner.providers);
-        if let Some(existing) =
-            guard.iter_mut().find(|item| item.id().trim() == id)
-        {
-            *existing = provider;
-        } else {
-            guard.push(provider);
+        let cached_router_hint = router::normalize_router_provider_hint(
+            provider.router_capability_hint(),
+        );
+        let registration_id = self
+            .inner
+            .next_provider_registration_id
+            .fetch_add(1, Ordering::Relaxed);
+        let entry = RegisteredProvider {
+            registration_id,
+            provider,
+            cached_router_hint,
+        };
+        let replaced_reg_id = {
+            let mut guard = lock(&self.inner.providers);
+            if let Some(existing) = guard
+                .iter_mut()
+                .find(|item| item.provider.id().trim() == id)
+            {
+                let old_id = existing.registration_id;
+                *existing = entry;
+                Some(old_id)
+            } else {
+                guard.push(entry);
+                None
+            }
+        };
+        if let Some(old_id) = replaced_reg_id {
+            lock(&self.inner.state.pending_provider_approvals)
+                .retain(|_, binding| binding.registration_id != old_id);
         }
     }
 
@@ -604,10 +699,25 @@ impl AgentHandle {
         if trimmed.is_empty() {
             return false;
         }
-        let mut guard = lock(&self.inner.providers);
-        let before = guard.len();
-        guard.retain(|item| item.id().trim() != trimmed);
-        guard.len() != before
+        let mut removed_ids = Vec::new();
+        {
+            let mut guard = lock(&self.inner.providers);
+            guard.retain(|item| {
+                if item.provider.id().trim() == trimmed {
+                    removed_ids.push(item.registration_id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if removed_ids.is_empty() {
+            return false;
+        }
+        lock(&self.inner.state.pending_provider_approvals).retain(
+            |_, binding| !removed_ids.contains(&binding.registration_id),
+        );
+        true
     }
 
     /// Snapshot IDs of currently registered [`ToolProvider`]s in order.
@@ -615,7 +725,7 @@ impl AgentHandle {
     pub fn registered_tool_provider_ids(&self) -> Vec<String> {
         lock(&self.inner.providers)
             .iter()
-            .map(|item| item.id().to_owned())
+            .map(|item| item.provider.id().to_owned())
             .collect()
     }
 
@@ -1700,7 +1810,7 @@ impl Harness {
         lock(&self.skills).clone()
     }
 
-    pub(super) fn tool_providers(&self) -> Vec<Arc<dyn ToolProvider>> {
+    pub(super) fn tool_providers(&self) -> Vec<RegisteredProvider> {
         lock(&self.providers).clone()
     }
 

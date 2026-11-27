@@ -4,19 +4,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use flowy_agent_core::{
-    DispatchRecord, SessionRole, TrackedObjectKind, WorkContract,
+    DispatchRecord, SessionRole, ToolProviderContext, ToolRegistry,
+    TrackedObjectKind, WorkContract,
 };
 
+use super::guards::{
+    PreStagedWorkerProviders, merge_staged_providers, normalize_cwd_key,
+    stage_tool_providers,
+};
 use super::router::{
     ChildWorkSummary, DispatchWorkResult, RoutedPendingCard, StopWorkResult,
     dispatch_fingerprint, verify_child_ownership,
 };
 use super::{
-    AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate, ArtifactStore,
-    BTreeSet, CancelOutcome, CardAction, CardActionOutcome, CardSelection,
-    ChatLine, Engine, Harness, MessageSource, Ordering, PendingCard,
-    ReceiptState, ResumedSubmission, Role, SessionRecord, SubmissionOutcome,
-    TaskTarget, TurnState, TurnStatus, WorkStatus, clear_live_heartbeat, lock,
+    AcceptanceQueue, AcceptedMessage, AgentHandle, AgentUpdate,
+    ApprovedToolGrant, ArtifactStore, BTreeSet, CancelOutcome, CardAction,
+    CardActionOutcome, CardSelection, ChatLine, Engine, Harness, MessageSource,
+    Ordering, PendingCard, ProviderApprovalBinding, ReceiptState,
+    ResumedSubmission, Role, SessionRecord, SubmissionOutcome, TaskTarget,
+    TurnState, TurnStatus, WorkStatus, clear_live_heartbeat, lock,
     log_storage_io_error, now_ms, persist_index,
 };
 use crate::artifact_store::PublicationState;
@@ -36,7 +42,8 @@ struct CardResumeSpec<'a> {
     previous_contract: Option<WorkContract>,
     visible_prompt: &'a str,
     resumed: ResumedSubmission,
-    approval_grant: Option<(String, String)>,
+    approval_grant: Option<ApprovedToolGrant>,
+    restored_pending_binding: Option<(String, String, ProviderApprovalBinding)>,
     denial_rollback: DenialRollback,
 }
 
@@ -487,6 +494,13 @@ impl AgentHandle {
         card_id: &str,
         selection: CardSelection,
     ) -> Result<CardActionOutcome, &'static str> {
+        let mut pre_staged = matches!(
+            selection,
+            CardSelection::ApproveTool { .. }
+                | CardSelection::Disambiguate { .. }
+        )
+        .then(|| self.inner.pre_stage_worker_providers(Some(session_id)))
+        .flatten();
         let _dispatch = lock(&self.inner.state.dispatch);
         if self.is_initializing() {
             return Err("library.loading");
@@ -597,6 +611,7 @@ impl AgentHandle {
                             ..ResumedSubmission::default()
                         },
                         approval_grant: None,
+                        restored_pending_binding: None,
                         denial_rollback: DenialRollback::Unchanged,
                     });
                 }
@@ -649,6 +664,7 @@ impl AgentHandle {
                         ..ResumedSubmission::default()
                     },
                     approval_grant: None,
+                    restored_pending_binding: None,
                     denial_rollback: DenialRollback::Unchanged,
                 })
             }
@@ -664,6 +680,63 @@ impl AgentHandle {
                 if args_hash != expected_hash {
                     return Err("notice.approval_hash_mismatch");
                 }
+                let is_provider_card =
+                    !matches!(tool_name.as_str(), "bash" | "powershell");
+                if !is_provider_card {
+                    let removed_card = engine
+                        .take_pending_card(
+                            session_id,
+                            card_id,
+                            TurnState::Idle,
+                            None,
+                        )
+                        .map_err(|_| {
+                            self.inner.state.report_storage_error();
+                            "notice.session_storage_failed"
+                        })?
+                        .ok_or("notice.card_not_found")?;
+                    let grant = ApprovedToolGrant::host(
+                        tool_name.clone(),
+                        args_hash.clone(),
+                    );
+                    lock(&self.inner.state.approved_tool_calls)
+                        .entry(session_id.to_owned())
+                        .or_default()
+                        .push(grant.clone());
+                    let resume_prompt = format!(
+                        "[ToolApproved] 用户已批准执行 `{tool_name}`（命令预览：`{command_preview}`）。请使用与上次完全一致的参数继续完成该操作。"
+                    );
+                    return self.resume_after_card_resolution(CardResumeSpec {
+                        engine: &engine,
+                        session_id,
+                        card_id,
+                        removed_card,
+                        previous_contract: None,
+                        visible_prompt: &resume_prompt,
+                        resumed: ResumedSubmission {
+                            skip_contract_evolve: true,
+                            model_prompt_override: Some(resume_prompt.clone()),
+                            display_text_override: Some(String::new()),
+                            skip_push_user_line: true,
+                            preserve_tool_approval: true,
+                            prompt_source: MessageSource::CardResume,
+                            bypass_busy_queue: true,
+                            pre_staged,
+                            ..ResumedSubmission::default()
+                        },
+                        approval_grant: Some(grant),
+                        restored_pending_binding: None,
+                        denial_rollback: DenialRollback::Unchanged,
+                    });
+                }
+
+                let binding_check = self.verify_provider_approval_binding(
+                    session_id,
+                    &record,
+                    &tool_name,
+                    &args_hash,
+                    &mut pre_staged,
+                );
                 let removed_card = engine
                     .take_pending_card(
                         session_id,
@@ -676,37 +749,93 @@ impl AgentHandle {
                         "notice.session_storage_failed"
                     })?
                     .ok_or("notice.card_not_found")?;
-                lock(&self.inner.state.approved_tool_calls)
-                    .entry(session_id.to_owned())
-                    .or_default()
-                    .push((tool_name.clone(), args_hash.clone()));
-                let resume_prompt = format!(
-                    "[ToolApproved] 用户已批准执行 `{tool_name}`（命令预览：`{command_preview}`）。请使用与上次完全一致的参数继续完成该操作。"
-                );
-                self.resume_after_card_resolution(CardResumeSpec {
-                    engine: &engine,
-                    session_id,
-                    card_id,
-                    removed_card,
-                    previous_contract: None,
-                    visible_prompt: &resume_prompt,
-                    resumed: ResumedSubmission {
-                        skip_contract_evolve: true,
-                        model_prompt_override: Some(resume_prompt.clone()),
-                        display_text_override: Some(String::new()),
-                        skip_push_user_line: true,
-                        preserve_tool_approval: true,
-                        prompt_source: MessageSource::CardResume,
-                        bypass_busy_queue: true,
-                        ..ResumedSubmission::default()
-                    },
-                    approval_grant: Some((tool_name, args_hash)),
-                    denial_rollback: DenialRollback::Unchanged,
-                })
+                let removed_pending =
+                    lock(&self.inner.state.pending_provider_approvals)
+                        .remove(&(session_id.to_owned(), args_hash.clone()));
+
+                match binding_check {
+                    Ok(binding) => {
+                        let grant = ApprovedToolGrant::provider(
+                            tool_name.clone(),
+                            args_hash.clone(),
+                            binding.clone(),
+                        );
+                        lock(&self.inner.state.approved_tool_calls)
+                            .entry(session_id.to_owned())
+                            .or_default()
+                            .push(grant.clone());
+                        let resume_prompt = format!(
+                            "[ToolApproved] 用户已批准执行 `{tool_name}`（命令预览：`{command_preview}`）。请使用与上次完全一致的参数继续完成该操作。"
+                        );
+                        self.resume_after_card_resolution(CardResumeSpec {
+                            engine: &engine,
+                            session_id,
+                            card_id,
+                            removed_card,
+                            previous_contract: None,
+                            visible_prompt: &resume_prompt,
+                            resumed: ResumedSubmission {
+                                skip_contract_evolve: true,
+                                model_prompt_override: Some(
+                                    resume_prompt.clone(),
+                                ),
+                                display_text_override: Some(String::new()),
+                                skip_push_user_line: true,
+                                preserve_tool_approval: true,
+                                prompt_source: MessageSource::CardResume,
+                                bypass_busy_queue: true,
+                                pre_staged,
+                                ..ResumedSubmission::default()
+                            },
+                            approval_grant: Some(grant),
+                            restored_pending_binding: Some((
+                                session_id.to_owned(),
+                                args_hash,
+                                binding,
+                            )),
+                            denial_rollback: DenialRollback::Unchanged,
+                        })
+                    }
+                    Err(stale_reason) => {
+                        let mut force_reconfirm_tools = BTreeSet::new();
+                        force_reconfirm_tools.insert(tool_name.clone());
+                        let resume_prompt = format!(
+                            "[ApprovalInvalidated] 先前对扩展工具 `{tool_name}` 的批准已失效（{stale_reason}），本次未授予执行权限。严禁假设用户已批准；如仍需执行，请重新发现当前工具并发起调用以请求用户再次确认。"
+                        );
+                        let restored_pending_binding = removed_pending
+                            .map(|b| (session_id.to_owned(), args_hash, b));
+                        self.resume_after_card_resolution(CardResumeSpec {
+                            engine: &engine,
+                            session_id,
+                            card_id,
+                            removed_card,
+                            previous_contract: None,
+                            visible_prompt: &resume_prompt,
+                            resumed: ResumedSubmission {
+                                skip_contract_evolve: true,
+                                model_prompt_override: Some(
+                                    resume_prompt.clone(),
+                                ),
+                                display_text_override: Some(String::new()),
+                                skip_push_user_line: true,
+                                preserve_tool_approval: false,
+                                prompt_source: MessageSource::CardResume,
+                                bypass_busy_queue: true,
+                                force_reconfirm_tools,
+                                pre_staged,
+                                ..ResumedSubmission::default()
+                            },
+                            approval_grant: None,
+                            restored_pending_binding,
+                            denial_rollback: DenialRollback::Unchanged,
+                        })
+                    }
+                }
             }
             (
                 PendingCard::ToolApproval {
                     tool_name,
+                    args_hash,
                     command_preview,
                     ..
                 },
@@ -730,6 +859,11 @@ impl AgentHandle {
                         "notice.session_storage_failed"
                     })?
                     .ok_or("notice.card_not_found")?;
+                let removed_pending =
+                    lock(&self.inner.state.pending_provider_approvals)
+                        .remove(&(session_id.to_owned(), args_hash.clone()));
+                let restored_pending_binding = removed_pending
+                    .map(|b| (session_id.to_owned(), args_hash, b));
                 let previous_denial = lock(&self.inner.state.denied_tool_turns)
                     .insert(session_id.to_owned(), deny_reason.clone());
                 let deny_prompt = format!(
@@ -753,11 +887,87 @@ impl AgentHandle {
                         ..ResumedSubmission::default()
                     },
                     approval_grant: None,
+                    restored_pending_binding,
                     denial_rollback: DenialRollback::Restore(previous_denial),
                 })
             }
             _ => Err("notice.card_selection_invalid"),
         }
+    }
+
+    fn verify_provider_approval_binding(
+        &self,
+        session_id: &str,
+        record: &SessionRecord,
+        tool_name: &str,
+        args_hash: &str,
+        pre_staged: &mut Option<PreStagedWorkerProviders>,
+    ) -> Result<ProviderApprovalBinding, &'static str> {
+        if record.role == SessionRole::Router
+            || record.access_mode == flowy_agent_core::WorkAccessMode::ReadOnly
+        {
+            return Err("session no longer permits write providers");
+        }
+        let binding = lock(&self.inner.state.pending_provider_approvals)
+            .get(&(session_id.to_owned(), args_hash.to_owned()))
+            .cloned()
+            .ok_or("provider approval missing or runtime restarted")?;
+        let providers = self.inner.tool_providers();
+        if !providers.iter().any(|entry| {
+            entry.registration_id == binding.registration_id
+                && entry.provider.id().trim() == binding.provider_id
+        }) {
+            return Err("provider instance was replaced or unregistered");
+        }
+        let current_cwd = self.inner.resolve_session_cwd(session_id, record);
+        let current_cwd_key = normalize_cwd_key(&current_cwd);
+        if binding.cwd_key != current_cwd_key {
+            return Err("session working directory changed");
+        }
+        let staged = if let Some(existing) = pre_staged.as_ref().filter(|pre| {
+            pre.matches(
+                session_id,
+                &current_cwd_key,
+                &record.origin,
+                record.access_mode,
+                &providers,
+            )
+        }) {
+            existing.staged.clone()
+        } else {
+            let ctx = ToolProviderContext {
+                session_id,
+                cwd: &current_cwd,
+                origin: &record.origin,
+                access_mode: record.access_mode,
+            };
+            let fresh = stage_tool_providers(&providers, &ctx);
+            *pre_staged = Some(PreStagedWorkerProviders {
+                session_id: session_id.to_owned(),
+                cwd_key: current_cwd_key,
+                origin: record.origin.clone(),
+                access_mode: record.access_mode,
+                provider_signatures: providers
+                    .iter()
+                    .map(|p| {
+                        (p.provider.id().trim().to_owned(), p.registration_id)
+                    })
+                    .collect(),
+                staged: fresh.clone(),
+            });
+            fresh
+        };
+        let mounted = merge_staged_providers(&ToolRegistry::new(), &staged);
+        let Some(prov) = mounted.provenance.get(tool_name) else {
+            return Err("tool is no longer mounted");
+        };
+        if prov.provider_id != binding.provider_id
+            || prov.registration_id != binding.registration_id
+            || prov.tool_fingerprint != binding.tool_fingerprint
+        {
+            return Err("tool definition, version, or provider changed");
+        }
+        Ok(binding)
     }
 
     fn resume_after_card_resolution(
@@ -773,6 +983,7 @@ impl AgentHandle {
             visible_prompt,
             resumed,
             approval_grant,
+            restored_pending_binding,
             denial_rollback,
         } = spec;
         let has_remaining_cards = engine
@@ -831,18 +1042,20 @@ impl AgentHandle {
                 removed_card,
                 previous_contract,
             );
-            if let Some((tool, hash)) = approval_grant {
+            if let Some(grant) = approval_grant {
                 let mut grants = lock(&self.inner.state.approved_tool_calls);
                 if let Some(list) = grants.get_mut(session_id) {
-                    if let Some(pos) =
-                        list.iter().rposition(|(t, h)| *t == tool && *h == hash)
-                    {
+                    if let Some(pos) = list.iter().rposition(|g| *g == grant) {
                         list.remove(pos);
                     }
                     if list.is_empty() {
                         grants.remove(session_id);
                     }
                 }
+            }
+            if let Some((sid, hash, binding)) = restored_pending_binding {
+                lock(&self.inner.state.pending_provider_approvals)
+                    .insert((sid, hash), binding);
             }
             if let DenialRollback::Restore(prev) = denial_rollback {
                 let mut denials = lock(&self.inner.state.denied_tool_turns);

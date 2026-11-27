@@ -830,17 +830,31 @@ pub(super) fn build_router_system_prompt(
     out
 }
 
+pub(super) fn normalize_router_provider_hint(
+    raw: Option<String>,
+) -> Option<String> {
+    let raw = raw?;
+    let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(flowy_agent_core::log_preview(
+        &cleaned,
+        MAX_ROUTER_PROVIDER_HINT_CHARS,
+    ))
+}
+
 fn append_worker_capabilities_section(harness: &Harness, out: &mut String) {
     let mut lines = Vec::new();
     let mut total_chars = 0_usize;
-    for provider in harness.tool_providers() {
+    for entry in harness.tool_providers() {
         if lines.len() >= MAX_ROUTER_PROVIDER_HINTS {
             break;
         }
-        let Some(raw) = provider.router_capability_hint() else {
+        let Some(hint) = entry.cached_router_hint.as_deref() else {
             continue;
         };
-        let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let cleaned = hint.trim();
         if cleaned.is_empty() {
             continue;
         }
@@ -850,7 +864,7 @@ fn append_worker_capabilities_section(harness: &Harness, out: &mut String) {
             break;
         }
         let clamped = flowy_agent_core::log_preview(
-            &cleaned,
+            cleaned,
             MAX_ROUTER_PROVIDER_HINT_CHARS.min(remaining),
         );
         total_chars = total_chars.saturating_add(clamped.chars().count());

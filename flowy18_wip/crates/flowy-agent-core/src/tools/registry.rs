@@ -4,7 +4,7 @@
 //! explicit policy callback plus any number of guards. A denial can never be
 //! turned back into permission by listener ordering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -224,6 +224,8 @@ struct Inner {
     tools: Mutex<HashMap<String, Arc<ToolDefinition>>>,
     guards: Mutex<Vec<ToolGuard>>,
     policy: Mutex<Option<ToolPolicy>>,
+    reject_duplicates: bool,
+    duplicate_names: Mutex<BTreeSet<String>>,
 }
 
 /// Scoped tool registry. Cheap to clone.
@@ -238,6 +240,8 @@ impl Default for Inner {
             tools: Mutex::new(HashMap::new()),
             guards: Mutex::new(Vec::new()),
             policy: Mutex::new(None),
+            reject_duplicates: false,
+            duplicate_names: Mutex::new(BTreeSet::new()),
         }
     }
 }
@@ -262,9 +266,36 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Register one tool; a duplicate name is replaced (last wins).
+    /// Create an isolated staging registry that detects and rejects duplicate
+    /// tool names instead of silently overwriting earlier registrations.
+    #[must_use]
+    pub fn new_rejecting_duplicates() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                reject_duplicates: true,
+                ..Inner::default()
+            }),
+        }
+    }
+
+    /// Names registered more than once while `new_rejecting_duplicates()` mode
+    /// was active, sorted in ascending order.
+    #[must_use]
+    pub fn duplicate_tool_names(&self) -> Vec<String> {
+        lock(&self.inner.duplicate_names).iter().cloned().collect()
+    }
+
+    /// Register one tool; default mode replaces duplicates (last wins), while
+    /// `new_rejecting_duplicates()` preserves the first entry and records the
+    /// collision in [`Self::duplicate_tool_names`].
     pub fn register(&self, tool: Arc<ToolDefinition>) {
-        lock(&self.inner.tools).insert(tool.name.clone(), tool);
+        let mut tools = lock(&self.inner.tools);
+        if self.inner.reject_duplicates && tools.contains_key(&tool.name) {
+            drop(tools);
+            lock(&self.inner.duplicate_names).insert(tool.name.clone());
+            return;
+        }
+        tools.insert(tool.name.clone(), tool);
     }
 
     pub fn unregister(&self, name: &str) {
@@ -361,6 +392,8 @@ impl ToolRegistry {
                 tools: Mutex::new(tools),
                 guards: Mutex::new(guards),
                 policy: Mutex::new(policy),
+                reject_duplicates: false,
+                duplicate_names: Mutex::new(BTreeSet::new()),
             }),
         }
     }
@@ -587,5 +620,34 @@ mod tests {
 
         assert_eq!(registry.list(), vec!["alpha", "middle", "zeta"]);
         assert_eq!(forked.list(), vec!["extra", "middle", "zeta"]);
+    }
+
+    #[test]
+    fn rejecting_duplicates_staging_records_duplicates_while_default_registry_keeps_last_write_wins()
+     {
+        let make_tool = |desc: &'static str| {
+            Arc::new(ToolDefinition::new(
+                "dup",
+                desc,
+                json!({"type": "object"}),
+                |_args, _ctx| {
+                    Box::pin(async {
+                        ToolExecutionResult::success_text("ok", json!({}))
+                    })
+                },
+            ))
+        };
+
+        let default_reg = ToolRegistry::new();
+        default_reg.register(make_tool("first"));
+        default_reg.register(make_tool("second"));
+        assert_eq!(default_reg.duplicate_tool_names(), Vec::<String>::new());
+        assert_eq!(default_reg.get("dup").unwrap().description, "second");
+
+        let strict_reg = ToolRegistry::new_rejecting_duplicates();
+        strict_reg.register(make_tool("first"));
+        strict_reg.register(make_tool("second"));
+        assert_eq!(strict_reg.duplicate_tool_names(), vec!["dup"]);
+        assert_eq!(strict_reg.get("dup").unwrap().description, "first");
     }
 }
