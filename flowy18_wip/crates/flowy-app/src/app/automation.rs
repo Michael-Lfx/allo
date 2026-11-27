@@ -1,12 +1,13 @@
 //! Automation wiring: the store, worker and service behind the automation
-//! page and the model tools, plus run notifications.
+//! page and the Worker tools. Runs report inside their own conversation, so
+//! there are no separate run notifications here.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use flowy_automation::{
-    Automation, AutomationService, AutomationStore, Run, RunId, RunListener,
-    ServiceError, Worker, WorkerConfig, now_ms,
+    AutomationService, AutomationStore, ServiceError, Worker, WorkerConfig,
+    now_ms,
 };
 use flowy_studio::{AutomationPage, AutomationUiAction, AutomationView};
 use gpui::{Context, Task};
@@ -17,20 +18,12 @@ use super::{FlowyApp, Section};
 const KEEP_RUNS: usize = 20;
 const REFRESH: Duration = Duration::from_millis(500);
 
-/// Runs that ended on the worker, waiting to become system notifications.
-type Finished = Arc<Mutex<Vec<(String, RunId)>>>;
-
 #[derive(Default)]
 pub(super) struct AutomationState {
     service: Option<Arc<AutomationService>>,
-    finished: Finished,
     view: AutomationView,
     feedback: Option<&'static str>,
     watch: Option<Task<()>>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl FlowyApp {
@@ -58,22 +51,9 @@ impl FlowyApp {
         {
             tracing::warn!(%error, "could not tidy automation runs");
         }
-        match store.run_session_ids() {
-            Ok(ids) => agent.mark_automation_sessions(ids),
-            Err(error) => {
-                tracing::warn!(%error, "could not read automation sessions");
-                return;
-            }
-        }
-        let finished = Arc::clone(&self.automations.finished);
-        let on_finished: RunListener =
-            Arc::new(move |automation: &Automation, run: &Run| {
-                lock(&finished).push((automation.title.clone(), run.id));
-            });
         let worker = Worker::start(
             Arc::clone(&store),
             agent.automation_executor(),
-            on_finished,
             WorkerConfig::default(),
             agent.runtime_handle(),
         );
@@ -98,26 +78,21 @@ impl FlowyApp {
         }
     }
 
-    pub(super) fn open_automation_run(
-        &mut self,
-        run_id: RunId,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.automations.view = AutomationView::Run(run_id);
-        self.automations.feedback = None;
-        if self.section != Section::Automation {
-            self.push_section(Section::Automation, cx);
+    /// A deleted conversation takes its automations with it.
+    pub(super) fn delete_conversation_automations(&self, conversation: &str) {
+        if let Some(service) = &self.automations.service
+            && let Err(error) = service.delete_conversation(conversation)
+        {
+            tracing::warn!(%error, "could not delete conversation automations");
         }
-        self.refresh_automation(cx);
     }
 
     pub(super) fn refresh_automation(&mut self, cx: &mut Context<'_, Self>) {
-        self.notify_finished_runs(cx);
         if self.section != Section::Automation {
             return;
         }
         let page = self.automation_page();
-        // An empty list shows the welcome canvas with the draft composer.
+        // An empty list shows the welcome canvas.
         let page = (page.view != AutomationView::List
             || !page.automations.is_empty()
             || page.error.is_some())
@@ -154,24 +129,6 @@ impl FlowyApp {
         page
     }
 
-    fn notify_finished_runs(&self, cx: &Context<'_, Self>) {
-        let finished = std::mem::take(&mut *lock(&self.automations.finished));
-        if finished.is_empty() {
-            return;
-        }
-        let title = self.t("auto.notification_title");
-        let open = self.t("auto.view_run");
-        for (name, run_id) in finished {
-            flowy_shell::show_automation_notification(
-                cx,
-                &run_id.to_string(),
-                &title,
-                &name,
-                &open,
-            );
-        }
-    }
-
     pub(super) fn handle_automation_action(
         &mut self,
         action: &AutomationUiAction,
@@ -185,10 +142,11 @@ impl FlowyApp {
                 self.refresh_automation(cx);
                 return;
             }
-            A::OpenSession(session_id) => {
+            A::OpenConversation(conversation) => {
                 self.push_section(Section::Studio, cx);
-                self.studio
-                    .update(cx, |panel, cx| panel.open_session(session_id, cx));
+                self.studio.update(cx, |panel, cx| {
+                    panel.open_session(conversation, cx);
+                });
                 return;
             }
             _ => {}
@@ -197,27 +155,21 @@ impl FlowyApp {
             return;
         };
         let result = match action {
-            A::Save(Some(id), input) => {
+            A::Save(id, input) => {
                 service.update(*id, input.clone()).map(|_| "auto.saved")
             }
-            A::Save(None, input) => service.create(input.clone()).map(|item| {
-                self.automations.view = AutomationView::Detail(item.id);
-                "auto.saved"
-            }),
             A::Pause(id) => service.pause(*id).map(|_| "auto.saved"),
             A::Resume(id) => service.resume(*id).map(|_| "auto.saved"),
             A::Delete(id) => service.delete(*id).map(|()| {
                 self.automations.view = AutomationView::List;
                 "auto.saved"
             }),
-            A::RunNow(id) => service.run_now(*id).map(|run| {
-                self.automations.view = AutomationView::Run(run.id);
-                "auto.queued"
+            A::Cancel(run_id) => Ok(if service.cancel(*run_id) {
+                "auto.cancelled"
+            } else {
+                "auto.invalid"
             }),
-            A::Cancel(run_id) => {
-                service.cancel(*run_id).map(|_| "auto.cancelled")
-            }
-            A::Navigate(_) | A::OpenSession(_) => return,
+            A::Navigate(_) | A::OpenConversation(_) => return,
         };
         let saved = matches!(action, A::Save(..)) && result.is_ok();
         self.automations.feedback = Some(match result {

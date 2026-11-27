@@ -22,14 +22,14 @@ pub enum AutomationView {
 #[derive(Clone, Debug)]
 pub enum AutomationUiAction {
     Navigate(AutomationView),
-    /// `None` creates a new automation, `Some` updates an existing one.
-    Save(Option<AutomationId>, AutomationInput),
+    /// Edits an automation. Only the agent creates them, in a conversation.
+    Save(AutomationId, AutomationInput),
     Pause(AutomationId),
     Resume(AutomationId),
     Delete(AutomationId),
-    RunNow(AutomationId),
     Cancel(RunId),
-    OpenSession(String),
+    /// Opens the conversation that owns the automation and its results.
+    OpenConversation(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -284,8 +284,10 @@ impl StudioPanel {
                     .flex_wrap()
                     .gap(px(8.))
                     .child(button(
-                        "auto.run_now",
-                        AutomationUiAction::RunNow(id),
+                        "auto.open_conversation",
+                        AutomationUiAction::OpenConversation(
+                            item.conversation_id.clone(),
+                        ),
                         ControlVariant::Primary,
                     ))
                     .child(toggle)
@@ -500,7 +502,7 @@ impl StudioPanel {
                                     };
                                     cx.emit(StudioEvent::Automation(Box::new(
                                         AutomationUiAction::Save(
-                                            Some(original.id),
+                                            original.id,
                                             input,
                                         ),
                                     )));
@@ -517,11 +519,12 @@ impl StudioPanel {
         page: &AutomationPage,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        let title = page
+        let owner = page
             .automations
             .iter()
-            .find(|item| item.id == run.automation_id)
-            .map(|item| item.title.clone());
+            .find(|item| item.id == run.automation_id);
+        let title = owner.map(|item| item.title.clone());
+        let conversation = owner.map(|item| item.conversation_id.clone());
         div()
             .flex()
             .flex_col()
@@ -541,6 +544,16 @@ impl StudioPanel {
                 page.busy,
                 cx,
             ))
+            .when_some(conversation, |body, conversation| {
+                body.child(div().child(self.automation_button(
+                    "auto-open-conversation",
+                    "auto.open_conversation",
+                    AutomationUiAction::OpenConversation(conversation),
+                    page.busy,
+                    ControlVariant::Primary,
+                    cx,
+                )))
+            })
             .into_any_element()
     }
 
@@ -609,16 +622,6 @@ impl StudioPanel {
             .flex()
             .flex_wrap()
             .gap(px(8.))
-            .when_some(run.session_id.clone(), |row, session_id| {
-                row.child(self.automation_button(
-                    "auto-open-result",
-                    "auto.open_result",
-                    AutomationUiAction::OpenSession(session_id),
-                    busy,
-                    ControlVariant::Primary,
-                    cx,
-                ))
-            })
             .when(!run.status.is_final(), |row| {
                 row.child(self.automation_button(
                     "auto-cancel-run",
@@ -634,7 +637,6 @@ impl StudioPanel {
 
     fn trigger_text(&self, trigger: &TriggerSpec) -> String {
         match trigger {
-            TriggerSpec::Manual => self.t("auto.manual"),
             TriggerSpec::Once { scheduled_at_ms } => {
                 automation_time(*scheduled_at_ms)
             }
@@ -685,12 +687,11 @@ const fn access_key(access: Access) -> &'static str {
 
 const fn status_key(status: RunStatus) -> &'static str {
     match status {
-        RunStatus::Queued => "auto.queued",
         RunStatus::Running => "auto.running",
         RunStatus::Succeeded => "auto.succeeded",
         RunStatus::Failed => "auto.failed",
         RunStatus::Interrupted => "auto.interrupted",
-        RunStatus::Skipped => "auto.skipped",
+
         RunStatus::Cancelled => "auto.cancelled",
     }
 }

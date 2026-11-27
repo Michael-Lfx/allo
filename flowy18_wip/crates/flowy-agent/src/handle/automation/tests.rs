@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use flowy_automation::schedule::TriggerSpec;
-use flowy_automation::{AutomationId, now_ms};
+use flowy_automation::{
+    AutomationId, AutomationStore, Worker, WorkerConfig, now_ms,
+};
 
 use super::*;
 use crate::LlmConfig;
@@ -39,26 +41,35 @@ fn echo_handle(root: &std::path::Path) -> AgentHandle {
     )
 }
 
-/// `AgentHandle` owns a runtime, so it must not be dropped inside an async
-/// test; drive the executor on a throwaway runtime from a sync test instead.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(future)
+/// Installs a service whose worker never ticks, so only the host is tested.
+fn install_service(handle: &AgentHandle) {
+    let store = Arc::new(AutomationStore::open_in_memory().unwrap());
+    let worker = Worker::start(
+        Arc::clone(&store),
+        handle.automation_executor(),
+        WorkerConfig {
+            tick: Duration::from_secs(3600),
+            run_timeout: Duration::from_secs(60),
+        },
+        handle.runtime_handle(),
+    );
+    handle.set_automation_service(Some(Arc::new(AutomationService::new(
+        store, worker,
+    ))));
 }
-fn automation(cwd: Option<PathBuf>, access: Access) -> Automation {
+
+fn automation(conversation: &str, access: Access) -> Automation {
     let now = now_ms();
     Automation {
         id: AutomationId::generate(),
+        conversation_id: conversation.to_owned(),
         title: "Morning summary".to_owned(),
         action: Action::AgentTask {
             prompt: "summarise the notes".to_owned(),
         },
-        trigger: TriggerSpec::Manual,
-        cwd,
+        trigger: TriggerSpec::Once {
+            scheduled_at_ms: now + 86_400_000,
+        },
         access,
         enabled: true,
         next_run_at_ms: None,
@@ -67,92 +78,164 @@ fn automation(cwd: Option<PathBuf>, access: Access) -> Automation {
     }
 }
 
+fn dispatch_user_work(
+    handle: &AgentHandle,
+    router_id: &str,
+    mode: WorkAccessMode,
+) -> String {
+    handle
+        .inner
+        .dispatch_work_from_router(
+            router_id,
+            DispatchWorkRequest {
+                brief: "set up a daily summary".to_owned(),
+                requested_mode: Some(mode),
+                target_work_id: None,
+                target_object_ids: Vec::new(),
+                request_id: None,
+            },
+        )
+        .unwrap()
+        .work_id
+}
+
+fn record(handle: &AgentHandle, id: &str) -> SessionRecord {
+    lock(&handle.inner.engine)
+        .clone()
+        .unwrap()
+        .session(id)
+        .unwrap()
+}
+
 #[test]
-fn a_run_completes_in_a_titled_background_session_without_tools() {
-    let root = Scratch::new("home");
+fn only_user_dispatched_read_write_workers_get_the_tools() {
+    let root = Scratch::new("tools");
     let handle = echo_handle(&root.0);
-    let active_before = handle.active_session_id();
+    install_service(&handle);
+    let router_id = handle.create_router_session().unwrap();
+    let writer =
+        dispatch_user_work(&handle, &router_id, WorkAccessMode::ReadWrite);
+    let reader =
+        dispatch_user_work(&handle, &router_id, WorkAccessMode::ReadOnly);
 
-    let automation = automation(None, Access::Read);
-    let executor = handle.automation_executor();
-    let report = block_on(executor.run(
-        &automation,
-        RunId::generate(),
-        RunCancel::default(),
-    ));
-
-    assert_eq!(report.outcome, RunOutcome::Succeeded);
-    let session_id = report.session_id.expect("session");
-    assert_eq!(handle.active_session_id(), active_before);
-    assert!(handle.list_sessions().iter().any(|session| {
-        session.id == session_id && session.title == "Morning summary"
-    }));
+    let tools = handle.inner.automation_tools_for(&record(&handle, &writer));
+    assert_eq!(
+        tools.map(|(_, conversation)| conversation),
+        Some(router_id.clone())
+    );
     assert!(
         handle
-            .session_lines(&session_id)
+            .inner
+            .automation_tools_for(&record(&handle, &reader))
+            .is_none()
+    );
+    assert!(
+        handle
+            .inner
+            .automation_tools_for(&record(&handle, &router_id))
+            .is_none()
+    );
+
+    handle.set_automation_service(None);
+    assert!(
+        handle
+            .inner
+            .automation_tools_for(&record(&handle, &writer))
+            .is_none()
+    );
+}
+
+#[test]
+fn a_run_dispatches_a_worker_in_its_conversation_without_the_tools() {
+    let root = Scratch::new("dispatch");
+    let handle = echo_handle(&root.0);
+    install_service(&handle);
+    let router_id = handle.create_router_session().unwrap();
+    let automation = automation(&router_id, Access::Write);
+    let run_id = RunId::generate();
+
+    let work_id = handle
+        .inner
+        .dispatch_run(&automation, run_id, "summarise the notes")
+        .unwrap();
+    let worker = record(&handle, &work_id);
+    assert_eq!(worker.role, SessionRole::Worker);
+    assert_eq!(worker.root_session_id.as_deref(), Some(router_id.as_str()));
+    assert_eq!(worker.access_mode, WorkAccessMode::ReadWrite);
+    assert!(
+        handle
+            .inner
+            .child_works(&router_id)
             .iter()
-            .any(|line| matches!(
-                line,
-                crate::ChatLine::User { text } if text == "summarise the notes"
-            ))
+            .any(|work| work.work_id == work_id)
     );
-    assert!(handle.inner.automation_tools_for(&session_id).is_none());
-}
-
-#[test]
-fn a_locked_workspace_skips_without_creating_a_session() {
-    let root = Scratch::new("busy");
-    let workspace = root.0.join("project");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let handle = echo_handle(&root.0);
-    let sessions_before = handle.list_sessions().len();
-    let _held = handle
-        .inner
-        .state
-        .workspace_locks
-        .try_acquire(&workspace, WorkspaceAccessMode::Write, "other-turn")
-        .expect("lock");
-
-    let automation = automation(Some(workspace), Access::Read);
-    let executor = handle.automation_executor();
-    let report = block_on(executor.run(
-        &automation,
-        RunId::generate(),
-        RunCancel::default(),
-    ));
-
+    // A run's Worker must not create automations of its own.
+    assert!(handle.inner.automation_tools_for(&worker).is_none());
+    // The same run never dispatches twice.
     assert_eq!(
-        report,
-        RunReport {
-            session_id: None,
-            outcome: RunOutcome::Busy,
-        }
+        handle
+            .inner
+            .dispatch_run(&automation, run_id, "summarise the notes")
+            .unwrap(),
+        work_id
     );
-    assert_eq!(handle.list_sessions().len(), sessions_before);
 }
 
 #[test]
-fn read_only_standard_sessions_take_a_read_lock() {
-    let root = Scratch::new("lock-mode");
+fn read_access_dispatches_a_read_only_worker() {
+    let root = Scratch::new("read");
     let handle = echo_handle(&root.0);
-    let read_only = handle
+    let router_id = handle.create_router_session().unwrap();
+    let work_id = handle
         .inner
-        .create_session_with_role_inner(
-            SessionOrigin::Home,
-            None,
-            false,
-            SessionRole::Standard,
-            None,
-            WorkAccessMode::ReadOnly,
+        .dispatch_run(
+            &automation(&router_id, Access::Read),
+            RunId::generate(),
+            "x",
         )
         .unwrap();
-    let default = handle.create_session().unwrap();
     assert_eq!(
-        handle.inner.session_access_mode(&read_only),
-        Some(WorkspaceAccessMode::Read)
+        record(&handle, &work_id).access_mode,
+        WorkAccessMode::ReadOnly
     );
+}
+
+#[test]
+fn a_run_without_its_conversation_fails() {
+    let root = Scratch::new("missing");
+    let handle = echo_handle(&root.0);
+    let standard = handle.create_session().unwrap();
+    let missing = automation("r-missing", Access::Read);
     assert_eq!(
-        handle.inner.session_access_mode(&default),
-        Some(WorkspaceAccessMode::Write)
+        handle.inner.dispatch_run(&missing, RunId::generate(), "x"),
+        Err("ROUTER_NOT_FOUND")
     );
+    let reminder = Automation {
+        action: Action::Reminder {
+            text: "stand-up".to_owned(),
+        },
+        ..automation(&standard, Access::Read)
+    };
+    assert_eq!(
+        handle.inner.post_reminder(&reminder, "stand-up"),
+        Err("ROUTER_NOT_FOUND")
+    );
+}
+
+#[test]
+fn work_states_map_to_run_outcomes() {
+    assert_eq!(settled("queued", false), None);
+    assert_eq!(settled("running", false), None);
+    assert_eq!(settled("completed", false), Some(RunOutcome::Succeeded));
+    assert_eq!(settled("delivered", false), Some(RunOutcome::Succeeded));
+    assert_eq!(settled("stopped", true), Some(RunOutcome::Cancelled));
+    assert!(matches!(
+        settled("failed", false),
+        Some(RunOutcome::Failed(_))
+    ));
+    assert!(matches!(
+        settled("awaiting_approval", false),
+        Some(RunOutcome::Failed(_))
+    ));
+    assert_eq!(settled("awaiting_approval", true), None);
 }

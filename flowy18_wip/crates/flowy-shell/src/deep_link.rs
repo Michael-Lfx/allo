@@ -5,7 +5,6 @@ static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeepLink {
     Invite { code: String },
-    AutomationRun { run_id: String },
     Open,
 }
 
@@ -37,14 +36,6 @@ pub fn parse_with_scheme(url: &str, scheme: &str) -> Option<DeepLink> {
     }
     let mut parts = rest.split('/');
     let head = parts.next()?.to_ascii_lowercase();
-    if head == "automation-run" {
-        let run_id = parts.next()?;
-        return (parts.next().is_none() && valid_run_route(run_id)).then(
-            || DeepLink::AutomationRun {
-                run_id: run_id.to_owned(),
-            },
-        );
-    }
     if head == "invite" {
         let code = parts.next()?.trim();
         if code.is_empty() || parts.next().is_some() {
@@ -61,19 +52,6 @@ pub fn parse_with_scheme(url: &str, scheme: &str) -> Option<DeepLink> {
         });
     }
     None
-}
-
-pub fn valid_run_route(id: &str) -> bool {
-    id.len() == 36
-        && id.as_bytes()[14] == b'7'
-        && matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
-        && id.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-            }
-        })
 }
 
 #[cfg(test)]

@@ -1,24 +1,23 @@
 use super::*;
-use crate::model::{Action, AutomationInput};
+use crate::model::Action;
 use crate::schedule::TriggerSpec;
 
-fn automation(title: &str, created_at_ms: i64) -> Automation {
-    let input = AutomationInput {
+fn automation(
+    title: &str,
+    conversation: &str,
+    created_at_ms: i64,
+) -> Automation {
+    Automation {
+        id: AutomationId::generate(),
+        conversation_id: conversation.to_owned(),
         title: title.to_owned(),
         action: Action::AgentTask {
             prompt: "summarise".to_owned(),
         },
-        trigger: TriggerSpec::Manual,
-        cwd: Some(PathBuf::from("C:/work")),
+        trigger: TriggerSpec::Once {
+            scheduled_at_ms: 1_000,
+        },
         access: Access::Write,
-    };
-    Automation {
-        id: AutomationId::generate(),
-        title: input.title,
-        action: input.action,
-        trigger: input.trigger,
-        cwd: input.cwd,
-        access: input.access,
         enabled: true,
         next_run_at_ms: None,
         created_at_ms,
@@ -29,8 +28,9 @@ fn automation(title: &str, created_at_ms: i64) -> Automation {
 fn finished(automation: &Automation, created_at_ms: i64) -> Run {
     Run {
         status: RunStatus::Succeeded,
+        work_id: Some("w-1".to_owned()),
         finished_at_ms: Some(created_at_ms + 1),
-        ..Run::queued(automation.id, RunTrigger::Manual, created_at_ms)
+        ..Run::started(automation.id, created_at_ms)
     }
 }
 
@@ -43,8 +43,8 @@ fn temp_db() -> PathBuf {
 #[test]
 fn saves_reads_and_deletes_with_runs() {
     let store = AutomationStore::open_in_memory().unwrap();
-    let mut first = automation("first", 1);
-    let second = automation("second", 2);
+    let mut first = automation("first", "r-1", 1);
+    let second = automation("second", "r-2", 2);
     store.save(&first).unwrap();
     store.save(&second).unwrap();
     assert_eq!(store.get(first.id).unwrap(), Some(first.clone()));
@@ -53,6 +53,7 @@ fn saves_reads_and_deletes_with_runs() {
     first.next_run_at_ms = Some(10);
     store.save(&first).unwrap();
     assert_eq!(store.list().unwrap(), vec![first.clone(), second.clone()]);
+    assert_eq!(store.list_for("r-2").unwrap(), vec![second.clone()]);
     assert_eq!(store.due(9).unwrap(), vec![]);
     assert_eq!(store.due(10).unwrap(), vec![first.clone()]);
 
@@ -71,7 +72,7 @@ fn saves_reads_and_deletes_with_runs() {
 #[test]
 fn reopening_keeps_data_and_unknown_databases_are_backed_up() {
     let path = temp_db();
-    let saved = automation("kept", 1);
+    let saved = automation("kept", "r-1", 1);
     AutomationStore::open(&path).unwrap().save(&saved).unwrap();
     let reopened = AutomationStore::open(&path).unwrap();
     assert_eq!(reopened.list().unwrap(), vec![saved]);
@@ -82,7 +83,7 @@ fn reopening_keeps_data_and_unknown_databases_are_backed_up() {
     let legacy = Connection::open(&unknown).unwrap();
     legacy
         .execute_batch(
-            "CREATE TABLE legacy (id TEXT); PRAGMA user_version = 4;",
+            "CREATE TABLE legacy (id TEXT); PRAGMA user_version = 1;",
         )
         .unwrap();
     drop(legacy);
@@ -98,46 +99,40 @@ fn reopening_keeps_data_and_unknown_databases_are_backed_up() {
 }
 
 #[test]
-fn transitions_only_from_the_expected_state() {
+fn unfinished_runs_become_interrupted_on_startup() {
     let store = AutomationStore::open_in_memory().unwrap();
-    let owner = automation("owner", 1);
+    let owner = automation("owner", "r-1", 1);
     store.save(&owner).unwrap();
-    let run = Run::queued(owner.id, RunTrigger::Scheduled, 2);
-    store.save_run(&run).unwrap();
-    assert_eq!(store.queued_runs().unwrap(), vec![run.clone()]);
-
-    assert!(
-        store
-            .transition(run.id, RunStatus::Queued, RunStatus::Running, 3)
-            .unwrap()
-    );
-    assert!(
-        !store
-            .transition(run.id, RunStatus::Queued, RunStatus::Cancelled, 4)
-            .unwrap()
-    );
-    let running = store.run(run.id).unwrap().unwrap();
-    assert_eq!(running.status, RunStatus::Running);
-    assert_eq!(running.started_at_ms, Some(3));
-    assert_eq!(store.queued_runs().unwrap(), vec![]);
+    let running = Run {
+        status: RunStatus::Running,
+        started_at_ms: Some(3),
+        ..Run::started(owner.id, 2)
+    };
+    store.save_run(&running).unwrap();
+    let done = finished(&owner, 4);
+    store.save_run(&done).unwrap();
 
     assert_eq!(store.mark_running_interrupted(9).unwrap(), 1);
-    let interrupted = store.run(run.id).unwrap().unwrap();
+    let interrupted = store.run(running.id).unwrap().unwrap();
     assert_eq!(interrupted.status, RunStatus::Interrupted);
     assert_eq!(interrupted.finished_at_ms, Some(9));
+    assert_eq!(store.run(done.id).unwrap(), Some(done));
 }
 
 #[test]
 fn prune_keeps_the_newest_finished_runs_and_all_active_ones() {
     let store = AutomationStore::open_in_memory().unwrap();
-    let owner = automation("owner", 1);
+    let owner = automation("owner", "r-1", 1);
     store.save(&owner).unwrap();
     let runs: Vec<_> = (10..15).map(|at| finished(&owner, at)).collect();
     for run in &runs {
         store.save_run(run).unwrap();
     }
-    let queued = Run::queued(owner.id, RunTrigger::Manual, 1);
-    store.save_run(&queued).unwrap();
+    let running = Run {
+        status: RunStatus::Running,
+        ..Run::started(owner.id, 1)
+    };
+    store.save_run(&running).unwrap();
 
     assert_eq!(store.prune(2).unwrap(), 3);
     let kept: Vec<_> = store
@@ -146,5 +141,5 @@ fn prune_keeps_the_newest_finished_runs_and_all_active_ones() {
         .into_iter()
         .map(|run| run.id)
         .collect();
-    assert_eq!(kept, vec![runs[4].id, runs[3].id, queued.id]);
+    assert_eq!(kept, vec![runs[4].id, runs[3].id, running.id]);
 }

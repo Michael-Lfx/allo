@@ -7,16 +7,11 @@ use chrono::{
 pub use chrono_tz::Tz as IanaTimeZone;
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
+/// Automations only run on a schedule; there is no manual trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerSpec {
-    #[default]
-    Manual,
-    Once {
-        scheduled_at_ms: i64,
-    },
+    Once { scheduled_at_ms: i64 },
     Calendar(CalendarRule),
 }
 
@@ -47,15 +42,14 @@ pub enum ScheduleError {
 }
 
 impl TriggerSpec {
-    /// First scheduled instant strictly after `after_ms`. Manual and spent
-    /// one-time triggers have none.
+    /// First scheduled instant strictly after `after_ms`. A spent one-time
+    /// trigger has none.
     pub fn next_after(
         &self,
         after_ms: i64,
     ) -> Result<Option<i64>, ScheduleError> {
         let after = utc_from_ms(after_ms)?;
         match self {
-            Self::Manual => Ok(None),
             Self::Once { scheduled_at_ms } => {
                 utc_from_ms(*scheduled_at_ms)?;
                 Ok((*scheduled_at_ms > after_ms).then_some(*scheduled_at_ms))

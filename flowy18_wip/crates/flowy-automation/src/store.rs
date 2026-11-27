@@ -11,19 +11,19 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, Params, Row, params};
 
 use crate::model::{
-    Access, Automation, AutomationId, Run, RunId, RunStatus, RunTrigger, now_ms,
+    Access, Automation, AutomationId, Run, RunId, RunStatus, now_ms,
 };
 
-const SCHEMA_VERSION: i32 = 1;
-const SCHEMA_V1: &str = "
+const SCHEMA_VERSION: i32 = 2;
+const SCHEMA: &str = "
 BEGIN;
 CREATE TABLE automations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id TEXT NOT NULL UNIQUE,
+    conversation_id TEXT NOT NULL,
     title TEXT NOT NULL,
     action TEXT NOT NULL,
     trigger TEXT NOT NULL,
-    cwd TEXT,
     access TEXT NOT NULL,
     enabled INTEGER NOT NULL,
     next_run_at_ms INTEGER,
@@ -31,27 +31,26 @@ CREATE TABLE automations (
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX automations_due ON automations (enabled, next_run_at_ms);
+CREATE INDEX automations_by_conversation ON automations (conversation_id);
 CREATE TABLE runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,
     automation_id TEXT NOT NULL,
     status TEXT NOT NULL,
-    trigger TEXT NOT NULL,
-    session_id TEXT,
+    work_id TEXT,
     created_at_ms INTEGER NOT NULL,
     started_at_ms INTEGER,
     finished_at_ms INTEGER,
     error TEXT
 );
 CREATE INDEX runs_by_automation ON runs (automation_id, created_at_ms);
-CREATE INDEX runs_by_status ON runs (status);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 COMMIT;
 ";
 
-const AUTOMATION_COLUMNS: &str = "automation_id, title, action, trigger, cwd, access, \
-    enabled, next_run_at_ms, created_at_ms, updated_at_ms";
-const RUN_COLUMNS: &str = "run_id, automation_id, status, trigger, session_id, \
+const AUTOMATION_COLUMNS: &str = "automation_id, conversation_id, title, action, \
+    trigger, access, enabled, next_run_at_ms, created_at_ms, updated_at_ms";
+const RUN_COLUMNS: &str = "run_id, automation_id, status, work_id, \
     created_at_ms, started_at_ms, finished_at_ms, error";
 
 #[derive(Debug, thiserror::Error)]
@@ -95,7 +94,7 @@ impl AutomationStore {
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
         if user_version(&conn)? == 0 {
-            conn.execute_batch(SCHEMA_V1)?;
+            conn.execute_batch(SCHEMA)?;
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -106,7 +105,8 @@ impl AutomationStore {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Inserts or replaces the automation.
+    /// Inserts or replaces the automation. The owning conversation never
+    /// changes after creation.
     pub fn save(&self, automation: &Automation) -> Result<(), StoreError> {
         let action = serde_json::to_string(&automation.action)?;
         let trigger = serde_json::to_string(&automation.trigger)?;
@@ -116,20 +116,16 @@ impl AutomationStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
                  ON CONFLICT (automation_id) DO UPDATE SET title = excluded.title, \
                  action = excluded.action, trigger = excluded.trigger, \
-                 cwd = excluded.cwd, access = excluded.access, \
-                 enabled = excluded.enabled, \
+                 access = excluded.access, enabled = excluded.enabled, \
                  next_run_at_ms = excluded.next_run_at_ms, \
                  updated_at_ms = excluded.updated_at_ms"
             ),
             params![
                 automation.id.to_string(),
+                automation.conversation_id,
                 automation.title,
                 action,
                 trigger,
-                automation
-                    .cwd
-                    .as_ref()
-                    .map(|cwd| cwd.to_string_lossy().into_owned()),
                 automation.access.as_str(),
                 automation.enabled,
                 automation.next_run_at_ms,
@@ -170,6 +166,16 @@ impl AutomationStore {
         self.automations("ORDER BY created_at_ms, id", [])
     }
 
+    pub fn list_for(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<Automation>, StoreError> {
+        self.automations(
+            "WHERE conversation_id = ?1 ORDER BY created_at_ms, id",
+            [conversation_id],
+        )
+    }
+
     /// Enabled automations whose next run is at or before `now_ms`.
     pub fn due(&self, now_ms: i64) -> Result<Vec<Automation>, StoreError> {
         self.automations(
@@ -201,10 +207,10 @@ impl AutomationStore {
         self.lock().execute(
             &format!(
                 "INSERT INTO runs ({RUN_COLUMNS}) \
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 \
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 \
                  WHERE EXISTS (SELECT 1 FROM automations WHERE automation_id = ?2) \
                  ON CONFLICT (run_id) DO UPDATE SET status = excluded.status, \
-                 session_id = excluded.session_id, \
+                 work_id = excluded.work_id, \
                  started_at_ms = excluded.started_at_ms, \
                  finished_at_ms = excluded.finished_at_ms, \
                  error = excluded.error"
@@ -213,8 +219,7 @@ impl AutomationStore {
                 run.id.to_string(),
                 run.automation_id.to_string(),
                 run.status.as_str(),
-                run.trigger.as_str(),
-                run.session_id,
+                run.work_id,
                 run.created_at_ms,
                 run.started_at_ms,
                 run.finished_at_ms,
@@ -222,30 +227,6 @@ impl AutomationStore {
             ],
         )?;
         Ok(())
-    }
-
-    /// Moves a run from `from` to `to` only if it is still in `from`, so a
-    /// cancel and a start cannot both win.
-    pub fn transition(
-        &self,
-        id: RunId,
-        from: RunStatus,
-        to: RunStatus,
-        at_ms: i64,
-    ) -> Result<bool, StoreError> {
-        let column = if to == RunStatus::Running {
-            "started_at_ms"
-        } else {
-            "finished_at_ms"
-        };
-        let changed = self.lock().execute(
-            &format!(
-                "UPDATE runs SET status = ?3, {column} = ?4 \
-                 WHERE run_id = ?1 AND status = ?2"
-            ),
-            params![id.to_string(), from.as_str(), to.as_str(), at_ms],
-        )?;
-        Ok(changed == 1)
     }
 
     pub fn run(&self, id: RunId) -> Result<Option<Run>, StoreError> {
@@ -267,11 +248,6 @@ impl AutomationStore {
         )
     }
 
-    /// Oldest first.
-    pub fn queued_runs(&self) -> Result<Vec<Run>, StoreError> {
-        self.runs("WHERE status = 'queued' ORDER BY created_at_ms, id", [])
-    }
-
     fn runs(
         &self,
         filter: &str,
@@ -288,8 +264,8 @@ impl AutomationStore {
         Ok(rows)
     }
 
-    /// Called once at startup: runs left `running` by the previous process
-    /// become `interrupted`. They are not retried.
+    /// Called once at startup: runs left `running` by the
+    /// previous process become `interrupted`. They are not retried.
     pub fn mark_running_interrupted(
         &self,
         now_ms: i64,
@@ -301,31 +277,16 @@ impl AutomationStore {
         )?)
     }
 
-    /// Keeps the newest `keep` runs of each automation; queued and running
-    /// runs are never removed.
+    /// Keeps the newest `keep` runs of each automation; running runs are
+    /// never removed.
     pub fn prune(&self, keep: usize) -> Result<usize, StoreError> {
         Ok(self.lock().execute(
-            "DELETE FROM runs WHERE status NOT IN ('queued', 'running') \
+            "DELETE FROM runs WHERE status != 'running' \
              AND id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER ( \
              PARTITION BY automation_id ORDER BY created_at_ms DESC, id DESC \
              ) AS position FROM runs) WHERE position <= ?1)",
             [i64::try_from(keep).unwrap_or(i64::MAX)],
         )?)
-    }
-
-    /// Sessions created by earlier runs. They must not get the automation
-    /// management tools after a restart.
-    pub fn run_session_ids(&self) -> Result<Vec<String>, StoreError> {
-        let conn = self.lock();
-        let mut statement = conn.prepare(
-            "SELECT DISTINCT session_id FROM runs WHERE session_id IS NOT NULL",
-        )?;
-        let ids = statement
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
-        drop(statement);
-        drop(conn);
-        Ok(ids)
     }
 }
 
@@ -371,10 +332,10 @@ fn known<T>(value: Option<T>, text: &str) -> ParseResult<T> {
 fn automation_from_row(row: &Row<'_>) -> rusqlite::Result<Automation> {
     Ok(Automation {
         id: decode(row, 0, |text| Ok(AutomationId::parse(text)?))?,
-        title: row.get(1)?,
-        action: decode(row, 2, |text| Ok(serde_json::from_str(text)?))?,
-        trigger: decode(row, 3, |text| Ok(serde_json::from_str(text)?))?,
-        cwd: row.get::<_, Option<String>>(4)?.map(PathBuf::from),
+        conversation_id: row.get(1)?,
+        title: row.get(2)?,
+        action: decode(row, 3, |text| Ok(serde_json::from_str(text)?))?,
+        trigger: decode(row, 4, |text| Ok(serde_json::from_str(text)?))?,
         access: decode(row, 5, |text| known(Access::parse(text), text))?,
         enabled: row.get(6)?,
         next_run_at_ms: row.get(7)?,
@@ -388,12 +349,11 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         id: decode(row, 0, |text| Ok(RunId::parse(text)?))?,
         automation_id: decode(row, 1, |text| Ok(AutomationId::parse(text)?))?,
         status: decode(row, 2, |text| known(RunStatus::parse(text), text))?,
-        trigger: decode(row, 3, |text| known(RunTrigger::parse(text), text))?,
-        session_id: row.get(4)?,
-        created_at_ms: row.get(5)?,
-        started_at_ms: row.get(6)?,
-        finished_at_ms: row.get(7)?,
-        error: row.get(8)?,
+        work_id: row.get(3)?,
+        created_at_ms: row.get(4)?,
+        started_at_ms: row.get(5)?,
+        finished_at_ms: row.get(6)?,
+        error: row.get(7)?,
     })
 }
 

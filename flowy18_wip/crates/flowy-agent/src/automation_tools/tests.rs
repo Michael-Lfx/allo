@@ -12,36 +12,40 @@ struct Succeeds;
 impl RunExecutor for Succeeds {
     fn run<'a>(
         &'a self,
-        _automation: &'a flowy_automation::Automation,
+        _automation: &'a Automation,
         _run_id: RunId,
         _cancel: CancelToken,
     ) -> RunFuture<'a> {
         Box::pin(async {
             RunReport {
-                session_id: Some("session-1".to_owned()),
+                work_id: Some("w-1".to_owned()),
                 outcome: RunOutcome::Succeeded,
             }
         })
     }
 }
 
-fn registry(writable: bool) -> (ToolRegistry, Arc<AutomationService>) {
+fn service() -> Arc<AutomationService> {
     let store = Arc::new(AutomationStore::open_in_memory().unwrap());
     let worker = Worker::start(
         Arc::clone(&store),
         Arc::new(Succeeds),
-        Arc::new(|_, _| {}),
         WorkerConfig {
             tick: Duration::from_secs(3600),
             run_timeout: Duration::from_secs(60),
         },
         tokio::runtime::Handle::current(),
     );
-    let service = Arc::new(AutomationService::new(store, worker));
-    service.set_signed_in(true);
+    Arc::new(AutomationService::new(store, worker))
+}
+
+fn registry(
+    service: &Arc<AutomationService>,
+    conversation: &str,
+) -> ToolRegistry {
     let registry = ToolRegistry::new();
-    register(&registry, &service, writable);
-    (registry, service)
+    register(&registry, service, conversation);
+    registry
 }
 
 async fn call(registry: &ToolRegistry, name: &str, arguments: Value) -> Value {
@@ -54,7 +58,7 @@ async fn call(registry: &ToolRegistry, name: &str, arguments: Value) -> Value {
         },
         ToolRunContext {
             signal: flowy_agent_core::types::CancelToken::new(),
-            agent_id: Some("session-0".to_owned()),
+            agent_id: Some("w-0".to_owned()),
             cwd: None,
             todos: None,
             submission_id: None,
@@ -72,7 +76,7 @@ async fn call(registry: &ToolRegistry, name: &str, arguments: Value) -> Value {
     }
 }
 
-fn daily_definition(access: &str) -> Value {
+fn weekly_definition(access: &str) -> Value {
     json!({
         "title": "Inbox digest",
         "action": { "kind": "agent_task", "prompt": "Summarise new mail" },
@@ -82,14 +86,14 @@ fn daily_definition(access: &str) -> Value {
             "local_time": "08:30:00",
             "frequency": { "kind": "weekly", "weekday": "Mon" }
         }},
-        "workspace": { "path": "C:/notes", "access": access }
+        "access": access
     })
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ten_tools_are_registered() {
-    let (registry, _) = registry(true);
-    let mut names: Vec<_> = registry
+async fn nine_tools_are_registered_without_run_now() {
+    let service = service();
+    let mut names: Vec<_> = registry(&service, "r-1")
         .schemas()
         .into_iter()
         .map(|schema| schema.name)
@@ -106,121 +110,121 @@ async fn ten_tools_are_registered() {
             "automation_list",
             "automation_pause",
             "automation_resume",
-            "automation_run_now",
             "automation_update",
         ]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn tools_manage_automations_end_to_end() {
-    let (registry, service) = registry(true);
+async fn tools_manage_this_conversations_automations() {
+    let service = service();
+    let tools = registry(&service, "r-1");
     let created = call(
-        &registry,
+        &tools,
         "automation_create",
-        json!({ "definition": daily_definition("write") }),
+        json!({ "definition": weekly_definition("write") }),
     )
     .await;
+    assert_eq!(created["conversation_id"], "r-1");
     assert_eq!(created["access"], "write");
     assert!(created["next_run_at_ms"].is_i64());
-    assert!(created.get("access_note").is_none());
     let id = created["id"].clone();
 
-    let listed = call(&registry, "automation_list", json!({})).await;
+    let listed = call(&tools, "automation_list", json!({})).await;
     assert_eq!(listed["automations"].as_array().unwrap().len(), 1);
 
     let updated = call(
-        &registry,
+        &tools,
         "automation_update",
         json!({
             "automation_id": id,
             "definition": {
                 "title": "Stand-up",
-                "action": { "kind": "reminder", "text": "Stand-up in 5 minutes" }
+                "action": { "kind": "reminder", "text": "Stand-up in 5 minutes" },
+                "schedule": { "trigger": {
+                    "kind": "once", "scheduled_at_ms": 4_102_444_800_000_i64
+                }}
             }
         }),
     )
     .await;
     assert_eq!(updated["title"], "Stand-up");
-    assert_eq!(updated["trigger"]["kind"], "manual");
+    assert_eq!(updated["trigger"]["kind"], "once");
     assert_eq!(updated["access"], "read");
 
-    let paused = call(
-        &registry,
-        "automation_pause",
-        json!({ "automation_id": id }),
-    )
-    .await;
+    let paused =
+        call(&tools, "automation_pause", json!({ "automation_id": id })).await;
     assert_eq!(paused["enabled"], false);
+    let history =
+        call(&tools, "automation_history", json!({ "automation_id": id }))
+            .await;
+    assert_eq!(history["runs"], json!([]));
 
-    let run = call(
-        &registry,
-        "automation_run_now",
-        json!({ "automation_id": id }),
-    )
-    .await;
-    let run_id = RunId::parse(run["id"].as_str().unwrap()).unwrap();
-    for _ in 0..200 {
-        if service
-            .run(run_id)
-            .unwrap()
-            .is_some_and(|run| run.status.is_final())
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let history = call(
-        &registry,
-        "automation_history",
-        json!({ "automation_id": id }),
-    )
-    .await;
-    assert_eq!(history["runs"][0]["status"], "succeeded");
-
-    let deleted = call(
-        &registry,
-        "automation_delete",
-        json!({ "automation_id": id }),
-    )
-    .await;
+    let deleted =
+        call(&tools, "automation_delete", json!({ "automation_id": id })).await;
     assert_eq!(deleted["deleted"], true);
     let missing =
-        call(&registry, "automation_get", json!({ "automation_id": id })).await;
+        call(&tools, "automation_get", json!({ "automation_id": id })).await;
     assert_eq!(missing["error"], "not_found");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn write_access_is_lowered_in_a_read_only_conversation() {
-    let (registry, _) = registry(false);
+async fn other_conversations_cannot_see_or_change_an_automation() {
+    let service = service();
+    let owner = registry(&service, "r-1");
+    let other = registry(&service, "r-2");
     let created = call(
-        &registry,
+        &owner,
         "automation_create",
-        json!({ "definition": daily_definition("write") }),
+        json!({ "definition": weekly_definition("read") }),
     )
     .await;
-    assert_eq!(created["access"], "read");
-    assert_eq!(created["access_note"], DOWNGRADE_NOTE);
+    let id = created["id"].clone();
+
+    let listed = call(&other, "automation_list", json!({})).await;
+    assert_eq!(listed["automations"], json!([]));
+    for name in ["automation_get", "automation_pause", "automation_delete"] {
+        let result = call(&other, name, json!({ "automation_id": id })).await;
+        assert_eq!(result["error"], "not_found", "{name}");
+    }
+    assert!(
+        service
+            .get(AutomationId::parse(id.as_str().unwrap()).unwrap())
+            .unwrap()
+            .enabled
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_arguments_are_reported_to_the_model() {
-    let (registry, _) = registry(true);
+    let service = service();
+    let tools = registry(&service, "r-1");
     let unknown = call(
-        &registry,
+        &tools,
         "automation_create",
-        json!({ "definition": daily_definition("read"), "budget": 1 }),
+        json!({ "definition": weekly_definition("read"), "budget": 1 }),
     )
     .await;
     assert_eq!(unknown["error"], "invalid_request");
-    let empty = call(
-        &registry,
+    let no_schedule = call(
+        &tools,
         "automation_create",
         json!({ "definition": {
-            "title": "",
+            "title": "x",
             "action": { "kind": "reminder", "text": "x" }
         }}),
     )
     .await;
-    assert_eq!(empty["error"], "invalid_request");
+    assert_eq!(no_schedule["error"], "invalid_request");
+    let manual = call(
+        &tools,
+        "automation_create",
+        json!({ "definition": {
+            "title": "x",
+            "action": { "kind": "reminder", "text": "x" },
+            "schedule": { "trigger": { "kind": "manual" } }
+        }}),
+    )
+    .await;
+    assert_eq!(manual["error"], "invalid_request");
 }

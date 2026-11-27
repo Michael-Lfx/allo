@@ -1868,15 +1868,6 @@ impl FlowyApp {
                             Some(flowy_shell::DeepLink::Invite { code }) => {
                                 app.receive_invite_code(code, cx);
                             }
-                            Some(flowy_shell::DeepLink::AutomationRun {
-                                run_id,
-                            }) => {
-                                if let Ok(run_id) =
-                                    flowy_automation::RunId::parse(&run_id)
-                                {
-                                    app.open_automation_run(run_id, cx);
-                                }
-                            }
                             Some(flowy_shell::DeepLink::Open) | None => {}
                         }
                     }
@@ -2538,11 +2529,6 @@ fn apply_pending_deep_links(
         match flowy_shell::parse_deep_link(&url) {
             Some(flowy_shell::DeepLink::Invite { code }) => {
                 app.receive_invite_code(code, cx);
-            }
-            Some(flowy_shell::DeepLink::AutomationRun { run_id }) => {
-                if let Ok(run_id) = flowy_automation::RunId::parse(&run_id) {
-                    app.open_automation_run(run_id, cx);
-                }
             }
             Some(flowy_shell::DeepLink::Open) | None => {}
         }

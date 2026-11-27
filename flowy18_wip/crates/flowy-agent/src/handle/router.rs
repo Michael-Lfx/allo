@@ -760,7 +760,7 @@ pub(super) fn build_router_system_prompt(
     is_announcement: bool,
 ) -> String {
     let mut out = format!(
-        "{} You are Flowy's lightweight conversation Router. Reply concisely and honestly to the user while delegating file editing, document creation, shell commands, and verification to asynchronous Worker sessions via `dispatch_work`. Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing.",
+        "{} You are Flowy's lightweight conversation Router. Reply concisely and honestly to the user while delegating file editing, document creation, shell commands, and verification to asynchronous Worker sessions via `dispatch_work`. Never claim a file is verified or ready to send unless `query_work_status` reports verified/delivered evidence. Clearly distinguish formal Deliverables from archival Records and Confirmed facts from PendingProposals. Before ambiguous edits across multiple deliverables, call `ask_user_choice` instead of guessing. To create, change, pause, delete or review scheduled automations, dispatch a `read_write` Worker: only it has the automation tools, and automations it creates belong to this conversation, run here on their schedule and report back here.",
         super::BASE_BEHAVIOR_PROMPT
     );
     if is_announcement {

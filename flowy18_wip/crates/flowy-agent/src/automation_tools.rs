@@ -1,23 +1,22 @@
-//! Model-facing automation management. Each tool parses its arguments, calls
-//! the [`AutomationService`] shared with the automation page, and returns
-//! JSON. Sessions created by automation runs never get these tools.
+//! Automation management for read-write Workers in a conversation. Each tool
+//! parses its arguments, calls the [`AutomationService`] shared with the
+//! automation page, and returns JSON. Every tool is scoped to the Worker's
+//! conversation: automations are created there, run there and report there.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use flowy_agent_core::tools::{ToolDefinition, ToolRegistry};
 use flowy_agent_core::{ToolCallArgs, ToolExecutionResult, ToolRunContext};
 use flowy_automation::schedule::TriggerSpec;
 use flowy_automation::{
-    Access, Action, AutomationId, AutomationInput, AutomationService, RunId,
-    ServiceError,
+    Access, Action, Automation, AutomationId, AutomationInput,
+    AutomationService, RunId, ServiceError,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 const HISTORY_LIMIT: usize = 20;
-const DOWNGRADE_NOTE: &str = "Write access needs a read-write conversation; the automation was saved as read-only.";
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -28,21 +27,20 @@ enum Op {
     Pause,
     Resume,
     Delete,
-    RunNow,
     History,
     CancelRun,
 }
 
-const TOOLS: [(Op, &str, &str); 10] = [
+const TOOLS: [(Op, &str, &str); 9] = [
     (
         Op::Create,
         "create",
-        "Create an automation. An agent_task runs the prompt as a background conversation; a reminder only shows a notification. Without a schedule it runs only through automation_run_now. Workspace access defaults to read; write needs a read-write conversation.",
+        "Create a scheduled automation in this conversation. When it is due, an agent_task runs as new work in this conversation and its result is announced here; a reminder is posted here. Automations only run on their schedule.",
     ),
     (
         Op::List,
         "list",
-        "List saved automations with their enabled state and next run time (Unix UTC milliseconds).",
+        "List this conversation's automations with their enabled state and next run time (Unix UTC milliseconds).",
     ),
     (Op::Get, "get", "Read one automation."),
     (
@@ -63,43 +61,35 @@ const TOOLS: [(Op, &str, &str); 10] = [
     (
         Op::Delete,
         "delete",
-        "Delete an automation and its run history, cancelling its runs in progress.",
-    ),
-    (
-        Op::RunNow,
-        "run_now",
-        "Queue one run now and return it. Check its result with automation_history.",
+        "Delete an automation and its run history, cancelling its run in progress.",
     ),
     (
         Op::History,
         "history",
-        "Recent runs, newest first. A run's session_id is the conversation that holds its result.",
+        "Recent runs, newest first. A run's work_id is the work in this conversation that carried it out.",
     ),
-    (
-        Op::CancelRun,
-        "cancel_run",
-        "Cancel a queued or running run.",
-    ),
+    (Op::CancelRun, "cancel_run", "Cancel a running run."),
 ];
 
-/// Registers the ten tools. `writable` is whether the current conversation
-/// itself may write; it caps the access of automations the model saves.
+/// Registers the tools for a Worker of `conversation`.
 pub fn register(
     registry: &ToolRegistry,
     service: &Arc<AutomationService>,
-    writable: bool,
+    conversation: &str,
 ) {
     for (op, name, description) in TOOLS {
         let service = Arc::clone(service);
+        let conversation = conversation.to_owned();
         registry.register(Arc::new(ToolDefinition::new(
             format!("automation_{name}"),
             description,
             op.parameters(),
             move |args: ToolCallArgs, _context: ToolRunContext| {
                 let service = Arc::clone(&service);
-                Box::pin(
-                    async move { op.call(&service, args.arguments, writable) },
-                )
+                let conversation = conversation.clone();
+                Box::pin(async move {
+                    op.call(&service, &conversation, args.arguments)
+                })
             },
         )));
     }
@@ -110,10 +100,9 @@ pub fn register(
 struct Definition {
     title: String,
     action: Action,
+    schedule: Schedule,
     #[serde(default)]
-    schedule: Option<Schedule>,
-    #[serde(default)]
-    workspace: Option<Workspace>,
+    access: Access,
 }
 
 #[derive(Deserialize)]
@@ -122,33 +111,14 @@ struct Schedule {
     trigger: TriggerSpec,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Workspace {
-    #[serde(default)]
-    path: Option<PathBuf>,
-    #[serde(default)]
-    access: Access,
-}
-
-impl Definition {
-    /// Returns the input and whether write access was lowered to read.
-    fn into_input(self, writable: bool) -> (AutomationInput, bool) {
-        let (cwd, requested) =
-            self.workspace.map_or((None, Access::Read), |workspace| {
-                (workspace.path, workspace.access)
-            });
-        let downgraded = requested == Access::Write && !writable;
-        let input = AutomationInput {
-            title: self.title,
-            action: self.action,
-            trigger: self
-                .schedule
-                .map_or_else(Default::default, |schedule| schedule.trigger),
-            cwd,
-            access: if downgraded { Access::Read } else { requested },
-        };
-        (input, downgraded)
+impl From<Definition> for AutomationInput {
+    fn from(definition: Definition) -> Self {
+        Self {
+            title: definition.title,
+            action: definition.action,
+            trigger: definition.schedule.trigger,
+            access: definition.access,
+        }
     }
 }
 
@@ -192,10 +162,10 @@ impl Op {
     fn call(
         self,
         service: &AutomationService,
+        conversation: &str,
         args: Value,
-        writable: bool,
     ) -> ToolExecutionResult {
-        match self.run(service, args, writable) {
+        match self.run(service, conversation, args) {
             Ok(value) => ToolExecutionResult::success_value(value),
             Err(ToolError::Args(message)) => {
                 ToolExecutionResult::error("invalid_request", message)
@@ -215,48 +185,61 @@ impl Op {
     fn run(
         self,
         service: &AutomationService,
+        conversation: &str,
         args: Value,
-        writable: bool,
     ) -> Result<Value, ToolError> {
+        // Automations of other conversations look missing.
+        let owned = |id: AutomationId| -> Result<Automation, ToolError> {
+            let automation = service.get(id)?;
+            if automation.conversation_id == conversation {
+                Ok(automation)
+            } else {
+                Err(ServiceError::NotFound.into())
+            }
+        };
         Ok(match self {
             Self::Create => {
                 let Create { definition } = parse(args)?;
-                let (input, downgraded) = definition.into_input(writable);
-                saved(&service.create(input)?, downgraded)
+                to_json(&service.create(conversation, definition.into())?)
             }
             Self::Update => {
                 let Update {
                     automation_id,
                     definition,
                 } = parse(args)?;
-                let (input, downgraded) = definition.into_input(writable);
-                saved(&service.update(automation_id, input)?, downgraded)
+                owned(automation_id)?;
+                to_json(&service.update(automation_id, definition.into())?)
             }
-            Self::List => json!({ "automations": service.list()? }),
-            Self::Get => {
-                to_json(&service.get(parse::<ById>(args)?.automation_id)?)
+            Self::List => {
+                json!({ "automations": service.list_for(conversation)? })
             }
+            Self::Get => to_json(&owned(parse::<ById>(args)?.automation_id)?),
             Self::Pause => {
-                to_json(&service.pause(parse::<ById>(args)?.automation_id)?)
+                let ById { automation_id } = parse(args)?;
+                owned(automation_id)?;
+                to_json(&service.pause(automation_id)?)
             }
             Self::Resume => {
-                to_json(&service.resume(parse::<ById>(args)?.automation_id)?)
+                let ById { automation_id } = parse(args)?;
+                owned(automation_id)?;
+                to_json(&service.resume(automation_id)?)
             }
             Self::Delete => {
                 let ById { automation_id } = parse(args)?;
+                owned(automation_id)?;
                 service.delete(automation_id)?;
                 json!({ "automation_id": automation_id, "deleted": true })
             }
-            Self::RunNow => {
-                to_json(&service.run_now(parse::<ById>(args)?.automation_id)?)
-            }
             Self::History => {
                 let ById { automation_id } = parse(args)?;
+                owned(automation_id)?;
                 json!({ "runs": service.history(automation_id, HISTORY_LIMIT)? })
             }
             Self::CancelRun => {
                 let ByRun { run_id } = parse(args)?;
-                json!({ "run_id": run_id, "cancelled": service.cancel(run_id)? })
+                let run = service.run(run_id)?.ok_or(ServiceError::NotFound)?;
+                owned(run.automation_id)?;
+                json!({ "run_id": run_id, "cancelled": service.cancel(run_id) })
             }
         })
     }
@@ -295,19 +278,11 @@ fn to_json(value: &impl serde::Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
-fn saved(automation: &flowy_automation::Automation, downgraded: bool) -> Value {
-    let mut value = to_json(automation);
-    if downgraded && let Some(object) = value.as_object_mut() {
-        object.insert("access_note".to_owned(), json!(DOWNGRADE_NOTE));
-    }
-    value
-}
-
 fn definition_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "action"],
+        "required": ["title", "action", "schedule"],
         "properties": {
             "title": { "type": "string" },
             "action": { "oneOf": [
@@ -316,7 +291,7 @@ fn definition_schema() -> Value {
                     "required": ["kind", "prompt"],
                     "properties": {
                         "kind": { "const": "agent_task" },
-                        "prompt": { "type": "string" }
+                        "prompt": { "type": "string", "description": "Self-contained task brief for the work dispatched at each run." }
                     }
                 },
                 {
@@ -331,12 +306,7 @@ fn definition_schema() -> Value {
             "schedule": {
                 "type": "object", "additionalProperties": false,
                 "required": ["trigger"],
-                "description": "Omit to run only on demand.",
                 "properties": { "trigger": { "oneOf": [
-                    {
-                        "type": "object", "required": ["kind"],
-                        "properties": { "kind": { "const": "manual" } }
-                    },
                     {
                         "type": "object", "required": ["kind", "scheduled_at_ms"],
                         "properties": {
@@ -368,13 +338,9 @@ fn definition_schema() -> Value {
                     }
                 ]}}
             },
-            "workspace": {
-                "type": "object", "additionalProperties": false,
-                "description": "Omit to run in a fresh conversation folder.",
-                "properties": {
-                    "path": { "type": "string", "description": "Absolute folder the run works in." },
-                    "access": { "enum": ["read", "write"] }
-                }
+            "access": {
+                "enum": ["read", "write"],
+                "description": "Workspace access of the work each run dispatches. Defaults to read."
             }
         }
     })
