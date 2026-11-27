@@ -267,3 +267,34 @@ part_of: map.md
   `NOMI_LEARNING_REVIEW_PROVENANCE=stage1-enforce` 回放/冒烟确认后再翻
   缺省。`stage1-enforce` 已可用（开关即执法档）。
 - 表完备性硬门未做（碎片面 report-only 默认，另票）。
+
+### 真机补跑（2026-11-27，事后补验）
+
+环境：新构建的 `target/debug/nomicore.exe`（含本波代码）+ `Nomi-dev` 库副本
++ 默认 `AIPC-deepseek-v4-flash`；`learning-smoke grow`，观测档案在
+`Nomi-dev/observation/learning-smoke/`。
+
+| 臂 | 目标 | 结果 | 读数 |
+| --- | --- | --- | --- |
+| staged 单批 | 手冲咖啡 | EXIT 0 / 4 节点 / 2 调用 / 177.8s | rows=19 invalid=0 degraded=false stage1=covered-enforce；表内 4 缺失 + 15 常识，**无已教/自教行**，直出未触发 |
+| enforce 单批 | 复式记账 | EXIT 0 / 5 节点 / 2 调用 / 314.0s | rows=16 invalid=0 degraded=false stage1=enforce-all；同样无已教/自教行 |
+| enforce 2 批 | 咖啡（贴既有已教账） | EXIT 0 / 10 节点 | 见下 |
+
+2 批 enforce 的关键读数：
+
+- **第 1 批 degraded**：`rows=0 invalid=2 retried=1 degraded=true
+  review_degraded=true`，死因两次都是
+  `自教行「一次冲煮中注入的全部水」的 ref 指向提名概念自身（循环自证）`；
+  机械核两次拒绝后走既有 Degraded 保守放行，5 节点仍落图。
+- **第 2 批通过**：`rows=11 invalid=0 retried=0 degraded=false direct=0
+  sibling=0 stage1=enforce-all`；表内 **8 已教 + 3 常识**，8 条已教行全部
+  `term == ref`（总水量/粉水比记法/比例反求基准量/比例放大求水量/等价路径/
+  等比倍乘）。第 1 批同一批的已教行还写过 `term=比值/水份数/目标总水量`、
+  ref=粉水比记法/总水量（直出违规），第 2 批改成同名——**直出规则 + 反馈
+  在真机上确实改变了模型输出**。
+
+结论：`stage1-enforce` 在第 2 批真机通过，但第 1 批的 Degraded fail-open
+仍是风险（自证错误两次 → 无有效表落图）；缺省保持 staged，
+`stage1-enforce` 作为可选校准档，暂不翻缺省。另：温度计 2 批 enforce 在
+第 1 批 3 轮 teaches 门耗尽（`标尺/刻度线` 未铸名），未进第 2 批——与
+出处门无关，是既有铸名完备性问题，建议另立小票。
