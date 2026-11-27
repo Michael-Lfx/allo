@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.19 更新）**：**直接先读 §27 与 §27.1（`origin/main@3e66290a9`：PR #512 与 `#514–#528` 十六连 PR 主干全账、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 完结、`persona.rs` 暂缓与在研 worktree 协同边界）**，再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（PR #523 Router/Work 工具扩展架构规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§26 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流状态与 §27–§27.1 不一致处，**一律以 §27–§27.1 为准**。
+> **现役唯一入口（2026-11-27 修订 9.20 更新）**：**直接先读 §28（`origin/main@b0c55cc18` + `feat/flowy18-work-capability-provider`：`ToolProvider` 有状态扩展底座、通用 `Ask` 审批、`Deferred`/`tool_search` 与最新模块布局）**，并对照 §27 与 §27.1（PR #512 与 `#514–#528` 十六连 PR 主干全账、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（Router/Work 隔离与有状态 `ToolProvider` 扩展接入规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§27.1 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流与扩展接缝状态与 §28 不一致处，**一律以 §28 为准**。
 
 ---
 
@@ -868,4 +868,19 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
   - 23 语种纯 LF 词典（`ar.json`..`zh-TW.json`）在 `#525` 新增 Mission Control 键并裁剪 19 个退役 `board.*` 键后当前对称维持 **975 键**；`flowy-studio/src/overview/flow_modal.rs` 已于 `#525` 物理删除（由 `overview/inspector.rs` 替代）。
   - **跨账本导航**：设计详情见 [`最终方案.md`](最终方案.md) §12.17、全量实测见 [`证据.md`](证据.md) §11.45、待裁决更新见 [`BLOCKED.md`](BLOCKED.md) §6、Router/Work 工具扩展架构见 [`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)。
 - **并线协同说明**：为避免与在研 worktree `.agents/worktrees/feat-work-capability-seam`（`feat/flowy18-work-capability-provider`）发生合并冲突，修订 9.19 全账同步未触碰 `flowy18_wip/docs/architecture/README.md`。
+
+---
+
+## 28. Work 能力扩展底座与 Tool Search 收口（2026-11-27 · `feat/flowy18-work-capability-provider` · `origin/main@b0c55cc18` · 修订 9.20）
+
+- **主干与分支定位**：`origin/main` 已合入至 `b0c55cc18`（PR #529 完成修订 9.19 台账对齐）。分支 `feat/flowy18-work-capability-provider`（工作树 `.agents/worktrees/feat-work-capability-seam`，`CARGO_BUILD_BUILD_DIR=$env:LOCALAPPDATA\Temp\flowy18-capability-build`）已完成 rebase 与全部 Level 4 门禁，补齐修订 9.20 全账并解除上文 §27.1 对 `docs/architecture/README.md` 的协同避让。
+- **扩展能力接缝速查（后续接定时任务 / MCP / 可执行 Skill / 插件只读此契约）**：
+  1. **只实现 `flowy_agent_core::ToolProvider`**（[`tools/provider.rs`](../../../crates/flowy-agent-core/src/tools/provider.rs)）：扩展 Crate 仅需依赖 `flowy-agent-core`（绝不依赖 `flowy-agent` 或 `flowy-studio`），将状态（如 `Arc<Service>`）放在 Provider struct 中；启动时调用一行 `agent_handle.register_tool_provider(Arc::new(...))`（[`handle/mod.rs`](../../../crates/flowy-agent/src/handle/mod.rs)）。
+  2. **严格隔离边界（零改动 `handle/submit.rs`）**：宿主仅在 `Worker (ReadWrite)` 与遗留 `Standard` 会话分支挂载扩展 Provider；`Router`（4 控制工具）与 `Worker (ReadOnly)`（3 目录内只读工具）**永不调用 `register_tools` 也永不暴露扩展工具**。
+  3. **按需发现与通用审批**：多工具扩展标记 `.with_exposure(ToolExposure::Deferred)` 与 `.with_read_only(...)` / `.with_tags([...])`（[`tools/registry.rs`](../../../crates/flowy-agent-core/src/tools/registry.rs)），宿主自动注入 `tool_search`（[`tools/search.rs`](../../../crates/flowy-agent-core/src/tools/search.rs)）并在同回合尾端追加激活；写工具风险拦截返回 `PreToolDecision::Ask { args_hash: String::new(), .. }` 即可走宿主统一 SHA-256 审批卡、`ApproveTool` 预激活（`pre_activated_tools`，兼容 PR #526 `active_dispatch_receipt_id`）与一次性授权消费。
+  4. **安全红线**：`mount_tool_providers` 对空/空白名、`RESERVED_HOST_TOOLS`（含 `tool_search`）及重名阴影条目 fail-closed 拒绝，并强制剥离 `.with_artifact_delivery()`、覆写 `ToolSource::Provider(id)`。详情与完整示范代码见 [`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)。
+- **新增 / 扩展模块映射**：
+  - `flowy-agent-core/src/tools/`：新增 `provider.rs`（81 行）与 `search.rs`（634 行），增强 `registry.rs`、`builtin.rs`、`adapter.rs`、`engine.rs`、`loop_runner.rs`。
+  - `flowy-agent/src/handle/`：从 14 文件增至 15 文件（新增 `provider_tests.rs` 971 行），增强 `mod.rs`、`guards.rs`、`submit.rs`、`router.rs`。
+- **复核实测真值（`origin/main@b0c55cc18` 等价代码树）**：`cargo fmt --all -- --check` 0 diff；`flowy-agent-core` **146 passed / 2 ignored**；`flowy-agent -- --test-threads=1` **285 passed / 4 ignored**（含 6 项 `provider_tests`）；`flowy-studio` **175 passed / 2 ignored**；`flowy-ui` **46 + 2 passed**；`flowy-desktop --locked` PASS；5-Crate `--all-targets clippy -D warnings` 0 告警；8 份文档链接/Mermaid/`0` CRLF 与 `check-ui-contracts.mjs` 全库扫描全部通过（详情见 [`证据.md`](证据.md) §11.46）。
 
