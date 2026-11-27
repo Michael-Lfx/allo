@@ -27,6 +27,9 @@ use crate::artifact_store::PublicationState;
 const MAX_STATUS_HEADER_CHARS: usize = 900;
 /// Maximum recent child Works projected into the Router read-only header.
 const MAX_HEADER_WORKS: usize = 8;
+const MAX_ROUTER_PROVIDER_HINTS: usize = 8;
+const MAX_ROUTER_PROVIDER_HINT_CHARS: usize = 160;
+const MAX_ROUTER_PROVIDER_TOTAL_CHARS: usize = 600;
 
 /// Structured result returned by `dispatch_work` and `revise_work`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,7 +358,7 @@ fn dispatch_work_tool(
             "type": "object",
             "properties": {
                 "brief": { "type": "string", "description": "Clear, self-contained task brief for the Worker." },
-                "mode": { "type": "string", "enum": ["read_only", "read_write"], "description": "Workspace access mode. `read_only` ONLY exposes `read_file`/`glob`/`grep` (no shell/curl) and can run concurrently. Tasks needing shell commands, network/curl calls, file edits, or artifact creation MUST use `read_write` (even for read-only inspection)." },
+                "mode": { "type": "string", "enum": ["read_only", "read_write"], "description": "Workspace access mode. `read_only` ONLY exposes `read_file`/`glob`/`grep` (no shell/curl/extensions) and can run concurrently. Tasks needing shell commands, network/curl calls, extension/automation providers, file edits, or artifact creation MUST use `read_write` (even for read-only extension queries)." },
                 "target_work_id": { "type": "string", "description": "Existing child Worker ID to continue (keeps original origin, workspace, and access_mode)." },
                 "target_object_ids": { "type": "array", "items": { "type": "string" }, "description": "Optional object IDs owned by child Workers to locate and target the exact owning Worker." },
                 "request_id": { "type": "string", "description": "Caller-supplied idempotency key preventing duplicate work creation on retries." }
@@ -778,6 +781,7 @@ pub(super) fn build_router_system_prompt(
             );
         }
     }
+    append_worker_capabilities_section(harness, &mut out);
     if works.is_empty() {
         return out;
     }
@@ -824,6 +828,46 @@ pub(super) fn build_router_system_prompt(
     }
     out.push_str(&header);
     out
+}
+
+fn append_worker_capabilities_section(harness: &Harness, out: &mut String) {
+    let mut lines = Vec::new();
+    let mut total_chars = 0_usize;
+    for provider in harness.tool_providers() {
+        if lines.len() >= MAX_ROUTER_PROVIDER_HINTS {
+            break;
+        }
+        let Some(raw) = provider.router_capability_hint() else {
+            continue;
+        };
+        let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if cleaned.is_empty() {
+            continue;
+        }
+        let remaining =
+            MAX_ROUTER_PROVIDER_TOTAL_CHARS.saturating_sub(total_chars);
+        if remaining == 0 {
+            break;
+        }
+        let clamped = flowy_agent_core::log_preview(
+            &cleaned,
+            MAX_ROUTER_PROVIDER_HINT_CHARS.min(remaining),
+        );
+        total_chars = total_chars.saturating_add(clamped.chars().count());
+        lines.push(clamped);
+    }
+    if lines.is_empty() {
+        return;
+    }
+    out.push_str(
+        "\n\n[WorkerCapabilities]\nAvailable inside `mode=\"read_write\"` Workers only:\n",
+    );
+    for line in lines {
+        out.push_str("- ");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.truncate(out.trim_end().len());
 }
 
 impl Harness {

@@ -35,10 +35,12 @@ pub use flex::FlexProvider;
 pub use flowy_agent_core::{
     AcceptanceQueue, AcceptedMessage, BranchHeartbeat, DeliveryCommit,
     DisambiguationOption, FactEntry, FactStatus, ObjectVerifyState,
-    PendingCard, PendingRouterFollowup, ReceiptState, RequiredDeliverable,
-    SessionOrigin, SessionRole, SessionWorkspace, StopHandoffManifest,
-    SubmissionOutcome, TrackedObject, TrackedObjectKind, WorkAccessMode,
-    WorkContract,
+    PendingCard, PendingRouterFollowup, PreToolDecision, ReceiptState,
+    RequiredDeliverable, SessionOrigin, SessionRole, SessionWorkspace,
+    StopHandoffManifest, SubmissionOutcome, TOOL_SEARCH_NAME, ToolCallArgs,
+    ToolDefinition, ToolExecutionResult, ToolExposure, ToolPolicyContext,
+    ToolProvider, ToolProviderContext, ToolRegistry, ToolRunContext,
+    ToolSource, TrackedObject, TrackedObjectKind, WorkAccessMode, WorkContract,
     tools::{
         SHELL_CONFIRM_REQUIRED, SandboxAvailability, SandboxBackend,
         SandboxPolicy, ShellPolicyDecision, detect_sandbox_availability,

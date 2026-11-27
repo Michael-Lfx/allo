@@ -10,7 +10,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use flowy_agent_core::tools::ToolDefinition;
+use flowy_agent_core::tools::{ToolDefinition, ToolSource};
 use flowy_agent_core::{
     RequiredDeliverable, ToolCallArgs, ToolExecutionResult, ToolRunContext,
     WorkContract,
@@ -606,7 +606,9 @@ pub fn definition_with_options(
                 .await
             })
         },
-    ))
+    )
+    .with_read_only(true)
+    .with_source(ToolSource::Host))
 }
 
 #[cfg(test)]
@@ -665,5 +667,7 @@ pub fn artifact_definition_with_options(
                 .await
             })
         },
-    ))
+    )
+    .with_read_only(true)
+    .with_source(ToolSource::Host))
 }

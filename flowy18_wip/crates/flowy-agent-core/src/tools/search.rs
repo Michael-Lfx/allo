@@ -25,7 +25,6 @@ pub const TOOL_SEARCH_NAME: &str = "tool_search";
 
 const DEFAULT_MAX_RESULTS: usize = 8;
 const HARD_MAX_RESULTS: usize = 20;
-const MAX_CATALOG_ENTRIES: usize = 60;
 const MAX_CATALOG_LIST_THRESHOLD: usize = 30;
 const MAX_CATALOG_DESC_CHARS: usize = 60;
 const MAX_CATALOG_TOTAL_CHARS: usize = 1_600;
@@ -159,7 +158,7 @@ pub fn format_deferred_tool_catalog(registry: &ToolRegistry) -> Option<String> {
         "[DeferredToolsAvailable]\nAdditional specialized tools are registered in deferred mode and not loaded into the active schema yet. Call `tool_search` with keywords or `select:name1,name2` to unlock matching tools before invoking them:\n",
     );
     if deferred.len() <= MAX_CATALOG_LIST_THRESHOLD {
-        for def in deferred.iter().take(MAX_CATALOG_ENTRIES) {
+        for def in &deferred {
             let line = format_catalog_entry(def);
             if out.chars().count() + line.chars().count()
                 > MAX_CATALOG_TOTAL_CHARS
