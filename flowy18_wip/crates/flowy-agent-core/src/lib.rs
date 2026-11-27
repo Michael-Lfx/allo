@@ -33,6 +33,11 @@ pub use session::{
     SubmissionOutcome, TrackedObject, TrackedObjectKind, TurnState,
     WorkAccessMode, WorkContract,
 };
+pub use tools::{
+    ActivatedToolSet, TOOL_SEARCH_NAME, ToolDefinition, ToolExposure,
+    ToolPolicyContext, ToolProvider, ToolProviderContext, ToolRegistry,
+    ToolSource,
+};
 pub use transport::{
     echo_stream_fn, openai_stream_fn, openai_structured_stream_fn,
 };
@@ -152,6 +157,7 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: None,
+            pre_activated_tools: Vec::new(),
         };
         let engine = Arc::new(
             Engine::open(
@@ -291,6 +297,7 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: None,
+            pre_activated_tools: Vec::new(),
         };
         let engine = Arc::new(
             Engine::open(
@@ -426,6 +433,7 @@ mod router_core_tests {
             delivery_committer: None,
             work_contract: None,
             pre_tool_hook: Some(hook),
+            pre_activated_tools: Vec::new(),
         };
         let engine = Arc::new(
             Engine::open(

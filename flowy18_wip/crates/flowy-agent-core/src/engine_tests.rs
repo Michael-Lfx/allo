@@ -291,6 +291,7 @@ fn config() -> EngineConfig {
         delivery_committer: None,
         work_contract: None,
         pre_tool_hook: None,
+        pre_activated_tools: Vec::new(),
     }
 }
 

@@ -305,6 +305,9 @@ mod tests {
                     ..ModelRoute::default()
                 },
                 tools: vec![Arc::new(tool)],
+                deferred_tools: Vec::new(),
+                activated_tools: None,
+                read_only_tools: std::collections::HashSet::new(),
                 signal: CancelToken::new(),
                 pre_tool_hook: None,
             },
