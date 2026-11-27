@@ -23,24 +23,7 @@ pub fn track_unproven_process_dispatches(
 ) -> Arc<AtomicBool> {
     let dispatched = Arc::new(AtomicBool::new(false));
     for name in registry.list() {
-        if matches!(
-            name.as_str(),
-            "read_file"
-                | "write_file"
-                | "edit_file"
-                | "glob"
-                | "grep"
-                | "create_deck"
-                | "verify_deck"
-                | "verify_artifact"
-                | "publish_file"
-                | "todo_write"
-                | "query_work_status"
-                | "dispatch_work"
-                | "control_work"
-                | "ask_user_choice"
-        ) || name.starts_with("automation_")
-        {
+        if !crate::tool_policy::tool_policy(&name).unproven_process {
             continue;
         }
         let Some(definition) = registry.get(&name) else {

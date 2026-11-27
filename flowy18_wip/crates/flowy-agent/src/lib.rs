@@ -24,6 +24,7 @@ mod projection;
 mod publish_tool;
 mod semantic_verify;
 mod title;
+pub(crate) mod tool_policy;
 mod verify;
 mod workspace_arbiter;
 

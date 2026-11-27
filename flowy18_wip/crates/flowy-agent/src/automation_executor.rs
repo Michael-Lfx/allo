@@ -91,17 +91,15 @@ impl AgentRunExecutor {
             return Err(PortError::Unavailable);
         }
         let resolved = self.resolver.resolve(&spec)?;
-        let expected_skills =
-            spec.skill_refs.iter().cloned().collect::<BTreeSet<_>>();
-        let actual_skills = resolved
+        let mut expected_skills = spec.skill_refs.clone();
+        let mut actual_skills = resolved
             .skills
             .iter()
             .map(automation_skill_ref)
-            .collect::<BTreeSet<_>>();
-        if expected_skills.len() != spec.skill_refs.len()
-            || expected_skills != actual_skills
-            || resolved.skills.len() != actual_skills.len()
-        {
+            .collect::<Vec<_>>();
+        expected_skills.sort_unstable();
+        actual_skills.sort_unstable();
+        if expected_skills != actual_skills {
             return Err(PortError::Forbidden);
         }
         let binding = spec.model.as_ref().ok_or(PortError::InvalidRequest)?;

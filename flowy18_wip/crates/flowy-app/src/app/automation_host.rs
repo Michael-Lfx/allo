@@ -127,7 +127,7 @@ impl ManualAutomation {
                     }
                     event = tokio::select! {
                         () = wake.notified() => true,
-                        () = tokio::time::sleep(Duration::from_millis(100)) => false,
+                        () = tokio::time::sleep(Duration::from_secs(1)) => false,
                     };
                 }
             };

@@ -12,6 +12,8 @@ use flowy_agent_core::CancelToken;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+use crate::tool_policy::WorkspaceScope;
+
 const MAX_ACTIVE: usize = 2;
 const MAX_BACKGROUND: usize = 1;
 const PRIORITY_MAX_BYPASSES: u8 = 3;
@@ -140,41 +142,19 @@ impl WorkspaceRequest {
         directory: &Path,
         tools: &[String],
     ) -> io::Result<Self> {
-        // Router orchestration and automation bridge calls do not directly
-        // touch the local workspace; their child work acquires its own permit.
-        let non_filesystem = |tool: &str| {
-            matches!(
-                tool,
-                "query_work_status"
-                    | "dispatch_work"
-                    | "control_work"
-                    | "ask_user_choice"
-            ) || tool.starts_with("automation_")
-        };
-        if tools.iter().all(|tool| non_filesystem(tool)) {
+        let mut access = None;
+        for tool in tools {
+            match crate::tool_policy::tool_policy(tool).workspace {
+                WorkspaceScope::Device => return Ok(Self::DeviceWrite),
+                WorkspaceScope::Write => access = Some(WorkspaceAccess::Write),
+                WorkspaceScope::Read if access.is_none() => {
+                    access = Some(WorkspaceAccess::Read);
+                }
+                WorkspaceScope::Read | WorkspaceScope::None => {}
+            }
+        }
+        let Some(access) = access else {
             return Ok(Self::Scoped(Vec::new()));
-        }
-        // Only these built-in file tools have path guards proving a scope.
-        // Shell, verification/rendering, publishing and future unknown tools
-        // are deliberately device-exclusive until all of their I/O is known.
-        if tools.iter().any(|tool| {
-            !matches!(
-                tool.as_str(),
-                "read_file" | "grep" | "glob" | "write_file" | "edit_file"
-            )
-        }) {
-            return Ok(Self::DeviceWrite);
-        }
-        if tools.is_empty() {
-            return Ok(Self::Scoped(Vec::new()));
-        }
-        let access = if tools
-            .iter()
-            .all(|tool| matches!(tool.as_str(), "read_file" | "grep" | "glob"))
-        {
-            WorkspaceAccess::Read
-        } else {
-            WorkspaceAccess::Write
         };
         Ok(Self::Scoped(vec![WorkspaceClaim::resolve(
             directory, access,
