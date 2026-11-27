@@ -9,9 +9,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rpi_agent::{AgentError, AgentTool, AgentToolResult, TextContentOrImage};
+#[cfg(not(target_os = "linux"))]
+use rpi_tools::OsExecutionEnv;
+#[cfg(windows)]
+use rpi_tools::create_powershell_tool;
 use rpi_tools::{
-    BashToolOptions, ExecutionEnv, ExecutionToolContext, OsExecutionEnv,
-    create_bash_tool, create_powershell_tool,
+    BashToolOptions, ExecutionEnv, ExecutionToolContext, create_bash_tool,
 };
 
 use crate::tools::registry::ToolDefinition;
@@ -25,8 +28,18 @@ use crate::types::{ContentBlock, ToolExecutionResult};
 /// full-output spill to a temporary file.
 #[must_use]
 pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
+    #[cfg(target_os = "linux")]
+    let env = crate::tools::sandbox::linux_execution_env(
+        cwd,
+        crate::tools::sandbox::SandboxPolicy::for_workspace(cwd.to_path_buf()),
+    );
+    #[cfg(not(target_os = "linux"))]
     let env: Arc<dyn ExecutionEnv> =
         Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
+    bash_definition(env)
+}
+
+fn bash_definition(env: Arc<dyn ExecutionEnv>) -> Arc<ToolDefinition> {
     let context = ExecutionToolContext::new(env, None);
     let tool = create_bash_tool(
         &context,
@@ -51,6 +64,27 @@ pub fn pi_shell_definition(cwd: &Path) -> Arc<ToolDefinition> {
     #[cfg(not(windows))]
     {
         pi_bash_definition(cwd)
+    }
+}
+
+/// Production shell with the host's branded data directory in the Linux
+/// credential protection policy.
+#[must_use]
+pub fn pi_shell_definition_for_host(
+    cwd: &Path,
+    data_root: &Path,
+) -> Arc<ToolDefinition> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::tools::sandbox::{SandboxPolicy, linux_execution_env};
+        let policy = SandboxPolicy::for_workspace(cwd.to_path_buf())
+            .with_protected_path(data_root.join("auth"));
+        bash_definition(linux_execution_env(cwd, policy))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = data_root;
+        pi_shell_definition(cwd)
     }
 }
 
@@ -440,6 +474,43 @@ mod tests {
             )
             .await;
         assert_eq!(*seen.lock().unwrap(), vec![Some(120.0), Some(15.0)]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires nonprivileged Bubblewrap with mount and PID namespaces"]
+    async fn linux_bwrap_tool_enforces_workspace_writes() {
+        let salt = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("build-test")
+            .join(format!("flowy-bwrap-shell-{salt}"));
+        let cwd = root.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let registry = ToolRegistry::new();
+        std::fs::create_dir(root.join("auth")).unwrap();
+        std::fs::write(root.join("auth/fixture"), "synthetic").unwrap();
+        registry.register(super::pi_shell_definition_for_host(&cwd, &root));
+        let result = registry
+            .execute(
+                "call-bwrap".into(),
+                "bash".into(),
+                json!({
+                    "command": "set -e; printf inside > inside; test -d ../auth; test ! -e ../auth/fixture; if printf outside > ../outside; then exit 1; fi",
+                    "timeout": 10,
+                }),
+                run_ctx(),
+            )
+            .await;
+        let inside = std::fs::read(cwd.join("inside"));
+        let outside_written = root.join("outside").exists();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(inside.unwrap(), b"inside");
+        assert!(!outside_written, "shell wrote outside the workspace");
+        assert!(!result.is_error(), "{result:?}");
     }
 
     #[tokio::test]

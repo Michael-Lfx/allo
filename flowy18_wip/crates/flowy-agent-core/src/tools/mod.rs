@@ -15,7 +15,7 @@ pub use builtin::{
     has_reserved_device_component, is_windows_reparse_point,
     is_windows_reserved_device_name, register_builtin_tools,
 };
-pub use pi::pi_shell_definition;
+pub use pi::{pi_shell_definition, pi_shell_definition_for_host};
 pub use provider::{ToolPolicyContext, ToolProvider, ToolProviderContext};
 pub use registry::{
     BoxFuture, ToolDefinition, ToolExposure, ToolGuard, ToolPolicy,

@@ -67,7 +67,11 @@ impl AgentHandle {
             let mut initializing = lock(&self.inner.state.initializing);
             let config = lock(&self.inner.config).clone();
             if let Some(engine) = engine {
-                engine.set_config(engine_config(&config, &cwd));
+                engine.set_config(engine_config(
+                    &config,
+                    &cwd,
+                    &self.inner.state.root,
+                ));
             }
             *initializing = false;
         }
@@ -164,7 +168,7 @@ impl AgentHandle {
         let tool_cwd = ensure_tool_cwd(&state.root);
         let engine = match Engine::open(
             state.root.clone(),
-            engine_config(&config, &tool_cwd),
+            engine_config(&config, &tool_cwd, &state.root),
             Arc::clone(&observer),
         ) {
             Ok(engine) => Arc::new(engine),
@@ -186,7 +190,7 @@ impl AgentHandle {
                 state.report_storage_error();
                 match Engine::open(
                     state.root.clone(),
-                    engine_config(&config, &tool_cwd),
+                    engine_config(&config, &tool_cwd, &state.root),
                     observer,
                 ) {
                     Ok(engine) => Arc::new(engine),

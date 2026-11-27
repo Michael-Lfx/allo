@@ -105,6 +105,13 @@ jobs:
         run: cargo test -p flowy-agent-core --locked
       - name: Agent orchestration tests
         run: cargo test -p flowy-agent --locked
+      - name: Install Bubblewrap for sandbox integration
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Nonprivileged Linux sandbox integration
+        run: cargo test -p flowy-agent-core --locked --lib linux_bwrap_ -- --ignored --test-threads=1
+
 
   windows-core-agent:
     name: GPUI Windows core and agent tests
