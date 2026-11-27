@@ -454,6 +454,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | 脚本 | 说明 |
 | --- | --- |
 | **开发（热重载）** | |
+| `bun run optimize:example-covers` | 用 ImageMagick 重新压缩首页示例封面并仅在更小时替换 |
 | `bun run dev` | 启动桌面应用开发（tauri dev，热重载） |
 | `bun run dev:web` | 启动 Web 全栈开发（后端 API + 前端 vite） |
 | `bun run dev:ui` | 仅启动前端开发服务器（纯 vite，无后端） |
@@ -467,8 +468,11 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run build:linux` | 打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/ |
 | `bun run build:signed` | 打桌面包并签名+公证（仅 macOS） |
 | `bun run build:updater` | 打桌面包并产出自更新 .sig 制品 |
-| `bun run build:inspect` | 只读检查构建目录占用与活跃开发会话 |
-| `bun run build:gc` | 显式回收可证明不再使用的历史构建产物 |
+| `bun run build:unibuddy` | 构建 UniBuddy 品牌 UI，并为当前操作系统打桌面安装包 |
+| `bun run build:inspect` | 只读检查构建目录占用与活跃开发会话（支持 --flowy18 / --worktrees / --prune-temp） |
+| `bun run build:inspect:all` | 只读盘点根仓、flowy18_wip、worktree 与 Temp 构建缓存占用 |
+| `bun run build:gc` | 显式回收可证明不再使用的历史构建产物（支持 --flowy18 / --worktrees / --prune-temp） |
+| `bun run build:gc:all` | 显式安全回收根仓、flowy18_wip 与空闲 worktree 过期增量/产物（跳过活跃会话，清 Temp 需另加 --prune-temp） |
 | `bun run build:clean` | 显式清理构建缓存并提示下一次会冷编译 |
 | `bun run make:latest` | 扫描本机更新产物，生成/合并自动更新清单 latest.json |
 | `bun run upload:modelscope` | 上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN） |
@@ -495,12 +499,14 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | **静态检查 / 门禁** | |
 | `bun run check:process-runtime-boundary` | Enforce the supervised process runtime boundary and exact hand-off allowlist. |
 | `bun run check:browser-platform-boundary` | Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths. |
+| `bun run check:tauri-renderer-boundary` | Reject direct @tauri-apps imports outside ui/src/common/adapter in renderer and common code. |
 | `bun run check:agent-vocabulary` | [Deprecated] Retired gate for legacy agent vocabulary. |
 | `bun run check:windows-console-hide` | Require nomi-process-runtime hide helpers for tool spawns and Windows Pipe-only shell transport. |
 | `bun run check:codemirror-runtime` | Verify the CodeMirror and Lezer runtime closure uses one deduplicated instance per core package. |
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
 | `bun run check:fingerprint` | Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site. |
 | `bun run check:release-sync` | Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide. |
+| `bun run check:release-product-profiles` | Verify the shared desktop release workflow keeps Flowy and UniBuddy tags, configs, channels, publication targets, and NSIS installer bitmaps isolated. |
 | `bun run check:release-voice-preparation` | Verify every release build hook still prepares the production voice daemon and never rebuilds the UI. |
 | `bun run release:check` | Agent Store release gate: repo gates + web typecheck/tests + App Server protocol tests (docs/agent-store/25). |
 | `bun run release:check:site` | Agent Store release gate, docs-site half: docs-sync + market gates + typecheck in the sibling agent-store-site checkout. |
@@ -512,6 +518,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:support-surface-contract` | 静态校验客服面板 Edge 矩阵的进程清理、回环 URL 和运行次数上限 |
 | `bun run check:dead-css` | 扫描 CSS 工具类死代码（check-dead-css-utilities.mjs） |
 | `bun run check:button-layout-contract` | 扫描所有 Arco 图标文字按钮并校验共享横向布局契约 |
+| `bun run check:example-covers` | 校验首页示例封面尺寸与单文件体积，防止打包资源回涨 |
 | `bun run check` | 聚合仓级门禁：错误面板契约 + 进程运行时边界 + 浏览器平台边界 + 市场清单 + 协议指纹 + 跨仓发布同步 + 脚本登记（ui/ 的前端检查已移出此链，脚本保留、按需手动跑） |
 | `bun run typecheck` | 前端 TypeScript 类型检查（tsc --noEmit） |
 | `bun run typecheck:auth` | 登录/认证相关前端类型检查（窄范围，CI 必过） |
