@@ -841,6 +841,9 @@ mod tests {
 
         // Default limit matches MAX_ACTIVATED_TOOLS_PER_TURN (= 32).
         let default_set = ActivatedToolSet::default();
-        assert_eq!(default_set.max_activated(), super::MAX_ACTIVATED_TOOLS_PER_TURN);
+        assert_eq!(
+            default_set.max_activated(),
+            super::MAX_ACTIVATED_TOOLS_PER_TURN
+        );
     }
 }
