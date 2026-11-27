@@ -1243,7 +1243,6 @@ impl StudioPanel {
         self.close_all_popovers();
         self.flow_modal.close();
         self.clear_right_sheet();
-        self.dock_visible = true;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
         self.apply_draft_project(None);
@@ -1568,6 +1567,7 @@ impl StudioPanel {
             .update(cx, |feed, cx| feed.set_artifacts(artifacts, cx));
         if self.right_drawer_open {
             self.refresh_drawer_metadata(cx);
+            cx.notify();
         }
     }
 
@@ -2568,7 +2568,7 @@ impl StudioPanel {
                 let key = crate::ports::canonical_path_key(path);
                 let size = crate::ports::resolve_safe_local_file(path)
                     .and_then(|safe| {
-                        std::fs::metadata(&safe).ok().map(|m| (safe, m))
+                        std::fs::symlink_metadata(&safe).ok().map(|m| (safe, m))
                     })
                     .filter(|(safe, meta)| {
                         meta.is_file()
@@ -5610,6 +5610,157 @@ mod tests {
                 "existing draft must stay intact while fix context moves to quote"
             );
         });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn open_chief_assistant_reset_preserves_collapsed_dock_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-panel-dock-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        panel.update(cx, |panel, cx| {
+            panel.set_dock_visible(false, cx);
+            assert!(!panel.dock_visible);
+            panel.open_chief_assistant(cx);
+            assert!(
+                !panel.dock_visible,
+                "reset_session from open_chief_assistant must not overwrite collapsed dock_visible"
+            );
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn set_artifacts_with_open_drawer_and_empty_workspace_files_notifies_panel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "flowy-panel-artifacts-notify-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create test root");
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        let notifies = Arc::new(AtomicUsize::new(0));
+        let notifies_ref = Arc::clone(&notifies);
+        let _sub = cx.update(|_, cx| {
+            cx.observe(&panel, move |_, _| {
+                notifies_ref.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+
+        panel.update(cx, |panel, cx| {
+            let sid = panel.agent.create_session().expect("create session");
+            panel.agent.select_session(&sid).expect("select session");
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid),
+                    flowy_agent::ChatHistory {
+                        rows: vec![flowy_agent::ChatLine::Artifact {
+                            artifact_id: "art-empty-ws".into(),
+                        }],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+            panel.toggle_deliverables(cx);
+            assert!(panel.right_drawer_open);
+            assert_eq!(panel.visible_workspace_deliverables(cx).len(), 0);
+        });
+        cx.run_until_parked();
+        notifies.store(0, Ordering::SeqCst);
+
+        let item = crate::library::LibraryItem {
+            id: "art-empty-ws".into(),
+            title: "Summary Deck".into(),
+            original_name: "summary.pptx".into(),
+            description: String::new(),
+            category: crate::library::Category::Slides,
+            date: String::new(),
+            time: String::new(),
+            pending: false,
+            preview: None,
+            size_bytes: Some(2048),
+            extension: "pptx".into(),
+            media_type: None,
+            delivered_at_ms: 0,
+            delivered_date: "2026-11-27".into(),
+            delivered_time: "10:00".into(),
+            source_session_id: String::new(),
+            source_title: String::new(),
+            source_deleted: false,
+            source_unavailable: false,
+            favorite: false,
+            availability: crate::library::ArtifactAvailability::Available,
+            override_used: false,
+        };
+        panel.update(cx, |panel, cx| {
+            panel.set_artifacts(vec![item], cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            notifies.load(Ordering::SeqCst) >= 1,
+            "set_artifacts with open right drawer must notify StudioPanel even when workspace deliverable paths are empty"
+        );
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.feed.read(cx).session_artifacts().len(), 1);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
