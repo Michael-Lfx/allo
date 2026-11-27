@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.22 更新）**：**直接先读 §30（`origin/main@0fdeb69d6` + `fix/flowy18-provider-seam-hardening`：PR #530 扩展底座四项安全/并发硬化、`autonomous_drain` 隔离与最新接入契约）**，并对照 **§29（`PR #531` 可视细滚动条与 Windows UIA `ScrollPattern` 契约）**、**§28（`PR #530` `ToolProvider` / `Ask` / `tool_search` 有状态扩展底座与最新模块布局）** 与 §27 / §27.1（PR #512 与 `#514–#529` 主干全账、Wave 2 目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（Router/Work 隔离与有状态 `ToolProvider` 扩展接入规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§29 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流与扩展/滚动契约与 §30 不一致处，**一律以 §30 为准**。
+> **现役唯一入口（2026-11-27 修订 9.23 更新）**：**直接先读 §31（`origin/main@f40a16275` · `PR #533–#545` 主干最新底座：15 Crate `flowy-automation`、Linux/macOS 沙箱 CI、`check-docs-and-scroll.mjs` `rawScrollAllowlist` 30 处存量冻结、`build-dir` 代次 GC/`worktree-gc`/`nextest.toml` 与下一步低频滚区/扩展契约）**，并对照 **§30（`PR #534` @ `2b783e385` `ToolProvider` 硬化与异步 drain 隔离）**、**§29（`PR #531` 可视细滚动条与 Windows UIA `ScrollPattern` 契约）**、**§28（`PR #530` 扩展底座与模块布局）** 与 §27 / §27.1（PR #512 与 `#514–#529` 主干全账、Wave 2 目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511）、§25（703/703 基线）、§24（PR #504）、§23（PR #503）、§22（PR #498 + 修订 9.13）、§21（PR-2B）、§19（PR-2A 契约）、§20（PR #497）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§30 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流、工程门禁与滚动/扩展契约与 §31 不一致处，**一律以 §31 为准**。
 
 ---
 
@@ -902,14 +902,30 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
 
 ---
 
-## 30. PR #530 Work 扩展底座硬化与并发隔离收口（2026-11-27 · `fix/flowy18-provider-seam-hardening` · `origin/main@0fdeb69d6` · 修订 9.22）
+## 30. PR #530 Work 扩展底座硬化与并发隔离收口（2026-11-27 · `PR #534` @ `2b783e385` / `fix/flowy18-provider-seam-hardening` · 基于 `origin/main@0fdeb69d6` · 修订 9.22）
 
-- **主干与分支定位**：`origin/main@0fdeb69d6` 已合入 **PR #530**（Work 扩展底座）、**PR #531**（可视细滚动条与 Windows UIA `ScrollPattern`）与 **PR #532**（修订 9.21 台账）。分支 `fix/flowy18-provider-seam-hardening`（worktree `.agents/worktrees/feat-work-capability-seam`，构建目录 `$env:LOCALAPPDATA\Temp\flowy18-capability-build`）已完成四项底座硬化 + `autonomous_drain` 2-线程阻塞修复、8 项新增端到端回归与完整 Level 4 门禁，正在提 PR 收口。
+- **主干与分支定位**：`origin/main@0fdeb69d6` 已合入 **PR #530**（Work 扩展底座）、**PR #531**（可视细滚动条与 Windows UIA `ScrollPattern`）与 **PR #532**（修订 9.21 台账）。分支 `fix/flowy18-provider-seam-hardening`（worktree `.agents/worktrees/feat-work-capability-seam`，构建目录 `$env:LOCALAPPDATA\Temp\flowy18-capability-build`）已完成四项底座硬化 + `autonomous_drain` 2-线程阻塞修复、8 项新增端到端回归与完整 Level 4 门禁，并已于 `2026-11-27T06:14:13Z` 作为 **`PR #534`（`2b783e385`）** 合入 `main`。
 - **扩展接线契约新增硬规则（接入首个真实业务 Provider 前必读）**：
   1. **实现 `ToolProvider::version()` 保护热升级/跨版本审批**（[`tools/provider.rs`](../../../crates/flowy-agent-core/src/tools/provider.rs#L40)）：当同一 `id()` 的 Provider 更新内部策略、鉴权语义或实现版本（即便工具 JSON Schema 没变）时，覆写 `version() -> Some("x.y.z")` 即可使旧版挂起的 `ToolApproval` 卡片在热升级或重启后自动作废并强迫 `[ApprovalInvalidated]` + `force_reconfirm_tools` 重新确认；无 `Ask` 的新版本也无法绕过。
   2. **同一 Provider 内禁止注册重复工具名**：`stage_tool_providers` 对单次 `register_tools` 内重复注册的工具名（[`tools/registry.rs#L272`](../../../crates/flowy-agent-core/src/tools/registry.rs#L272)）按整名 fail-closed 丢弃并打 `tracing::warn!`，而原生 `ToolRegistry::new()` 保持原有后写覆盖语义。
   3. **多工具 `Deferred` 预算与零引用环**：`tool_search` 快照与 `ActivatedToolSet` 单回合累计通过搜索新增激活上限为 **`MAX_ACTIVATED_TOOLS_PER_TURN = 32`**（[`tools/search.rs#L33`](../../../crates/flowy-agent-core/src/tools/search.rs#L33)）；搜索闭包仅捕获纯值目录快照，正常完成与 `cancel_task` 取消均完整释放工具闭包与服务状态；审批恢复注入的 `pre_activated_tools` 不受 32 上限影响。
   4. **异步调度与锁序安全**：`router_capability_hint()` 只在 `register_tool_provider` 注册期缓存一次（Router 会话零回调）；Worker `pre_stage_worker_providers` 在 `state.dispatch` 锁外完成且 `autonomous_drain` 经 `spawn_blocking` 隔离；非认领回合经 `has_owned_claim` 跳过 `accept_drain`；但接入仍须坚持 `register_tools` 纯内存无阻塞原则。
 - **本轮终版 Level 4 实测真值（代码点 `74ee21b1d`，顺序执行）**：`bun scripts/check-ui-contracts.mjs`（24 夹具 + 全库 PASS）、`cargo fmt --all -- --check` 0 diff、`flowy-agent-core` **149 passed / 2 ignored**、`flowy-agent -- --test-threads=1` **294 passed / 4 ignored**（含 `provider_tests` **15/15 PASS**、`guard_tests` **34/34**、`router_tests` **31/31 + 1 ignored**）、`flowy-studio` **175 passed / 2 ignored**、`flowy-ui` **50 + 2 passed**、`cargo check -p flowy-desktop --locked` PASS、5-Crate `--all-targets clippy -- -D warnings` 0 告警（详情见 [`证据.md`](证据.md) §11.48）。
-- **下一里程碑建议（待本 PR 合入后）**：优先按受控最小业务切片验证真实接入契约（例如本地自动化规则只读查询 + 需 `Ask` 确认的写入规则，端到端验证「Router 派发 -> Worker `tool_search` -> 用户确认 -> 仅执行一次 -> 可观察结果」与桌面真实卡片/取消归属），再逐步接调度器执行体、其余 ~26 处低频滚区、`Enforced` 沙箱与大规模工具目录；`persona.rs` 与 V6 外发（§5）仍维持暂缓/硬阻塞。
+- **下一里程碑建议**：已在修订 9.23 由 `#533–#545` 率先落地双平台沙箱、个人自动化与静检基线；当前最新收口基线与待办请直看下节 **§31**。
+
+---
+
+## 31. `origin/main@f40a16275` 主干十三连收口：15 Crate、双平台沙箱 CI、门禁与 `nextest` 基线（2026-11-27 · PR #533–#545 · 修订 9.23）
+
+- **当前真实工作区基线**：`origin/main@f40a16275`（`PR #545`）包含 **15 个工作区 Crate**（新增 `crates/flowy-automation`）、23 份 pure-LF 多语言字典（当前对称 **1,015 键**），已在 Linux（Bubblewrap，`ubuntu-26.04`）与 macOS（Seatbelt，`macos-15`）CI 启用实机原生 Shell 沙箱门禁（Windows 仍诚实上报 `Degraded` 待 `AppContainer`）。
+- **日常开发与预提交必跑新契约（开工必读）**：
+  1. **快检脚本与防回退双门禁**：提交前本地先跑 `bun flowy18_wip/scripts/check-fast.mjs --diff`（~2s 串行检查 [`check-ui-contracts.mjs`](../../../scripts/check-ui-contracts.mjs) `52` 断言 [全工作区非测试 0 `.unwrap()` + UIA `Role::MenuItemRadio`/`.aria_expanded(` 禁令 + 非授权通配符禁令] + [`check-docs-and-scroll.mjs`](../../../scripts/check-docs-and-scroll.mjs) `15` 断言 + `rustfmt`）；且 `.githooks/pre-push` 已自动在涉及 `flowy18_wip/` 改动时触发 `check-fast`（见 `PR #541`–`#542`）。
+  2. **ScrollArea 防回退只减不增**：严禁在 `flowy-ui/src/scroll.rs` 之外新增 `.scrollbar_width(...)` 或未经白名单的 `.overflow_*_scroll(...)`；当前 `rawScrollAllowlist` 尚余 **21 文件 30 处**存量（`flowy-app`: 17、`flowy-studio`: 12、`flowy-ui`: 1）。新增 `a11y.*` 键须满足 `^a11y\.[a-z0-9_]+$` 小写蛇形命名。
+  3. **`nextest`、`build-dir` 回收与 Worktree 安全**：`flowy18_wip/.config/nextest.toml` 已将 `flowy-agent` 与 `flowy-automation` 收口为单线程 `serial-storage` 组（其余 Crate 并发，`cargo nextest run -p flowy-agent-core -p flowy-agent -p flowy-automation --locked` 实测 `470 passed, 6 skipped`）；仓根提供 `bun run build:inspect:all` / `build:gc:all`（支持 Cargo 1.100 `build-dir` 代次裁剪，自动保护 `dx-capture-wrapper/target/`）及 `bun run worktree:inspect` / `worktree:prune`（严禁未经确认清理他人未合入或脏 worktree）。
+- **个人自动化与界面最新动态（`#535` / `#537` / `#544`）**：已落地独立「我的技能」导航（`flowy-app/src/app/skills/mine.rs`）及绑定源会话的 `flowy-automation` 定时调度与 Router `WorkEventBatch` 3 次退避重试+宿主直写兜底（`query_work_status` 直出本地格式化状态；桌面侧栏暂隐自动化页标签）。
+- **下一步优先队列（接手即用）**：
+  1. **迁入低频原生滚动区到 `ScrollArea`**：
+     - **Batch 1**：迁入 `flowy-app` 全部 **17 处（10 文件）** 将 `flowy-app` 白名单清零——注意 `theme::dialog`（`gallery:570` / `invite:124` / `projects:317`）与 `theme::menu`（`settings:468`）须**外包壳+内嵌 `scroll_area` 双层拆解**（`ScrollArea` 未实现 `InteractiveElement` / 会破坏 `Role::Dialog`、`Role::Menu` 与键导）；`max_h` 弹层使用 `.max_h_viewport(...)`；`skills:381` 需先在 `ScrollArea` 上暴露 `.on_scroll(...)` 转发；`appearance:57` 与 `settings:568` 外包父容器补齐 `.flex().flex_col()`；同步补全 23 语种 pure-LF `a11y.scroll_*` 键。
+     - **Batch 2 边界**：`flowy-studio` 可安全迁移 10 处常规/水平视口（`studio:253` 亦走 `theme::menu` 拆解，`drawer_preview:942` 补底部滑块让位边距）；`overlays.rs:875` 保留基础设施豁免防双层滚条，[`markdown.rs`](../../../crates/flowy-studio/src/markdown.rs#L745) 两处横向块在未给 `markdown::render` 传入消息/轮次盐值前切勿强迁（防 `next_control: Cell::new(0)` 重置引起跨气泡 `ScrollHandle` 串台）。
+  2. **按既有 `ToolProvider` 契约扩展真实能力切片 & Windows AppContainer**：`persona.rs` 个性化继续**暂缓**，V6 外发（[`BLOCKED.md`](BLOCKED.md) §5）继续**硬阻塞**。
 
