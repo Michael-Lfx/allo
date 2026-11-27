@@ -107,7 +107,7 @@ fn skills_and_personalization_are_direct_navigation_items(
         app.ota.checked = true;
         app
     });
-    let (plugins, more, skills, personalization, automation) =
+    let (plugins, more, skills, personalization, automation, mine, explore) =
         cx.read_entity(&app, |app, _| {
             (
                 app.t("dock.plugins"),
@@ -115,6 +115,8 @@ fn skills_and_personalization_are_direct_navigation_items(
                 app.t("more.skills"),
                 app.t("more.personal"),
                 app.t("dock.automation"),
+                app.t("skills.mine"),
+                app.t("skills.library_explore"),
             )
         });
     draw(cx);
@@ -144,10 +146,27 @@ fn skills_and_personalization_are_direct_navigation_items(
         }
     });
     click(cx, &skills);
+    cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
+    click(cx, &mine);
     cx.read_entity(&app, |app, _| {
-        assert_eq!(app.persona.page, more::Page::Skills);
-        assert_eq!(app.section, Section::More);
+        assert_eq!(app.section, Section::MySkills);
+        assert_eq!(app.active_dialog, state::ActiveDialog::None);
+        assert_eq!(app.nav_back.last(), Some(&Section::Skills));
     });
+    click(cx, &personalization);
+    cx.update_entity(&app, super::FlowyApp::navigate_back);
+    cx.read_entity(&app, |app, _| {
+        assert_eq!(app.section, Section::MySkills);
+    });
+    cx.update_entity(&app, super::FlowyApp::navigate_back);
+    cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
+    cx.update_entity(&app, super::FlowyApp::navigate_forward);
+    draw(cx);
+    cx.read_entity(&app, |app, _| {
+        assert_eq!(app.section, Section::MySkills);
+    });
+    click(cx, &explore);
+    cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
     click(cx, &automation);
     cx.read_entity(&app, |app, _| {
         assert_eq!(app.section, Section::Automation);
@@ -155,7 +174,6 @@ fn skills_and_personalization_are_direct_navigation_items(
     click(cx, &personalization);
     cx.read_entity(&app, |app, _| {
         assert_eq!(app.section, Section::More);
-        assert_eq!(app.persona.page, more::Page::Personal);
         assert_eq!(app.nav_back.last(), Some(&Section::Automation));
     });
     let _ = std::fs::remove_dir_all(root);
