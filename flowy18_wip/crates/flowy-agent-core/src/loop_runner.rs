@@ -1284,6 +1284,7 @@ fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                     content: vec![ContentBlock::text(user_text(&user.content))],
                     source: MessageSource::User,
                     display_text: None,
+                    dispatch_receipt_id: None,
                 });
             }
             AgentMessage::Assistant(assistant) => {
@@ -1318,6 +1319,7 @@ fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                         model: assistant.model.clone(),
                     },
                     display_text: None,
+                    dispatch_receipt_id: None,
                 });
             }
             AgentMessage::ToolResult(result) => {
@@ -1349,6 +1351,7 @@ fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                         tool: result.tool_name.clone(),
                     },
                     display_text: None,
+                    dispatch_receipt_id: None,
                 });
             }
             AgentMessage::Custom(_) => {}

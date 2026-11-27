@@ -4,7 +4,7 @@
 //! rows are projected from loop events and persisted next to the structured
 //! history, so the UI keeps its snapshot semantics.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -236,6 +236,10 @@ struct Live {
     active_turn_is_internal: bool,
     /// Non-busy status captured before an internal turn so transient failures restore cleanly.
     active_turn_prev_status: Option<TurnStatus>,
+    /// Canonical card key (`verify:...` / `artifact:...`) -> originating dispatch `receipt_id`.
+    card_receipts: BTreeMap<String, String>,
+    /// Dispatch `receipt_id` for the currently active (or latest) Worker dispatch cycle.
+    active_dispatch_receipt_id: Option<String>,
 }
 
 struct ResumedSubmission {
@@ -250,6 +254,7 @@ struct ResumedSubmission {
     pub(super) prompt_source: MessageSource,
     pub(super) is_router_announcement: bool,
     pub(super) bypass_busy_queue: bool,
+    pub(super) dispatch_receipt_id: Option<String>,
 }
 
 impl Default for ResumedSubmission {
@@ -266,6 +271,7 @@ impl Default for ResumedSubmission {
             prompt_source: MessageSource::User,
             is_router_announcement: false,
             bypass_busy_queue: false,
+            dispatch_receipt_id: None,
         }
     }
 }
@@ -1171,7 +1177,6 @@ impl AgentHandle {
             let Some(child_live) = live.get(child_id) else {
                 continue;
             };
-            let target_turn = work_turns.get(child_id).copied();
             for line in &child_live.projection.lines {
                 match line {
                     ChatLine::Verification {
@@ -1187,6 +1192,15 @@ impl AgentHandle {
                     } => {
                         let key =
                             verification_dedup_key(report_id, artifact_path);
+                        let receipt_id = child_live
+                            .card_receipts
+                            .get(&verification_receipt_key(
+                                report_id,
+                                artifact_path,
+                            ))
+                            .map(String::as_str);
+                        let target_turn =
+                            work_turns.resolve(child_id, receipt_id);
                         let card = ChatLine::Verification {
                             report_id: report_id.clone(),
                             artifact_path: artifact_path.clone(),
@@ -1220,6 +1234,12 @@ impl AgentHandle {
                     ChatLine::Artifact { artifact_id }
                         if seen_artifacts.insert(artifact_id.clone()) =>
                     {
+                        let receipt_id = child_live
+                            .card_receipts
+                            .get(&artifact_receipt_key(artifact_id))
+                            .map(String::as_str);
+                        let target_turn =
+                            work_turns.resolve(child_id, receipt_id);
                         push_to_slot(
                             target_turn,
                             ChatLine::Artifact {
@@ -1274,21 +1294,20 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
-    /// Map each dispatched/revised `work_id` to the index in `user_positions`
-    /// of the latest Router user turn that produced a successful
-    /// `DispatchWorkResult`.
+    /// Map each dispatched/revised `(work_id, receipt_id)` (and latest
+    /// `work_id` fallback for legacy untagged cards) to its Router user turn
+    /// index in `user_positions`.
     fn collect_work_dispatch_turns(
         rows: &[ChatLine],
         user_positions: &[usize],
-    ) -> HashMap<String, usize> {
-        let mut work_turns = HashMap::new();
+    ) -> WorkDispatchTurns {
+        let mut work_turns = WorkDispatchTurns::default();
         if user_positions.is_empty() {
             return work_turns;
         }
         let mut current_turn: Option<usize> = None;
         let mut user_cursor = 0_usize;
-        let mut pending_tools: std::collections::VecDeque<&str> =
-            std::collections::VecDeque::new();
+        let mut pending_tools: VecDeque<&str> = VecDeque::new();
         for (idx, line) in rows.iter().enumerate() {
             while user_cursor < user_positions.len()
                 && user_positions[user_cursor] <= idx
@@ -1313,10 +1332,27 @@ impl AgentHandle {
                             .get("work_id")
                             .and_then(serde_json::Value::as_str)
                         && !work_id.is_empty()
-                        && (val.get("receipt_id").is_some()
-                            || matches!(prev_tool, Some("dispatch_work")))
                     {
-                        work_turns.insert(work_id.to_owned(), turn);
+                        let receipt_id = val
+                            .get("receipt_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|rid| !rid.is_empty());
+                        if val.get("receipt_id").is_some()
+                            || matches!(prev_tool, Some("dispatch_work"))
+                        {
+                            work_turns
+                                .latest_by_work
+                                .insert(work_id.to_owned(), turn);
+                            if let Some(rid) = receipt_id {
+                                work_turns
+                                    .by_receipt
+                                    .entry(work_id.to_owned())
+                                    .or_default()
+                                    .entry(rid.to_owned())
+                                    .or_insert(turn);
+                            }
+                        }
                     }
                 }
                 ChatLine::ToolResult { is_error: true, .. } => {
@@ -1928,6 +1964,8 @@ impl Harness {
                 access_mode,
                 active_turn_is_internal: false,
                 active_turn_prev_status: None,
+                card_receipts: BTreeMap::new(),
+                active_dispatch_receipt_id: None,
             },
         );
         if make_active {
@@ -1939,6 +1977,28 @@ impl Harness {
         }
         self.state.push_update(AgentUpdate::Sessions);
         Ok(id)
+    }
+}
+
+#[derive(Debug, Default)]
+struct WorkDispatchTurns {
+    /// `work_id -> (receipt_id -> router_user_turn_index)` (first turn owning a receipt wins).
+    by_receipt: HashMap<String, HashMap<String, usize>>,
+    /// `work_id -> latest_router_user_turn_index` fallback for legacy untagged cards.
+    latest_by_work: HashMap<String, usize>,
+}
+
+impl WorkDispatchTurns {
+    fn resolve(
+        &self,
+        work_id: &str,
+        receipt_id: Option<&str>,
+    ) -> Option<usize> {
+        receipt_id
+            .map(str::trim)
+            .filter(|rid| !rid.is_empty())
+            .and_then(|rid| self.by_receipt.get(work_id)?.get(rid).copied())
+            .or_else(|| self.latest_by_work.get(work_id).copied())
     }
 }
 
@@ -1954,6 +2014,17 @@ fn verification_dedup_key(report_id: &str, artifact_path: &str) -> String {
     } else {
         format!("report:{rid}")
     }
+}
+
+fn verification_receipt_key(report_id: &str, artifact_path: &str) -> String {
+    format!(
+        "verify:{}",
+        verification_dedup_key(report_id, artifact_path)
+    )
+}
+
+fn artifact_receipt_key(artifact_id: &str) -> String {
+    format!("artifact:{artifact_id}")
 }
 
 /// Remove and return all active receipt claims targeting `session_id`.

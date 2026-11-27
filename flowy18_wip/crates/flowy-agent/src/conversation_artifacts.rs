@@ -565,6 +565,7 @@ mod tests {
             content: vec![ContentBlock::text("write files")],
             source: MessageSource::User,
             display_text: None,
+            dispatch_receipt_id: None,
         }
     }
 
@@ -582,6 +583,7 @@ mod tests {
                 model: "test".into(),
             },
             display_text: None,
+            dispatch_receipt_id: None,
         }
     }
 
@@ -597,6 +599,7 @@ mod tests {
             }],
             source: MessageSource::Tool { tool: tool.into() },
             display_text: None,
+            dispatch_receipt_id: None,
         }
     }
 

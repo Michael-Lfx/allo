@@ -180,6 +180,8 @@ pub enum PendingCard {
         options: Vec<DisambiguationOption>,
         #[serde(default)]
         allow_multi: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dispatch_receipt_id: Option<String>,
     },
     ToolApproval {
         card_id: String,
@@ -745,6 +747,7 @@ mod tests {
                 content: vec![ContentBlock::text("read the config")],
                 source: MessageSource::User,
                 display_text: None,
+                dispatch_receipt_id: None,
             },
             Message {
                 id: "a1".into(),
@@ -764,6 +767,7 @@ mod tests {
                     model: "AIPC-deepseek-v4-flash".into(),
                 },
                 display_text: None,
+                dispatch_receipt_id: None,
             },
             Message {
                 id: "t1".into(),
@@ -778,6 +782,7 @@ mod tests {
                     tool: "read_file".into(),
                 },
                 display_text: None,
+                dispatch_receipt_id: None,
             },
             Message {
                 id: "a2".into(),
@@ -788,6 +793,7 @@ mod tests {
                     model: "AIPC-deepseek-v4-flash".into(),
                 },
                 display_text: None,
+                dispatch_receipt_id: None,
             },
         ]
     }
@@ -1009,6 +1015,7 @@ mod tests {
                     extension: "pptx".to_owned(),
                 }],
                 allow_multi: true,
+                dispatch_receipt_id: None,
             }],
             last_stop_handoff: Some(StopHandoffManifest {
                 input_revision: 3,
@@ -1026,5 +1033,32 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&record).unwrap())
                 .unwrap();
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn message_dispatch_receipt_id_round_trips_and_omits_when_none() {
+        let legacy = Message {
+            id: "u0".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("hi")],
+            source: MessageSource::User,
+            display_text: None,
+            dispatch_receipt_id: None,
+        };
+        let encoded_none = serde_json::to_string(&legacy).unwrap();
+        assert!(
+            !encoded_none.contains("dispatch_receipt_id"),
+            "None dispatch_receipt_id must be skipped in JSON: {encoded_none}"
+        );
+        let decoded_legacy: Message =
+            serde_json::from_str(&encoded_none).unwrap();
+        assert_eq!(decoded_legacy.dispatch_receipt_id, None);
+
+        let mut stamped = legacy;
+        stamped.dispatch_receipt_id = Some("rcpt-42".into());
+        let encoded_some = serde_json::to_string(&stamped).unwrap();
+        assert!(encoded_some.contains("\"dispatch_receipt_id\":\"rcpt-42\""));
+        let decoded: Message = serde_json::from_str(&encoded_some).unwrap();
+        assert_eq!(decoded.dispatch_receipt_id.as_deref(), Some("rcpt-42"));
     }
 }

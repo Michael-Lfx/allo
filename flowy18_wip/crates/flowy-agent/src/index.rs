@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -44,6 +45,13 @@ pub struct SessionRecord {
     pub root_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "WorkAccessMode::is_default")]
     pub access_mode: WorkAccessMode,
+    /// Maps canonical projected card keys (`verify:...` / `artifact:...`) to
+    /// the Worker dispatch `receipt_id` that produced each card.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub card_receipts: BTreeMap<String, String>,
+    /// Dispatch `receipt_id` for the currently active (or latest) Worker turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_dispatch_receipt_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

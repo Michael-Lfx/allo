@@ -486,6 +486,7 @@ mod tests {
             content: vec![ContentBlock::text("repeated question")],
             source: MessageSource::User,
             display_text: None,
+            dispatch_receipt_id: None,
         };
         let assistant_message = |id: &str, content| Message {
             id: id.into(),
@@ -496,6 +497,7 @@ mod tests {
                 model: "test".into(),
             },
             display_text: None,
+            dispatch_receipt_id: None,
         };
         History {
             active: None,
@@ -664,6 +666,7 @@ mod tests {
                         )],
                         source: flowy_agent_core::MessageSource::User,
                         display_text: None,
+                        dispatch_receipt_id: None,
                     },
                     flowy_agent_core::Message {
                         id: "m2".into(),
@@ -676,6 +679,7 @@ mod tests {
                             model: "m".into(),
                         },
                         display_text: None,
+                        dispatch_receipt_id: None,
                     },
                 ],
                 todos: Vec::new(),

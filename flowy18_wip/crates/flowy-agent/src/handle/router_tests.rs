@@ -3830,13 +3830,96 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
     wait_children_done("w1 turn 4 settled");
     wait_idle(&handle, &router_id, "turn 4 settled");
 
+    let (rep_a2, path_a2) = handle
+        .chat_history()
+        .rows
+        .iter()
+        .find_map(|l| match l {
+            ChatLine::Verification {
+                report_id,
+                artifact_path,
+                ..
+            } if artifact_path.ends_with("alpha_v2.pptx") => {
+                Some((report_id.clone(), artifact_path.clone()))
+            }
+            _ => None,
+        })
+        .expect("w1 alpha_v2 verification card");
+
+    // Verify zero silent fallback: history.json messages and index.json card_receipts
+    // both record distinct non-empty dispatch_receipt_ids for Turn 1 and Turn 4.
+    let core_index =
+        flowy_agent_core::SessionIndex::load(&root).expect("load history.json");
+    let core_w1 = core_index.get(&w1_id).expect("worker w1 in history.json");
+    let worker_receipts: Vec<String> = core_w1
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == flowy_agent_core::Role::User
+                && matches!(m.source, MessageSource::User)
+                && m.display_text.as_deref() != Some("")
+        })
+        .map(|m| {
+            m.dispatch_receipt_id
+                .clone()
+                .expect("every dispatched/revised Worker turn persists dispatch_receipt_id")
+        })
+        .collect();
+    assert_eq!(
+        worker_receipts.len(),
+        2,
+        "w1 must have Turn 1 dispatch and Turn 4 revise receipts: {worker_receipts:?}"
+    );
+    assert_ne!(worker_receipts[0].trim(), "");
+    assert_ne!(worker_receipts[1].trim(), "");
+    assert_ne!(
+        worker_receipts[0], worker_receipts[1],
+        "Turn 1 dispatch and Turn 4 revise must use distinct receipt_ids"
+    );
+
+    let ui_index =
+        crate::index::SessionIndex::load(&root).expect("load index.json");
+    let ui_w1 = ui_index
+        .sessions
+        .iter()
+        .find(|s| s.id == w1_id)
+        .expect("worker w1 in index.json");
+    assert_eq!(
+        ui_w1
+            .card_receipts
+            .get(&verification_receipt_key(&rep_a1, &path_a1)),
+        Some(&worker_receipts[0])
+    );
+    assert_eq!(
+        ui_w1.card_receipts.get(&artifact_receipt_key(&art_a1)),
+        Some(&worker_receipts[0])
+    );
+    assert_eq!(
+        ui_w1
+            .card_receipts
+            .get(&verification_receipt_key(&rep_a2, &path_a2)),
+        Some(&worker_receipts[1])
+    );
+    assert_eq!(
+        ui_w1.active_dispatch_receipt_id.as_deref(),
+        Some(worker_receipts[1].as_str())
+    );
+
     let assert_after_revise = |h: &AgentHandle| {
         let rows = h.chat_history().rows;
+        let t1 = find_user(&rows, "deliver alpha");
         let t2 = find_user(&rows, "just chatting");
         let t3 = find_user(&rows, "deliver beta");
         let t4 = find_user(&rows, "revise alpha");
+        let va1 = find_verif(&rows, "alpha_v1.pptx");
         let vb = find_verif(&rows, "beta_v1.pptx");
         let va2 = find_verif(&rows, "alpha_v2.pptx");
+        let aa = rows
+            .iter()
+            .position(|l| {
+                matches!(l, ChatLine::Artifact { artifact_id } if artifact_id == &art_a1)
+            })
+            .expect("artifact A present");
         let va1_count = rows
             .iter()
             .filter(|l| matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("alpha_v1.pptx")))
@@ -3852,18 +3935,20 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
         assert_eq!(va1_count, 1);
         assert_eq!(va2_count, 1);
         assert_eq!(aa_count, 1);
-        // Revised `w1_id` now anchors to Turn 4 (so its cards move after t4),
-        // while `w2` stays anchored to Turn 3 (strictly between t3 and t4).
-        assert!(t2 < t3 && t3 < vb && vb < t4 && t4 < va2);
-        let va1 = find_verif(&rows, "alpha_v1.pptx");
+        // Turn 1 cards stay anchored to Turn 1 even after revising `w1_id` in Turn 4;
+        // Turn 3's `w2` card stays anchored to Turn 3; revision `alpha_v2` anchors to Turn 4.
         assert!(
-            t4 < va1,
-            "revised worker history belongs to latest Turn 4: t4={t4} va1={va1}"
+            t1 < va1 && va1 < t2 && t1 < aa && aa < t2,
+            "Turn 1 cards must remain anchored between t1 and t2 after Turn 4 revise: t1={t1} va1={va1} aa={aa} t2={t2}"
+        );
+        assert!(
+            t2 < t3 && t3 < vb && vb < t4 && t4 < va2,
+            "Turn 3 & Turn 4 cards must preserve chronological turn anchors: t2={t2} t3={t3} vb={vb} t4={t4} va2={va2}"
         );
     };
     assert_after_revise(&handle);
 
-    // Restart and re-verify exact placement and deduplication survive persistence.
+    // Normal restart (using persisted sessions/index.json).
     drop(handle);
     let reopened =
         AgentHandle::with_config(root.to_path_buf(), server.config());
@@ -3872,6 +3957,17 @@ fn router_timeline_anchors_child_cards_by_dispatch_and_revise_turn_across_restar
     }
     reopened.select_session(&router_id).unwrap();
     assert_after_revise(&reopened);
+
+    // Cold index rebuild restart (delete index.json, reconstruct from history.json).
+    drop(reopened);
+    std::fs::remove_file(root.join("sessions").join("index.json"))
+        .expect("remove index.json for cold rebuild");
+    let rebuilt = AgentHandle::with_config(root.to_path_buf(), server.config());
+    while rebuilt.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    rebuilt.select_session(&router_id).unwrap();
+    assert_after_revise(&rebuilt);
 }
 
 #[test]
@@ -3895,6 +3991,7 @@ fn chat_history_multi_router_and_active_workers_zero_clone_benchmark() {
                 ))],
                 source: MessageSource::User,
                 display_text: None,
+                dispatch_receipt_id: None,
             })
             .collect()
     };
@@ -4300,6 +4397,44 @@ fn collect_work_dispatch_turns_pairs_batched_tools_and_resets_across_turns() {
             text: r#"{"work_id":"w-stale"}"#.into(),
             is_error: false,
         },
+        // Turn 3: `control_work(revise)` on w-revise with rcpt-2.
+        ChatLine::User {
+            text: "revise turn".into(),
+        },
+        ChatLine::ToolCall {
+            name: "dispatch_work".into(),
+            target: String::new(),
+            call_id: "c-disp-1".into(),
+            running: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"work_id":"w-revise","receipt_id":"rcpt-1"}"#.into(),
+            is_error: false,
+        },
+        // Turn 4: idempotent deduplicated replay of rcpt-1 + a fresh revise rcpt-2.
+        ChatLine::User {
+            text: "replay and revise".into(),
+        },
+        ChatLine::ToolCall {
+            name: "dispatch_work".into(),
+            target: String::new(),
+            call_id: "c-disp-dup".into(),
+            running: false,
+        },
+        ChatLine::ToolCall {
+            name: "control_work".into(),
+            target: String::new(),
+            call_id: "c-rev-2".into(),
+            running: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"work_id":"w-revise","receipt_id":"rcpt-1"}"#.into(),
+            is_error: false,
+        },
+        ChatLine::ToolResult {
+            text: r#"{"work_id":"w-revise","receipt_id":"rcpt-2"}"#.into(),
+            is_error: false,
+        },
     ];
     let user_positions: Vec<usize> = rows
         .iter()
@@ -4310,8 +4445,14 @@ fn collect_work_dispatch_turns_pairs_batched_tools_and_resets_across_turns() {
         .collect();
     let turns =
         AgentHandle::collect_work_dispatch_turns(&rows, &user_positions);
-    assert_eq!(turns.get("w-batch"), Some(&1));
-    assert_eq!(turns.get("w-stale"), None);
+    assert_eq!(turns.resolve("w-batch", None), Some(1));
+    assert_eq!(turns.resolve("w-stale", None), None);
+    // Original receipt stays anchored to Turn 3 even after Turn 4 replay & revise.
+    assert_eq!(turns.resolve("w-revise", Some("rcpt-1")), Some(3));
+    assert_eq!(turns.resolve("w-revise", Some("rcpt-2")), Some(4));
+    // Untagged or unknown receipt falls back gracefully to latest dispatch turn.
+    assert_eq!(turns.resolve("w-revise", None), Some(4));
+    assert_eq!(turns.resolve("w-revise", Some("rcpt-unknown")), Some(4));
 }
 
 #[test]
@@ -4506,4 +4647,1090 @@ fn work_event_batch_and_prompt_surface_active_sibling_discipline() {
         interim_prompt.contains("Emit ONLY ONE short progress sentence"),
         "announcement prompt with active siblings must enforce 1-sentence brief: {interim_prompt}"
     );
+}
+
+#[test]
+fn project_messages_with_index_preserves_receipt_across_card_resume_and_isolates_revisions()
+ {
+    use flowy_agent_core::{ArtifactReceipt, ContentBlock, Message, Role};
+
+    let mut allowed = BTreeSet::new();
+    allowed.insert("art-1".to_owned());
+
+    let verify_json = |rep: &str, path: &str, hash: &str| {
+        json!({
+            "ok": true,
+            "report_id": rep,
+            "artifact": path,
+            "artifact_hash": hash,
+            "issues": [],
+            "provenance_warnings": []
+        })
+        .to_string()
+    };
+
+    let messages = vec![
+        Message {
+            id: "u1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("turn 1 brief")],
+            source: MessageSource::User,
+            display_text: None,
+            dispatch_receipt_id: Some("rcpt-1".into()),
+        },
+        Message {
+            id: "t1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "c1".into(),
+                content: vec![ContentBlock::text(verify_json(
+                    "rep-1",
+                    "out/v1.pptx",
+                    "hash-1",
+                ))],
+                is_error: Some(false),
+                artifact: None,
+            }],
+            source: MessageSource::Tool {
+                tool: "verify_deck".into(),
+            },
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "resume-1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("[CardChoiceConfirmed] proceed")],
+            source: MessageSource::CardResume,
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "t2".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "c2".into(),
+                content: vec![ContentBlock::text(verify_json(
+                    "rep-2",
+                    "out/v1b.pptx",
+                    "hash-2",
+                ))],
+                is_error: Some(false),
+                artifact: Some(Box::new(ArtifactReceipt {
+                    artifact_id: "art-1".into(),
+                    delivery_key: "pptx:v1b.pptx".into(),
+                    session_id: "w-1".into(),
+                    submission_id: "submission-1".into(),
+                    tool_call_id: "c2".into(),
+                    display_name: "v1b.pptx".into(),
+                    media_type: None,
+                    size_bytes: 128,
+                    sha256: "hash-2".into(),
+                    created_at_ms: 1,
+                    origin_title_snapshot: String::new(),
+                })),
+            }],
+            source: MessageSource::Tool {
+                tool: "verify_deck".into(),
+            },
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "u2".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("turn 2 revise brief")],
+            source: MessageSource::User,
+            display_text: None,
+            dispatch_receipt_id: Some("rcpt-2".into()),
+        },
+        Message {
+            id: "sys-1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("[WorkEventBatch] info")],
+            source: MessageSource::SystemEvent {
+                event_kind: "work".into(),
+            },
+            display_text: Some(String::new()),
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "internal-empty-1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("[internal resume]")],
+            source: MessageSource::User,
+            display_text: Some(String::new()),
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "t3".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "c3".into(),
+                content: vec![ContentBlock::text(verify_json(
+                    "rep-3",
+                    "out/v2.pptx",
+                    "hash-3",
+                ))],
+                is_error: Some(false),
+                artifact: None,
+            }],
+            source: MessageSource::Tool {
+                tool: "verify_deck".into(),
+            },
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "u3-unclaimed".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("direct un-claimed prompt")],
+            source: MessageSource::User,
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+        Message {
+            id: "t4".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "c4".into(),
+                content: vec![ContentBlock::text(verify_json(
+                    "rep-unclaimed",
+                    "out/v3.pptx",
+                    "hash-4",
+                ))],
+                is_error: Some(false),
+                artifact: None,
+            }],
+            source: MessageSource::Tool {
+                tool: "verify_deck".into(),
+            },
+            display_text: None,
+            dispatch_receipt_id: None,
+        },
+    ];
+
+    let projected =
+        observer::project_messages_with_index(&messages, &allowed, None, None);
+    assert_eq!(
+        projected
+            .card_receipts
+            .get(&verification_receipt_key("rep-1", "out/v1.pptx"))
+            .map(String::as_str),
+        Some("rcpt-1")
+    );
+    assert_eq!(
+        projected
+            .card_receipts
+            .get(&verification_receipt_key("rep-2", "out/v1b.pptx"))
+            .map(String::as_str),
+        Some("rcpt-1"),
+        "CardResume must preserve prior turn receipt"
+    );
+    assert_eq!(
+        projected
+            .card_receipts
+            .get(&artifact_receipt_key("art-1"))
+            .map(String::as_str),
+        Some("rcpt-1")
+    );
+    assert_eq!(
+        projected
+            .card_receipts
+            .get(&verification_receipt_key("rep-3", "out/v2.pptx"))
+            .map(String::as_str),
+        Some("rcpt-2"),
+        "SystemEvent and empty-display internal turns must preserve receipt"
+    );
+    assert_eq!(
+        projected
+            .card_receipts
+            .get(&verification_receipt_key("rep-unclaimed", "out/v3.pptx")),
+        None,
+        "un-claimed user turn must clear prior receipt"
+    );
+    assert_eq!(projected.active_dispatch_receipt_id, None);
+}
+
+#[test]
+fn legacy_index_and_messages_deserialize_without_receipt_fields() {
+    let legacy_index = json!({
+        "id": "w-legacy",
+        "title": "Legacy Worker",
+        "updated_at": 100
+    });
+    let decoded_record: crate::index::SessionRecord =
+        serde_json::from_value(legacy_index).expect("legacy index record");
+    assert!(decoded_record.card_receipts.is_empty());
+    assert!(decoded_record.active_dispatch_receipt_id.is_none());
+    let encoded_record =
+        serde_json::to_string(&decoded_record).expect("encode index record");
+    assert!(
+        !encoded_record.contains("card_receipts")
+            && !encoded_record.contains("active_dispatch_receipt_id"),
+        "empty receipt metadata must be skipped in index.json: {encoded_record}"
+    );
+
+    let legacy_msg = json!({
+        "id": "u-legacy",
+        "role": "user",
+        "content": [{"type": "text", "text": "legacy prompt"}],
+        "source": {"kind": "user"}
+    });
+    let decoded_msg: flowy_agent_core::Message =
+        serde_json::from_value(legacy_msg).expect("legacy message");
+    assert!(decoded_msg.dispatch_receipt_id.is_none());
+}
+
+#[test]
+fn restore_existing_history_replaces_and_clears_active_dispatch_receipt_id() {
+    use flowy_agent_core::{
+        ContentBlock, Message, Role, SessionRecord, TurnState,
+    };
+
+    let verify_json = |rep: &str, path: &str| {
+        json!({
+            "ok": true,
+            "report_id": rep,
+            "artifact": path,
+            "artifact_hash": format!("hash-{rep}"),
+            "issues": [],
+            "provenance_warnings": []
+        })
+        .to_string()
+    };
+    let make_live = |receipt: Option<&str>, status: TurnStatus| Live {
+        projection: ChatProjection::from_lines(vec![ChatLine::User {
+            text: "turn 1".into(),
+        }]),
+        title: "Worker".into(),
+        titled: true,
+        pinned: false,
+        archived: false,
+        auto_title_pending: false,
+        auto_title_in_flight: false,
+        auto_title_attempts: 0,
+        title_signal: CancelToken::new(),
+        status,
+        updated_at: 10,
+        turn_started_at: None,
+        workspace: None,
+        origin: SessionOrigin::Home,
+        session_workspace: None,
+        heartbeat: None,
+        role: SessionRole::Worker,
+        root_session_id: Some("r-1".into()),
+        access_mode: WorkAccessMode::ReadWrite,
+        active_turn_is_internal: false,
+        active_turn_prev_status: None,
+        card_receipts: BTreeMap::new(),
+        active_dispatch_receipt_id: receipt.map(str::to_owned),
+    };
+
+    // Case A: trailing un-claimed `submission-` turn must clear stale `active_dispatch_receipt_id`.
+    let mut live_a = make_live(Some("rcpt-1"), TurnStatus::Completed);
+    let record_a = SessionRecord {
+        id: "w-1".into(),
+        status: TurnState::Completed,
+        updated_at: 20,
+        messages: vec![
+            Message {
+                id: "submission-1".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("turn 1")],
+                source: MessageSource::User,
+                display_text: None,
+                dispatch_receipt_id: Some("rcpt-1".into()),
+            },
+            Message {
+                id: "submission-2".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("direct turn")],
+                source: MessageSource::User,
+                display_text: None,
+                dispatch_receipt_id: None,
+            },
+            Message {
+                id: "tool-2".into(),
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "c-2".into(),
+                    content: vec![ContentBlock::text(verify_json(
+                        "rep-2",
+                        "out/unclaimed.pptx",
+                    ))],
+                    is_error: Some(false),
+                    artifact: None,
+                }],
+                source: MessageSource::Tool {
+                    tool: "verify_deck".into(),
+                },
+                display_text: None,
+                dispatch_receipt_id: None,
+            },
+        ],
+        ..SessionRecord::default()
+    };
+    let empty_allowed = BTreeSet::new();
+    observer::restore_existing_history(
+        &mut live_a,
+        record_a,
+        &empty_allowed,
+        None,
+    );
+    assert_eq!(live_a.active_dispatch_receipt_id, None);
+    assert_eq!(
+        live_a
+            .card_receipts
+            .get(&verification_receipt_key("rep-2", "out/unclaimed.pptx")),
+        None
+    );
+
+    // Case B1: interrupted turn recovery derives `initial_receipt` from `record.messages[index]`.
+    let mut live_b1 = make_live(Some("rcpt-stale"), TurnStatus::Stopped);
+    let record_b1 = SessionRecord {
+        id: "w-2".into(),
+        status: TurnState::Completed,
+        updated_at: 30,
+        messages: vec![
+            Message {
+                id: "submission-1".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("turn 1")],
+                source: MessageSource::User,
+                display_text: None,
+                dispatch_receipt_id: Some("rcpt-2".into()),
+            },
+            Message {
+                id: "tool-b1".into(),
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "c-b1".into(),
+                    content: vec![ContentBlock::text(verify_json(
+                        "rep-b1",
+                        "out/b1.pptx",
+                    ))],
+                    is_error: Some(false),
+                    artifact: None,
+                }],
+                source: MessageSource::Tool {
+                    tool: "verify_deck".into(),
+                },
+                display_text: None,
+                dispatch_receipt_id: None,
+            },
+        ],
+        ..SessionRecord::default()
+    };
+    observer::restore_existing_history(
+        &mut live_b1,
+        record_b1,
+        &empty_allowed,
+        None,
+    );
+    assert_eq!(
+        live_b1
+            .card_receipts
+            .get(&verification_receipt_key("rep-b1", "out/b1.pptx"))
+            .map(String::as_str),
+        Some("rcpt-2")
+    );
+    assert_eq!(
+        live_b1.active_dispatch_receipt_id.as_deref(),
+        Some("rcpt-2")
+    );
+
+    // Case B2: interrupted un-claimed turn must clear stale `active_dispatch_receipt_id`.
+    let mut live_b2 = make_live(Some("rcpt-stale"), TurnStatus::WaitingForUser);
+    let record_b2 = SessionRecord {
+        id: "w-3".into(),
+        status: TurnState::Completed,
+        updated_at: 30,
+        messages: vec![
+            Message {
+                id: "submission-1".into(),
+                role: Role::User,
+                content: vec![ContentBlock::text("turn 1")],
+                source: MessageSource::User,
+                display_text: None,
+                dispatch_receipt_id: None,
+            },
+            Message {
+                id: "tool-b2".into(),
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "c-b2".into(),
+                    content: vec![ContentBlock::text(verify_json(
+                        "rep-b2",
+                        "out/b2.pptx",
+                    ))],
+                    is_error: Some(false),
+                    artifact: None,
+                }],
+                source: MessageSource::Tool {
+                    tool: "verify_deck".into(),
+                },
+                display_text: None,
+                dispatch_receipt_id: None,
+            },
+        ],
+        ..SessionRecord::default()
+    };
+    observer::restore_existing_history(
+        &mut live_b2,
+        record_b2,
+        &empty_allowed,
+        None,
+    );
+    assert_eq!(
+        live_b2
+            .card_receipts
+            .get(&verification_receipt_key("rep-b2", "out/b2.pptx")),
+        None
+    );
+    assert_eq!(live_b2.active_dispatch_receipt_id, None);
+}
+
+#[test]
+fn disambiguated_worker_revision_preserves_receipt_anchor_across_later_revision_and_restart()
+ {
+    let root = temp_dir("disambig-worker-revision-anchor");
+    let gate = PromptGate::new();
+    let w1_id_slot: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let w1_id_slot_c = Arc::clone(&w1_id_slot);
+
+    let seed_brief = "请帮青禾项目做一份报价表和三页青禾项目报价汇报.pptx，报价 30 万元，汇报日期 2026-11-27";
+    let add_brief =
+        "保留青禾项目报价汇报.pptx，另做一份三页的青禾项目内部讨论稿.pptx";
+    let ambig_brief = "把刚才那份的报价改成 32 万元。";
+    let explicit_brief = "保留青禾项目报价汇报.pptx，另把青禾项目内部讨论稿.pptx的汇报日期改成 2026-12-05";
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, _g| {
+            if is_router_req(req) {
+                if req.last_user.contains("turn1 seed") {
+                    if req.last_tool_result.is_none() {
+                        return MockReply::ToolCalls(vec![(
+                            "c-dis-d1".into(),
+                            "dispatch_work".into(),
+                            json!({
+                                "brief": seed_brief,
+                                "mode": "read_write",
+                                "request_id": "req-dis-1"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("dispatched-seed".into());
+                }
+                if req.last_user.contains("turn2 add") {
+                    if req.last_tool_result.is_none() {
+                        let wid = w1_id_slot_c
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("w1_id populated");
+                        return MockReply::ToolCalls(vec![(
+                            "c-dis-d2".into(),
+                            "control_work".into(),
+                            json!({
+                                "work_id": wid,
+                                "action": "revise",
+                                "revision_brief": add_brief,
+                                "request_id": "req-dis-2"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("revised-add".into());
+                }
+                if req.last_user.contains("turn3 ambig") {
+                    if req.last_tool_result.is_none() {
+                        let wid = w1_id_slot_c
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("w1_id populated");
+                        return MockReply::ToolCalls(vec![(
+                            "c-dis-d3".into(),
+                            "control_work".into(),
+                            json!({
+                                "work_id": wid,
+                                "action": "revise",
+                                "revision_brief": ambig_brief,
+                                "request_id": "req-dis-3"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("revised-ambig".into());
+                }
+                if req.last_user.contains("turn4 chat") {
+                    return MockReply::Text("chat-mid-reply".into());
+                }
+                if req.last_user.contains("turn5 explicit") {
+                    if req.last_tool_result.is_none() {
+                        let wid = w1_id_slot_c
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("w1_id populated");
+                        return MockReply::ToolCalls(vec![(
+                            "c-dis-d5".into(),
+                            "control_work".into(),
+                            json!({
+                                "work_id": wid,
+                                "action": "revise",
+                                "revision_brief": explicit_brief,
+                                "request_id": "req-dis-5"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("revised-explicit".into());
+                }
+                return MockReply::Text("router-ack".into());
+            }
+
+            // Worker responses ordered most-specific first.
+            if req.last_user.contains("已确认修改目标") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-dis-w3".into(),
+                        "create_deck".into(),
+                        json!({ "path": "dis_alpha_v2.pptx", "title": "A2", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("dis-alpha-v2-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-dis-w3-v".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "dis_alpha_v2.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            if req.last_user.contains("2026-12-05") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-dis-w5".into(),
+                        "create_deck".into(),
+                        json!({ "path": "dis_discuss_v2.pptx", "title": "D2", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("dis-discuss-v2-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-dis-w5-v".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "dis_discuss_v2.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            if req.last_user.contains("内部讨论稿") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-dis-w2".into(),
+                        "create_deck".into(),
+                        json!({ "path": "dis_discuss_v1.pptx", "title": "D1", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("dis-discuss-v1-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-dis-w2-v".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "dis_discuss_v1.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            if req.last_user.contains("报价汇报") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-dis-w1".into(),
+                        "create_deck".into(),
+                        json!({ "path": "dis_alpha_v1.pptx", "title": "A1", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("dis-alpha-v1-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-dis-w1-v".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "dis_alpha_v1.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            MockReply::Text("worker-ok".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    handle.select_session(&router_id).unwrap();
+
+    let wait_children_done = |label: &str| {
+        wait_until(
+            Duration::from_secs(6),
+            || {
+                let works = handle.child_works(&router_id);
+                !works.is_empty()
+                    && works.iter().all(|w| {
+                        !matches!(
+                            w.state.as_str(),
+                            "queued" | "running" | "verifying" | "stopping"
+                        )
+                    })
+            },
+            label,
+        );
+    };
+
+    // Turn 1: seed Worker w1 with first deliverable.
+    handle
+        .submit_router_message(&router_id, 11001, "turn1 seed")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("dis_alpha_v1.pptx"))
+            })
+        },
+        "dis_alpha_v1 verification projected",
+    );
+    wait_children_done("turn 1 w1 settled");
+    wait_idle(&handle, &router_id, "turn 1 router idle");
+
+    let w1_id = handle
+        .chat_history()
+        .rows
+        .iter()
+        .find_map(|l| match l {
+            ChatLine::Verification {
+                artifact_path,
+                source_session_id: Some(src),
+                ..
+            } if artifact_path.ends_with("dis_alpha_v1.pptx") => {
+                Some(src.clone())
+            }
+            _ => None,
+        })
+        .expect("w1_id from turn 1");
+    *w1_id_slot.lock().unwrap() = Some(w1_id.clone());
+
+    // Turn 2: add second deliverable to w1 so contract now holds 2 objects.
+    handle
+        .submit_router_message(&router_id, 11002, "turn2 add")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("dis_discuss_v1.pptx"))
+            })
+        },
+        "dis_discuss_v1 verification projected",
+    );
+    wait_children_done("turn 2 w1 settled");
+    wait_idle(&handle, &router_id, "turn 2 router idle");
+
+    // Turn 3: revise w1 with ambiguous brief -> parks PendingCard::Disambiguation with receipt_id.
+    handle
+        .submit_router_message(&router_id, 11003, "turn3 ambig")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.session_pending_cards(&w1_id).iter().any(|c| {
+                matches!(
+                    c,
+                    flowy_agent_core::PendingCard::Disambiguation { .. }
+                )
+            })
+        },
+        "w1 parked PendingCard::Disambiguation",
+    );
+    let parked_card = handle.session_pending_cards(&w1_id)[0].clone();
+    let flowy_agent_core::PendingCard::Disambiguation {
+        card_id,
+        options,
+        dispatch_receipt_id,
+        ..
+    } = parked_card
+    else {
+        panic!("expected Disambiguation card");
+    };
+    let disambig_rcpt = dispatch_receipt_id.expect(
+        "parked Worker disambiguation card must retain dispatch_receipt_id",
+    );
+    assert_ne!(disambig_rcpt.trim(), "");
+
+    let outcome = handle
+        .apply_card_action(CardAction::ResolveCard {
+            session_id: w1_id.clone(),
+            card_id: card_id.clone(),
+            selection: CardSelection::Disambiguate {
+                object_ids: vec![options[0].object_id.clone()],
+            },
+        })
+        .expect("resolve Worker disambiguation card");
+    assert_eq!(
+        outcome,
+        CardActionOutcome::CardResolved {
+            card_id,
+            resumed: true,
+        }
+    );
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("dis_alpha_v2.pptx"))
+            })
+        },
+        "dis_alpha_v2 verification projected after disambiguation resume",
+    );
+    wait_children_done("turn 3 w1 settled");
+    wait_idle(&handle, &router_id, "turn 3 router idle");
+
+    // Turn 4: conversational break.
+    handle
+        .submit_router_message(&router_id, 11004, "turn4 chat")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Assistant { text } if text.contains("chat-mid-reply"))
+            })
+        },
+        "turn 4 chat landed",
+    );
+
+    // Turn 5: subsequent explicit revision on the same Worker w1.
+    handle
+        .submit_router_message(&router_id, 11005, "turn5 explicit")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("dis_discuss_v2.pptx"))
+            })
+        },
+        "dis_discuss_v2 verification projected",
+    );
+    wait_children_done("turn 5 w1 settled");
+    wait_idle(&handle, &router_id, "turn 5 router idle");
+
+    // Verify all 4 Worker dispatches persisted distinct non-empty dispatch_receipt_id in history.json.
+    let core_index =
+        flowy_agent_core::SessionIndex::load(&root).expect("load history.json");
+    let core_w1 = core_index.get(&w1_id).expect("w1 in history.json");
+    let worker_receipts: Vec<String> = core_w1
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == flowy_agent_core::Role::User
+                && matches!(m.source, MessageSource::User)
+                && m.display_text.as_deref() != Some("")
+        })
+        .map(|m| {
+            m.dispatch_receipt_id
+                .clone()
+                .expect("every Worker turn persists dispatch_receipt_id")
+        })
+        .collect();
+    assert_eq!(worker_receipts.len(), 4);
+    assert_eq!(worker_receipts[2], disambig_rcpt);
+    assert_ne!(worker_receipts[2], worker_receipts[3]);
+
+    let assert_anchors = |h: &AgentHandle| {
+        let rows = h.chat_history().rows;
+        let find_user = |needle: &str| {
+            rows.iter()
+                .position(|l| matches!(l, ChatLine::User { text } if text.contains(needle)))
+                .unwrap_or_else(|| panic!("missing user turn {needle}"))
+        };
+        let find_verif = |suffix: &str| {
+            rows.iter()
+                .position(|l| matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with(suffix)))
+                .unwrap_or_else(|| panic!("missing verification {suffix}"))
+        };
+        let t1 = find_user("turn1 seed");
+        let t2 = find_user("turn2 add");
+        let t3 = find_user("turn3 ambig");
+        let t4 = find_user("turn4 chat");
+        let t5 = find_user("turn5 explicit");
+        let va1 = find_verif("dis_alpha_v1.pptx");
+        let vd1 = find_verif("dis_discuss_v1.pptx");
+        let va2 = find_verif("dis_alpha_v2.pptx");
+        let vd2 = find_verif("dis_discuss_v2.pptx");
+        assert!(
+            t1 < va1
+                && va1 < t2
+                && t2 < vd1
+                && vd1 < t3
+                && t3 < va2
+                && va2 < t4
+                && t4 < t5
+                && t5 < vd2,
+            "disambiguated Turn 3 card must remain anchored in Turn 3 after Turn 5 revise: t1={t1} va1={va1} t2={t2} vd1={vd1} t3={t3} va2={va2} t4={t4} t5={t5} vd2={vd2}"
+        );
+    };
+    assert_anchors(&handle);
+
+    // Survives both normal restart and cold index rebuild.
+    drop(handle);
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
+    while reopened.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    reopened.select_session(&router_id).unwrap();
+    assert_anchors(&reopened);
+
+    drop(reopened);
+    std::fs::remove_file(root.join("sessions").join("index.json"))
+        .expect("remove index.json for cold rebuild");
+    let rebuilt = AgentHandle::with_config(root.to_path_buf(), server.config());
+    while rebuilt.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    rebuilt.select_session(&router_id).unwrap();
+    assert_anchors(&rebuilt);
+}
+
+#[test]
+fn override_after_revision_preserves_original_dispatch_receipt_anchor() {
+    let root = temp_dir("override-after-revision");
+    let gate = PromptGate::new();
+    let w1_id_slot: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let w1_id_slot_c = Arc::clone(&w1_id_slot);
+
+    let server = RouterMockServer::start(
+        Arc::clone(&gate),
+        Arc::new(move |req, _g| {
+            if is_router_req(req) {
+                if req.last_user.contains("deliver v1") {
+                    if req.last_tool_result.is_none() {
+                        return MockReply::ToolCalls(vec![(
+                            "c-ovr-d1".into(),
+                            "dispatch_work".into(),
+                            json!({
+                                "brief": "worker-ovr-v1",
+                                "mode": "read_write",
+                                "request_id": "req-ovr-1"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("dispatched-v1".into());
+                }
+                if req.last_user.contains("chat break") {
+                    return MockReply::Text("chat-break-reply".into());
+                }
+                if req.last_user.contains("revise v2") {
+                    if req.last_tool_result.is_none() {
+                        let wid = w1_id_slot_c
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("w1_id set");
+                        return MockReply::ToolCalls(vec![(
+                            "c-ovr-rev".into(),
+                            "control_work".into(),
+                            json!({
+                                "work_id": wid,
+                                "action": "revise",
+                                "revision_brief": "worker-ovr-v2",
+                                "request_id": "req-ovr-2"
+                            }),
+                        )]);
+                    }
+                    return MockReply::Text("revised-v2".into());
+                }
+                return MockReply::Text("router-ack".into());
+            }
+            if req.last_user.contains("worker-ovr-v2") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-ovr-w2".into(),
+                        "create_deck".into(),
+                        json!({ "path": "ovr_v2.pptx", "title": "V2", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("ovr-v2-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-ovr-v2-check".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "ovr_v2.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            if req.last_user.contains("worker-ovr-v1") {
+                return match req.last_tool_result.as_deref() {
+                    None => MockReply::ToolCalls(vec![(
+                        "c-ovr-w1".into(),
+                        "create_deck".into(),
+                        json!({ "path": "ovr_v1.pptx", "title": "V1", "slides": ["S1", "S2", "S3"] }),
+                    )]),
+                    Some(res) if res.contains("report_id") => {
+                        MockReply::Text("ovr-v1-done".into())
+                    }
+                    Some(_) => MockReply::ToolCalls(vec![(
+                        "c-ovr-v1-check".into(),
+                        "verify_deck".into(),
+                        json!({ "path": "ovr_v1.pptx", "slides": 3, "anchors": [{"anchor": "S2-title", "value": "Missing"}] }),
+                    )]),
+                };
+            }
+            MockReply::Text("worker-ok".into())
+        }),
+    );
+
+    let handle = AgentHandle::with_config(root.to_path_buf(), server.config());
+    handle.set_autonomous_drain(true);
+    let router_id = handle.create_router_session().unwrap();
+    handle.select_session(&router_id).unwrap();
+
+    let wait_children_done = |label: &str| {
+        wait_until(
+            Duration::from_secs(6),
+            || {
+                let works = handle.child_works(&router_id);
+                !works.is_empty()
+                    && works.iter().all(|w| {
+                        !matches!(
+                            w.state.as_str(),
+                            "queued" | "running" | "verifying" | "stopping"
+                        )
+                    })
+            },
+            label,
+        );
+    };
+
+    // Turn 1: deliver v1 (leaves failing verification rep_v1).
+    handle
+        .submit_router_message(&router_id, 9001, "deliver v1")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("ovr_v1.pptx"))
+            })
+        },
+        "ovr_v1 verification projected",
+    );
+    wait_children_done("v1 settled");
+    wait_idle(&handle, &router_id, "turn 1 settled");
+
+    let (w1_id, rep_v1, path_v1) = handle
+        .chat_history()
+        .rows
+        .iter()
+        .find_map(|l| match l {
+            ChatLine::Verification {
+                report_id,
+                artifact_path,
+                source_session_id: Some(src),
+                ..
+            } if artifact_path.ends_with("ovr_v1.pptx") => {
+                Some((src.clone(), report_id.clone(), artifact_path.clone()))
+            }
+            _ => None,
+        })
+        .expect("v1 verification card");
+    *w1_id_slot.lock().unwrap() = Some(w1_id.clone());
+
+    // Turn 2: conversational break.
+    handle
+        .submit_router_message(&router_id, 9002, "chat break")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(5),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Assistant { text } if text.contains("chat-break-reply"))
+            })
+        },
+        "chat break landed",
+    );
+
+    // Turn 3: revise same worker -> active_dispatch_receipt_id switches to Turn 3 receipt.
+    handle
+        .submit_router_message(&router_id, 9003, "revise v2")
+        .unwrap();
+    wait_until(
+        Duration::from_secs(6),
+        || {
+            handle.chat_history().rows.iter().any(|l| {
+                matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("ovr_v2.pptx"))
+            })
+        },
+        "ovr_v2 verification projected",
+    );
+    wait_children_done("v2 settled");
+    wait_idle(&handle, &router_id, "turn 3 settled");
+
+    // User overrides Turn 1's blocked v1 card AFTER Turn 3 revision completed.
+    let art_v1 = handle
+        .override_deliver_artifact(&w1_id, &rep_v1, &path_v1)
+        .expect("override v1 after revision");
+
+    let assert_anchors = |h: &AgentHandle| {
+        let rows = h.chat_history().rows;
+        let find_user = |needle: &str| {
+            rows.iter()
+                .position(|l| matches!(l, ChatLine::User { text } if text.contains(needle)))
+                .unwrap_or_else(|| panic!("missing user turn {needle}"))
+        };
+        let t1 = find_user("deliver v1");
+        let t2 = find_user("chat break");
+        let t3 = find_user("revise v2");
+        let v1 = rows
+            .iter()
+            .position(|l| matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("ovr_v1.pptx")))
+            .expect("ovr_v1 verification");
+        let v2 = rows
+            .iter()
+            .position(|l| matches!(l, ChatLine::Verification { artifact_path, .. } if artifact_path.ends_with("ovr_v2.pptx")))
+            .expect("ovr_v2 verification");
+        let aa1 = rows
+            .iter()
+            .position(|l| matches!(l, ChatLine::Artifact { artifact_id } if artifact_id == &art_v1))
+            .expect("override artifact art_v1");
+        assert!(
+            t1 < v1 && v1 < t2 && t1 < aa1 && aa1 < t2,
+            "late override of v1 must stay anchored to Turn 1: t1={t1} v1={v1} aa1={aa1} t2={t2}"
+        );
+        assert!(
+            t2 < t3 && t3 < v2,
+            "v2 must remain anchored to Turn 3: t2={t2} t3={t3} v2={v2}"
+        );
+    };
+    assert_anchors(&handle);
+
+    // Survives both normal restart and cold index rebuild.
+    drop(handle);
+    let reopened =
+        AgentHandle::with_config(root.to_path_buf(), server.config());
+    while reopened.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    reopened.select_session(&router_id).unwrap();
+    assert_anchors(&reopened);
+
+    drop(reopened);
+    std::fs::remove_file(root.join("sessions").join("index.json"))
+        .expect("remove index.json for cold rebuild");
+    let rebuilt = AgentHandle::with_config(root.to_path_buf(), server.config());
+    while rebuilt.is_initializing() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    rebuilt.select_session(&router_id).unwrap();
+    assert_anchors(&rebuilt);
 }

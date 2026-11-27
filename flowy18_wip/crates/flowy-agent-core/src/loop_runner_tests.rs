@@ -46,6 +46,7 @@ fn orphan_tool_call_gets_placeholder_and_orphan_results_are_dropped() {
             model: "m".into(),
         },
         display_text: None,
+        dispatch_receipt_id: None,
     };
     let user = Message {
         id: "u1".into(),
@@ -53,6 +54,7 @@ fn orphan_tool_call_gets_placeholder_and_orphan_results_are_dropped() {
         content: vec![ContentBlock::text("next")],
         source: MessageSource::User,
         display_text: None,
+        dispatch_receipt_id: None,
     };
     let mut history: Vec<AgentMessage> = Vec::new();
     for message in [&assistant, &user] {
@@ -83,6 +85,7 @@ fn unmatched_tool_result_is_dropped_from_provider_history() {
         content: vec![ContentBlock::text("hi")],
         source: MessageSource::User,
         display_text: None,
+        dispatch_receipt_id: None,
     };
     history.push(to_agent_message(&user).unwrap().unwrap());
     history.push(AgentMessage::ToolResult(Box::new(
@@ -118,6 +121,7 @@ fn invalid_tool_arguments_degrade_to_an_empty_object() {
             model: "m".into(),
         },
         display_text: None,
+        dispatch_receipt_id: None,
     };
     let converted = to_agent_message(&assistant).unwrap().unwrap();
     let AgentMessage::Assistant(assistant) = converted else {
@@ -143,6 +147,7 @@ fn legacy_tool_result_without_tool_source_is_skipped() {
         }],
         source: MessageSource::User,
         display_text: None,
+        dispatch_receipt_id: None,
     };
     assert!(to_agent_message(&message).unwrap().is_none());
 }
@@ -156,6 +161,7 @@ fn tool_history_converts_both_ways_without_losing_pairing_or_arguments() {
             content: vec![ContentBlock::text("read it")],
             source: MessageSource::User,
             display_text: None,
+            dispatch_receipt_id: None,
         },
         Message {
             id: "a1".into(),
@@ -170,6 +176,7 @@ fn tool_history_converts_both_ways_without_losing_pairing_or_arguments() {
                 model: "m".into(),
             },
             display_text: None,
+            dispatch_receipt_id: None,
         },
         Message {
             id: "t1".into(),
@@ -184,6 +191,7 @@ fn tool_history_converts_both_ways_without_losing_pairing_or_arguments() {
                 tool: "read_file".into(),
             },
             display_text: None,
+            dispatch_receipt_id: None,
         },
     ];
     for message in &history {
@@ -303,6 +311,7 @@ async fn orphaned_tool_call_is_repaired_before_the_provider_request() {
             model: "m".into(),
         },
         display_text: None,
+        dispatch_receipt_id: None,
     };
     // Legacy row without MessageSource::Tool: converted to None, so the
     // assistant tool call would otherwise reach the provider unanswered.
@@ -317,6 +326,7 @@ async fn orphaned_tool_call_is_repaired_before_the_provider_request() {
         }],
         source: MessageSource::User,
         display_text: None,
+        dispatch_receipt_id: None,
     };
     let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (emitter, _events) = CollectorEmitter::new();

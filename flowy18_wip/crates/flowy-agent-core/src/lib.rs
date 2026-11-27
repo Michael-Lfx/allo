@@ -407,6 +407,7 @@ mod router_core_tests {
                             extension: "pptx".into(),
                         }],
                         allow_multi: false,
+                        dispatch_receipt_id: None,
                     },
                     reason: "USER_CHOICE_REQUIRED".into(),
                 }

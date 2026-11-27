@@ -374,7 +374,16 @@ impl AgentHandle {
         } else {
             for commit in &record.delivery_commits {
                 confirm_commit_audit(&self.inner.state.root, &store, commit);
-                apply_delivery_commit_to_live(&self.inner.state, commit);
+                let commit_receipt = record
+                    .messages
+                    .iter()
+                    .find(|m| m.id == commit.submission_id)
+                    .and_then(|m| m.dispatch_receipt_id.as_deref());
+                apply_delivery_commit_to_live(
+                    &self.inner.state,
+                    commit,
+                    commit_receipt,
+                );
             }
             if let Some(session) =
                 lock(&self.inner.state.live).get_mut(session_id)
@@ -815,6 +824,17 @@ fn finish_override_live_update(
     let target_key = crate::delivery::artifact_key(full_path);
     let mut parent_root_to_notify: Option<String> = None;
     if let Some(live) = lock(&state.live).get_mut(session_id) {
+        let exact_receipt = (!report_id.is_empty())
+            .then(|| {
+                live.card_receipts
+                    .get(&super::verification_receipt_key(
+                        report_id,
+                        &full_path.display().to_string(),
+                    ))
+                    .cloned()
+            })
+            .flatten();
+        let mut path_receipt = None;
         for line in &mut live.projection.lines {
             if let ChatLine::Verification {
                 report_id: existing_id,
@@ -827,7 +847,24 @@ fn finish_override_live_update(
                         == target_key)
             {
                 *override_used = true;
+                if path_receipt.is_none() {
+                    path_receipt = live
+                        .card_receipts
+                        .get(&super::verification_receipt_key(
+                            existing_id,
+                            existing_path,
+                        ))
+                        .cloned();
+                }
             }
+        }
+        if let Some(rid) = exact_receipt
+            .or(path_receipt)
+            .or_else(|| live.active_dispatch_receipt_id.clone())
+        {
+            live.card_receipts
+                .entry(super::artifact_receipt_key(artifact_id))
+                .or_insert(rid);
         }
         if !live.projection.lines.iter().any(|line| {
             matches!(line, ChatLine::Artifact { artifact_id: id } if id == artifact_id)

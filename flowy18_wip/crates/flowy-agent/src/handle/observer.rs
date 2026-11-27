@@ -1,15 +1,15 @@
 //! `TurnObserver` projection, history hydration, artifact capture, and verification card folding.
 
 use super::{
-    AcceptanceQueue, AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeSet,
-    BranchHeartbeat, CancelToken, ChatLine, ChatProjection, ContentBlock,
-    DeliveryCommit, Engine, FileChangeKind, HashMap, IndexRecord, Live,
-    LlmConfig, LoopOutcome, Message, MessageSource, Mutex, Path, PendingCard,
-    ReceiptState, Role, SessionDeletionState, SessionIndex, SessionOrigin,
-    SessionRecord, SessionRole, StopHandoffManifest, SubmissionOutcome,
-    TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus, UiState,
-    VerificationIssue, complete_text, lock, log_storage_io_error, model_route,
-    now_ms, title, tool_target,
+    AcceptanceQueue, AgentUpdate, AgentWorkspace, Arc, ArtifactStore, BTreeMap,
+    BTreeSet, BranchHeartbeat, CancelToken, ChatLine, ChatProjection,
+    ContentBlock, DeliveryCommit, Engine, FileChangeKind, HashMap, IndexRecord,
+    Live, LlmConfig, LoopOutcome, Message, MessageSource, Mutex, Path,
+    PendingCard, ReceiptState, Role, SessionDeletionState, SessionIndex,
+    SessionOrigin, SessionRecord, SessionRole, StopHandoffManifest,
+    SubmissionOutcome, TITLE_MAX_CHARS, TurnObserver, TurnState, TurnStatus,
+    UiState, VerificationIssue, complete_text, lock, log_storage_io_error,
+    model_route, now_ms, title, tool_target,
 };
 
 /// Maximum Unicode scalar characters kept in a sidebar session preview.
@@ -92,10 +92,22 @@ pub(super) fn mark_delivery_failed(state: &UiState, session_id: &str) {
 pub(super) fn apply_delivery_commit_to_live(
     state: &UiState,
     commit: &DeliveryCommit,
+    explicit_receipt: Option<&str>,
 ) {
     if let Some(session) = lock(&state.live).get_mut(&commit.session_id) {
         session.projection.flush();
+        let receipt_id = explicit_receipt
+            .map(str::trim)
+            .filter(|rid| !rid.is_empty())
+            .map(str::to_owned)
+            .or_else(|| session.active_dispatch_receipt_id.clone());
         for artifact_id in &commit.artifact_ids {
+            if let Some(rid) = receipt_id.as_ref() {
+                session
+                    .card_receipts
+                    .entry(super::artifact_receipt_key(artifact_id))
+                    .or_insert_with(|| rid.clone());
+            }
             if !session.projection.lines.iter().any(|line| {
                 matches!(
                     line,
@@ -129,7 +141,7 @@ impl TurnObserver for UiObserver {
         if let Some(store) = self.state.artifact_store.get() {
             confirm_commit_audit(&self.state.root, store, commit);
         }
-        apply_delivery_commit_to_live(&self.state, commit);
+        apply_delivery_commit_to_live(&self.state, commit, None);
         if persist_index(&self.state).is_err() {
             self.state.report_storage_error();
         }
@@ -268,6 +280,23 @@ impl TurnObserver for UiObserver {
             live.projection
                 .finish_tool_call(call_id, &display_text, is_error);
             if let Some(card) = verification_line {
+                if let (
+                    Some(rid),
+                    ChatLine::Verification {
+                        report_id,
+                        artifact_path,
+                        ..
+                    },
+                ) = (live.active_dispatch_receipt_id.as_ref(), &card)
+                {
+                    live.card_receipts.insert(
+                        super::verification_receipt_key(
+                            report_id,
+                            artifact_path,
+                        ),
+                        rid.clone(),
+                    );
+                }
                 upsert_verification_line(&mut live.projection.lines, card);
             }
             // Drop the cached arguments either way; a failed call leaves the
@@ -1013,6 +1042,10 @@ fn persist_index_with_status(
             role: session.role,
             root_session_id: session.root_session_id.clone(),
             access_mode: session.access_mode,
+            card_receipts: session.card_receipts.clone(),
+            active_dispatch_receipt_id: session
+                .active_dispatch_receipt_id
+                .clone(),
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -1053,9 +1086,8 @@ pub(super) fn import_engine_sessions(
     deleted_sessions: &BTreeSet<String>,
 ) {
     let records = engine.sessions();
-    let committed = state
-        .artifact_store
-        .get()
+    let store = state.artifact_store.get();
+    let committed = store
         .and_then(|store| store.committed_ids().ok())
         .unwrap_or_default();
     let delivery_gate =
@@ -1111,13 +1143,24 @@ pub(super) fn import_engine_sessions(
                 })
                 .collect::<BTreeSet<_>>();
             if existing_ids != allowed {
-                let mut projected = lines_from_messages_with_index(
+                let mut projected = project_messages_with_index(
                     &record.messages,
                     &allowed,
                     override_index.as_ref(),
+                    None,
                 );
-                append_missing_artifacts(&mut projected, &override_artifacts);
-                projected.extend(
+                append_missing_artifacts(
+                    &mut projected.lines,
+                    &override_artifacts,
+                );
+                bind_override_artifact_receipts(
+                    &projected.lines,
+                    &mut projected.card_receipts,
+                    &override_artifacts,
+                    store,
+                    projected.active_dispatch_receipt_id.as_deref(),
+                );
+                projected.lines.extend(
                     existing
                         .projection
                         .lines
@@ -1127,9 +1170,37 @@ pub(super) fn import_engine_sessions(
                         })
                         .cloned(),
                 );
-                existing.projection = ChatProjection::from_lines(projected);
+                existing.projection =
+                    ChatProjection::from_lines(projected.lines);
+                existing.card_receipts = projected.card_receipts;
+                existing.active_dispatch_receipt_id =
+                    projected.active_dispatch_receipt_id;
                 existing.status = live_status(record.status.clone());
                 existing.updated_at = record.updated_at;
+            } else if existing.card_receipts.is_empty()
+                && record
+                    .messages
+                    .iter()
+                    .any(|m| m.dispatch_receipt_id.is_some())
+            {
+                let mut projected = project_messages_with_index(
+                    &record.messages,
+                    &allowed,
+                    override_index.as_ref(),
+                    None,
+                );
+                bind_override_artifact_receipts(
+                    &projected.lines,
+                    &mut projected.card_receipts,
+                    &override_artifacts,
+                    store,
+                    projected.active_dispatch_receipt_id.as_deref(),
+                );
+                existing.card_receipts = projected.card_receipts;
+                if existing.active_dispatch_receipt_id.is_none() {
+                    existing.active_dispatch_receipt_id =
+                        projected.active_dispatch_receipt_id;
+                }
             }
             let waiting_for_user = record.status == TurnState::WaitingForUser
                 || !record.pending_cards.is_empty();
@@ -1149,6 +1220,13 @@ pub(super) fn import_engine_sessions(
                 &mut existing.projection.lines,
                 &override_artifacts,
             );
+            bind_override_artifact_receipts(
+                &existing.projection.lines,
+                &mut existing.card_receipts,
+                &override_artifacts,
+                store,
+                existing.active_dispatch_receipt_id.as_deref(),
+            );
             if pending_delivery {
                 mark_live_delivery_failed(existing);
             } else if waiting_for_user {
@@ -1156,14 +1234,23 @@ pub(super) fn import_engine_sessions(
             }
             continue;
         }
-        let mut lines = lines_from_messages_with_index(
+        let mut projected = project_messages_with_index(
             &record.messages,
             &allowed,
             override_index.as_ref(),
+            None,
         );
-        append_missing_artifacts(&mut lines, &override_artifacts);
+        append_missing_artifacts(&mut projected.lines, &override_artifacts);
+        bind_override_artifact_receipts(
+            &projected.lines,
+            &mut projected.card_receipts,
+            &override_artifacts,
+            store,
+            projected.active_dispatch_receipt_id.as_deref(),
+        );
         let title = if record.title.is_empty() {
-            lines
+            projected
+                .lines
                 .iter()
                 .find_map(|line| match line {
                     ChatLine::User { text }
@@ -1186,7 +1273,7 @@ pub(super) fn import_engine_sessions(
         live.insert(
             record.id.clone(),
             Live {
-                projection: ChatProjection::from_lines(lines),
+                projection: ChatProjection::from_lines(projected.lines),
                 title,
                 titled,
                 pinned: record.pinned,
@@ -1217,8 +1304,59 @@ pub(super) fn import_engine_sessions(
                 access_mode: record.access_mode,
                 active_turn_is_internal: false,
                 active_turn_prev_status: None,
+                card_receipts: projected.card_receipts,
+                active_dispatch_receipt_id: projected
+                    .active_dispatch_receipt_id,
             },
         );
+    }
+}
+
+fn bind_override_artifact_receipts(
+    lines: &[ChatLine],
+    card_receipts: &mut BTreeMap<String, String>,
+    override_artifacts: &[String],
+    store: Option<&ArtifactStore>,
+    fallback_receipt: Option<&str>,
+) {
+    for artifact_id in override_artifacts {
+        let artifact_key = super::artifact_receipt_key(artifact_id);
+        if card_receipts.contains_key(&artifact_key) {
+            continue;
+        }
+        let sha256 = store
+            .and_then(|s| s.get(artifact_id).ok().flatten())
+            .map(|record| record.manifest.receipt.sha256);
+        let matched = sha256.as_deref().and_then(|hash| {
+            let mut unflagged_match = None;
+            for line in lines {
+                if let ChatLine::Verification {
+                    report_id,
+                    artifact_path,
+                    artifact_hash,
+                    override_used,
+                    ..
+                } = line
+                    && artifact_hash == hash
+                    && let Some(rid) =
+                        card_receipts.get(&super::verification_receipt_key(
+                            report_id,
+                            artifact_path,
+                        ))
+                {
+                    if *override_used {
+                        return Some(rid.as_str());
+                    }
+                    if unflagged_match.is_none() {
+                        unflagged_match = Some(rid.as_str());
+                    }
+                }
+            }
+            unflagged_match
+        });
+        if let Some(rid) = matched.or(fallback_receipt) {
+            card_receipts.insert(artifact_key, rid.to_owned());
+        }
     }
 }
 
@@ -1262,11 +1400,16 @@ pub(super) fn restore_existing_history(
                 latest = Some((row, index));
             }
             None if message.id.starts_with("submission-") => {
-                lines.extend(lines_from_messages_with_index(
+                let recovered = project_messages_with_index(
                     &record.messages[index..],
                     allowed,
                     overrides,
-                ));
+                    None,
+                );
+                lines.extend(recovered.lines);
+                existing.card_receipts.extend(recovered.card_receipts);
+                existing.active_dispatch_receipt_id =
+                    recovered.active_dispatch_receipt_id;
                 existing.status = live_status(record.status);
                 existing.updated_at = record.updated_at;
                 return;
@@ -1302,12 +1445,19 @@ pub(super) fn restore_existing_history(
             _ => None,
         })
         .peekable();
-    let mut recovered = lines_from_messages_with_index(
+    let initial_receipt = record.messages[index]
+        .dispatch_receipt_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|rid| !rid.is_empty())
+        .map(str::to_owned);
+    let mut recovered = project_messages_with_index(
         &record.messages[index + 1..],
         allowed,
         overrides,
+        initial_receipt,
     );
-    for line in &mut recovered {
+    for line in &mut recovered.lines {
         if let ChatLine::Reasoning {
             text,
             duration_secs,
@@ -1319,13 +1469,15 @@ pub(super) fn restore_existing_history(
             *duration_secs = elapsed;
         }
     }
-    lines.extend(recovered);
+    lines.extend(recovered.lines);
     // Task receipts belong to the UI and have no structured message.
     lines.extend(
         previous
             .into_iter()
             .filter(|line| matches!(line, ChatLine::TaskReceipt { .. })),
     );
+    existing.card_receipts.extend(recovered.card_receipts);
+    existing.active_dispatch_receipt_id = recovered.active_dispatch_receipt_id;
     existing.status = TurnStatus::Completed;
     existing.updated_at = record.updated_at;
 }
@@ -1507,12 +1659,59 @@ fn parse_verification_line_with_index(
     })
 }
 
-pub(super) fn lines_from_messages_with_index(
+pub(super) struct ProjectedMessages {
+    pub(super) lines: Vec<ChatLine>,
+    pub(super) card_receipts: BTreeMap<String, String>,
+    pub(super) active_dispatch_receipt_id: Option<String>,
+}
+
+fn flush_pending_cards(
+    lines: &mut Vec<ChatLine>,
+    card_receipts: &mut BTreeMap<String, String>,
+    pending_verifications: &mut Vec<ChatLine>,
+    pending_artifacts: &mut Vec<String>,
+    receipt_id: Option<&str>,
+) {
+    for card in pending_verifications.drain(..) {
+        if let (
+            Some(rid),
+            ChatLine::Verification {
+                report_id,
+                artifact_path,
+                ..
+            },
+        ) = (receipt_id, &card)
+        {
+            card_receipts.insert(
+                super::verification_receipt_key(report_id, artifact_path),
+                rid.to_owned(),
+            );
+        }
+        lines.push(card);
+    }
+    for artifact_id in pending_artifacts.drain(..) {
+        if let Some(rid) = receipt_id {
+            card_receipts
+                .entry(super::artifact_receipt_key(&artifact_id))
+                .or_insert_with(|| rid.to_owned());
+        }
+        lines.push(ChatLine::Artifact { artifact_id });
+    }
+}
+
+pub(super) fn project_messages_with_index(
     messages: &[Message],
     allowed: &BTreeSet<String>,
     overrides: Option<&crate::delivery::OverrideIndex>,
-) -> Vec<ChatLine> {
+    initial_receipt: Option<String>,
+) -> ProjectedMessages {
     let mut lines = Vec::new();
+    let mut card_receipts = BTreeMap::new();
+    let mut current_receipt = initial_receipt
+        .as_deref()
+        .map(str::trim)
+        .filter(|rid| !rid.is_empty())
+        .map(str::to_owned);
     let mut pending_verifications = Vec::new();
     let mut pending_artifacts = Vec::new();
     for message in messages {
@@ -1522,10 +1721,19 @@ pub(super) fn lines_from_messages_with_index(
                 if matches!(message.source, MessageSource::User)
                     && !is_internal_resume_message(message)
                 {
-                    lines.extend(std::mem::take(&mut pending_verifications));
-                    for artifact_id in std::mem::take(&mut pending_artifacts) {
-                        lines.push(ChatLine::Artifact { artifact_id });
-                    }
+                    flush_pending_cards(
+                        &mut lines,
+                        &mut card_receipts,
+                        &mut pending_verifications,
+                        &mut pending_artifacts,
+                        current_receipt.as_deref(),
+                    );
+                    current_receipt = message
+                        .dispatch_receipt_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|rid| !rid.is_empty())
+                        .map(str::to_owned);
                 }
                 if !matches!(message.source, MessageSource::SystemEvent { .. })
                 {
@@ -1655,11 +1863,18 @@ pub(super) fn lines_from_messages_with_index(
             }
         }
     }
-    lines.extend(pending_verifications);
-    for artifact_id in pending_artifacts {
-        lines.push(ChatLine::Artifact { artifact_id });
+    flush_pending_cards(
+        &mut lines,
+        &mut card_receipts,
+        &mut pending_verifications,
+        &mut pending_artifacts,
+        current_receipt.as_deref(),
+    );
+    ProjectedMessages {
+        lines,
+        card_receipts,
+        active_dispatch_receipt_id: current_receipt,
     }
-    lines
 }
 
 pub(super) fn tool_result_display_text(tool_name: &str, text: &str) -> String {
@@ -1774,6 +1989,7 @@ pub(super) fn messages_from_lines(
                     content: vec![ContentBlock::text(text.clone())],
                     source: MessageSource::User,
                     display_text: None,
+                    dispatch_receipt_id: None,
                 });
             }
             ChatLine::Assistant { text } => messages.push(Message {
@@ -1785,6 +2001,7 @@ pub(super) fn messages_from_lines(
                     model: config.model.clone(),
                 },
                 display_text: None,
+                dispatch_receipt_id: None,
             }),
             _ => {}
         }
