@@ -105,6 +105,33 @@ jobs:
         run: cargo test -p flowy-agent-core --locked
       - name: Agent orchestration tests
         run: cargo test -p flowy-agent --locked
+
+  linux-sandbox:
+    name: Flowy Linux Bubblewrap integration
+    # Ubuntu 26.04 ships the AppArmor profile for Bubblewrap's namespace setup.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: flowy18_wip
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100"
+      - name: Use crates.io from GitHub
+        working-directory: .
+        run: bun scripts/ci-use-crates-io.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flowy18-linux-sandbox
+          workspaces: "flowy18_wip -> build.noindex"
       - name: Install Bubblewrap for sandbox integration
         run: |
           sudo apt-get update
@@ -119,7 +146,6 @@ jobs:
             --unshare-net --chdir / -- /bin/bash -c "exit 0"
       - name: Nonprivileged Linux sandbox integration
         run: cargo test -p flowy-agent-core --locked --lib linux_bwrap_ -- --ignored --test-threads=1
-
 
   windows-core-agent:
     name: GPUI Windows core and agent tests
