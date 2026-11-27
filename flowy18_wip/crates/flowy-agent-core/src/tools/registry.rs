@@ -135,6 +135,12 @@ impl std::fmt::Debug for ToolRegistry {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl ToolRegistry {
     #[must_use]
     pub fn new() -> Self {
@@ -143,34 +149,27 @@ impl ToolRegistry {
 
     /// Register one tool; a duplicate name is replaced (last wins).
     pub fn register(&self, tool: Arc<ToolDefinition>) {
-        self.inner
-            .tools
-            .lock()
-            .unwrap()
-            .insert(tool.name.clone(), tool);
+        lock(&self.inner.tools).insert(tool.name.clone(), tool);
     }
 
     pub fn unregister(&self, name: &str) {
-        self.inner.tools.lock().unwrap().remove(name);
+        lock(&self.inner.tools).remove(name);
     }
 
     /// Install the single host policy hook.
     pub fn set_policy(&self, policy: ToolPolicy) {
-        *self.inner.policy.lock().unwrap() = Some(policy);
+        *lock(&self.inner.policy) = Some(policy);
     }
 
     /// Add a monotonic guard evaluated before every dispatch.
     pub fn add_guard(&self, guard: ToolGuard) {
-        self.inner.guards.lock().unwrap().push(guard);
+        lock(&self.inner.guards).push(guard);
     }
 
     /// Model-facing schemas of every registered tool.
     #[must_use]
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        self.inner
-            .tools
-            .lock()
-            .unwrap()
+        lock(&self.inner.tools)
             .values()
             .map(|tool| tool.schema())
             .collect()
@@ -179,14 +178,14 @@ impl ToolRegistry {
     #[must_use]
     pub fn list(&self) -> Vec<String> {
         let mut names: Vec<String> =
-            self.inner.tools.lock().unwrap().keys().cloned().collect();
+            lock(&self.inner.tools).keys().cloned().collect();
         names.sort();
         names
     }
 
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<ToolDefinition>> {
-        self.inner.tools.lock().unwrap().get(name).cloned()
+        lock(&self.inner.tools).get(name).cloned()
     }
 
     /// Run one accepted call through policy, guards, and the tool body.
@@ -210,7 +209,7 @@ impl ToolRegistry {
         };
 
         let decision = {
-            let policy = self.inner.policy.lock().unwrap().clone();
+            let policy = lock(&self.inner.policy).clone();
             policy.map(|policy| policy(&args))
         };
         match decision {
@@ -226,7 +225,7 @@ impl ToolRegistry {
             }
         }
 
-        let guards = self.inner.guards.lock().unwrap().clone();
+        let guards = lock(&self.inner.guards).clone();
         for guard in &guards {
             if let Some(reason) = guard(&args) {
                 return ToolExecutionResult::error("DENIED", reason);

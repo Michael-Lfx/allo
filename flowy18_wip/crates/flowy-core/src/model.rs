@@ -795,6 +795,9 @@ impl Document {
             .filter(|(_, node)| ids.contains(&node.id))
             .map(|(index, _)| index)
             .collect();
+        if selected.len() < 3 {
+            return false;
+        }
         selected.sort_by(|a, b| match axis {
             Axis::Horizontal => self.nodes[*a]
                 .position
@@ -806,8 +809,13 @@ impl Document {
                 .total_cmp(&self.nodes[*b].position.y),
         });
 
-        let first = &self.nodes[selected[0]];
-        let last = &self.nodes[*selected.last().unwrap()];
+        let (Some(&first_idx), Some(&last_idx)) =
+            (selected.first(), selected.last())
+        else {
+            return false;
+        };
+        let first = &self.nodes[first_idx];
+        let last = &self.nodes[last_idx];
         let span = match axis {
             Axis::Horizontal => last.position.x - first.position.x,
             Axis::Vertical => last.position.y - first.position.y,
@@ -1158,6 +1166,18 @@ mod tests {
             .map(|id| doc.node(id).unwrap().position.x)
             .collect();
         assert!((positions[1] - 200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn distribute_nodes_ignores_stale_selection_ids_without_panicking() {
+        let mut doc = Document::new("Test");
+        let a = doc.add_node(NodeKind::Action, Vec2::new(0.0, 0.0));
+        let b = doc.add_node(NodeKind::Action, Vec2::new(100.0, 0.0));
+        let stale = ids(&[a, b, NodeId(9999)]);
+        assert!(!doc.distribute_nodes(&stale, Axis::Horizontal));
+
+        let all_stale = ids(&[NodeId(9001), NodeId(9002), NodeId(9003)]);
+        assert!(!doc.distribute_nodes(&all_stale, Axis::Vertical));
     }
 
     #[test]

@@ -134,7 +134,9 @@ impl AgentTool for RegistryTool {
                 {
                     // Only the adapter can reach this private host-side sink;
                     // untrusted tool details never become receipt metadata.
-                    sink.lock().unwrap().push(receipt.as_ref().clone());
+                    sink.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(receipt.as_ref().clone());
                 }
                 Ok(AgentToolResult {
                     content: to_loop_content(&content),

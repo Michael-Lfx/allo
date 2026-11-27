@@ -76,6 +76,42 @@ jobs:
       - name: Verify production UI contracts
         run: bun flowy18_wip/scripts/check-ui-contracts.mjs
 
+  windows-core-agent:
+    name: GPUI Windows core and agent tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: flowy18_wip
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100"
+          components: clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Use crates.io from GitHub
+        working-directory: .
+        run: bun scripts/ci-use-crates-io.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flowy18-windows-core
+          workspaces: "flowy18_wip -> build.noindex"
+          cache-on-failure: true
+      - name: Core, storage, OTA, auth, skills, and agent-core tests
+        run: cargo test -p flowy-core -p flowy-net -p flowy-auth -p flowy-obs -p flowy-ota -p flowy-skills -p flowy-agent-core --locked
+      - name: Agent orchestration tests (serial for Windows fsync determinism)
+        run: cargo test -p flowy-agent --locked -- --test-threads=1
+      - name: Core and agent clippy
+        run: cargo clippy -p flowy-core -p flowy-net -p flowy-auth -p flowy-obs -p flowy-ota -p flowy-skills -p flowy-agent-core -p flowy-agent --all-targets --locked -- -D warnings
+
   windows-ui:
     name: GPUI Windows tests and compile
     needs: patch-readiness
@@ -134,11 +170,15 @@ jobs:
         run: cargo test -p flowy-ui --locked
       - name: All 23 locale dictionaries
         run: cargo test -p flowy-i18n --locked
+      - name: Shell integration tests
+        run: cargo test -p flowy-shell --locked
       - name: Studio regression tests
         run: cargo test -p flowy-studio --locked
       - name: Application regression tests
         run: cargo test -p flowy-app --locked
-      - name: Desktop compile
-        run: cargo check -p flowy-desktop --locked
-      - name: UI clippy
-        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets --locked -- -D warnings
+      - name: Desktop tests and compile
+        run: |
+          cargo test -p flowy-desktop --locked
+          cargo check -p flowy-desktop --locked
+      - name: Workspace clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

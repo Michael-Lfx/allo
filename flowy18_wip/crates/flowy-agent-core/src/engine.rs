@@ -175,7 +175,7 @@ impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("root", &self.root)
-            .field("sessions", &self.inner.lock().unwrap().index.sessions.len())
+            .field("sessions", &self.lock_inner().index.sessions.len())
             .finish_non_exhaustive()
     }
 }
@@ -208,8 +208,14 @@ impl Engine {
         &self.root
     }
 
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn set_config(&self, config: EngineConfig) {
-        self.inner.lock().unwrap().config = config;
+        self.lock_inner().config = config;
     }
 
     #[must_use]
@@ -258,32 +264,26 @@ impl Engine {
 
     #[must_use]
     pub fn active(&self) -> Option<String> {
-        self.inner.lock().unwrap().index.active.clone()
+        self.lock_inner().index.active.clone()
     }
 
     #[must_use]
     pub fn submitted_session(&self, submission: u128) -> Option<String> {
         let message_id = format!("submission-{submission:032x}");
-        self.inner
-            .lock()
-            .unwrap()
-            .index
-            .sessions
-            .iter()
-            .find_map(|record| {
-                let in_history = record.messages.iter().any(|message| {
-                    message.role == Role::User && message.id == message_id
-                });
-                let in_followups = record
-                    .pending_router_followups
-                    .iter()
-                    .any(|item| item.submission_id == message_id);
-                (in_history || in_followups).then(|| record.id.clone())
-            })
+        self.lock_inner().index.sessions.iter().find_map(|record| {
+            let in_history = record.messages.iter().any(|message| {
+                message.role == Role::User && message.id == message_id
+            });
+            let in_followups = record
+                .pending_router_followups
+                .iter()
+                .any(|item| item.submission_id == message_id);
+            (in_history || in_followups).then(|| record.id.clone())
+        })
     }
 
     pub fn set_active(&self, id: Option<String>) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         inner.index.active = id;
         inner.index.save(&self.root)
     }
@@ -669,7 +669,7 @@ impl Engine {
         origin: SessionOrigin,
         workspace: Option<SessionWorkspace>,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -689,7 +689,7 @@ impl Engine {
         contract: WorkContract,
         submission_id: Option<&str>,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -714,7 +714,7 @@ impl Engine {
         submission_id: &str,
         revision: u32,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -735,7 +735,7 @@ impl Engine {
         submission_id: &str,
         outcome: SubmissionOutcome,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -756,7 +756,7 @@ impl Engine {
         card: PendingCard,
         updated_contract: Option<WorkContract>,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -808,7 +808,7 @@ impl Engine {
         next_status: TurnState,
         updated_contract: Option<WorkContract>,
     ) -> std::io::Result<Option<PendingCard>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let record = inner.index.get_mut(id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -848,7 +848,7 @@ impl Engine {
 
     /// Insert or replace one durable session record.
     pub fn insert_session(&self, record: SessionRecord) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         inner.index.upsert(record);
         inner.index.save(&self.root)
     }
@@ -864,7 +864,7 @@ impl Engine {
         title: String,
         titled: bool,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let (prev_title, prev_titled, prev_snapshots) = {
             let record = inner.index.get_mut(id).ok_or_else(|| {
                 std::io::Error::new(
@@ -911,7 +911,7 @@ impl Engine {
         id: &str,
         pinned: bool,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let prev = {
             let record = inner.index.get_mut(id).ok_or_else(|| {
                 std::io::Error::new(
@@ -942,7 +942,7 @@ impl Engine {
         id: &str,
         archived: bool,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let prev = {
             let record = inner.index.get_mut(id).ok_or_else(|| {
                 std::io::Error::new(
@@ -972,7 +972,7 @@ impl Engine {
         &self,
         commit: &DeliveryCommit,
     ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         let previous = inner
             .index
             .get(&commit.session_id)
@@ -1013,7 +1013,7 @@ impl Engine {
     }
 
     pub fn remove_session(&self, id: &str) -> std::io::Result<bool> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         if inner.finalizing.contains(id) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -1044,7 +1044,7 @@ impl Engine {
     /// child tools.
     #[must_use]
     pub fn is_cancelling(&self, id: &str) -> bool {
-        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        let fence = self.lock_inner().fences.get(id).cloned();
         fence.is_some_and(|fence| fence.is_cancelling())
     }
 
@@ -1052,7 +1052,7 @@ impl Engine {
     /// cancelling/reaping child tools).
     #[must_use]
     pub fn is_active(&self, id: &str) -> bool {
-        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        let fence = self.lock_inner().fences.get(id).cloned();
         fence.is_some_and(|fence| fence.is_active())
     }
 
@@ -1090,7 +1090,7 @@ impl Engine {
     /// reaping and release its fence. Returns `true` if idle.
     #[must_use]
     pub fn wait_until_idle(&self, id: &str, timeout: Duration) -> bool {
-        let fence = self.inner.lock().unwrap().fences.get(id).cloned();
+        let fence = self.lock_inner().fences.get(id).cloned();
         fence.is_none_or(|fence| fence.wait_until_idle(timeout))
     }
 
@@ -1099,7 +1099,7 @@ impl Engine {
     /// is completing its independent store marker; callers must keep the
     /// saving state visible until the terminal notification arrives.
     pub fn request_cancel(&self, id: &str) -> std::io::Result<bool> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         if inner.finalizing.contains(id) {
             return Ok(false);
         }
@@ -1335,7 +1335,7 @@ impl Engine {
             "enter"
         );
         let (prepared, saved) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             let config = config.unwrap_or_else(|| inner.config.clone());
             if needs_credential && config.api_key.is_none() {
                 return Err(RunError::NoCredential);
@@ -1501,7 +1501,7 @@ impl Engine {
         });
         let result = run_turn(request, stream, emitter).await;
         let stored = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             if !ticket.is_current() {
                 drop(inner);
                 self.settle_cancelled_run(
@@ -1547,7 +1547,9 @@ impl Engine {
                     if result.outcome == LoopOutcome::Completed {
                         attach_artifact_receipts(
                             &mut result.messages,
-                            &artifact_receipts.lock().unwrap(),
+                            &artifact_receipts.lock().unwrap_or_else(
+                                std::sync::PoisonError::into_inner,
+                            ),
                             session_id,
                             submission_id.as_deref(),
                         );

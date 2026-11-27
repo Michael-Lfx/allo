@@ -2654,14 +2654,14 @@ fn bind_shell_main_window(window: gpui::WindowHandle<FlowyApp>) {
     *SHELL_MAIN
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .unwrap() = Some(window);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
 }
 
 fn ensure_shell_main_window(cx: &mut App) {
     let existing = *SHELL_MAIN
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .unwrap();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(window) = existing {
         let alive = window
             .update(cx, |_app, window, _cx| {

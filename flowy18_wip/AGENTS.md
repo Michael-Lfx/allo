@@ -13,7 +13,7 @@ Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试 / `dx serve` 热补丁的�
 | `flowy-obs` | 日志、Sentry 崩溃上报、遥测 allowlist/outbox | `init_tracing` / `Telemetry` |
 | `flowy-core` | 文档图模型、历史、原子写、`DocumentSession` | 会话命令 API |
 | `flowy-auth` | 云登录 Email OTP + JWT 会话落盘；经 `flowy-net` 调 Flowy `/user/*` | `AuthClient` / `SessionStore` / `Session`；env：`FLOWY_API_BASE_URL` / `FLOWY_AUTH_CHANNEL` / `FLOWY_AUTH_APP` |
-| `flowy-chat` | 任务线程投影 + mock stream | `Thread` / `Item` / `Beat` / `MockStream` |
+| `flowy-skills` | 本地与远程技能注册表、安全边界、预算裁剪与提示注入 | `SkillRegistry` / `SkillSummary` / 技能市场同步 |
 | `flowy-ui` | 窗口主题、控件与弹层契约、Accent/Density | `UiContext` / `ThemeState` / `ResolvedTheme` / `ModalLayer` / 控件 builders / `OverlayHost` |
 | `flowy-shell` | deep link / notify / autostart / 托盘 | `install(Brand, open_main)` / `configure_brand` / `tray_available`；托盘走 `gpui-tray` 的 `gpui-kit` feature（真包是 `gpui-pre`）。托盘可用时关窗最小化（`gpui-pre` 没有 `set_visible`），不可用时关窗退出；`ctrl-q` 始终可退。注意：从带标签的沙箱目录直接运行 exe，进程是低完整性，Windows 会拒绝托盘图标，表现为关窗直接退出——装好或换目录运行即正常 |
 | `flowy-agent` | UI↔core 端口；多 session / 流式投影 / 标题回退；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK 入口当前未接线（`LlmConfig::from_flex` 保留） |
