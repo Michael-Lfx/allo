@@ -79,7 +79,10 @@ screen so the next person (or agent) does not repeat them.
    sizes to content.
 2. **`scrollbar_width(px(0.))` disables scrolling.** GPUI lays a `Scroll` node
    out like `Hidden` when the width is zero, so `max_offset()` stays 0 and
-   programmatic scrolling is clamped away. Use at least 1px.
+   programmatic scrolling is clamped away. Use `flowy_ui::scroll_area` or
+   `flowy_ui::scroll_list_host` (`crates/flowy-ui/src/scroll.rs`) instead of raw
+   `.overflow_*_scroll().scrollbar_width(...)` so viewports get the unified 4px/6px
+   overflow-only hairline thumb and Windows UIA `ScrollPattern` support (never drop below 1px).
 3. **`window.viewport_size()` and `window.bounds()` go stale.** After the window
    is resized they can keep reporting the launch size, so any breakpoint computed
    from them misfires. Prefer flex and wrapping; only read the window when a
@@ -116,6 +119,7 @@ canvas. Pair it with `motion::ENTER_OFFSET`.
 
 - Prefer `flowy_ui::interactive` / `Button` / `TextField` over bare `div().on_click()` for operable controls.
 - Keep element ids stable across frames; do not key focus identity on translated labels.
+- Wrap scrollable viewports in `flowy_ui::scroll_area` / `flowy_ui::scroll_list_host` (`crates/flowy-ui/src/scroll.rs`) with localized `a11y.scroll_*` labels (distinguished as `"滚动区"` / `"scroll area"`) so subtle 4px/6px overflow-only thumbs and Windows UIA `ScrollPattern` stay unified without colliding with buttons or tabs.
 
 ## Button hierarchy
 
