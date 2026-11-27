@@ -976,27 +976,36 @@ impl Harness {
             } else if state.autonomous_drain.load(Ordering::Acquire)
                 && let Some(harness) = weak_harness.upgrade()
             {
-                let live_delivery_failed =
-                    lock(&state.live).get(&id).is_some_and(|session| {
-                        matches!(session.status, TurnStatus::DeliveryFailed)
-                    });
-                let has_durable_commit =
-                    expected_sub.as_deref().is_some_and(|sub| {
-                        engine.session(&id).is_some_and(|rec| {
-                            rec.delivery_commits
-                                .iter()
-                                .any(|commit| commit.submission_id == sub)
-                        })
-                    });
-                let completed = matches!(outcome, Ok(LoopOutcome::Completed))
-                    || live_delivery_failed
-                    || (matches!(outcome, Err(RunError::Storage(_)))
-                        && has_durable_commit);
-                let _ = harness.finish_accepted_if_owned(
-                    &id,
-                    expected_sub.as_deref(),
-                    completed,
-                );
+                if harness.has_owned_claim(&id, expected_sub.as_deref()) {
+                    let live_delivery_failed =
+                        lock(&state.live).get(&id).is_some_and(|session| {
+                            matches!(session.status, TurnStatus::DeliveryFailed)
+                        });
+                    let has_durable_commit =
+                        expected_sub.as_deref().is_some_and(|sub| {
+                            engine.session(&id).is_some_and(|rec| {
+                                rec.delivery_commits
+                                    .iter()
+                                    .any(|commit| commit.submission_id == sub)
+                            })
+                        });
+                    let completed =
+                        matches!(outcome, Ok(LoopOutcome::Completed))
+                            || live_delivery_failed
+                            || (matches!(outcome, Err(RunError::Storage(_)))
+                                && has_durable_commit);
+                    let h = Arc::clone(&harness);
+                    let claim_sid = id.clone();
+                    let claim_sub = expected_sub.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = h.finish_accepted_if_owned(
+                            &claim_sid,
+                            claim_sub.as_deref(),
+                            completed,
+                        );
+                    })
+                    .await;
+                }
                 harness.kick_autonomous_drain();
                 drop(harness);
             }

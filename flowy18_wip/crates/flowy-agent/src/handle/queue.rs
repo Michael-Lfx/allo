@@ -734,12 +734,27 @@ impl Harness {
         self.finish_accepted_locked(None, None, completed)
     }
 
+    pub(super) fn has_owned_claim(
+        &self,
+        session_id: &str,
+        submission_id: Option<&str>,
+    ) -> bool {
+        submission_id.is_some_and(|sub| {
+            lock(&self.state.active_claims).values().any(|claim| {
+                claim.session_id == session_id && claim.submission_id == sub
+            })
+        })
+    }
+
     pub(super) fn finish_accepted_if_owned(
         &self,
         session_id: &str,
         submission_id: Option<&str>,
         completed: bool,
     ) -> Result<bool, &'static str> {
+        if !self.has_owned_claim(session_id, submission_id) {
+            return Ok(false);
+        }
         self.finish_accepted_locked(Some(session_id), submission_id, completed)
     }
 
@@ -875,10 +890,13 @@ impl Harness {
                 if harness.in_flight_work_count() >= max_slots {
                     break;
                 }
-                match harness.run_accepted_once() {
-                    Ok(Some(_)) => {}
-                    Ok(None) => break,
-                    Err(error) => {
+                let h = Arc::clone(&harness);
+                match tokio::task::spawn_blocking(move || h.run_accepted_once())
+                    .await
+                {
+                    Ok(Ok(Some(_))) => {}
+                    Ok(Ok(None)) | Err(_) => break,
+                    Ok(Err(error)) => {
                         tracing::warn!(
                             target: "flowy.acceptance",
                             error,

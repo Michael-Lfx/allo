@@ -494,12 +494,13 @@ impl AgentHandle {
         card_id: &str,
         selection: CardSelection,
     ) -> Result<CardActionOutcome, &'static str> {
-        let mut pre_staged =
-            matches!(selection, CardSelection::ApproveTool { .. })
-                .then(|| {
-                    self.inner.pre_stage_worker_providers(Some(session_id))
-                })
-                .flatten();
+        let mut pre_staged = matches!(
+            selection,
+            CardSelection::ApproveTool { .. }
+                | CardSelection::Disambiguate { .. }
+        )
+        .then(|| self.inner.pre_stage_worker_providers(Some(session_id)))
+        .flatten();
         let _dispatch = lock(&self.inner.state.dispatch);
         if self.is_initializing() {
             return Err("library.loading");
