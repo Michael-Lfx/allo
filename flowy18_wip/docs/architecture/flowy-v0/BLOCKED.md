@@ -2,7 +2,7 @@
 
 > 拿不准的事写这里，跳过继续做别的。执行者不停下来等。
 
-## 现役待裁决总览（2026-11-26）
+## 现役待裁决总览（2026-11-27）
 
 | 编号 | 事项 | 当前状态 | 裁决结论与执行边界 |
 | --- | --- | --- | --- |
@@ -11,7 +11,7 @@
 | **§3** | `flowy18_wip` 首次冷构建与二进制入口 | ✅ **已于 2026-11-23 核实结案** | `cargo build -p flowy-desktop --bin flowy-app` |
 | **§4** | 任务 14 全类型硬门：无核验器类型的显式豁免边界 | ✅ **已于 2026-11-25 拍板结案** | 采用推荐方案 A：`.pptx` 强制走核验报告；尚无核验器的已知类型（`csv/pdf/md/txt/json/html`）走显式豁免表（`EXEMPT_NO_VERIFIER_V0`）并写审计事件；未知扩展名默认阻断 |
 | **§5** | V6 外发通道、凭据存储与单向门策略 | 🔴 **硬阻塞（停等拍板）** | **严禁动工**；不接邮件/Webhook/IM 发送，停在本地交付门与卡片层 |
-| **§6** | Super Agent 后续切片排期（S4 / PR-2A / PR #497 / PR-2B 已合流 · 真云端 UX 收口待合 · S5 顺延） | ✅ **S4（PR #494）、PR-2A（PR #496）、PR #497 与 PR-2B（PR #498）已合流** · 🟡 **真云端 UX 收口（`fix/flowy-live-cloud-ux-polish`）已完成 Rebase + 审查减脂 + 669/669 门禁待合，S5 顺延下轮** | S1–S3（PR #492）、S4 目录级并发池（PR #494）、导航/看板 v2（PR #495）、PR-2A 轻量 Router 内核（PR #496）、工作台打磨（PR #497）与 PR-2B Router UI 接线（PR #498）均已合入 `origin/main@83a9aef16`；`fix/flowy-live-cloud-ux-polish` 已线性 rebase 至 `83a9aef16` 并完成真云端全链路 8 项 UX 修复、PR #498 耦合优化（共享心跳本地化、投影层防重停、导航回 Chat 与 23 语种桌面通知文案）与两轮审查减脂，通过 8-Crate 669/669、真云端 `live_cloud_` 3/3、9-Crate clippy 0 警告与双主题实机视觉 E2E；后续顺延 S5（休眠跳表 / OS 沙箱 `Enforced`），V6（§5）仍硬阻塞 |
+| **§6** | Super Agent 后续切片排期（#494–#511 已合流 `origin/main@c4da1ac65` · S5 时钟/尾读收口 · OS 沙箱 `Enforced` 真机挂载与 V6 留后） | ✅ **#499–#511 已全部合入 `origin/main@c4da1ac65`** · 📋 **OS 原生沙箱 `Enforced` 真机挂载 / `persona.rs` & `dispatch_receipt_id` 留待后续切片，V6 仍硬阻塞** | PR #505–#511 已将 Markdown/Library/Trace 性能、Shell/Skills 安全、PPTX 内嵌 `.xlsx` 图表核验、Spill 行分片 `read_file`、`views-meta/` 防篡改 GC、S5 休眠时钟跳变探针/单调 `drain_sleep_until_ms`/活跃认领跳过、`acceptance` & `delivery` 边界切片增量尾读与终态压缩、以及桌面多实例 `wake/` 目录队列冷/热深链并入 `main`；后续仅剩 macOS/Linux/Windows OS 沙箱子进程 `Enforced` 真机包壳与 `persona.rs`/细粒度路由重锚，V6（§5）仍硬阻塞 |
 
 ---
 
