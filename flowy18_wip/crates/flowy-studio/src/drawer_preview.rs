@@ -228,20 +228,11 @@ fn read_bounded_bytes(
 }
 
 pub fn load_drawer_preview(path: &str) -> DrawerPreviewBody {
-    let Some(safe_path) = crate::ports::resolve_safe_local_file(path) else {
+    let Ok((safe_path, file, meta)) =
+        crate::ports::open_safe_local_regular_file(Path::new(path))
+    else {
         return DrawerPreviewBody::Notice("chat.preview_missing");
     };
-    let Ok(file) = std::fs::File::open(&safe_path) else {
-        return DrawerPreviewBody::Notice("chat.preview_missing");
-    };
-    let Ok(meta) = file.metadata() else {
-        return DrawerPreviewBody::Notice("chat.preview_missing");
-    };
-    if !meta.is_file()
-        || crate::ports::is_link_or_unsafe_reparse(&safe_path, &meta)
-    {
-        return DrawerPreviewBody::Notice("chat.preview_missing");
-    }
 
     let extension = safe_path
         .extension()

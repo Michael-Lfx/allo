@@ -57,19 +57,16 @@ fn category_for_local_ext(ext: &str) -> Category {
 }
 
 fn read_local_preview_bytes(path: &Path) -> Result<Vec<u8>, &'static str> {
-    let file = std::fs::File::open(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            "library.error.missing"
-        } else {
-            "library.error.read"
-        }
-    })?;
-    let meta = file.metadata().map_err(|_| "library.error.read")?;
-    if !meta.is_file()
-        || flowy_studio::ports::is_link_or_unsafe_reparse(path, &meta)
-    {
-        return Err("library.error.missing");
-    }
+    let (_safe_path, file, meta) =
+        flowy_studio::ports::open_safe_local_regular_file(path).map_err(
+            |error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    "library.error.missing"
+                } else {
+                    "library.error.read"
+                }
+            },
+        )?;
     if meta.len() > MAX_LOCAL_PREVIEW_BYTES {
         return Err("library.error.large");
     }
@@ -232,7 +229,15 @@ impl FlowyApp {
             .extension()
             .and_then(|ext| ext.to_str())
             .map_or_default(str::to_ascii_lowercase);
-        let size_bytes = std::fs::metadata(&safe_path).ok().map(|m| m.len());
+        let size_bytes = std::fs::symlink_metadata(&safe_path)
+            .ok()
+            .filter(|meta| {
+                meta.is_file()
+                    && !flowy_studio::ports::is_link_or_unsafe_reparse(
+                        &safe_path, meta,
+                    )
+            })
+            .map(|meta| meta.len());
         let item = LibraryItem {
             id: String::new(),
             title: file_name.clone(),
@@ -538,5 +543,58 @@ mod tests {
 
         drop(app);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_local_preview_bytes_revalidates_paths_and_rejects_swaps() {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-app-retry-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("draft.md");
+        std::fs::write(&file_path, b"# OK").unwrap();
+
+        assert_eq!(read_local_preview_bytes(&file_path).unwrap(), b"# OK");
+        assert_eq!(
+            read_local_preview_bytes(Path::new("relative/draft.md")),
+            Err("library.error.missing")
+        );
+        assert_eq!(
+            read_local_preview_bytes(Path::new(r"\\attacker\share\draft.md")),
+            Err("library.error.missing")
+        );
+
+        // Simulate path swapped into a non-regular entry before Retry.
+        let target_dir = root.join("target_dir");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::remove_file(&file_path).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&file_path)
+                .arg(&target_dir)
+                .output()
+                .expect("invoke mklink /J");
+            assert!(status.status.success());
+            assert_eq!(
+                read_local_preview_bytes(&file_path),
+                Err("library.error.missing")
+            );
+            let _ = std::fs::remove_dir(&file_path);
+        }
+        #[cfg(unix)]
+        {
+            let real_other = root.join("real_other.md");
+            std::fs::write(&real_other, b"swapped").unwrap();
+            std::os::unix::fs::symlink(&real_other, &file_path).unwrap();
+            assert_eq!(
+                read_local_preview_bytes(&file_path),
+                Err("library.error.missing")
+            );
+            let _ = std::fs::remove_file(&file_path);
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

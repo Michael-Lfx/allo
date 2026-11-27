@@ -57,8 +57,8 @@ impl crate::panel::StudioPanel {
             );
         }
         let is_board = self.surface == crate::panel::StudioSurface::Board;
-        // The drawer sits beside Home/Chat, never on the Global Visual Board
-        // (which uses centered modal flowcharts so KPIs never squash).
+        // The drawer sits only beside Home and Chat, never on the Global Visual
+        // Board, Automation, or placeholder surfaces.
         let content = if self.surface == crate::panel::StudioSurface::Home {
             self.studio(window, cx).into_any_element()
         } else if self.surface == crate::panel::StudioSurface::Chat {
@@ -70,7 +70,8 @@ impl crate::panel::StudioPanel {
         } else {
             self.section_page().into_any_element()
         };
-        let drawer = (!is_board && self.right_drawer_open)
+        let drawer = (surface_supports_right_drawer(self.surface)
+            && self.right_drawer_open)
             .then(|| self.right_sheet_drawer(window, cx).into_any_element());
         column = column.child(
             div()
@@ -484,7 +485,7 @@ impl crate::panel::StudioPanel {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let in_chat = self.surface == crate::panel::StudioSurface::Chat;
-        let is_board = self.surface == crate::panel::StudioSurface::Board;
+        let supports_drawer = surface_supports_right_drawer(self.surface);
         let is_blank_home = self.surface == crate::panel::StudioSurface::Home
             && self.active_project_id.is_none();
         let can_return_to_chat = self.surface
@@ -502,8 +503,9 @@ impl crate::panel::StudioPanel {
             !matches!(self.local_env.overall, crate::ports::EnvSeverity::Ready);
         let rtl = self.i18n.locale().is_rtl();
 
-        let deliverables_trigger =
-            (!is_board && (in_chat || deliverable_count > 0)).then(|| {
+        let deliverables_trigger = (supports_drawer
+            && (in_chat || deliverable_count > 0))
+            .then(|| {
                 let button = theme::interactive(
                     "deliverables",
                     deliverables_label.clone(),
@@ -812,11 +814,38 @@ impl crate::panel::StudioPanel {
     }
 }
 
+const fn surface_supports_right_drawer(
+    surface: crate::panel::StudioSurface,
+) -> bool {
+    matches!(
+        surface,
+        crate::panel::StudioSurface::Home | crate::panel::StudioSurface::Chat
+    )
+}
+
 const fn tier_key(tier: flowy_agent::Model) -> &'static str {
     match tier {
         flowy_agent::Model::Max => "max",
         flowy_agent::Model::Standard => "standard",
         flowy_agent::Model::Lite => "lite",
         flowy_agent::Model::Flex => "flex",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::surface_supports_right_drawer;
+    use crate::panel::StudioSurface;
+
+    #[test]
+    fn right_drawer_only_renders_on_home_and_chat_surfaces() {
+        assert!(surface_supports_right_drawer(StudioSurface::Home));
+        assert!(surface_supports_right_drawer(StudioSurface::Chat));
+        assert!(!surface_supports_right_drawer(StudioSurface::Board));
+        assert!(!surface_supports_right_drawer(StudioSurface::Automation));
+        assert!(!surface_supports_right_drawer(StudioSurface::Placeholder {
+            title_key: "dock.create",
+            detail_key: "section.create",
+        }));
     }
 }
