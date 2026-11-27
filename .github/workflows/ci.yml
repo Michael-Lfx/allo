@@ -115,31 +115,18 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
-          # Ubuntu security/archive mirrors occasionally return transient 404s
-          # mid-publish when an index entry rotates between update and install.
-          # Refresh metadata and retry fail-closed (never --fix-missing).
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              -o Acquire::Retries=3 \
-              build-essential \
-              cmake \
-              pkg-config \
-              libwebkit2gtk-4.1-dev \
-              libayatana-appindicator3-dev \
-              libpipewire-0.3-dev \
-              libgbm-dev \
-              libclang-dev \
-              librsvg2-dev \
-              libasound2-dev \
-              xdg-utils; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "apt-get install failed (attempt $attempt/3); refreshing mirror metadata and retrying in 5s..."
-            sleep 5
-          done
+          bun scripts/ci-apt-install.mjs \
+            build-essential \
+            cmake \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libgbm-dev \
+            libclang-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            xdg-utils
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
@@ -165,18 +152,12 @@ jobs:
 
       - name: Install Linux tools
         run: |
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              -o Acquire::Retries=3 \
-              squashfs-tools 7zip; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "apt-get install failed (attempt $attempt/3); refreshing mirror metadata and retrying in 5s..."
-            sleep 5
-          done
+          bun scripts/ci-apt-install.mjs \
+            --verify-bin mksquashfs \
+            --verify-bin unsquashfs \
+            --verify-bin 7z \
+            squashfs-tools \
+            7zip
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
@@ -197,6 +178,7 @@ jobs:
           bun run check:release-sync
           bun run check:release-product-profiles
           bun run check:release-voice-preparation
+          bun test scripts/ci-apt-install.test.mjs
           bun test scripts/verify-voice-release-package.test.mjs
           bun run help --check
 
@@ -245,31 +227,18 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
-          # Ubuntu security/archive mirrors occasionally return transient 404s
-          # mid-publish when an index entry rotates between update and install.
-          # Refresh metadata and retry fail-closed (never --fix-missing).
-          for attempt in 1 2 3; do
-            if sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              -o Acquire::Retries=3 \
-              build-essential \
-              cmake \
-              pkg-config \
-              libwebkit2gtk-4.1-dev \
-              libayatana-appindicator3-dev \
-              libpipewire-0.3-dev \
-              libgbm-dev \
-              libclang-dev \
-              librsvg2-dev \
-              libasound2-dev \
-              xdg-utils; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "apt-get install failed (attempt $attempt/3); refreshing mirror metadata and retrying in 5s..."
-            sleep 5
-          done
+          bun scripts/ci-apt-install.mjs \
+            build-essential \
+            cmake \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libgbm-dev \
+            libclang-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            xdg-utils
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
