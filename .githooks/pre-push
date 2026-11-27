@@ -2,4 +2,18 @@
 set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
-exec "$repo_root/scripts/run-git-attribution-check.sh" pre-push "$@"
+stdin_refs=$(cat)
+
+if [ -n "$stdin_refs" ]; then
+  printf '%s\n' "$stdin_refs" | "$repo_root/scripts/run-git-attribution-check.sh" pre-push "$@"
+else
+  "$repo_root/scripts/run-git-attribution-check.sh" pre-push "$@" </dev/null
+fi
+
+if [ -n "$stdin_refs" ]; then
+  if command -v bun >/dev/null 2>&1; then
+    printf '%s\n' "$stdin_refs" | bun "$repo_root/scripts/pre-push-flowy18.mjs" "$@"
+  elif command -v node >/dev/null 2>&1; then
+    printf '%s\n' "$stdin_refs" | node "$repo_root/scripts/pre-push-flowy18.mjs" "$@"
+  fi
+fi

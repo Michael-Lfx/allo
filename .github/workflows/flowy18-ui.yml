@@ -71,10 +71,20 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100"
+          components: rustfmt
       - name: Verify scanner fixtures
-        run: bun flowy18_wip/scripts/check-ui-contracts.mjs --self-test
-      - name: Verify production UI contracts
-        run: bun flowy18_wip/scripts/check-ui-contracts.mjs
+        run: |
+          bun flowy18_wip/scripts/check-ui-contracts.mjs --self-test
+          bun flowy18_wip/scripts/check-docs-and-scroll.mjs --self-test
+      - name: Verify production UI, docs, and ScrollArea contracts
+        run: |
+          bun flowy18_wip/scripts/check-ui-contracts.mjs
+          bun flowy18_wip/scripts/check-docs-and-scroll.mjs
+      - name: Rust formatting
+        run: cargo fmt --manifest-path flowy18_wip/Cargo.toml --all -- --check
 
   linux-core-agent:
     name: Flowy Linux core and agent tests
@@ -259,7 +269,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.100"
-          components: rustfmt, clippy
+          components: clippy
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Use crates.io from GitHub
         working-directory: .
@@ -269,10 +279,6 @@ jobs:
           shared-key: flowy18-windows-ui
           workspaces: "flowy18_wip -> build.noindex"
           cache-on-failure: true
-      # Formatting runs first: it needs no build, and a two-second style
-      # problem should not wait behind a full compile and test pass.
-      - name: Rust formatting
-        run: cargo fmt --all -- --check
       # Cargo operations are intentionally sequential, including the tests.
       - name: UI primitives and overlays
         run: cargo test -p flowy-ui --locked
@@ -290,5 +296,6 @@ jobs:
         run: |
           cargo test -p flowy-desktop --locked
           cargo check -p flowy-desktop --locked
-      - name: Workspace clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Complement windows-core-agent's 8-crate clippy set to cover all 15 workspace crates without double-checking.
+      - name: UI and desktop clippy
+        run: cargo clippy -p flowy-ui -p flowy-i18n -p flowy-automation -p flowy-shell -p flowy-studio -p flowy-app -p flowy-desktop --all-targets --locked -- -D warnings
