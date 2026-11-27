@@ -117,6 +117,14 @@ impl PreviewPanel {
         self.status = status;
         cx.notify();
     }
+    #[must_use]
+    pub const fn is_loaded(&self) -> bool {
+        self.document.is_some()
+    }
+    #[must_use]
+    pub const fn load_error(&self) -> Option<&'static str> {
+        self.error
+    }
     pub fn set_item(&mut self, item: LibraryItem, cx: &mut Context<'_, Self>) {
         if item.id == self.item.id {
             if item.availability != ArtifactAvailability::Available {
@@ -576,7 +584,8 @@ impl Render for PreviewPanel {
                 cx.listener(|_, _, _, cx| cx.emit(PreviewEvent::OpenDefault)),
             ),
         );
-        let save_as =
+        let save_as = super::test_control(
+            "preview-save-as",
             ui::Button::new("preview-save-as", self.t("library.save_as"))
                 .size(ui::ControlSize::Small)
                 .icon(ui::icons::download())
@@ -588,7 +597,8 @@ impl Render for PreviewPanel {
                     cx.listener(|this, _, _, cx| {
                         cx.emit(PreviewEvent::SaveAs(this.item.id.clone()));
                     }),
-                );
+                ),
+        );
         let close = ui::IconButton::new(
             "library-close-preview",
             self.t("library.close"),
@@ -653,7 +663,7 @@ impl Render for PreviewPanel {
                         )
                     }),
             )
-            .child(save_as);
+            .when(!self.item.id.is_empty(), |row| row.child(save_as));
         if self.item.default_open_supported() {
             header = header.child(open);
         }
@@ -905,7 +915,7 @@ fn table_cell_units(text: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn render_table_preview(
+pub fn render_table_preview(
     table: preview::TablePreview<'_>,
     t: ui::ResolvedTheme,
 ) -> gpui::Stateful<gpui::Div> {

@@ -1,5 +1,7 @@
 use crate::composer::{ChatComposer, ComposerEvent};
-use crate::deliverables::PreviewBody;
+use crate::drawer_preview::{
+    DrawerPreviewBody, DrawerPreviewState, PreviewMode,
+};
 use crate::feed::{
     ArtifactAction, ChatFeed, OpenDeliverables, OpenTask, QuoteMessage,
     RevealFile, WorkingIndicator, WorkingIndicatorEvent,
@@ -12,7 +14,8 @@ use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
 use gpui::{
-    Context, Entity, EventEmitter, IntoElement, Task, Window, prelude::*,
+    Context, Entity, EventEmitter, Focusable, IntoElement, Task, Window,
+    prelude::*,
 };
 use std::path::PathBuf;
 use std::sync::{
@@ -95,6 +98,7 @@ pub enum StudioEvent {
     TurnFinished,
     ArtifactsChanged,
     PreviewArtifact(String),
+    PreviewLocalFile(String),
     SaveArtifact(String),
     LocateArtifactSource {
         session_id: String,
@@ -302,10 +306,30 @@ pub struct StudioPanel {
     pub(crate) deliverables: Option<crate::deliverables::DeliverableScope>,
     /// Single background work or queued receipt inspected in the right sheet.
     pub(crate) inspected_work: Option<crate::deliverables::InspectedWork>,
-    /// Path being previewed inside the drawer.
-    pub(crate) preview_file: Option<String>,
-    /// Loaded once when the file is picked, so rendering never touches disk.
-    pub(crate) preview_body: Option<PreviewBody>,
+    /// Asynchronous rich preview state for the right-hand deliverables drawer.
+    pub(crate) drawer_preview: DrawerPreviewState,
+    /// Scope filter for Workspace Files inside the Deliverables tab (`Latest` vs `All`).
+    pub(crate) deliverables_view_scope:
+        crate::deliverables::DeliverablesViewScope,
+    /// Whether the user expanded the right drawer into its wide workbench width.
+    pub(crate) drawer_wide: bool,
+    /// Background-probed local file sizes keyed by canonical path.
+    pub(crate) deliverable_sizes:
+        std::collections::HashMap<String, Option<u64>>,
+    /// Safe non-overlapping parent folder candidate eligible for "Save as project".
+    pub(crate) promote_project_candidate: Option<String>,
+    drawer_meta_generation: u64,
+    drawer_meta_task: Option<Task<()>>,
+    /// Per-session overrides flipping default expand state for step turn groups.
+    pub(crate) step_turn_toggled:
+        std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    /// Expanded individual step detail cards inside the Steps tab.
+    pub(crate) expanded_step_items: std::collections::HashSet<String>,
+    pub(crate) drawer_step_copied: Option<(String, u64)>,
+    drawer_step_copy_epoch: u64,
+    drawer_step_copy_task: Option<Task<()>>,
+    /// Mirrors shell sidebar visibility for adaptive right-drawer width clamping.
+    pub(crate) dock_visible: bool,
     /// Composer drafts keyed by session, so switching tasks does not leak text.
     drafts: std::collections::HashMap<String, String>,
     /// Single active WeChat-style reply quote shown above the composer.
@@ -662,8 +686,20 @@ impl StudioPanel {
             session_opened_by_user: false,
             deliverables: None,
             inspected_work: None,
-            preview_file: None,
-            preview_body: None,
+            drawer_preview: DrawerPreviewState::default(),
+            deliverables_view_scope:
+                crate::deliverables::DeliverablesViewScope::Latest,
+            drawer_wide: false,
+            deliverable_sizes: std::collections::HashMap::new(),
+            promote_project_candidate: None,
+            drawer_meta_generation: 0,
+            drawer_meta_task: None,
+            step_turn_toggled: std::collections::HashMap::new(),
+            expanded_step_items: std::collections::HashSet::new(),
+            drawer_step_copied: None,
+            drawer_step_copy_epoch: 0,
+            drawer_step_copy_task: None,
+            dock_visible: true,
             drafts: std::collections::HashMap::new(),
             active_quote: None,
             quote_session: None,
@@ -1135,8 +1171,12 @@ impl StudioPanel {
         self.right_drawer_open = false;
         self.deliverables = None;
         self.inspected_work = None;
-        self.preview_file = None;
-        self.preview_body = None;
+        self.drawer_preview.clear();
+        self.drawer_meta_generation =
+            self.drawer_meta_generation.wrapping_add(1);
+        self.drawer_meta_task = None;
+        self.deliverable_sizes.clear();
+        self.promote_project_candidate = None;
         self.refresh_trace_cache();
     }
 
@@ -1203,6 +1243,7 @@ impl StudioPanel {
         self.close_all_popovers();
         self.flow_modal.close();
         self.clear_right_sheet();
+        self.dock_visible = true;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
         self.apply_draft_project(None);
@@ -1525,6 +1566,9 @@ impl StudioPanel {
     ) {
         self.feed
             .update(cx, |feed, cx| feed.set_artifacts(artifacts, cx));
+        if self.right_drawer_open {
+            self.refresh_drawer_metadata(cx);
+        }
     }
 
     /// Explicit override bound to a specific session and real non-empty
@@ -2097,24 +2141,35 @@ impl StudioPanel {
         let filtered = self.feed.read(cx).filter_settled_deliverables(files);
         if had_input && filtered.is_empty() {
             if self
-                .preview_file
+                .drawer_preview
+                .file
                 .as_deref()
                 .is_some_and(|path| self.feed.read(cx).is_path_failed(path))
             {
-                self.preview_file = None;
-                self.preview_body = None;
+                self.drawer_preview.clear();
             }
             self.emit_notice(Some("verify.card.failed"), cx);
             return;
         }
+        let quick_single = (filtered.len() == 1
+            && self.feed.read(cx).failed_verifications().is_empty()
+            && self.feed.read(cx).session_artifacts().is_empty())
+        .then(|| filtered[0].path.clone());
         self.clear_right_sheet();
         self.right_drawer_open = true;
         self.deliverables = Some(
             crate::deliverables::DeliverableScope::TurnSnapshot(filtered),
         );
+        self.deliverables_view_scope =
+            crate::deliverables::DeliverablesViewScope::Latest;
         self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
         self.close_all_popovers();
-        cx.notify();
+        self.refresh_drawer_metadata(cx);
+        if let Some(single_path) = quick_single {
+            self.set_preview_file(Some(single_path), cx);
+        } else {
+            cx.notify();
+        }
     }
 
     /// Opens the right-hand inspector sheet for one running session or queued
@@ -2139,16 +2194,34 @@ impl StudioPanel {
             self.close_right_sheet(cx);
             return;
         }
-        let files = self.feed.read(cx).latest_deliverables();
+        let (latest_files, has_all, has_failures, has_artifacts) = {
+            let feed = self.feed.read(cx);
+            (
+                feed.latest_deliverables(),
+                feed.all_deliverable_items().is_some_and(|v| !v.is_empty()),
+                !feed.failed_verifications().is_empty(),
+                !feed.session_artifacts().is_empty(),
+            )
+        };
         self.clear_right_sheet();
         self.right_drawer_open = true;
-        if let Some(files) = files {
+        if let Some(files) = latest_files {
             self.deliverables =
                 Some(crate::deliverables::DeliverableScope::Latest(files));
+            self.deliverables_view_scope =
+                crate::deliverables::DeliverablesViewScope::Latest;
+            self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
+        } else if has_all || has_failures || has_artifacts {
+            self.deliverables_view_scope = if has_all {
+                crate::deliverables::DeliverablesViewScope::All
+            } else {
+                crate::deliverables::DeliverablesViewScope::Latest
+            };
             self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
         } else {
             self.drawer_tab = crate::deliverables::RightDrawerTab::Steps;
         }
+        self.refresh_drawer_metadata(cx);
         self.close_all_popovers();
         cx.notify();
     }
@@ -2160,12 +2233,26 @@ impl StudioPanel {
         cx.notify();
     }
 
+    /// Syncs whether the left dock sidebar is visible so the right drawer can
+    /// clamp its width to keep the central chat canvas legible.
+    pub fn set_dock_visible(
+        &mut self,
+        visible: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.dock_visible != visible {
+            self.dock_visible = visible;
+            cx.notify();
+        }
+    }
+
     /// Number of deliverables available in the current session's latest turn.
     pub(crate) fn deliverable_count(&self, cx: &Context<'_, Self>) -> usize {
         self.feed.read(cx).latest_deliverable_count()
     }
 
-    /// Picks a file to preview; `None` returns the drawer to the list.
+    /// Picks a file to preview asynchronously inside the drawer; `None` returns
+    /// to the deliverables list.
     pub(crate) fn set_preview_file(
         &mut self,
         path: Option<String>,
@@ -2174,15 +2261,356 @@ impl StudioPanel {
         if let Some(target) = path.as_deref()
             && self.feed.read(cx).is_path_failed(target)
         {
-            self.preview_file = None;
-            self.preview_body = None;
+            self.drawer_preview.clear();
             self.emit_notice(Some("verify.card.failed"), cx);
             return;
         }
-        self.preview_body =
-            path.as_deref().map(crate::deliverables::load_preview);
-        self.preview_file = path;
+        self.drawer_preview.clear();
+        let Some(target) = path else {
+            cx.notify();
+            return;
+        };
+        let generation = self.drawer_preview.generation;
+        self.drawer_preview.file = Some(target.clone());
+        self.drawer_preview.mode = PreviewMode::Rendered;
+        self.drawer_preview.body = Some(DrawerPreviewBody::Loading);
+        let load_path = target;
+        let job = cx.background_executor().spawn(async move {
+            crate::drawer_preview::load_drawer_preview(&load_path)
+        });
+        self.drawer_preview.task =
+            Some(cx.spawn(async move |weak, cx| {
+                let loaded = job.await;
+                let _ =
+                    weak.update(cx, |panel, cx| {
+                        if panel.drawer_preview.generation != generation {
+                            return;
+                        }
+                        if panel.drawer_preview.file.as_deref().is_some_and(
+                            |p| panel.feed.read(cx).is_path_failed(p),
+                        ) {
+                            panel.drawer_preview.clear();
+                            panel.emit_notice(Some("verify.card.failed"), cx);
+                            return;
+                        }
+                        panel.drawer_preview.body = Some(loaded);
+                        panel.drawer_preview.task = None;
+                        cx.notify();
+                    });
+            }));
         cx.notify();
+    }
+
+    pub(crate) fn toggle_drawer_preview_mode(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.drawer_preview.mode = match self.drawer_preview.mode {
+            PreviewMode::Rendered => PreviewMode::Source,
+            PreviewMode::Source => PreviewMode::Rendered,
+        };
+        cx.notify();
+    }
+
+    pub(crate) fn copy_drawer_preview(
+        &mut self,
+        generation: u64,
+        text: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.drawer_preview.generation != generation {
+            return;
+        }
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.drawer_preview.copied_generation = Some(generation);
+        self.drawer_preview.copy_task =
+            Some(cx.spawn(async move |weak, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                let _ = weak.update(cx, |panel, cx| {
+                    if panel.drawer_preview.copied_generation
+                        == Some(generation)
+                    {
+                        panel.drawer_preview.copied_generation = None;
+                        panel.drawer_preview.copy_task = None;
+                        cx.notify();
+                    }
+                });
+            }));
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_drawer_width(&mut self, cx: &mut Context<'_, Self>) {
+        self.drawer_wide = !self.drawer_wide;
+        cx.notify();
+    }
+
+    pub(crate) fn set_deliverables_view_scope(
+        &mut self,
+        scope: crate::deliverables::DeliverablesViewScope,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.deliverables_view_scope = scope;
+        if matches!(
+            self.deliverables,
+            Some(crate::deliverables::DeliverableScope::TurnSnapshot(_))
+        ) {
+            self.deliverables = self
+                .feed
+                .read(cx)
+                .latest_deliverables()
+                .map(crate::deliverables::DeliverableScope::Latest);
+        }
+        self.refresh_drawer_metadata(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_step_turn(
+        &mut self,
+        session_id: &str,
+        turn_ix: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let entry = self
+            .step_turn_toggled
+            .entry(session_id.to_owned())
+            .or_default();
+        if !entry.remove(&turn_ix) {
+            entry.insert(turn_ix);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_step_item(
+        &mut self,
+        item_id: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.expanded_step_items.remove(&item_id) {
+            self.expanded_step_items.insert(item_id);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn copy_drawer_step_text(
+        &mut self,
+        item_id: String,
+        text: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.drawer_step_copy_epoch =
+            self.drawer_step_copy_epoch.wrapping_add(1);
+        let epoch = self.drawer_step_copy_epoch;
+        self.drawer_step_copied = Some((item_id.clone(), epoch));
+        self.drawer_step_copy_task = Some(cx.spawn(async move |weak, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let _ = weak.update(cx, |panel, cx| {
+                if panel.drawer_step_copied == Some((item_id, epoch)) {
+                    panel.drawer_step_copied = None;
+                    panel.drawer_step_copy_task = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn open_step_file_in_deliverables(
+        &mut self,
+        path: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.drawer_tab = crate::deliverables::RightDrawerTab::Deliverables;
+        self.inspected_work = None;
+        if self.deliverables.is_none() {
+            self.deliverables = self
+                .feed
+                .read(cx)
+                .latest_deliverables()
+                .map(crate::deliverables::DeliverableScope::Latest);
+        }
+        if self.feed.read(cx).is_path_failed(path) {
+            self.drawer_preview.clear();
+            self.emit_notice(Some("verify.card.failed"), cx);
+            return;
+        }
+        let target_key = crate::ports::canonical_path_key(path);
+        let in_latest =
+            self.feed.read(cx).latest_deliverable_items().is_some_and(
+                |items| {
+                    items.iter().any(|item| {
+                        crate::ports::canonical_path_key(&item.entry.path)
+                            == target_key
+                    })
+                },
+            );
+        if !in_latest {
+            self.deliverables_view_scope =
+                crate::deliverables::DeliverablesViewScope::All;
+        }
+        self.refresh_drawer_metadata(cx);
+        self.set_preview_file(Some(path.to_owned()), cx);
+    }
+
+    pub(crate) fn quote_file_to_composer(
+        &mut self,
+        path: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let name = crate::ports::basename(path);
+        let display = crate::ports::display_path_str(path);
+        let quote_text = self.tf(
+            "drawer.quote_file_text",
+            &[("name", &name), ("path", &display)],
+        );
+        self.set_active_quote(
+            crate::composer::QuoteRole::Assistant,
+            &quote_text,
+            cx,
+        );
+        if let Some(window) = window {
+            self.prompt.read(cx).focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    pub(crate) fn request_fix_in_chat(
+        &mut self,
+        summary: String,
+        path: Option<String>,
+        window: Option<&mut Window>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let fix_text = if let Some(path) = path.as_deref() {
+            let name = crate::ports::basename(path);
+            self.tf(
+                "drawer.fix_prompt",
+                &[("name", &name), ("issue", &summary)],
+            )
+        } else {
+            self.tf("drawer.fix_prompt_generic", &[("issue", &summary)])
+        };
+        if self.prompt_text(cx).trim().is_empty() {
+            self.fill_prompt(&fix_text, cx);
+        } else {
+            // Preserve the user's in-progress draft and attach fix context as a quote.
+            self.set_active_quote(
+                crate::composer::QuoteRole::Assistant,
+                &fix_text,
+                cx,
+            );
+        }
+        if let Some(window) = window {
+            self.prompt.read(cx).focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    pub(crate) fn locate_verification_card(
+        &self,
+        report_id: &str,
+        artifact_path: &str,
+        window: Option<&mut Window>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let found = self.feed.update(cx, |feed, cx| {
+            feed.focus_verification_row(report_id, artifact_path, cx)
+        });
+        if found && let Some(window) = window {
+            window.refresh();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn visible_workspace_deliverables(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> Vec<crate::feed::DeliverableItem> {
+        let feed = self.feed.read(cx);
+        match &self.deliverables {
+            Some(crate::deliverables::DeliverableScope::TurnSnapshot(
+                files,
+            )) => feed.filter_settled_deliverable_items(files.clone()),
+            _ => match self.deliverables_view_scope {
+                crate::deliverables::DeliverablesViewScope::Latest => feed
+                    .latest_deliverable_items()
+                    .or_else(|| feed.all_deliverable_items())
+                    .unwrap_or_default(),
+                crate::deliverables::DeliverablesViewScope::All => {
+                    feed.all_deliverable_items().unwrap_or_default()
+                }
+            },
+        }
+    }
+
+    pub(crate) fn refresh_drawer_metadata(&mut self, cx: &Context<'_, Self>) {
+        self.drawer_meta_generation =
+            self.drawer_meta_generation.wrapping_add(1);
+        let generation = self.drawer_meta_generation;
+        let items = self.visible_workspace_deliverables(cx);
+        let paths: Vec<String> =
+            items.into_iter().map(|item| item.entry.path).collect();
+        if paths.is_empty() {
+            self.deliverable_sizes.clear();
+            self.promote_project_candidate = None;
+            self.drawer_meta_task = None;
+            return;
+        }
+        let check_promote = self.active_project_id.is_none();
+        let store_root = self.store_root.clone();
+        let job = cx.background_executor().spawn(async move {
+            let mut sizes =
+                std::collections::HashMap::with_capacity(paths.len());
+            for path in &paths {
+                let key = crate::ports::canonical_path_key(path);
+                let size = crate::ports::resolve_safe_local_file(path)
+                    .and_then(|safe| {
+                        std::fs::metadata(&safe).ok().map(|m| (safe, m))
+                    })
+                    .filter(|(safe, meta)| {
+                        meta.is_file()
+                            && !crate::ports::is_link_or_unsafe_reparse(
+                                safe, meta,
+                            )
+                    })
+                    .map(|(_, meta)| meta.len());
+                sizes.insert(key, size);
+            }
+            let promote_candidate = if check_promote {
+                paths.first().and_then(|first| {
+                    let parent_dir =
+                        crate::ports::resolve_safe_parent_dir(first)?;
+                    if parent_dir.parent().is_some()
+                        && !crate::ports::is_same_or_overlapping_dir(
+                            &parent_dir,
+                            &store_root,
+                        )
+                    {
+                        Some(first.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            (sizes, promote_candidate)
+        });
+        self.drawer_meta_task = Some(cx.spawn(async move |weak, cx| {
+            let (sizes, promote_candidate) = job.await;
+            let _ = weak.update(cx, |panel, cx| {
+                if panel.drawer_meta_generation != generation {
+                    return;
+                }
+                panel.deliverable_sizes = sizes;
+                panel.promote_project_candidate = promote_candidate;
+                panel.drawer_meta_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     fn sync_right_drawer_deliverables(&mut self, cx: &mut Context<'_, Self>) {
@@ -2213,15 +2641,16 @@ impl StudioPanel {
         };
         if next != self.deliverables {
             self.deliverables = next;
+            self.refresh_drawer_metadata(cx);
             changed = true;
         }
         if self
-            .preview_file
+            .drawer_preview
+            .file
             .as_deref()
             .is_some_and(|path| self.feed.read(cx).is_path_failed(path))
         {
-            self.preview_file = None;
-            self.preview_body = None;
+            self.drawer_preview.clear();
             self.emit_notice(Some("verify.card.failed"), cx);
             changed = false;
         }
@@ -4885,9 +5314,10 @@ mod tests {
         panel.update(cx, |panel, cx| {
             assert!(panel.right_drawer_open);
             assert_eq!(
-                panel.deliverables.as_ref().map(
-                    crate::deliverables::DeliverableScope::files
-                ),
+                panel
+                    .deliverables
+                    .as_ref()
+                    .map(crate::deliverables::DeliverableScope::files),
                 Some(&[entry_a.clone()][..])
             );
 
@@ -4922,17 +5352,26 @@ mod tests {
             panel.sync_right_drawer_deliverables(cx);
             assert_eq!(
                 panel.deliverables,
-                Some(crate::deliverables::DeliverableScope::TurnSnapshot(vec![
-                    entry_a.clone(),
-                ])),
+                Some(crate::deliverables::DeliverableScope::TurnSnapshot(
+                    vec![entry_a.clone(),]
+                )),
                 "live sync must not overwrite pinned historical turn snapshot"
             );
             assert_eq!(panel.deliverable_count(cx), 1);
 
             // Start previewing A, then Turn 3 fails verification on A via variant path.
             panel.set_preview_file(Some(a_str.clone()), cx);
-            assert_eq!(panel.preview_file.as_deref(), Some(a_str.as_str()));
-            assert!(matches!(panel.preview_body, Some(PreviewBody::Text(_))));
+            assert_eq!(
+                panel.drawer_preview.file.as_deref(),
+                Some(a_str.as_str())
+            );
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            assert!(matches!(
+                panel.drawer_preview.body,
+                Some(DrawerPreviewBody::Markdown(_))
+            ));
 
             let sid = panel.agent.active_session_id().unwrap();
             panel.feed.update(cx, |feed, cx| {
@@ -4967,7 +5406,8 @@ mod tests {
             });
             panel.sync_right_drawer_deliverables(cx);
             assert!(
-                panel.preview_file.is_none() && panel.preview_body.is_none(),
+                panel.drawer_preview.file.is_none()
+                    && panel.drawer_preview.body.is_none(),
                 "active preview must be evicted when later turn fails verification"
             );
             assert!(panel.deliverables.is_none());
@@ -4982,8 +5422,193 @@ mod tests {
 
             panel.emit_notice(None, cx);
             panel.set_preview_file(Some(a_str.clone()), cx);
-            assert!(panel.preview_file.is_none());
+            assert!(panel.drawer_preview.file.is_none());
             assert_eq!(panel.notice, Some("verify.card.failed"));
+        });
+
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn drawer_workbench_async_preview_fix_in_chat_and_scope_switching(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir()
+            .join(format!("flowy-studio-workbench-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let work_dir = root.join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        let file_a = work_dir.join("alpha.md");
+        let file_b = work_dir.join("beta.csv");
+        let file_bad = work_dir.join("broken.csv");
+        std::fs::write(&file_a, "# Alpha Report\nDone.").unwrap();
+        std::fs::write(&file_b, "col,val\nok,1\n").unwrap();
+        std::fs::write(&file_bad, "col,val\nbad,0\n").unwrap();
+        let a_str = file_a.to_string_lossy().into_owned();
+        let b_str = file_b.to_string_lossy().into_owned();
+        let bad_str = file_bad.to_string_lossy().into_owned();
+
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig::default(),
+                },
+                ui,
+                window,
+                cx,
+            )
+        });
+
+        panel.update(cx, |panel, cx| {
+            let sid = panel.agent.create_session().unwrap();
+            panel.agent.select_session(&sid).unwrap();
+            let entry_a = flowy_agent::FileEntry {
+                path: a_str.clone(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 2,
+                removed: 0,
+                binary: false,
+            };
+            let entry_b = flowy_agent::FileEntry {
+                path: b_str.clone(),
+                change: flowy_agent::FileChangeKind::Add,
+                added: 2,
+                removed: 0,
+                binary: false,
+            };
+            panel.feed.update(cx, |feed, cx| {
+                feed.sync_history(
+                    Some(sid),
+                    flowy_agent::ChatHistory {
+                        rows: vec![
+                            flowy_agent::ChatLine::User {
+                                text: "turn 1".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_a],
+                            },
+                            flowy_agent::ChatLine::Verification {
+                                report_id: "r1".into(),
+                                artifact_path: a_str.clone(),
+                                artifact_hash: "11111111".into(),
+                                ok: true,
+                                issues: Vec::new(),
+                                semantic_hint: None,
+                                override_used: false,
+                                provenance_warnings: Vec::new(),
+                                source_session_id: None,
+                            },
+                            flowy_agent::ChatLine::User {
+                                text: "turn 2".into(),
+                            },
+                            flowy_agent::ChatLine::FileChanges {
+                                files: vec![entry_b],
+                            },
+                            flowy_agent::ChatLine::Verification {
+                                report_id: "r-bad".into(),
+                                artifact_path: bad_str.clone(),
+                                artifact_hash: "22222222".into(),
+                                ok: false,
+                                issues: vec![flowy_agent::VerificationIssue {
+                                    code: "formula_error".into(),
+                                    field: "Sheet1!B2".into(),
+                                }],
+                                semantic_hint: None,
+                                override_used: false,
+                                provenance_warnings: Vec::new(),
+                                source_session_id: None,
+                            },
+                        ],
+                        streaming: None,
+                        status: flowy_agent::TurnStatus::Completed,
+                    },
+                    cx,
+                );
+            });
+
+            // Toggle drawer captures both failed banner & latest workspace items.
+            panel.toggle_deliverables(cx);
+            assert!(panel.right_drawer_open);
+            assert!(panel.feed.read(cx).has_trace_attention());
+            assert_eq!(panel.feed.read(cx).failed_verifications().len(), 1);
+            assert_eq!(
+                panel.visible_workspace_deliverables(cx).len(),
+                1,
+                "Latest scope shows only turn 2 settled beta.csv"
+            );
+
+            // Switch to All scope -> surfaces alpha.md + beta.csv.
+            panel.set_deliverables_view_scope(
+                crate::deliverables::DeliverablesViewScope::All,
+                cx,
+            );
+            assert_eq!(panel.visible_workspace_deliverables(cx).len(), 2);
+
+            // Rapid async preview switch A -> B cancels stale A load.
+            panel.set_preview_file(Some(a_str.clone()), cx);
+            panel.set_preview_file(Some(b_str.clone()), cx);
+            assert_eq!(
+                panel.drawer_preview.file.as_deref(),
+                Some(b_str.as_str())
+            );
+            assert!(matches!(
+                panel.drawer_preview.body,
+                Some(DrawerPreviewBody::Loading)
+            ));
+        });
+        cx.run_until_parked();
+        panel.update(cx, |panel, cx| {
+            assert_eq!(
+                panel.drawer_preview.file.as_deref(),
+                Some(b_str.as_str())
+            );
+            assert!(matches!(
+                panel.drawer_preview.body,
+                Some(DrawerPreviewBody::Table { .. })
+            ));
+            assert!(
+                !panel.deliverable_sizes.is_empty(),
+                "background metadata probe populates cached sizes"
+            );
+
+            // Fix in chat fills empty prompt, then preserves non-empty draft as quote.
+            panel.request_fix_in_chat(
+                "Sheet1!B2".into(),
+                Some(bad_str.clone()),
+                None,
+                cx,
+            );
+            assert!(
+                panel.prompt_text(cx).contains("broken.csv"),
+                "empty prompt filled with fix request"
+            );
+            assert!(panel.active_quote.is_none());
+
+            panel.set_prompt_text("keep my draft", cx);
+            panel.request_fix_in_chat(
+                "Sheet1!B2".into(),
+                Some(bad_str),
+                None,
+                cx,
+            );
+            assert_eq!(panel.prompt_text(cx), "keep my draft");
+            assert!(
+                panel
+                    .active_quote
+                    .as_ref()
+                    .is_some_and(|q| q.excerpt.contains("broken.csv")),
+                "existing draft must stay intact while fix context moves to quote"
+            );
         });
 
         drop(panel);

@@ -871,7 +871,7 @@ impl Renderer<'_> {
     }
 }
 
-fn mono_font() -> Font {
+pub fn mono_font() -> Font {
     font(if cfg!(target_os = "windows") {
         "Consolas"
     } else {

@@ -1838,6 +1838,9 @@ impl FlowyApp {
             StudioEvent::PreviewArtifact(id) => {
                 self.open_artifact_preview(id, cx);
             }
+            StudioEvent::PreviewLocalFile(path) => {
+                self.open_local_file_preview(path, cx);
+            }
             StudioEvent::SaveArtifact(id) => self.save_artifact_as(id, cx),
             StudioEvent::LocateArtifactSource {
                 session_id,

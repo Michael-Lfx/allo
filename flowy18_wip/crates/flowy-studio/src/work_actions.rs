@@ -9,6 +9,23 @@ use gpui::Context;
 
 use crate::panel::{ActivePopover, StudioPanel, StudioSurface};
 
+/// Validates and opens a local file in the OS default application.
+///
+/// Checks `can_open_with_default_app` both before and after canonical local
+/// file resolution (closing TOCTOU symlink-to-executable swap windows).
+pub fn open_safe_local_file(path: &str) -> Result<(), &'static str> {
+    let safe_path = flowy_agent::can_open_with_default_app(path)
+        .then(|| crate::ports::resolve_safe_local_file(path))
+        .flatten()
+        .filter(|canon| {
+            canon
+                .to_str()
+                .is_some_and(flowy_agent::can_open_with_default_app)
+        })
+        .ok_or("library.error.open")?;
+    open::that(&safe_path).map_err(|_| "library.error.open")
+}
+
 impl StudioPanel {
     /// Synchronizes both claimable pending receipts (for legacy tests/counts)
     /// and all non-terminal visible receipts (`Queued`/`Running`/`Retrying`/
@@ -43,20 +60,8 @@ impl StudioPanel {
         path: &str,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(safe_path) = flowy_agent::can_open_with_default_app(path)
-            .then(|| crate::ports::resolve_safe_local_file(path))
-            .flatten()
-            .filter(|canon| {
-                canon
-                    .to_str()
-                    .is_some_and(flowy_agent::can_open_with_default_app)
-            })
-        else {
-            self.emit_notice(Some("library.error.open"), cx);
-            return;
-        };
-        if open::that(&safe_path).is_err() {
-            self.emit_notice(Some("library.error.open"), cx);
+        if let Err(notice) = open_safe_local_file(path) {
+            self.emit_notice(Some(notice), cx);
         }
     }
 

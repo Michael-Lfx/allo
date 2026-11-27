@@ -63,6 +63,21 @@ impl StudioPanel {
         &self,
         progress: &WorkContractProgress,
     ) -> AnyElement {
+        self.render_contract_progress(progress, false)
+    }
+
+    pub(crate) fn contract_progress_checklist(
+        &self,
+        progress: &WorkContractProgress,
+    ) -> AnyElement {
+        self.render_contract_progress(progress, true)
+    }
+
+    fn render_contract_progress(
+        &self,
+        progress: &WorkContractProgress,
+        show_checklist: bool,
+    ) -> AnyElement {
         let total = progress
             .required_labels
             .len()
@@ -82,10 +97,54 @@ impl StudioPanel {
             Some(SubmissionOutcome::Failed { .. }) => self.theme.danger(),
             Some(SubmissionOutcome::Aborted) | None => self.theme.muted(),
         };
-        let missing_line = (!progress.missing_items.is_empty()).then(|| {
+        let mut missing_pool: Vec<String> = progress
+            .missing_items
+            .iter()
+            .map(|item| item.trim().to_ascii_lowercase())
+            .collect();
+        let checklist_rows: Vec<(String, bool, bool)> =
+            if show_checklist && !progress.required_labels.is_empty() {
+                let settled_known = progress.outcome.is_some()
+                    || progress.delivered_count > 0
+                    || !progress.missing_items.is_empty();
+                progress
+                    .required_labels
+                    .iter()
+                    .map(|label| {
+                        let norm = label.trim().to_ascii_lowercase();
+                        let is_missing = if let Some(pos) = missing_pool
+                            .iter()
+                            .position(|candidate| *candidate == norm)
+                        {
+                            missing_pool.remove(pos);
+                            true
+                        } else {
+                            false
+                        };
+                        let verified = !is_missing && settled_known;
+                        (label.clone(), verified, is_missing)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let remaining_missing: Vec<String> = if show_checklist {
+            progress
+                .missing_items
+                .iter()
+                .filter(|item| {
+                    let norm = item.trim().to_ascii_lowercase();
+                    missing_pool.contains(&norm)
+                })
+                .cloned()
+                .collect()
+        } else {
+            progress.missing_items.clone()
+        };
+        let missing_line = (!remaining_missing.is_empty()).then(|| {
             self.tf(
                 "board.contract_missing",
-                &[("items", &progress.missing_items.join(", "))],
+                &[("items", &remaining_missing.join(", "))],
             )
         });
         div()
@@ -117,6 +176,50 @@ impl StudioPanel {
                         )
                     }),
             )
+            .when(!checklist_rows.is_empty(), |col| {
+                let mut items =
+                    div().w_full().flex().flex_col().gap(px(3.)).pt(px(2.));
+                for (label, verified, is_missing) in checklist_rows {
+                    let (icon, color) = if is_missing {
+                        (
+                            theme::icons::circle_alert(),
+                            self.theme.status_attention(),
+                        )
+                    } else if verified {
+                        (theme::icons::check(), self.theme.status_verified())
+                    } else {
+                        (theme::icons::clock(), self.theme.muted())
+                    };
+                    items = items.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_xs()
+                            .child(
+                                icon.flex_none()
+                                    .size(px(12.))
+                                    .text_color(color),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .text_color(if is_missing {
+                                        self.theme.status_attention()
+                                    } else {
+                                        self.theme.ink()
+                                    })
+                                    .child(label),
+                            ),
+                    );
+                }
+                col.child(items)
+            })
             .when_some(missing_line, |col, text| {
                 col.child(
                     div()

@@ -19,7 +19,7 @@ pub struct ChatFeed {
     next_row_id: u64,
     row_focus: HashMap<u64, gpui::FocusHandle>,
     artifacts: HashMap<String, LibraryItem>,
-    pending_artifact_focus: Option<String>,
+    pending_row_focus: Option<u64>,
     /// Verification cards whose explicit override checkbox has been ticked by
     /// the user; always starts empty so override is never pre-checked (§8.3).
     override_checked: HashSet<String>,
@@ -29,7 +29,13 @@ pub struct ChatFeed {
     copied_row: Option<(u64, u64)>,
     copy_epoch: u64,
     verification_settlement: HashMap<String, bool>,
+    verification_badges: HashMap<String, DeliverableVerifyBadge>,
     cached_latest_deliverables: Option<Vec<flowy_agent::FileEntry>>,
+    cached_latest_items: Option<Vec<DeliverableItem>>,
+    cached_all_items: Option<Vec<DeliverableItem>>,
+    cached_failed_verifications: Vec<FailedVerificationItem>,
+    cached_session_artifacts: Vec<LibraryItem>,
+    cached_has_trace_attention: bool,
     history: ChatHistory,
     suppress_trailing_stopped: bool,
     projection: Projection,
@@ -72,6 +78,26 @@ impl gpui::EventEmitter<RevealFile> for ChatFeed {}
 pub struct OpenDeliverables(pub Vec<flowy_agent::FileEntry>);
 
 impl gpui::EventEmitter<OpenDeliverables> for ChatFeed {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliverableVerifyBadge {
+    Verified,
+    Overridden,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliverableItem {
+    pub entry: flowy_agent::FileEntry,
+    pub badge: Option<DeliverableVerifyBadge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedVerificationItem {
+    pub report_id: String,
+    pub artifact_path: String,
+    pub issue_count: usize,
+    pub summary: String,
+}
 
 /// Ask the panel to attach a single truncated quote from a chat bubble.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,38 +142,80 @@ fn head_line_preview(text: &str, max_chars: usize) -> (String, bool) {
     }
 }
 
-/// Records the chronological latest verification verdict (`ok || override_used`)
-/// per normalized local path across an entire session timeline (§8.3).
-pub fn session_verification_settlement(
-    lines: &[ChatLine],
-) -> HashMap<String, bool> {
-    let mut settled = HashMap::new();
-    for line in lines {
+struct LatestVerdict<'a> {
+    order: usize,
+    report_id: &'a str,
+    artifact_path: &'a str,
+    ok: bool,
+    override_used: bool,
+    issues: &'a [flowy_agent::VerificationIssue],
+}
+
+fn analyze_session_verifications<'a>(
+    lines: &'a [ChatLine],
+) -> (
+    HashMap<String, bool>,
+    HashMap<String, DeliverableVerifyBadge>,
+    Vec<LatestVerdict<'a>>,
+) {
+    let mut latest_by_key: HashMap<String, LatestVerdict<'a>> = HashMap::new();
+    for (order, line) in lines.iter().enumerate() {
         if let ChatLine::Verification {
+            report_id,
             artifact_path,
             ok,
+            issues,
             override_used,
             ..
         } = line
             && !artifact_path.trim().is_empty()
         {
-            settled.insert(
-                crate::ports::canonical_path_key(artifact_path),
-                *ok || *override_used,
+            let key = crate::ports::canonical_path_key(artifact_path);
+            latest_by_key.insert(
+                key,
+                LatestVerdict {
+                    order,
+                    report_id: report_id.as_str(),
+                    artifact_path: artifact_path.as_str(),
+                    ok: *ok,
+                    override_used: *override_used,
+                    issues: issues.as_slice(),
+                },
             );
         }
     }
-    settled
+    let mut settled = HashMap::with_capacity(latest_by_key.len());
+    let mut badges = HashMap::with_capacity(latest_by_key.len());
+    let mut failures = Vec::new();
+    for (key, verdict) in latest_by_key {
+        let passed = verdict.ok || verdict.override_used;
+        settled.insert(key.clone(), passed);
+        if verdict.ok {
+            badges.insert(key, DeliverableVerifyBadge::Verified);
+        } else if verdict.override_used {
+            badges.insert(key, DeliverableVerifyBadge::Overridden);
+        } else {
+            failures.push(verdict);
+        }
+    }
+    failures.sort_by_key(|item| std::cmp::Reverse(item.order));
+    (settled, badges, failures)
 }
 
-/// Collects deliverable files from the most recent turn that produced any,
-/// merging file-change summaries with verified/overridden verification
-/// receipts while strictly excluding any path whose latest session-wide
-/// verification failed without override (§8.3).
-fn collect_latest_deliverables(
+/// Records the chronological latest verification verdict (`ok || override_used`)
+/// per normalized local path across an entire session timeline (§8.3).
+#[cfg(test)]
+pub fn session_verification_settlement(
     lines: &[ChatLine],
+) -> HashMap<String, bool> {
+    analyze_session_verifications(lines).0
+}
+
+fn collect_settled_entries(
+    lines: &[ChatLine],
+    latest_settled: &HashMap<String, bool>,
+    latest_only: bool,
 ) -> Option<Vec<flowy_agent::FileEntry>> {
-    let latest_settled = session_verification_settlement(lines);
     let mut turn_starts: Vec<usize> = lines
         .iter()
         .enumerate()
@@ -160,9 +228,10 @@ fn collect_latest_deliverables(
     }
     turn_starts.push(lines.len());
 
+    let mut all_entries: Vec<flowy_agent::FileEntry> = Vec::new();
+    let mut seen = HashSet::new();
     for bounds in turn_starts.windows(2).rev() {
-        let mut entries: Vec<flowy_agent::FileEntry> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut turn_entries: Vec<flowy_agent::FileEntry> = Vec::new();
         for line in &lines[bounds[0]..bounds[1]] {
             match line {
                 ChatLine::FileChanges { files } => {
@@ -172,7 +241,7 @@ fn collect_latest_deliverables(
                             continue;
                         }
                         if seen.insert(norm) {
-                            entries.push(file.clone());
+                            turn_entries.push(file.clone());
                         }
                     }
                 }
@@ -188,7 +257,7 @@ fn collect_latest_deliverables(
                         continue;
                     }
                     if seen.insert(norm) {
-                        entries.push(flowy_agent::FileEntry {
+                        turn_entries.push(flowy_agent::FileEntry {
                             path: path.clone(),
                             change: *change,
                             added: *added,
@@ -204,7 +273,7 @@ fn collect_latest_deliverables(
                     if latest_settled.get(&norm).copied() == Some(true)
                         && seen.insert(norm)
                     {
-                        entries.push(flowy_agent::FileEntry {
+                        turn_entries.push(flowy_agent::FileEntry {
                             path: artifact_path.clone(),
                             change: flowy_agent::FileChangeKind::Add,
                             added: 0,
@@ -216,11 +285,45 @@ fn collect_latest_deliverables(
                 _ => {}
             }
         }
-        if !entries.is_empty() {
-            return Some(entries);
+        if !turn_entries.is_empty() {
+            if latest_only {
+                return Some(turn_entries);
+            }
+            all_entries.extend(turn_entries);
         }
     }
-    None
+    (!all_entries.is_empty()).then_some(all_entries)
+}
+
+fn attach_badges(
+    entries: Vec<flowy_agent::FileEntry>,
+    badges: &HashMap<String, DeliverableVerifyBadge>,
+) -> Vec<DeliverableItem> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let key = crate::ports::canonical_path_key(&entry.path);
+            DeliverableItem {
+                badge: badges.get(&key).copied(),
+                entry,
+            }
+        })
+        .collect()
+}
+
+/// Collects deliverable files from the most recent turn that produced any,
+/// merging file-change summaries with verified/overridden verification
+/// receipts while strictly excluding any path whose latest session-wide
+/// verification failed without override (§8.3).
+#[cfg(test)]
+fn collect_latest_deliverables(
+    lines: &[ChatLine],
+) -> Option<Vec<flowy_agent::FileEntry>> {
+    collect_settled_entries(
+        lines,
+        &session_verification_settlement(lines),
+        true,
+    )
 }
 
 struct StoredFeed {
@@ -281,7 +384,7 @@ impl ChatFeed {
             next_row_id: 0,
             row_focus: HashMap::new(),
             artifacts: HashMap::new(),
-            pending_artifact_focus: None,
+            pending_row_focus: None,
             override_checked: HashSet::new(),
             session: session.unwrap_or_default(),
             states: HashMap::new(),
@@ -291,7 +394,13 @@ impl ChatFeed {
             copied_row: None,
             copy_epoch: 0,
             verification_settlement: HashMap::new(),
+            verification_badges: HashMap::new(),
             cached_latest_deliverables: None,
+            cached_latest_items: None,
+            cached_all_items: None,
+            cached_failed_verifications: Vec::new(),
+            cached_session_artifacts: Vec::new(),
+            cached_has_trace_attention: false,
             history: ChatHistory::default(),
             suppress_trailing_stopped: false,
             projection: Projection::default(),
@@ -456,8 +565,15 @@ impl ChatFeed {
             .into_iter()
             .map(|item| (item.id.clone(), item))
             .collect();
+        self.refresh_session_artifacts_cache();
         self.list.remeasure_items(0..self.lines.len());
         cx.notify();
+    }
+
+    pub fn artifact_title(&self, artifact_id: &str) -> Option<String> {
+        self.artifacts
+            .get(artifact_id)
+            .map(|item| item.title.clone())
     }
 
     pub(crate) fn focus_artifact(
@@ -476,11 +592,54 @@ impl ChatFeed {
         else {
             return false;
         };
+        let Some(&row_id) = self.row_ids.get(row) else {
+            return false;
+        };
         self.list.scroll_to(gpui::ListOffset {
             item_ix: row,
             offset_in_item: px(0.),
         });
-        self.pending_artifact_focus = Some(artifact_id.to_owned());
+        self.pending_row_focus = Some(row_id);
+        cx.notify();
+        true
+    }
+
+    pub fn focus_verification_row(
+        &mut self,
+        report_id: &str,
+        artifact_path: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let row = if report_id.is_empty() {
+            None
+        } else {
+            self.lines.iter().rposition(|line| {
+                matches!(line, ChatLine::Verification { report_id: id, .. } if id == report_id)
+            })
+        }
+        .or_else(|| {
+            let target = crate::ports::canonical_path_key(artifact_path);
+            self.lines.iter().rposition(|line| {
+                matches!(
+                    line,
+                    ChatLine::Verification { artifact_path: p, .. }
+                        if crate::ports::canonical_path_key(p) == target
+                )
+            })
+        });
+        let Some(row) = row else {
+            return false;
+        };
+        let Some(&row_id) = self.row_ids.get(row) else {
+            return false;
+        };
+        self.expanded_rows.insert(row_id);
+        self.list.remeasure_items(row..row + 1);
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.),
+        });
+        self.pending_row_focus = Some(row_id);
         cx.notify();
         true
     }
@@ -830,11 +989,62 @@ impl ChatFeed {
         }
     }
 
+    fn refresh_session_artifacts_cache(&mut self) {
+        let mut seen = HashSet::new();
+        let mut resolved = Vec::new();
+        for line in self.lines.iter().rev() {
+            if let ChatLine::Artifact { artifact_id } = line
+                && seen.insert(artifact_id.as_str())
+                && let Some(item) = self.artifacts.get(artifact_id)
+            {
+                resolved.push(item.clone());
+            }
+        }
+        self.cached_session_artifacts = resolved;
+    }
+
     fn refresh_deliverables_cache(&mut self) {
-        self.verification_settlement =
-            session_verification_settlement(&self.lines);
-        self.cached_latest_deliverables =
-            collect_latest_deliverables(&self.lines);
+        let (settled, badges, failures) =
+            analyze_session_verifications(&self.lines);
+        self.cached_failed_verifications = failures
+            .into_iter()
+            .map(|verdict| {
+                let formatted = self.format_verification_issues(verdict.issues);
+                let summary = if formatted.is_empty() {
+                    self.t("verify.card.failed")
+                } else {
+                    formatted.join(" · ")
+                };
+                FailedVerificationItem {
+                    report_id: verdict.report_id.to_owned(),
+                    artifact_path: verdict.artifact_path.to_owned(),
+                    issue_count: verdict.issues.len(),
+                    summary,
+                }
+            })
+            .collect();
+        let latest_entries =
+            collect_settled_entries(&self.lines, &settled, true);
+        let all_entries = collect_settled_entries(&self.lines, &settled, false);
+        self.cached_latest_items = latest_entries
+            .clone()
+            .map(|entries| attach_badges(entries, &badges));
+        self.cached_all_items =
+            all_entries.map(|entries| attach_badges(entries, &badges));
+        self.cached_latest_deliverables = latest_entries;
+        self.verification_settlement = settled;
+        self.verification_badges = badges;
+        self.cached_has_trace_attention =
+            !self.cached_failed_verifications.is_empty()
+                || self.lines.iter().any(|line| match line {
+                    ChatLine::ToolResult { is_error: true, .. } => true,
+                    ChatLine::Verification {
+                        provenance_warnings,
+                        ..
+                    } => !provenance_warnings.is_empty(),
+                    _ => false,
+                });
+        self.refresh_session_artifacts_cache();
     }
 
     /// The most recent turn's deliverable files for the drawer toggle,
@@ -844,6 +1054,29 @@ impl ChatFeed {
         &self,
     ) -> Option<Vec<flowy_agent::FileEntry>> {
         self.cached_latest_deliverables.clone()
+    }
+
+    pub fn latest_deliverable_items(&self) -> Option<Vec<DeliverableItem>> {
+        self.cached_latest_items.clone()
+    }
+
+    pub fn all_deliverable_items(&self) -> Option<Vec<DeliverableItem>> {
+        self.cached_all_items.clone()
+    }
+
+    #[must_use]
+    pub fn failed_verifications(&self) -> &[FailedVerificationItem] {
+        &self.cached_failed_verifications
+    }
+
+    #[must_use]
+    pub fn session_artifacts(&self) -> &[LibraryItem] {
+        &self.cached_session_artifacts
+    }
+
+    #[must_use]
+    pub const fn has_trace_attention(&self) -> bool {
+        self.cached_has_trace_attention
     }
 
     /// Cached count of current-session deliverables (O(1) for `top_bar`).
@@ -875,6 +1108,14 @@ impl ChatFeed {
                     && seen.insert(key)
             })
             .collect()
+    }
+
+    pub fn filter_settled_deliverable_items(
+        &self,
+        files: Vec<flowy_agent::FileEntry>,
+    ) -> Vec<DeliverableItem> {
+        let filtered = self.filter_settled_deliverables(files);
+        attach_badges(filtered, &self.verification_badges)
     }
 
     pub(crate) fn sync_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
@@ -2659,11 +2900,8 @@ impl Render for ChatFeed {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        if let Some(artifact_id) = self.pending_artifact_focus.take()
-            && let Some(row) = self.lines.iter().position(|line| {
-                matches!(line, ChatLine::Artifact { artifact_id: id } if id == &artifact_id)
-            })
-            && let Some(focus) = self.row_focus.get(&self.row_ids[row])
+        if let Some(row_id) = self.pending_row_focus.take()
+            && let Some(focus) = self.row_focus.get(&row_id)
         {
             focus.focus(window, cx);
         }

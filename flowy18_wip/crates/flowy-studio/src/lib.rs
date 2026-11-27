@@ -6,6 +6,8 @@ mod composer;
 mod composer_add_menu;
 mod credits;
 mod deliverables;
+mod drawer_preview;
+mod drawer_steps;
 mod feed;
 mod file_kind;
 mod history;
@@ -30,6 +32,7 @@ pub use panel::{
 };
 pub use ports::{SkillChip, WorkBoardSnapshot};
 pub use projects::Project;
+pub use work_actions::open_safe_local_file;
 
 pub use credits::{CreditsViewState, grouped as grouped_credits};
 

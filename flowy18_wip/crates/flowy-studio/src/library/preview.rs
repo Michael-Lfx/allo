@@ -10,6 +10,7 @@ const MAX_PIXELS: u32 = 16_000_000;
 const MAX_SIDE: u32 = 16_000;
 pub(super) const CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_INPUT: u64 = 128 * 1024 * 1024;
+pub const MAX_LOCAL_PREVIEW_BYTES: u64 = MAX_INPUT;
 const MAX_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 const MAX_JSON_PRETTY_BYTES: usize = 256 * 1024;
 const MAX_CSV_ROWS: usize = 500;
@@ -29,7 +30,7 @@ pub(super) struct Document {
     pub file_size: u64,
     content: Content,
 }
-pub(super) struct TablePreview<'a> {
+pub struct TablePreview<'a> {
     pub headers: &'a [String],
     pub rows: &'a [Vec<String>],
     pub truncated_rows: bool,
@@ -57,7 +58,7 @@ pub(super) fn load(
         .unwrap_or(Err("library.error.render"))
 }
 
-fn is_text_preview_ext(ext: &str) -> bool {
+pub fn is_text_preview_ext(ext: &str) -> bool {
     matches!(
         ext,
         "md" | "markdown"
@@ -83,6 +84,15 @@ fn is_text_preview_ext(ext: &str) -> bool {
             | "sh"
             | "ps1"
     )
+}
+
+pub fn pretty_json_if_valid(text: &str) -> Option<String> {
+    if text.len() > MAX_JSON_PRETTY_BYTES {
+        return None;
+    }
+    let trimmed = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let value = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
+    serde_json::to_string_pretty(&value).ok()
 }
 
 fn load_inner(
@@ -121,15 +131,8 @@ fn load_inner(
                 }
             }
             "json" => {
-                if text.len() <= MAX_JSON_PRETTY_BYTES {
-                    let trimmed =
-                        text.strip_prefix('\u{feff}').unwrap_or(&text);
-                    if let Ok(value) =
-                        serde_json::from_str::<serde_json::Value>(trimmed)
-                        && let Ok(pretty) = serde_json::to_string_pretty(&value)
-                    {
-                        text = pretty;
-                    }
+                if let Some(pretty) = pretty_json_if_valid(&text) {
+                    text = pretty;
                 }
                 Content::CodeText(text)
             }
@@ -264,7 +267,7 @@ fn bounded_scale((width, height): (f32, f32), requested: f32) -> f32 {
         .min(MAX_SIDE as f32 / width.max(height))
 }
 
-fn parse_delimited_table(
+pub fn parse_delimited_table(
     raw: &str,
     delimiter: char,
 ) -> (Vec<String>, Vec<Vec<String>>, bool) {
