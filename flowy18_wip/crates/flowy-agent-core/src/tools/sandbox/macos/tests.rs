@@ -52,7 +52,7 @@ async fn macos_seatbelt_filters_environment_and_blocks_network_when_requested()
     let addr = listener.local_addr().unwrap();
     let connect = format!("/usr/bin/nc -z -w 1 127.0.0.1 {}", addr.port());
     let policy = SandboxPolicy::for_workspace(cwd.to_path_buf());
-    let allowed = unix::execution_env(cwd, policy.clone())
+    let allowed = unix::execution_env(cwd, policy.clone(), None)
         .exec(
             &connect,
             ShellExecOptions {
@@ -63,7 +63,7 @@ async fn macos_seatbelt_filters_environment_and_blocks_network_when_requested()
         .await
         .unwrap();
     assert_eq!(allowed.exit_code, 0, "{}", allowed.stderr);
-    let env = unix::execution_env(cwd, policy.with_network(false));
+    let env = unix::execution_env(cwd, policy.with_network(false), None);
     let command = format!(
         r#"set -e; test -z "$FLOWY_LLM_API_KEY"; if {connect} 2>/dev/null; then exit 12; fi; printf isolated"#
     );
@@ -98,6 +98,7 @@ async fn macos_seatbelt_reaps_on_cancel_and_timeout() {
         let env = unix::execution_env(
             cwd,
             SandboxPolicy::for_workspace(cwd.to_path_buf()),
+            None,
         );
         let cancel = CancellationToken::new();
         let running = env.exec(
