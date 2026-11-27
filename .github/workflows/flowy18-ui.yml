@@ -134,6 +134,12 @@ jobs:
         run: cargo test -p flowy-ui --locked
       - name: All 23 locale dictionaries
         run: cargo test -p flowy-i18n --locked
+      - name: Automation storage and scheduler tests
+        run: cargo test -p flowy-automation --locked -- --test-threads=1
+      - name: Agent tests
+        run: cargo test -p flowy-agent --locked -- --test-threads=1
+      - name: Shell notification routing tests
+        run: cargo test -p flowy-shell --locked -- --test-threads=1
       - name: Studio regression tests
         run: cargo test -p flowy-studio --locked
       - name: Application regression tests
@@ -141,4 +147,4 @@ jobs:
       - name: Desktop compile
         run: cargo check -p flowy-desktop --locked
       - name: UI clippy
-        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent --all-targets --locked -- -D warnings
+        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n -p flowy-agent -p flowy-automation -p flowy-shell --all-targets --locked -- -D warnings

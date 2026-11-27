@@ -401,7 +401,7 @@ impl FlowyApp {
                 }
             }
             SearchTarget::Skill => {
-                self.select_more_page(super::more::Page::Skills, cx);
+                self.push_section(Section::Skills, cx);
             }
             SearchTarget::NavigateBoard => {
                 self.push_section(Section::Board, cx);

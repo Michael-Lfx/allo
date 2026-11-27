@@ -4,7 +4,7 @@
 //! rows are projected from loop events and persisted next to the structured
 //! history, so the UI keeps its snapshot semantics.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -57,6 +57,7 @@ const ACCEPTED_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_MAX_CONCURRENT_WORKS: usize = 3;
 
 mod artifacts;
+mod automation;
 mod guards;
 mod observer;
 mod queue;
@@ -331,6 +332,10 @@ struct UiState {
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     origin_for_new_sessions: Mutex<SessionOrigin>,
     artifact_store: OnceLock<ArtifactStore>,
+    /// Backs the model's automation tools; `None` hides them.
+    automation: Mutex<Option<Arc<flowy_automation::AutomationService>>>,
+    /// Sessions created by automation runs; they never get those tools.
+    automation_sessions: Mutex<HashSet<String>>,
     initializing: Mutex<bool>,
     context_generation: AtomicU64,
     semantic_verify_enabled: AtomicBool,
@@ -391,6 +396,8 @@ impl UiState {
             workspace_for_new_sessions: Mutex::new(None),
             origin_for_new_sessions: Mutex::new(SessionOrigin::Unknown),
             artifact_store: store_slot,
+            automation: Mutex::new(None),
+            automation_sessions: Mutex::new(HashSet::new()),
             initializing: Mutex::new(true),
             context_generation: AtomicU64::new(0),
             semantic_verify_enabled: AtomicBool::new(
@@ -2561,13 +2568,14 @@ impl Harness {
                 })
                 .unwrap_or((SessionRole::Standard, WorkAccessMode::ReadWrite))
         };
+        // Standard sessions default to read-write; read-only ones (such as
+        // read-only automation runs) only need a shared read lease.
         match role {
             SessionRole::Router => None,
-            SessionRole::Worker => Some(match mode {
+            SessionRole::Worker | SessionRole::Standard => Some(match mode {
                 WorkAccessMode::ReadOnly => WorkspaceAccessMode::Read,
                 WorkAccessMode::ReadWrite => WorkspaceAccessMode::Write,
             }),
-            SessionRole::Standard => Some(WorkspaceAccessMode::Write),
         }
     }
 
@@ -3422,6 +3430,15 @@ impl Harness {
             }
             run_config.system =
                 append_skill_listing(&run_config.system, &skills);
+        }
+        if core_session.role != SessionRole::Router
+            && let Some(service) = self.automation_tools_for(&id)
+        {
+            crate::automation_tools::register(
+                &run_config.registry,
+                &service,
+                core_session.access_mode == WorkAccessMode::ReadWrite,
+            );
         }
         let mut workspace_lease = if let Some(access_mode) =
             self.session_access_mode(&id)

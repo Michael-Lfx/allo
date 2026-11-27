@@ -298,3 +298,21 @@ coverage/
 If a tool produces a non-standard temporary directory or dependency artifact,
 add it to the local ignore policy before continuing. Never "clean up" another
 developer's generated files by adding them to a commit.
+
+
+## 11. Registered standalone Flowy GPUI automation dataset
+
+[ADR-0018](../adr/0018-personal-agent-automation-local-store.md) registers
+`flowy18_wip`'s automation dataset at
+`<store_root>/automation/automations.sqlite3`. It is owned by
+`flowy-automation` and has two tables, `automations` and `runs`. Do not add
+these tables to `nomifun-db::id_schema_contract`'s single-database table
+inventory or import the backend runtime to open this independent database.
+
+The standard rules apply unchanged: each table has the technical
+`id INTEGER PRIMARY KEY AUTOINCREMENT`, a named bare UUIDv7 business identity
+with a unique constraint (`automation_id`, `run_id`), logical references
+maintained by the application, and no physical foreign keys. The schema
+version is `PRAGMA user_version`; migrations only move forward. The GPUI
+workspace generates UUIDs with the registered `uuid` dependency; this does not
+permit independent ad-hoc ID generators elsewhere.

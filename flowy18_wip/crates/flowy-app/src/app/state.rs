@@ -69,6 +69,13 @@ pub(super) struct GalleryState {
     pub(super) idea_note: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum MySkillsTab {
+    #[default]
+    Installed,
+    Saved,
+}
+
 pub(super) struct SkillsState {
     /// Selected market category slug. `None` is the trending shelf.
     pub(super) category: Option<String>,
@@ -88,6 +95,9 @@ pub(super) struct SkillsState {
     pub(super) empty_follows: u8,
     pub(super) follow_mark: usize,
     pub(super) installed: Vec<flowy_agent::InstalledSkill>,
+    pub(super) mine_query: Entity<InputState>,
+    pub(super) mine_tab: MySkillsTab,
+    pub(super) mine_selected: Option<(String, String)>,
     pub(super) install: Option<skills::InstallUi>,
     pub(super) install_task: Option<Task<()>>,
     pub(super) script_confirm: Option<flowy_skills::SkillId>,
@@ -119,7 +129,6 @@ pub struct InviteState {
 }
 
 pub struct PersonaState {
-    pub(super) page: more::Page,
     pub(super) tab: more::Tab,
     pub(super) status: Option<&'static str>,
     pub(super) knowledge: Vec<crate::persona::Knowledge>,

@@ -260,3 +260,19 @@ coverage/
 
 如果工具生成了非标准临时目录或依赖产物，应先加入本地 ignore 策略再继续。
 不要为了“清理”其他开发者生成的文件而把它们加入提交。
+
+
+## 11. 已登记的 Flowy GPUI 自动化独立数据集
+
+[ADR-0018](../adr/0018-personal-agent-automation-local-store.md) 登记
+`flowy18_wip` 的自动化数据集，位置为
+`<store_root>/automation/automations.sqlite3`，由 `flowy-automation` 持有，
+只有 `automations` 和 `runs` 两张表。不得把这些表加入
+`nomifun-db::id_schema_contract` 的单库表清单，也不得为了打开此独立库而
+引入 backend runtime。
+
+统一规则不变：每张表使用技术主键 `id INTEGER PRIMARY KEY AUTOINCREMENT`，
+具名裸 UUIDv7 业务身份带唯一约束（`automation_id`、`run_id`），引用由应用
+维护，不建物理外键。schema 版本使用 `PRAGMA user_version`，迁移只向前。
+GPUI workspace 通过已登记的 `uuid` 依赖生成 UUID；这不授权其他模块各自新增
+临时 ID 生成器。

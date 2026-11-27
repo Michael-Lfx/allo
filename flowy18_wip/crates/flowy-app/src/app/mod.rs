@@ -5,6 +5,7 @@ mod artifact_cleanup;
 mod artifact_preview;
 #[cfg(test)]
 mod artifact_tests;
+mod automation;
 mod conversation_actions;
 mod dock;
 mod flex;
@@ -109,6 +110,8 @@ pub enum Section {
     Create,
     Automation,
     More,
+    Skills,
+    MySkills,
 }
 
 /// Refresh is single-flight: one request at a time, for a signed-in session
@@ -180,6 +183,7 @@ pub struct FlowyApp {
     credits_generation: u64,
     credits_poll: Option<Task<()>>,
     locale_watch: Option<Task<()>>,
+    automations: automation::AutomationState,
     shell_watch: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
     /// Programmatic input text waiting for a window; see [`FlowyApp::set_input_text`].
@@ -240,6 +244,13 @@ impl FlowyApp {
                 {
                     self.active_dialog = state::ActiveDialog::Skill(id);
                 }
+            }
+            "skill-script-confirm"
+                if self.active_dialog
+                    == state::ActiveDialog::SkillScriptConfirm =>
+            {
+                self.skills.script_confirm = None;
+                self.active_dialog = state::ActiveDialog::None;
             }
             "skill-docs" => {
                 if let state::ActiveDialog::SkillDocs(id) = self.active_dialog {
@@ -332,6 +343,7 @@ impl FlowyApp {
         let skills_query = input_field(window, cx);
         let quick_search_query = input_field(window, cx);
         let conversation_rename_input = input_field(window, cx);
+        let mine_skills_query = input_field(window, cx);
         place(window, &nickname, &saved.nickname, cx);
         place(window, &occupation, &saved.occupation, cx);
         place(window, &about, &saved.about, cx);
@@ -541,6 +553,9 @@ impl FlowyApp {
                     }
                 })
             },
+            cx.subscribe(&mine_skills_query, |_, _, _: &InputEvent, cx| {
+                cx.notify();
+            }),
             cx.subscribe(&studio, |app, _, event: &StudioEvent, cx| {
                 app.on_studio_event(event, cx);
             }),
@@ -615,6 +630,9 @@ impl FlowyApp {
                 empty_follows: 0,
                 follow_mark: 0,
                 installed: initial_installed_skills,
+                mine_query: mine_skills_query,
+                mine_tab: state::MySkillsTab::default(),
+                mine_selected: None,
                 install: None,
                 install_task: None,
                 script_confirm: None,
@@ -639,7 +657,6 @@ impl FlowyApp {
             projects_open: true,
             tasks_open: true,
             persona: PersonaState {
-                page: more::Page::Personal,
                 tab: more::Tab::Profile,
                 status: None,
                 knowledge: saved.knowledge,
@@ -676,6 +693,7 @@ impl FlowyApp {
             credits_generation: 0,
             credits_poll: None,
             locale_watch: None,
+            automations: automation::AutomationState::default(),
             shell_watch: None,
             subscriptions,
             pending_input_text: std::cell::RefCell::new(Vec::new()),
@@ -688,6 +706,7 @@ impl FlowyApp {
         app.refresh_models(cx);
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
+        app.start_automation(cx);
         app.load_library(cx);
         app.sync_studio_skills(cx);
         tracing::debug!(
@@ -1305,6 +1324,7 @@ impl FlowyApp {
                             app.auth.attempted_code.clear();
                             app.set_input_text(&app.auth.code, "", cx);
                             app.auth.session = Some(session);
+                            app.set_automation_signed_in(true);
                             app.auth.phase = LoginPhase::Success;
                             app.auth.message = Some("login.success");
                             app.auth.pending_req_no = None;
@@ -1462,6 +1482,7 @@ impl FlowyApp {
     }
 
     pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
+        self.set_automation_signed_in(false);
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_task = None;
         self.catalog_loading = false;
@@ -1563,10 +1584,6 @@ impl FlowyApp {
             .update(cx, flowy_studio::StudioPanel::clear_thread);
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "GPUI Context is forwarded to entity updates"
-    )]
     fn sync_studio_surface(&mut self, cx: &mut Context<'_, Self>) {
         let notice = self.notice;
         match self.section {
@@ -1601,6 +1618,7 @@ impl FlowyApp {
                     panel.set_surface(StudioSurface::Automation, cx);
                     panel.set_notice(notice, cx);
                 });
+                self.refresh_automation(cx);
             }
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
@@ -1623,7 +1641,7 @@ impl FlowyApp {
                     panel.set_notice(notice, cx);
                 });
             }
-            Section::More => {
+            Section::More | Section::Skills | Section::MySkills => {
                 self.studio.update(cx, |panel, cx| {
                     panel.close_all_popovers();
                     panel.close_flow_modal(cx);
@@ -1639,6 +1657,9 @@ impl FlowyApp {
         cx: &mut Context<'_, Self>,
     ) {
         match event {
+            StudioEvent::Automation(action) => {
+                self.handle_automation_action(action, cx);
+            }
             StudioEvent::Notice(notice) => {
                 // Events are delivered after the current action. Reconcile the
                 // panel again so a navigation action cannot restore stale text
@@ -1762,6 +1783,10 @@ impl FlowyApp {
         }
         canvas = if self.section == Section::More {
             canvas.child(self.more_canvas(window, cx))
+        } else if self.section == Section::Skills {
+            canvas.child(self.skills_canvas(window, cx))
+        } else if self.section == Section::MySkills {
+            canvas.child(self.my_skills_canvas(window, cx))
         } else if self.section == Section::Library {
             canvas.child(self.library.clone())
         } else {
@@ -1843,6 +1868,15 @@ impl FlowyApp {
                             Some(flowy_shell::DeepLink::Invite { code }) => {
                                 app.receive_invite_code(code, cx);
                             }
+                            Some(flowy_shell::DeepLink::AutomationRun {
+                                run_id,
+                            }) => {
+                                if let Ok(run_id) =
+                                    flowy_automation::RunId::parse(&run_id)
+                                {
+                                    app.open_automation_run(run_id, cx);
+                                }
+                            }
                             Some(flowy_shell::DeepLink::Open) | None => {}
                         }
                     }
@@ -1898,7 +1932,10 @@ impl Render for FlowyApp {
             settings::Picker::None
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
-                    && self.section != Section::More
+                    && !matches!(
+                        self.section,
+                        Section::More | Section::Skills | Section::MySkills
+                    )
                     && self.section != Section::Library
                     && !self.studio.read(cx).has_flow_modal()
                     && self.studio.read(cx).surface
@@ -2038,9 +2075,9 @@ impl Render for FlowyApp {
                 }
                 root
             }
-            state::ActiveDialog::SkillScriptConfirm => root
-                .child(self.skill_layer(window, cx))
-                .child(self.skill_script_confirm_layer(window, cx)),
+            state::ActiveDialog::SkillScriptConfirm => {
+                root.child(self.skill_script_confirm_layer(window, cx))
+            }
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
             state::ActiveDialog::ProjectCreate => {
                 root.child(self.projects_layer(window, cx))
@@ -2502,6 +2539,11 @@ fn apply_pending_deep_links(
             Some(flowy_shell::DeepLink::Invite { code }) => {
                 app.receive_invite_code(code, cx);
             }
+            Some(flowy_shell::DeepLink::AutomationRun { run_id }) => {
+                if let Ok(run_id) = flowy_automation::RunId::parse(&run_id) {
+                    app.open_automation_run(run_id, cx);
+                }
+            }
             Some(flowy_shell::DeepLink::Open) | None => {}
         }
     }
@@ -2633,14 +2675,16 @@ mod tests {
             app.ota.checked = true;
             app
         });
-        let (plugins, more, skills, personalization, automation) = cx
-            .read_entity(&app, |app, _| {
+        let (plugins, more, skills, personalization, automation, mine, explore) =
+            cx.read_entity(&app, |app, _| {
                 (
                     app.t("dock.plugins"),
                     app.t("dock.more"),
                     app.t("more.skills"),
                     app.t("more.personal"),
                     app.t("dock.automation"),
+                    app.t("skills.mine"),
+                    app.t("skills.library_explore"),
                 )
             });
         draw(cx);
@@ -2670,10 +2714,27 @@ mod tests {
             }
         });
         click(cx, &skills);
+        cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
+        click(cx, &mine);
         cx.read_entity(&app, |app, _| {
-            assert_eq!(app.persona.page, more::Page::Skills);
-            assert_eq!(app.section, Section::More);
+            assert_eq!(app.section, Section::MySkills);
+            assert_eq!(app.active_dialog, state::ActiveDialog::None);
+            assert_eq!(app.nav_back.last(), Some(&Section::Skills));
         });
+        click(cx, &personalization);
+        cx.update_entity(&app, super::FlowyApp::navigate_back);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.section, Section::MySkills);
+        });
+        cx.update_entity(&app, super::FlowyApp::navigate_back);
+        cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
+        cx.update_entity(&app, super::FlowyApp::navigate_forward);
+        draw(cx);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.section, Section::MySkills);
+        });
+        click(cx, &explore);
+        cx.read_entity(&app, |app, _| assert_eq!(app.section, Section::Skills));
         click(cx, &automation);
         cx.read_entity(&app, |app, _| {
             assert_eq!(app.section, Section::Automation);
@@ -2681,7 +2742,6 @@ mod tests {
         click(cx, &personalization);
         cx.read_entity(&app, |app, _| {
             assert_eq!(app.section, Section::More);
-            assert_eq!(app.persona.page, more::Page::Personal);
             assert_eq!(app.nav_back.last(), Some(&Section::Automation));
         });
         let _ = std::fs::remove_dir_all(root);
@@ -2809,6 +2869,13 @@ mod tests {
                 actions_bounds.size.width > px(0.),
                 "project actions appear on hover: dark={dark}, bounds={actions_bounds:?}"
             );
+            let hovered_project = cx
+                .debug_bounds("project-row")
+                .expect("hovered project row bounds");
+            assert_eq!(
+                hovered_project.size, project_bounds.size,
+                "hovering a project row must not change its size: dark={dark}, before={project_bounds:?} after={hovered_project:?}"
+            );
             cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
             draw(cx);
             assert!(!has_header_fill(cx, project_sample, hover));
@@ -2822,16 +2889,20 @@ mod tests {
             let add_bounds = new_project_bounds(cx, &add_label).expect(
                 "new project button appears when the heading is hovered",
             );
-            // The retired fork centered the add button exactly on the header row. Under
-            // gpui-pre the row is 34.5px tall while the small icon button stays
-            // 28px and sits ~3px below the centerline, so an exact equality no
-            // longer holds. Keep the "same row" intent with a tolerance rather
-            // than deleting the check.
+            let hovered_header = cx
+                .debug_bounds("project-group-header")
+                .expect("hovered project group header bounds");
+            assert_eq!(
+                hovered_header.size, header_bounds.size,
+                "hovering the project heading must not change its size: dark={dark}, before={header_bounds:?} after={hovered_header:?}"
+            );
+            // The add button shares the text line, so the heading does not
+            // grow and the button stays on the row's centerline.
             assert!(
-                (add_bounds.center().y - header_bounds.center().y).abs()
-                    < px(4.),
+                (add_bounds.center().y - hovered_header.center().y).abs()
+                    < px(1.),
                 "the add button must sit on the header row: \
-                 add={add_bounds:?} header={header_bounds:?}"
+                 add={add_bounds:?} header={hovered_header:?}"
             );
             for pointer in
                 [gpui::point(px(24.), sample.y), sample, add_bounds.center()]
@@ -2967,6 +3038,13 @@ mod tests {
         let row = cx.debug_bounds("task-row").expect("conversation row");
         cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         draw(cx);
+        let row_hovered = cx
+            .debug_bounds("task-row")
+            .expect("hovered conversation row");
+        assert_eq!(
+            row_hovered.size, row.size,
+            "hovering a conversation row must not change its size: before={row:?} after={row_hovered:?}"
+        );
         let actions = cx
             .debug_bounds("task-actions")
             .expect("conversation more button appears on hover");
@@ -2996,6 +3074,13 @@ mod tests {
             gpui::Modifiers::default(),
         );
         draw(cx);
+        let project_task_hovered = cx
+            .debug_bounds("project-task-row")
+            .expect("hovered project conversation row");
+        assert_eq!(
+            project_task_hovered.size, project_task.size,
+            "hovering a project conversation must not change its size: before={project_task:?} after={project_task_hovered:?}"
+        );
         let nested_actions = cx
             .debug_bounds("task-actions")
             .expect("project conversation more button appears on hover");

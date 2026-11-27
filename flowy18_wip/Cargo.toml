@@ -11,6 +11,7 @@ members = [
     "crates/flowy-studio",
     "crates/flowy-agent",
     "crates/flowy-agent-core",
+    "crates/flowy-automation",
     "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
@@ -28,6 +29,7 @@ default-members = [
     "crates/flowy-studio",
     "crates/flowy-agent",
     "crates/flowy-agent-core",
+    "crates/flowy-automation",
     "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
@@ -49,6 +51,7 @@ roxmltree = "0.21"
 rpptx = "0.15"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = { version = "=0.10.4", features = ["serde"] }
 fontdb = "0.23"
 open = "5"
 pulldown-cmark = { version = "0.13.6", default-features = false }
@@ -59,6 +62,8 @@ flowy-app = { path = "crates/flowy-app" }
 flowy-auth = { path = "crates/flowy-auth" }
 flowy-agent = { path = "crates/flowy-agent" }
 flowy-agent-core = { path = "crates/flowy-agent-core" }
+flowy-automation = { path = "crates/flowy-automation" }
+uuid = { version = "1.29.2", features = ["v7"] }
 rpi-agent = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
 rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7", default-features = false, features = ["providers"] }
 rpi-tools = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
@@ -111,6 +116,7 @@ serde_json = "1"
 sha2 = "0.10"
 rustix = { version = "1.1.6", features = ["fs"] }
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 # Lint gates follow omatrack's policy: the checks that catch real defects are
 # errors, and every deliberate omission is written down instead of silently

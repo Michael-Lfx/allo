@@ -179,8 +179,8 @@ impl FlowyApp {
         .on_click(cx.listener(|app, _event, _window, cx| {
             app.select_navigation("board", Section::Board, cx);
         }));
-        let skills_selected = self.section == Section::More
-            && self.persona.page == super::more::Page::Skills;
+        let skills_selected =
+            matches!(self.section, Section::Skills | Section::MySkills);
         let skills_row = item_row(
             self.theme,
             "skills",
@@ -189,8 +189,7 @@ impl FlowyApp {
             DockIcon::Skills,
         )
         .on_click(cx.listener(|app, _event, _window, cx| {
-            app.user_menu = false;
-            app.select_more_page(super::more::Page::Skills, cx);
+            app.select_navigation("skills", Section::Skills, cx);
         }));
 
         // Top core 4 entries: New Task, Visual Board, Library, Skills.
@@ -242,10 +241,12 @@ impl FlowyApp {
                 cx,
             ));
         }
-        secondary = secondary.child(self.more_page_dock_item(
+        secondary = secondary.child(Self::quiet_nav_item(
+            &self.theme,
             "personalization",
-            "more.personal",
-            super::more::Page::Personal,
+            self.t("more.personal"),
+            self.section == Section::More,
+            Section::More,
             DockIcon::Personalization,
             cx,
         ));
@@ -562,25 +563,14 @@ impl FlowyApp {
             self.start_library_conversation(cx);
             return;
         }
+        if matches!(section, Section::Skills | Section::More) {
+            self.notice = None;
+            if self.section == section {
+                self.apply_section(section, cx);
+                return;
+            }
+        }
         self.push_section(section, cx);
-    }
-
-    fn more_page_dock_item(
-        &self,
-        id: &'static str,
-        key: &'static str,
-        page: super::more::Page,
-        icon: DockIcon,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let selected =
-            self.section == Section::More && self.persona.page == page;
-        quiet_row(self.theme, id, self.t(key), selected, icon).on_click(
-            cx.listener(move |app, _event, _window, cx| {
-                app.user_menu = false;
-                app.select_more_page(page, cx);
-            }),
-        )
     }
 
     fn project_rows(
@@ -824,6 +814,7 @@ impl FlowyApp {
                         theme::icons::ellipsis(),
                     ),
                     &self.theme,
+                    window,
                     cx.listener({
                         let id = project_id.to_owned();
                         move |app, _event, _window, cx| {
@@ -845,6 +836,7 @@ impl FlowyApp {
                             theme::icons::square_pen(),
                         ),
                         &self.theme,
+                        window,
                         cx.listener({
                             let id = project_id.to_owned();
                             move |app, _event, window, cx| {
@@ -982,7 +974,7 @@ impl FlowyApp {
     /// the project's edit button, the rightmost action.
     fn conversation_row_actions(
         &self,
-        _window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
         session_id: &str,
     ) -> impl IntoElement {
@@ -1003,6 +995,7 @@ impl FlowyApp {
                     )
                     .disabled(self.conversation_delete_busy()),
                     &self.theme,
+                    window,
                     cx.listener({
                         move |app, _, _, cx| {
                             cx.stop_propagation();
@@ -1242,6 +1235,7 @@ impl FlowyApp {
                         theme::icons::plus(),
                     ),
                     &self.theme,
+                    window,
                     cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.user_menu = false;
@@ -1698,8 +1692,9 @@ fn body_line_height(
 ///
 /// `IconButton::render` erases to `AnyElement`, which no longer exposes the
 /// interactive surface, so the hit target that the anchor and the tooltip
-/// attach to lives on this shell. The control keeps its own `ControlSize`
-/// metrics instead of the old line-height square.
+/// attach to lives on this shell. The square matches the row's text line.
+/// `ControlSize::Small` is taller than that line, so revealing it on hover
+/// grew the row and shifted the list.
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "every theme helper in this dock module takes the theme by reference"
@@ -1708,11 +1703,12 @@ fn dock_icon_button(
     id: impl Into<gpui::ElementId>,
     button: theme::IconButton,
     theme: &flowy_ui::ResolvedTheme,
+    window: &Window,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     div().id(id).flex_shrink_0().child(
         button
-            .size(theme::ControlSize::Small)
+            .extent(body_line_height(theme, window))
             .render(theme, on_click),
     )
 }
