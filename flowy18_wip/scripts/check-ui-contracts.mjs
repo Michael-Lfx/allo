@@ -112,10 +112,71 @@ function rawClickableDivs(source, code) {
   return results;
 }
 
+function testItemEnd(masked, attrStart) {
+  let cursor = attrStart;
+  while (cursor < masked.length) {
+    while (cursor < masked.length && /\s/.test(masked[cursor])) cursor++;
+    if (masked[cursor] === "#") {
+      const rest = masked.slice(cursor + 1).match(/^\s*\[/);
+      if (rest) {
+        cursor = closing(masked, cursor + 1 + rest[0].length - 1) + 1;
+        continue;
+      }
+    }
+    break;
+  }
+  const rest = masked.slice(cursor);
+  const vis = "(?:pub(?:\\s*\\([^)]*\\))?\\s+)?";
+  const qual = "(?:(?:default|unsafe|async|const)\\s+)*";
+  const isBraceItem =
+    masked[cursor] === "{" ||
+    new RegExp(`^${vis}${qual}(?:mod|fn|impl|trait|struct|enum|union)\\b`).test(rest) ||
+    /^macro_rules\s*!/.test(rest);
+  let depth = 0;
+  for (let i = cursor; i < masked.length; i++) {
+    const ch = masked[i];
+    if (isBraceItem) {
+      if (ch === "(" || ch === "[") depth++;
+      else if ((ch === ")" || ch === "]") && depth > 0) depth--;
+      else if (depth === 0) {
+        if (ch === ";") return i + 1;
+        if (ch === "{") return closing(masked, i) + 1;
+      }
+    } else {
+      if (ch === "(" || ch === "[" || ch === "{") depth++;
+      else if (ch === ")" || ch === "]") {
+        if (depth > 0) depth--;
+      } else if (ch === "}") {
+        if (depth > 0) depth--;
+        else return i;
+      } else if (depth === 0 && (ch === ";" || ch === ",")) {
+        return i + 1;
+      }
+    }
+  }
+  return masked.length;
+}
+
+/** Blank only #[cfg(test)]-gated items/fields/blocks while preserving newlines and offsets. */
+function stripTestCode(source) {
+  const masked = codeOnly(source);
+  const out = source.split("");
+  let coveredUntil = 0;
+  for (const match of masked.matchAll(/#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/g)) {
+    if (match.index < coveredUntil) continue;
+    const end = testItemEnd(masked, match.index + match[0].length);
+    for (let i = match.index; i < end; i++) {
+      if (out[i] !== "\n") out[i] = " ";
+    }
+    coveredUntil = end;
+  }
+  return out.join("");
+}
+
 function inspect(path, source) {
-  // Production code only. Fixtures in #[cfg(test)] modules are deliberately
+  // Production code only. Fixtures in #[cfg(test)] items are deliberately
   // isolated from runtime contracts and are checked by Cargo instead.
-  const production = source.split(/#\[cfg\(test\)\]/, 1)[0];
+  const production = stripTestCode(source);
   const code = codeOnly(production);
   const issues = [];
   const add = (offset, message) => issues.push(`${path}:${production.slice(0, offset).split("\n").length}: ${message}`);
@@ -205,7 +266,15 @@ function selfTest() {
   assert.match(compareLocale("en.json", { save: "Save", other: "Other" }, { save: "保存" })[0], /unexpected locale key other/);
   assert.match(compareLocale("en.json", { save: " " }, { save: "保存" })[0], /non-empty string/);
   assert.match(compareLocale("en.json", [], { save: "保存" })[0], /must be an object/);
-  console.log("UI contract scanner: 24 fixture assertions passed");
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "#[cfg(test)]\nmod tests;\nfn bad() {\n    rgb(0xffffff);\n}"), ["flowy-app/src/example.rs:4: raw UI color outside an explicitly named illustration/media function"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "#[cfg(test)]\nuse foo::{rgb, Bar};\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:3: raw UI color outside an explicitly named illustration/media function"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "#[cfg(test)]\n#[must_use]\npub(super) fn helper() { rgb(0); }\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:4: raw UI color outside an explicitly named illustration/media function"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "struct S {\n    #[cfg(test)]\n    rendered: usize,\n}\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:5: raw UI color outside an explicitly named illustration/media function"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "fn render() {\n    #[cfg(test)]\n    { rgb(0); }\n    #[cfg(test)]\n    let link = link.debug_selector(move || { rgb(0) });\n    div().on_click(cb);\n}"), ["flowy-app/src/example.rs:6: operation controls must use flowy_ui primitives (raw div id=dynamic/absent)"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "// #[cfg(test)]\nlet s = \"#[cfg(test)]\";\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:3: raw UI color outside an explicitly named illustration/media function"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "#[cfg(test)]\nmod tests {\n    #[cfg(test)]\n    fn nested() { rgb(0); }\n}\nfn bad() { theme::canvas(); }"), ["flowy-app/src/example.rs:6: read the explicit ResolvedTheme snapshot instead of a legacy global token"]);
+  assert.deepEqual(inspect("flowy-app/src/example.rs", "struct Tail {\n    #[cfg(test)]\n    only: usize\n}\nfn bad() { rgb(0xffffff); }"), ["flowy-app/src/example.rs:5: raw UI color outside an explicitly named illustration/media function"]);
+  console.log("UI contract scanner: 32 fixture assertions passed");
 }
 
 function rustFiles(directory) {
