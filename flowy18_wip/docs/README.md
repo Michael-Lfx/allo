@@ -9,7 +9,7 @@ Agent 阅读顺序：本页 → 对应分类 `README.md` → 目标文档。
 | --- | --- | --- |
 | GPUI 迁移 | **写任何 GPUI 代码前**：依赖锁定、输入控件、键上下文、布局陷阱、热补丁机制 | [gpui-pre-and-kit.md](gpui-pre-and-kit.md) |
 | Windows 开发与热补丁 | **Windows 开发者与 Agent 首读**：`dx serve --hot-patch` 启动与排坑、编译/测试环境、rebase 踩坑 | [plans/windows-build-rebase-pitfalls.md](plans/windows-build-rebase-pitfalls.md) |
-| 架构与决策 | 了解 agent 内核、工作契约、沙箱与 shell 等已定方案 | [architecture/README.md](architecture/README.md) · [Flowy v0 内核架构与实测索引](architecture/flowy-v0/README.md) |
+| 架构与决策 | 了解 agent 内核、工作契约、Router/Work 工具扩展边界、沙箱与 shell 等已定方案 | [architecture/README.md](architecture/README.md) · [Router / Work 架构与自动化 Tools 扩展规范](architecture/router-work-and-tool-extension.md) · [Flowy v0 内核架构与实测索引](architecture/flowy-v0/README.md) |
 | 计划与交接 | 接手未完成工作、查看待实现方案 | [plans/README.md](plans/README.md) · [Super Agent 界面交互与丝滑动效方案](plans/super-agent-ui-and-motion.zh.md) · [PPTX/PDF/JPG 预览依赖调研](plans/document-preview-dependencies.zh.md) |
 | pi-loop 工作流 | 查 pi-rust loop 实验、证据与迁移结论 | [pi-loop/README.md](pi-loop/README.md) |
 | 云端模型目录工作流 | 查账号模型目录、验证与阻塞记录 | [cloud-model-catalog/README.md](cloud-model-catalog/README.md) |
