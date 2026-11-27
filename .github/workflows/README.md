@@ -5,7 +5,7 @@ Three workflows live here:
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | `ci.yml` | every pull request, every push to `main` | compile every crate + test target, run the repo gates that are green; a documentation-only change skips the two Rust jobs |
-| `flowy18-ui.yml` | pull requests & `main` pushes touching `flowy18_wip/**` | validate `flowy18_wip` source contracts, `rustfmt`, all 14 workspace crates' unit/integration tests across two parallel Windows jobs (`windows-ui` + `windows-core-agent`), desktop compile, and `--workspace --all-targets` clippy |
+| `flowy18-ui.yml` | pull requests & `main` pushes touching `flowy18_wip/**` | validate `flowy18_wip` source/docs/scroll contracts and `rustfmt` (`source-contracts`), all 15 workspace crates' unit/integration tests and complementary `--all-targets` clippy across two parallel Windows jobs (`windows-ui` + `windows-core-agent`), plus Linux/macOS sandbox integration |
 | `release-modelscope.yml` | tag `vX.Y.Z` / `unibuddy-vX.Y.Z` (or `workflow_dispatch`) | publish the selected product's per-OS OTA channels |
 
 ## Workflow change policy
