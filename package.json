@@ -82,6 +82,8 @@
     "build:gc:all": "bun scripts/prune-build.mjs --gc --flowy18 --worktrees",
     "build:clean": "bun scripts/prune-build.mjs --clean",
     "clean": "bun run build:clean",
+    "worktree:inspect": "bun scripts/worktree-gc.mjs --inspect",
+    "worktree:prune": "bun scripts/worktree-gc.mjs --prune",
     "seed:dev": "bun scripts/seed-dev-from-prod.mjs",
     "reset:dev": "bun scripts/reset-dev-data.mjs",
     "bump": "bun scripts/bump-version.mjs",

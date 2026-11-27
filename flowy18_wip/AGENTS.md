@@ -42,10 +42,11 @@ Windows 推荐启动步骤：
 
 ### Windows 同事与 Agent 速查（前置 · 快速验证 · 红线）
 
-- **前置安装（一次性）**：Rust `1.100`（`rust-toolchain.toml` 已锁，自带 `lld-link.exe`）、Visual Studio Build Tools（MSVC x64 + Windows 10/11 SDK），以及精确版本 `cargo install dioxus-cli --version 0.7.10 --locked`。
+- **前置安装（一次性）**：Rust `1.100`（`rust-toolchain.toml` 已锁，自带 `lld-link.exe`）、Visual Studio Build Tools（MSVC x64 + Windows 10/11 SDK）、精确版本 `cargo install dioxus-cli --version 0.7.10 --locked`，以及建议在 Windows 上通过 `winget install --id nextest.cargo-nextest -e --source winget` 安装预编译 `cargo-nextest`（避开 `msstore` 超时）。
 - **分层验证（避免每次改几行都跑全量 8-crate 门禁）**：
   - 界面/布局/文案迭代：启动一次 `.\scripts\dev-hotpatch.ps1`，保存源码约 15–18s 原位热补丁生效。
-  - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`；`flowy-agent` 日常整 crate 复验可先跑 `-- --test-threads=4`（~19s）。
+  - 编译与逻辑内循环：`cargo check -p <crate> --lib`、`cargo test -p <crate> --lib <关键词> -- --nocapture`（或直接 `cargo nextest run -p <crate>`，已通过 [`.config/nextest.toml`](.config/nextest.toml) 将 `flowy-agent` / `flowy-automation` 收口为单线程 `serial-storage` 组，其余 crate 并发执行）、跨 crate 签名核验用 `cargo check -p flowy-desktop`（跳过链接）、改 UI/i18n 跑 `bun scripts/check-ui-contracts.mjs`；`flowy-agent` 不用 `nextest` 时日常整 crate 复验可先跑 `-- --test-threads=4`（~19s）。
+  - 缓存与 Worktree 维护：在仓根执行 `bun run build:inspect:all` / `bun run build:gc:all` 安全回收过期缓存（自动保护 `scripts/dx-capture-wrapper/target/` 与活跃会话），用 `bun run worktree:inspect` 盘点 worktree 状态。
   - 仅 PR 提交前跑一次完整门禁：`bun scripts/check-ui-contracts.mjs --self-test && bun scripts/check-ui-contracts.mjs`、`cargo fmt --all -- --check`、受影响及 CI 必过 crate 单测（`flowy-ui` **禁带 `--lib`** 以免漏跑集成测试 `tests/anchor_measurement.rs`；`flowy-agent` 与 `flowy-automation` 固定 `-- --test-threads=1` 规避 NTFS `fsync` 与调度并发抖动）、`cargo check -p flowy-desktop --locked`、`cargo clippy ... --all-targets -- -D warnings`（改动 `flowy-agent-core`/`flowy-agent` 公开结构体时须同时覆盖下游 `flowy-studio`/`flowy-app`/`flowy-desktop`，防 `clippy::large_enum_variant` 与单测 `pedantic` 告警）。
 - **目录拆分与生产源码契约（`scripts/check-ui-contracts.mjs` 强制检查）**：
   - 核心模块已按职责目录拆解（`flowy-agent/src/{handle,artifact_store}`、`flowy-studio/src/{feed,panel}`、`flowy-app/src/app/` 等），外置单元测试优先通过 `#[cfg(test)] mod tests;` 或 `*_tests.rs` 挂载。

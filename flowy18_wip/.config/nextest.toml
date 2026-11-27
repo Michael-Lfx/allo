@@ -1,0 +1,13 @@
+# cargo-nextest 配置（flowy18_wip 独立工作区）。
+#
+# Windows NTFS 下 flowy-agent（300ms 租约/fsync 时序单测）与 flowy-automation
+# 存在并发 fsync/目录状态竞争，CI 与文档已将其固定为 --test-threads=1。
+# 在 nextest 中对这两个 crate 收口为串行组，使其余 crate（如 flowy-agent-core、
+# flowy-ui、flowy-studio、flowy-core 等）默认保持高并发运行而不出现假红。
+
+[test-groups]
+serial-storage = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(flowy-agent) | package(flowy-automation)'
+test-group = 'serial-storage'

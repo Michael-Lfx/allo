@@ -20,6 +20,10 @@
 #      `[cache.disk] size = 26843545600` in sccache's own config file.
 #   5. If sccache ever reports a transient daemon error (exit code 2), run
 #      `sccache --stop-server` and retry.
+#
+# cargo-nextest (fast parallel test runner used by `bun run test:fast` and `flowy18_wip/.config/nextest.toml`):
+#   - Windows prebuilt install (bypassing `msstore` timeouts):
+#       winget install --id nextest.cargo-nextest -e --source winget
 [build]
 rustc-wrapper = "sccache"
 

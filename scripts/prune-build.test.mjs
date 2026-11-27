@@ -1,14 +1,34 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, test } from 'bun:test';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { createDevSessionLock } from './dev-session-lock.mjs';
+import { isProtectedBuildPath } from './lib/build-fs.mjs';
 import {
   discoverCheckoutBuildTargets,
   guardBuildTarget,
   hasMatchingEnvBuildDir,
   isFlowy18TempBuildName,
+  pruneBuildDirGenerations,
   shouldPruneTempEntry,
 } from './prune-build.mjs';
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const tempDirs = [];
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function writeSizedFile(filePath, sizeBytes, ageSeconds = 0) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, Buffer.alloc(sizeBytes, 0x61));
+  if (ageSeconds > 0) {
+    const t = new Date(Date.now() - ageSeconds * 1000);
+    utimesSync(filePath, t, t);
+  }
+}
 
 const rootPackage = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const pruneSource = readFileSync(new URL('./prune-build.mjs', import.meta.url), 'utf8');
@@ -132,6 +152,52 @@ describe('flowy18, worktrees, and temp build safety guards', () => {
       ]);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('pruneBuildDirGenerations evicts older duplicate crate hashes while preserving the newest generation per crate', () => {
+    const profileDir = mkdtempSync(join(tmpdir(), 'flowy-builddir-gc-'));
+    tempDirs.push(profileDir);
+
+    writeSizedFile(join(profileDir, 'build', 'flowy-studio', 'oldhash111', 'out', 'lib.rmeta'), 2048, 7200);
+    writeSizedFile(join(profileDir, 'build', 'flowy-studio', 'newhash222', 'out', 'lib.rmeta'), 1024, 10);
+    writeSizedFile(join(profileDir, 'build', 'windows', 'onlyhash999', 'out', 'lib.rmeta'), 1024, 172_800);
+    writeSizedFile(join(profileDir, 'incremental', 'flowy_studio-oldaaa', 's-1-a', 'dep-graph.bin'), 2048, 7200);
+    writeSizedFile(join(profileDir, 'incremental', 'flowy_studio-newbbb', 's-2-b', 'dep-graph.bin'), 1024, 5);
+
+    const res = pruneBuildDirGenerations(profileDir, 3072);
+    expect(res.scanned).toBe(true);
+    expect(res.removedCount).toBe(2);
+    expect(existsSync(join(profileDir, 'build', 'flowy-studio', 'oldhash111'))).toBe(false);
+    expect(existsSync(join(profileDir, 'build', 'flowy-studio', 'newhash222'))).toBe(true);
+    expect(existsSync(join(profileDir, 'build', 'windows', 'onlyhash999'))).toBe(true);
+    expect(existsSync(join(profileDir, 'incremental', 'flowy_studio-oldaaa'))).toBe(false);
+    expect(existsSync(join(profileDir, 'incremental', 'flowy_studio-newbbb'))).toBe(true);
+  });
+
+  test('protects dx-capture-wrapper/target and skips --build-dir owned by active dev session', () => {
+    expect(isProtectedBuildPath(join('flowy18_wip', 'scripts', 'dx-capture-wrapper', 'target'))).toBe(true);
+    expect(isProtectedBuildPath(join('flowy18_wip', 'build.noindex'))).toBe(false);
+
+    const customBuild = mkdtempSync(join(tmpdir(), 'flowy-active-lock-'));
+    tempDirs.push(customBuild);
+    const lock = createDevSessionLock({
+      buildDir: customBuild,
+      workspaceRoot: 'ws',
+      targetDir: 'target',
+    });
+    try {
+      writeSizedFile(join(customBuild, 'debug', 'build', 'demo', 'oldh', 'out', 'a.bin'), 2048, 3600);
+      writeSizedFile(join(customBuild, 'debug', 'build', 'demo', 'newh', 'out', 'a.bin'), 1024, 10);
+      const out = spawnSync('bun', ['scripts/prune-build.mjs', '--gc', '--build-dir', customBuild, '--cap', '0.000001'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      });
+      expect(out.status).toBe(0);
+      expect(out.stdout).toContain('SKIP [custom:');
+      expect(existsSync(join(customBuild, 'debug', 'build', 'demo', 'oldh'))).toBe(true);
+    } finally {
+      lock.release();
     }
   });
 });
