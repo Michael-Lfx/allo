@@ -1,21 +1,29 @@
-//! Deliverables drawer: the files one turn produced, with a light preview.
-//!
-//! Kept apart from `starter` and `feed` so the drawer can be replaced without
-//! touching the chat projection or the home stage.
+//! Unified right-hand workbench drawer: Deliverables (verification failure
+//! banner, workspace files with inline actions/preview, published artifacts),
+//! Steps (turn-grouped timeline & per-item checklist), and quiet Trace log.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use flowy_agent::{ChatLine, FileEntry, ReceiptState};
+use flowy_agent::{FileEntry, ReceiptState};
 use flowy_ui as theme;
 use gpui::{
-    AnimationExt, AnyElement, Context, FontWeight, Image, ImageFormat,
-    IntoElement, SharedString, SpringAnimation, Window, div, img, prelude::*,
-    px,
+    AnimationExt, AnyElement, Context, FontWeight, IntoElement, SharedString,
+    SpringAnimation, Window, div, prelude::*, px,
 };
 
-use crate::panel::StudioPanel;
+use crate::drawer_preview::format_file_size;
+use crate::feed::{
+    DeliverableItem, DeliverableVerifyBadge, FailedVerificationItem,
+};
+use crate::library::{ArtifactAvailability, LibraryItem};
+use crate::panel::{StudioEvent, StudioPanel};
 use flowy_ui::status_pill;
+
+const COMPACT_DRAWER_W: f32 = 360.0;
+const WIDE_MIN_W: f32 = 480.0;
+const WIDE_MAX_W: f32 = 620.0;
+const MIN_CHAT_W: f32 = 420.0;
+const MIN_DRAWER_W: f32 = 280.0;
 
 /// Active tab inside the unified right-hand sheet drawer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,6 +32,14 @@ pub enum RightDrawerTab {
     Deliverables,
     Steps,
     Trace,
+}
+
+/// Active view scope inside the Workspace Files section of Deliverables.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeliverablesViewScope {
+    #[default]
+    Latest,
+    All,
 }
 
 /// Source scope for the files listed inside the Deliverables drawer so
@@ -35,6 +51,7 @@ pub enum DeliverableScope {
     TurnSnapshot(Vec<FileEntry>),
 }
 
+#[cfg(test)]
 impl DeliverableScope {
     #[must_use]
     pub const fn files(&self) -> &[FileEntry] {
@@ -44,8 +61,34 @@ impl DeliverableScope {
     }
 }
 
+/// Computes adaptive right-drawer width `(width_px, can_toggle_wide)` clamped
+/// against viewport width and sidebar visibility so the chat canvas stays at
+/// least `MIN_CHAT_W` (`420px`) wide.
+#[must_use]
+pub fn compute_drawer_width(
+    viewport_w: f32,
+    dock_visible: bool,
+    wide: bool,
+) -> (f32, bool) {
+    if viewport_w <= 0.0 {
+        return (if wide { 520.0 } else { COMPACT_DRAWER_W }, true);
+    }
+    let dock_w = if dock_visible { theme::DOCK_WIDTH } else { 0.0 };
+    let available = (viewport_w - dock_w - MIN_CHAT_W).max(MIN_DRAWER_W);
+    let can_toggle_wide = available >= WIDE_MIN_W;
+    let target = if wide && can_toggle_wide {
+        (viewport_w * 0.44)
+            .clamp(WIDE_MIN_W, WIDE_MAX_W)
+            .min(available)
+    } else {
+        COMPACT_DRAWER_W.min(available)
+    };
+    (target, can_toggle_wide)
+}
+
 /// Truncated parent directory path, keeping the tail legible in a narrow drawer.
-fn short_parent_path(path: &str) -> String {
+#[must_use]
+pub fn short_parent_path(path: &str) -> String {
     let cleaned = crate::ports::display_path_str(path);
     let parent = Path::new(&cleaned)
         .parent()
@@ -60,10 +103,6 @@ fn short_parent_path(path: &str) -> String {
     format!("\u{2026}{tail}")
 }
 
-/// Reading more than this on the UI path would stall the frame. Matches the
-/// localized `"1MB"` copy in `chat.preview_too_large` across all 23 locales.
-const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
-
 /// What the right-hand inspector sheet shows when opened from the background
 /// works popover (Plan §3.2 #2: single-work step trace without interrupting the
 /// active main conversation).
@@ -71,74 +110,6 @@ const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
 pub enum InspectedWork {
     Session { id: String, title: String },
     Receipt(flowy_agent::AcceptedMessage),
-}
-
-/// What the drawer shows for the selected file.
-pub enum PreviewBody {
-    Text(String),
-    Image(Arc<Image>),
-    /// Locale key explaining why the file cannot be shown.
-    Notice(&'static str),
-}
-
-/// Reads one file for preview, classifying it by extension and size.
-pub fn load_preview(path: &str) -> PreviewBody {
-    use std::io::Read;
-    let Some(safe_path) = crate::ports::resolve_safe_local_file(path) else {
-        return PreviewBody::Notice("chat.preview_missing");
-    };
-    let Ok(file) = std::fs::File::open(&safe_path) else {
-        return PreviewBody::Notice("chat.preview_missing");
-    };
-    let Ok(meta) = file.metadata() else {
-        return PreviewBody::Notice("chat.preview_missing");
-    };
-    if !meta.is_file()
-        || crate::ports::is_link_or_unsafe_reparse(&safe_path, &meta)
-    {
-        return PreviewBody::Notice("chat.preview_missing");
-    }
-    if meta.len() > MAX_PREVIEW_BYTES {
-        return PreviewBody::Notice("chat.preview_too_large");
-    }
-    // Bounded read on the opened handle eliminates TOCTOU OOM if the file grows
-    // between metadata check and read.
-    let mut bytes = Vec::with_capacity(
-        usize::try_from(meta.len().min(MAX_PREVIEW_BYTES)).unwrap_or(0),
-    );
-    if file
-        .take(MAX_PREVIEW_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .is_err()
-    {
-        return PreviewBody::Notice("chat.preview_missing");
-    }
-    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
-        return PreviewBody::Notice("chat.preview_too_large");
-    }
-    let extension = safe_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase);
-    match extension.as_deref() {
-        Some("png") => PreviewBody::Image(Arc::new(Image::from_bytes(
-            ImageFormat::Png,
-            bytes,
-        ))),
-        Some("jpg" | "jpeg") => PreviewBody::Image(Arc::new(
-            Image::from_bytes(ImageFormat::Jpeg, bytes),
-        )),
-        Some("webp") => PreviewBody::Image(Arc::new(Image::from_bytes(
-            ImageFormat::Webp,
-            bytes,
-        ))),
-        _ => {
-            if bytes.contains(&0) {
-                return PreviewBody::Notice("chat.preview_binary");
-            }
-            PreviewBody::Text(String::from_utf8_lossy(&bytes).into_owned())
-        }
-    }
 }
 
 impl StudioPanel {
@@ -179,16 +150,25 @@ impl StudioPanel {
                 .latest_deliverables()
                 .map(DeliverableScope::Latest);
         }
+        self.refresh_drawer_metadata(cx);
     }
 
-    /// Unified right-hand sheet drawer: calm 2-tab inspector (Files | Activity)
-    /// plus a quiet Trace debug toggle and focused Single-Work Inspector.
+    /// Unified right-hand workbench drawer: Deliverables, structured Steps, and
+    /// quiet Trace debug toggle.
     pub(crate) fn right_sheet_drawer(
         &self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
+        let viewport_w = f32::from(window.viewport_size().width);
+        let (drawer_w, can_toggle_wide) = compute_drawer_width(
+            viewport_w,
+            self.dock_visible,
+            self.drawer_wide,
+        );
         let active_session = self.agent.active_session_id();
+        let deliverable_badge_count = self.deliverable_count(cx);
+
         let body = if let Some(work) = &self.inspected_work {
             match self.drawer_tab {
                 RightDrawerTab::Trace => match work {
@@ -210,20 +190,17 @@ impl StudioPanel {
                             .into_any_element()
                     }
                 },
-                _ => self.work_inspector_view(work, cx),
+                _ => self.work_inspector_view(work, true, window, cx),
             }
         } else {
             match self.drawer_tab {
                 RightDrawerTab::Deliverables => {
-                    let files = self
-                        .deliverables
-                        .as_ref()
-                        .map_or(&[][..], DeliverableScope::files);
-                    match (&self.preview_file, &self.preview_body) {
-                        (Some(path), Some(preview)) => self
-                            .preview_view(path, preview, window, cx)
-                            .into_any_element(),
-                        _ => self.deliverables_list(files, cx),
+                    match (&self.drawer_preview.file, &self.drawer_preview.body)
+                    {
+                        (Some(path), Some(preview)) => {
+                            self.drawer_preview_view(path, preview, window, cx)
+                        }
+                        _ => self.deliverables_list_view(window, cx),
                     }
                 }
                 RightDrawerTab::Steps => {
@@ -241,6 +218,8 @@ impl StudioPanel {
                                 id: sid.clone(),
                                 title,
                             },
+                            false,
+                            window,
                             cx,
                         );
                         if child_works.is_empty() {
@@ -307,11 +286,42 @@ impl StudioPanel {
             }
         };
 
+        let width_toggle = can_toggle_wide.then(|| {
+            let label = if self.drawer_wide {
+                self.t("drawer.width_compact")
+            } else {
+                self.t("drawer.width_wide")
+            };
+            self.icon_tooltip_button(
+                "drawer-width-toggle",
+                "drawer-width-toggle-tip",
+                label,
+                theme::icons::panel_right().size(px(14.)),
+                if self.drawer_wide {
+                    theme::ControlVariant::Secondary
+                } else {
+                    theme::ControlVariant::Ghost
+                },
+                |panel, _, cx| {
+                    panel.toggle_drawer_width(cx);
+                },
+                window,
+                cx,
+            )
+        });
+
         let trace_active = self.drawer_tab == RightDrawerTab::Trace;
-        let trace_toggle = self.icon_tooltip_button(
+        let trace_attention =
+            !trace_active && self.feed.read(cx).has_trace_attention();
+        let trace_label = if trace_attention {
+            self.t("drawer.trace_attention_label")
+        } else {
+            self.t("drawer.toggle_trace")
+        };
+        let trace_button = self.icon_tooltip_button(
             "drawer-tab-trace",
             "drawer-tab-trace-tip",
-            self.t("drawer.toggle_trace"),
+            trace_label,
             theme::icons::sliders_horizontal().size(px(14.)),
             if trace_active {
                 theme::ControlVariant::Secondary
@@ -330,6 +340,22 @@ impl StudioPanel {
             window,
             cx,
         );
+        let trace_toggle = div().relative().child(trace_button).when(
+            trace_attention,
+            |wrap| {
+                wrap.child(
+                    div()
+                        .id("drawer-trace-attention-dot")
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(self.theme.status_attention())
+                        .absolute()
+                        .top(px(2.))
+                        .right(px(2.)),
+                )
+            },
+        );
+
         let close_button = self.icon_tooltip_button(
             "deliverables-close",
             "deliverables-close-tip",
@@ -343,41 +369,60 @@ impl StudioPanel {
             cx,
         );
 
-        let tab_pill =
-            |tab: RightDrawerTab, key: &'static str, id: &'static str| {
-                let label = self.t(key);
-                let selected = self.drawer_tab == tab;
-                theme::interactive(id, label.clone(), &self.theme)
-                    .px(self.theme.space(8.))
-                    .py(px(3.))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .text_xs()
-                    .bg(if selected {
-                        self.theme.card()
-                    } else {
-                        self.theme.soft()
-                    })
-                    .text_color(if selected {
-                        self.theme.ink()
-                    } else {
-                        self.theme.muted()
-                    })
-                    .child(label)
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        if matches!(tab, RightDrawerTab::Deliverables) {
-                            panel.switch_to_deliverables_tab(cx);
-                        } else {
-                            panel.drawer_tab = tab;
-                        }
-                        panel.refresh_trace_cache();
-                        cx.notify();
-                    }))
+        let tab_pill = |tab: RightDrawerTab,
+                        key: &'static str,
+                        id: &'static str,
+                        badge: Option<usize>| {
+            let label = self.t(key);
+            let aria = match badge.filter(|c| *c > 0) {
+                Some(count) => format!("{label} ({count})"),
+                None => label.clone(),
             };
+            let selected = self.drawer_tab == tab;
+            theme::interactive(id, SharedString::from(aria), &self.theme)
+                .px(self.theme.space(8.))
+                .py(px(3.))
+                .rounded_md()
+                .cursor_pointer()
+                .text_xs()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .bg(if selected {
+                    self.theme.card()
+                } else {
+                    self.theme.soft()
+                })
+                .text_color(if selected {
+                    self.theme.ink()
+                } else {
+                    self.theme.muted()
+                })
+                .child(label)
+                .when_some(badge.filter(|c| *c > 0), |el, count| {
+                    el.child(
+                        div()
+                            .px(px(4.))
+                            .rounded_full()
+                            .bg(self.theme.soft())
+                            .text_color(self.theme.muted())
+                            .child(count.to_string()),
+                    )
+                })
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    if matches!(tab, RightDrawerTab::Deliverables) {
+                        panel.switch_to_deliverables_tab(cx);
+                    } else {
+                        panel.drawer_tab = tab;
+                    }
+                    panel.refresh_trace_cache();
+                    cx.notify();
+                }))
+        };
 
         let sheet = div()
             .id("deliverables-drawer")
-            .w(px(360.))
+            .w(px(drawer_w))
             .h_full()
             .flex()
             .flex_col()
@@ -407,11 +452,13 @@ impl StudioPanel {
                                 RightDrawerTab::Deliverables,
                                 "chat.deliverables",
                                 "drawer-tab-deliverables",
+                                Some(deliverable_badge_count),
                             ))
                             .child(tab_pill(
                                 RightDrawerTab::Steps,
                                 "drawer.tab_steps",
                                 "drawer-tab-steps",
+                                None,
                             )),
                     )
                     .child(
@@ -419,6 +466,7 @@ impl StudioPanel {
                             .flex()
                             .items_center()
                             .gap(px(4.))
+                            .children(width_toggle)
                             .child(trace_toggle)
                             .child(close_button),
                     ),
@@ -438,7 +486,6 @@ impl StudioPanel {
         } else {
             sheet
                 .with_spring(
-                    // The drawer springs in crisply from the right edge.
                     "deliverables-drawer",
                     SpringAnimation::new(crate::motion::spring_sheet())
                         .to(1.0_f32)
@@ -454,91 +501,21 @@ impl StudioPanel {
         }
     }
 
-    fn session_steps(&self, session_id: &str) -> Vec<String> {
-        let lines = self.agent.session_lines(session_id);
-        let last_user = lines
-            .iter()
-            .rposition(|line| matches!(line, ChatLine::User { .. }))
-            .unwrap_or(0);
-        let mut steps = Vec::new();
-        for line in &lines[last_user..] {
-            match line {
-                ChatLine::ToolCall {
-                    name,
-                    target,
-                    running,
-                    ..
-                } => {
-                    let prefix =
-                        if *running { "\u{25cf} " } else { "\u{2713} " };
-                    let heading = if *running {
-                        self.tf("chat.tool_live", &[("name", name)])
-                    } else {
-                        name.clone()
-                    };
-                    if target.trim().is_empty() {
-                        steps.push(format!("{prefix}{heading}"));
-                    } else {
-                        let safe_target =
-                            crate::ports::redact_trace_text(target);
-                        let short: String =
-                            safe_target.chars().take(48).collect();
-                        steps.push(format!(
-                            "{prefix}{heading} \u{00b7} {short}"
-                        ));
-                    }
-                }
-                ChatLine::Reasoning {
-                    duration_secs,
-                    live,
-                    ..
-                } => {
-                    steps.push(if *live {
-                        format!("\u{25cf} {}", self.t("chat.reasoning_live"))
-                    } else {
-                        let dur = self.format_duration_secs(*duration_secs);
-                        format!(
-                            "\u{2713} {}",
-                            self.tf("chat.thought_for", &[("duration", &dur)])
-                        )
-                    });
-                }
-                ChatLine::Verification {
-                    artifact_path,
-                    ok,
-                    override_used,
-                    ..
-                } => {
-                    let name = crate::ports::basename(artifact_path);
-                    let status = if *ok {
-                        self.t("verify.card.passed")
-                    } else if *override_used {
-                        self.t("verify.override.badge")
-                    } else {
-                        self.t("verify.card.failed")
-                    };
-                    steps.push(format!("{status} \u{00b7} {name}"));
-                }
-                ChatLine::ToolResult { text, is_error } if *is_error => {
-                    let safe_err = crate::ports::redact_trace_text(text);
-                    let short: String = safe_err.chars().take(56).collect();
-                    steps.push(format!("\u{2717} {short}"));
-                }
-                _ => {}
-            }
-        }
-        steps
-    }
-
     fn work_inspector_view(
         &self,
         work: &InspectedWork,
+        show_open_session: bool,
+        window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         match work {
-            InspectedWork::Session { id, title } => {
-                self.inspect_session_view(id, title, cx)
-            }
+            InspectedWork::Session { id, title } => self.inspect_session_view(
+                id,
+                title,
+                show_open_session,
+                window,
+                cx,
+            ),
             InspectedWork::Receipt(receipt) => {
                 self.inspect_receipt_view(receipt, cx)
             }
@@ -549,11 +526,13 @@ impl StudioPanel {
         &self,
         id: &str,
         title: &str,
+        show_open_session: bool,
+        window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         let is_running = self.agent.busy_session_ids().iter().any(|s| s == id);
         let needs_attention = self.agent.session_needs_attention(id);
-        let steps = self.session_steps(id);
+        let lines = self.agent.session_lines(id);
         let work_progress = self
             .board_snapshot
             .sessions
@@ -590,62 +569,8 @@ impl StudioPanel {
             )
         };
 
-        let mut steps_col =
-            div().w_full().flex().flex_col().gap(self.theme.space(6.));
-        if steps.is_empty() {
-            steps_col = steps_col.child(
-                div()
-                    .w_full()
-                    .px(self.theme.space(10.))
-                    .py(self.theme.space(12.))
-                    .rounded_lg()
-                    .bg(self.theme.soft().opacity(0.45))
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .whitespace_normal()
-                    .child(self.t("drawer.work_no_steps")),
-            );
-        } else {
-            for (step_ix, step_text) in steps.into_iter().enumerate() {
-                steps_col = steps_col.child(
-                    div()
-                        .id(("work-step", step_ix as u64))
-                        .w_full()
-                        .px(self.theme.space(10.))
-                        .py(self.theme.space(8.))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(self.theme.line())
-                        .bg(self.theme.canvas())
-                        .flex()
-                        .items_start()
-                        .gap(self.theme.space(8.))
-                        .child(
-                            div()
-                                .size(px(18.))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(self.theme.soft())
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(self.theme.muted())
-                                .child((step_ix + 1).to_string()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_xs()
-                                .text_color(self.theme.ink())
-                                .whitespace_normal()
-                                .child(step_text),
-                        ),
-                );
-            }
-        }
+        let steps_col =
+            self.structured_steps_view(id, &lines, is_running, window, cx);
 
         div()
             .w_full()
@@ -686,54 +611,68 @@ impl StudioPanel {
                             .child(status_badge),
                     )
                     .when_some(work_progress, |card, progress| {
-                        card.child(self.contract_progress_block(progress))
+                        card.child(self.contract_progress_checklist(progress))
                     })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(self.theme.space(8.))
-                            .child(
-                                theme::Button::new(
-                                    "work-inspector-open",
-                                    self.t("drawer.work_open_session"),
-                                )
-                                .variant(theme::ControlVariant::Secondary)
-                                .size(theme::ControlSize::Small)
-                                .trailing_icon(
-                                    theme::icons::arrow_up_right()
-                                        .size(px(12.)),
-                                )
-                                .render(
-                                    &self.theme,
-                                    cx.listener(move |panel, _, _, cx| {
-                                        let root_id = panel
-                                            .agent
-                                            .root_session_id(&open_id);
-                                        panel.open_session(&root_id, cx);
-                                        panel.close_right_sheet(cx);
-                                    }),
-                                ),
-                            )
-                            .when(is_running, |row| {
-                                row.child(
-                                    theme::Button::new(
-                                        "work-inspector-stop",
-                                        self.t("drawer.work_stop"),
+                    .when(show_open_session || is_running, |card| {
+                        card.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(self.theme.space(8.))
+                                .when(show_open_session, |row| {
+                                    row.child(
+                                        theme::Button::new(
+                                            "work-inspector-open",
+                                            self.t("drawer.work_open_session"),
+                                        )
+                                        .variant(
+                                            theme::ControlVariant::Secondary,
+                                        )
+                                        .size(theme::ControlSize::Small)
+                                        .trailing_icon(
+                                            theme::icons::arrow_up_right()
+                                                .size(px(12.)),
+                                        )
+                                        .render(
+                                            &self.theme,
+                                            cx.listener(
+                                                move |panel, _, _, cx| {
+                                                    let root_id = panel
+                                                        .agent
+                                                        .root_session_id(
+                                                            &open_id,
+                                                        );
+                                                    panel.open_session(
+                                                        &root_id, cx,
+                                                    );
+                                                    panel.close_right_sheet(cx);
+                                                },
+                                            ),
+                                        ),
                                     )
-                                    .variant(theme::ControlVariant::Ghost)
-                                    .size(theme::ControlSize::Small)
-                                    .render(
-                                        &self.theme,
-                                        cx.listener(move |panel, _, _, cx| {
-                                            panel.stop_session_turn(
-                                                &stop_id, cx,
-                                            );
-                                        }),
-                                    ),
-                                )
-                            }),
-                    ),
+                                })
+                                .when(is_running, |row| {
+                                    row.child(
+                                        theme::Button::new(
+                                            "work-inspector-stop",
+                                            self.t("drawer.work_stop"),
+                                        )
+                                        .variant(theme::ControlVariant::Ghost)
+                                        .size(theme::ControlSize::Small)
+                                        .render(
+                                            &self.theme,
+                                            cx.listener(
+                                                move |panel, _, _, cx| {
+                                                    panel.stop_session_turn(
+                                                        &stop_id, cx,
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                    )
+                                }),
+                        )
+                    }),
             )
             .child(steps_col)
             .into_any_element()
@@ -830,7 +769,7 @@ impl StudioPanel {
                             )),
                     )
                     .when_some(work_progress, |card, progress| {
-                        card.child(self.contract_progress_block(progress))
+                        card.child(self.contract_progress_checklist(progress))
                     })
                     .child(
                         div()
@@ -900,12 +839,29 @@ impl StudioPanel {
             .into_any_element()
     }
 
-    fn deliverables_list(
+    fn deliverables_list_view(
         &self,
-        files: &[FileEntry],
+        _window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> AnyElement {
-        if files.is_empty() {
+        let workspace_items = self.visible_workspace_deliverables(cx);
+        let feed = self.feed.read(cx);
+        let failed_items: Vec<FailedVerificationItem> =
+            feed.failed_verifications().to_vec();
+        let published_items: Vec<LibraryItem> =
+            feed.session_artifacts().to_vec();
+        let latest_count =
+            feed.latest_deliverable_items().map_or(0, |v| v.len());
+        let all_count = feed.all_deliverable_items().map_or(0, |v| v.len());
+        let is_snapshot = matches!(
+            self.deliverables,
+            Some(DeliverableScope::TurnSnapshot(_))
+        );
+
+        if workspace_items.is_empty()
+            && failed_items.is_empty()
+            && published_items.is_empty()
+        {
             return div()
                 .w_full()
                 .px(self.theme.space(16.))
@@ -929,19 +885,260 @@ impl StudioPanel {
                 )
                 .into_any_element();
         }
-        let mut column = div()
+
+        let mut root = div()
+            .w_full()
+            .p(self.theme.space(10.))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(12.));
+
+        if !failed_items.is_empty() {
+            root =
+                root.child(self.failed_verifications_banner(&failed_items, cx));
+        }
+
+        if !workspace_items.is_empty() || is_snapshot || all_count > 0 {
+            root = root.child(self.workspace_files_section(
+                &workspace_items,
+                latest_count,
+                all_count,
+                is_snapshot,
+                cx,
+            ));
+        }
+
+        if !published_items.is_empty() {
+            root = root
+                .child(self.published_artifacts_section(&published_items, cx));
+        }
+
+        root.into_any_element()
+    }
+
+    fn failed_verifications_banner(
+        &self,
+        failures: &[FailedVerificationItem],
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let mut banner = div()
+            .id("deliverables-failed-banner")
+            .w_full()
+            .p(self.theme.space(10.))
+            .rounded_xl()
+            .border_1()
+            .border_color(self.theme.danger().opacity(0.45))
+            .bg(self.theme.danger().opacity(0.08))
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(self.theme.space(6.))
+                    .child(
+                        theme::icons::circle_alert()
+                            .flex_none()
+                            .size(px(14.))
+                            .text_color(self.theme.danger()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.danger())
+                            .child(self.t("drawer.section_needs_fix")),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("drawer.needs_fix_hint")),
+            );
+
+        for (index, item) in failures.iter().enumerate() {
+            let name = crate::ports::basename(&item.artifact_path);
+            let fix_summary = item.summary.clone();
+            let fix_path = item.artifact_path.clone();
+            let locate_report_id = item.report_id.clone();
+            let locate_path = item.artifact_path.clone();
+
+            banner = banner.child(
+                div()
+                    .id(("deliverables-failed-item", index as u64))
+                    .w_full()
+                    .p(self.theme.space(8.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(self.theme.line())
+                    .bg(self.theme.canvas())
+                    .flex()
+                    .flex_col()
+                    .gap(self.theme.space(6.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.theme.ink())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(item.summary.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(self.theme.space(6.))
+                            .child(
+                                theme::Button::new(
+                                    SharedString::from(format!(
+                                        "deliverables-fail-fix-{index}"
+                                    )),
+                                    self.t("drawer.fix_in_chat"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, window, cx| {
+                                        panel.request_fix_in_chat(
+                                            fix_summary.clone(),
+                                            Some(fix_path.clone()),
+                                            Some(window),
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            )
+                            .child(
+                                theme::Button::new(
+                                    SharedString::from(format!(
+                                        "deliverables-fail-locate-{index}"
+                                    )),
+                                    self.t("drawer.locate_card"),
+                                )
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(move |panel, _, window, cx| {
+                                        panel.locate_verification_card(
+                                            &locate_report_id,
+                                            &locate_path,
+                                            Some(window),
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            ),
+                    ),
+            );
+        }
+
+        banner.into_any_element()
+    }
+
+    fn workspace_files_section(
+        &self,
+        items: &[DeliverableItem],
+        latest_count: usize,
+        all_count: usize,
+        is_snapshot: bool,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let show_scope_toggle = all_count > latest_count || is_snapshot;
+        let scope_pill = |scope: DeliverablesViewScope,
+                          label: String,
+                          id: &'static str| {
+            let active = !is_snapshot && self.deliverables_view_scope == scope;
+            theme::interactive(
+                id,
+                SharedString::from(label.clone()),
+                &self.theme,
+            )
+            .px(self.theme.space(6.))
+            .py(px(2.))
+            .rounded_md()
+            .cursor_pointer()
+            .text_xs()
+            .bg(if active {
+                self.theme.card()
+            } else {
+                self.theme.soft()
+            })
+            .text_color(if active {
+                self.theme.ink()
+            } else {
+                self.theme.muted()
+            })
+            .child(label)
+            .on_click(cx.listener(move |panel, _, _, cx| {
+                panel.set_deliverables_view_scope(scope, cx);
+            }))
+        };
+
+        let mut section = div()
             .w_full()
             .flex()
             .flex_col()
             .gap(self.theme.space(6.))
-            .p(self.theme.space(10.));
-        for (index, file) in files.iter().enumerate() {
-            let name = file
-                .path
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&file.path)
-                .to_owned();
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(self.theme.space(8.))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.theme.muted())
+                            .child(self.t("drawer.section_workspace")),
+                    )
+                    .when(show_scope_toggle, |row| {
+                        row.child(
+                            div()
+                                .p(px(2.))
+                                .rounded_md()
+                                .bg(self.theme.soft())
+                                .flex()
+                                .items_center()
+                                .gap(px(2.))
+                                .child(scope_pill(
+                                    DeliverablesViewScope::Latest,
+                                    self.t("drawer.scope_latest"),
+                                    "deliverables-scope-latest",
+                                ))
+                                .child(scope_pill(
+                                    DeliverablesViewScope::All,
+                                    self.tf(
+                                        "drawer.scope_all",
+                                        &[("count", &all_count.to_string())],
+                                    ),
+                                    "deliverables-scope-all",
+                                )),
+                        )
+                    }),
+            );
+
+        for (index, item) in items.iter().enumerate() {
+            let file = &item.entry;
+            let name = crate::ports::basename(&file.path);
             let parent = short_parent_path(&file.path);
             let file_kind = crate::file_kind::from_path(&file.path);
             let icon = file_kind.map_or_else(
@@ -955,8 +1152,91 @@ impl StudioPanel {
             );
             let kind_label =
                 self.t(crate::file_kind::kind_label_key(&file.path));
-            let path = file.path.clone();
-            column = column.child(
+            let size_label = self
+                .deliverable_sizes
+                .get(&crate::ports::canonical_path_key(&file.path))
+                .and_then(|opt| *opt)
+                .map(format_file_size);
+            let meta_line = match (size_label, parent.is_empty()) {
+                (Some(size), false) => {
+                    format!("{kind_label} · {size} · {parent}")
+                }
+                (Some(size), true) => format!("{kind_label} · {size}"),
+                (None, false) => format!("{kind_label} · {parent}"),
+                (None, true) => kind_label,
+            };
+            let badge_elem = item.badge.map(|badge| match badge {
+                DeliverableVerifyBadge::Verified => status_pill(
+                    self.theme.status_verified_bg(),
+                    self.theme.status_verified(),
+                    self.t("verify.card.passed"),
+                    None,
+                ),
+                DeliverableVerifyBadge::Overridden => status_pill(
+                    self.theme.status_attention_bg(),
+                    self.theme.status_attention(),
+                    self.t("verify.override.badge"),
+                    None,
+                ),
+            });
+
+            let path_preview = file.path.clone();
+            let path_reveal = file.path.clone();
+            let path_ext = file.path.clone();
+            let path_quote = file.path.clone();
+            let allow_ext = flowy_agent::can_open_with_default_app(&path_ext);
+
+            let reveal_btn = theme::IconButton::new(
+                ("deliverable-reveal", index as u64),
+                format!("{} · {name}", self.t("board.reveal_folder")),
+                theme::icons::folder_open(),
+            )
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render_interactive(
+                &self.theme,
+                cx.listener(move |panel, _, _, cx| {
+                    cx.stop_propagation();
+                    panel.reveal_file(&path_reveal, cx);
+                }),
+            );
+
+            let quote_btn = theme::IconButton::new(
+                ("deliverable-quote", index as u64),
+                format!("{} · {name}", self.t("drawer.quote_file")),
+                theme::icons::quote(),
+            )
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render_interactive(
+                &self.theme,
+                cx.listener(move |panel, _, window, cx| {
+                    cx.stop_propagation();
+                    panel.quote_file_to_composer(&path_quote, Some(window), cx);
+                }),
+            );
+
+            let ext_btn = allow_ext.then(|| {
+                theme::IconButton::new(
+                    ("deliverable-external", index as u64),
+                    format!(
+                        "{} · {name}",
+                        self.t("deliverables.open_external")
+                    ),
+                    theme::icons::external_link(),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render_interactive(
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        cx.stop_propagation();
+                        panel.open_file_externally(&path_ext, cx);
+                    }),
+                )
+            });
+
+            section = section.child(
                 theme::interactive(
                     ("deliverable", index as u64),
                     SharedString::from(name.clone()),
@@ -964,9 +1244,6 @@ impl StudioPanel {
                 )
                 .w_full()
                 .min_w_0()
-                .flex()
-                .items_center()
-                .gap(self.theme.space(10.))
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
                 .rounded_xl()
@@ -975,6 +1252,183 @@ impl StudioPanel {
                 .bg(self.theme.canvas())
                 .cursor_pointer()
                 .hover(|style| style.bg(self.theme.soft()))
+                .flex()
+                .flex_col()
+                .gap(self.theme.space(6.))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(self.theme.space(8.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(24.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(self.theme.ink())
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(self.theme.muted())
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .child(meta_line),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(self.theme.space(6.))
+                        .child(div().flex().items_center().children(badge_elem))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(2.))
+                                .child(quote_btn)
+                                .child(reveal_btn)
+                                .children(ext_btn),
+                        ),
+                )
+                .on_click(cx.listener(
+                    move |panel, _, _, cx| {
+                        panel.set_preview_file(Some(path_preview.clone()), cx);
+                    },
+                )),
+            );
+        }
+
+        if self.active_project_id.is_none()
+            && let Some(promote_path) = self.promote_project_candidate.clone()
+        {
+            section = section.child(
+                div().w_full().pt(self.theme.space(4.)).child(
+                    theme::Button::new(
+                        "deliverables-promote-project",
+                        self.t("deliverables.promote_project"),
+                    )
+                    .variant(theme::ControlVariant::Secondary)
+                    .size(theme::ControlSize::Small)
+                    .render(
+                        &self.theme,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.register_deliverable_folder_as_project(
+                                &promote_path,
+                                cx,
+                            );
+                        }),
+                    ),
+                ),
+            );
+        }
+
+        section.into_any_element()
+    }
+
+    fn published_artifacts_section(
+        &self,
+        items: &[LibraryItem],
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
+        let mut section = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(self.theme.space(6.))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.theme.muted())
+                    .child(self.t("drawer.section_published")),
+            );
+
+        for (index, item) in items.iter().enumerate() {
+            let id_preview = item.id.clone();
+            let id_save = item.id.clone();
+            let icon = crate::library::artifact_file_icon(item).map_or_else(
+                || {
+                    theme::icons::library()
+                        .size(px(18.))
+                        .text_color(self.theme.muted())
+                        .into_any_element()
+                },
+                |ico| ico.size(px(20.)).into_any_element(),
+            );
+            let ext = item.extension.to_ascii_uppercase();
+            let meta = match (ext.is_empty(), item.size_bytes) {
+                (false, Some(bytes)) => {
+                    format!("{ext} · {}", format_file_size(bytes))
+                }
+                (false, None) => ext,
+                (true, Some(bytes)) => format_file_size(bytes),
+                (true, None) => item.delivered_date.clone(),
+            };
+            let unavailable =
+                item.availability != ArtifactAvailability::Available;
+
+            let save_btn = (!unavailable).then(|| {
+                theme::IconButton::new(
+                    ("drawer-artifact-save", index as u64),
+                    format!("{} · {}", self.t("library.save_as"), item.title),
+                    theme::icons::download(),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render_interactive(
+                    &self.theme,
+                    cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(StudioEvent::SaveArtifact(id_save.clone()));
+                    }),
+                )
+            });
+
+            section = section.child(
+                theme::interactive(
+                    ("drawer-artifact", index as u64),
+                    SharedString::from(item.title.clone()),
+                    &self.theme,
+                )
+                .w_full()
+                .min_w_0()
+                .px(self.theme.space(10.))
+                .py(self.theme.space(8.))
+                .rounded_xl()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.canvas())
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
                 .child(
                     div()
                         .flex_none()
@@ -999,9 +1453,9 @@ impl StudioPanel {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child(name),
+                                .child(item.title.clone()),
                         )
-                        .when(!parent.is_empty(), |col| {
+                        .when(!meta.is_empty(), |col| {
                             col.child(
                                 div()
                                     .text_xs()
@@ -1009,165 +1463,24 @@ impl StudioPanel {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .truncate()
-                                    .child(parent),
+                                    .child(meta),
                             )
                         }),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .px(self.theme.space(6.))
-                        .py(px(2.))
-                        .rounded_md()
-                        .bg(self.theme.soft())
-                        .text_xs()
-                        .text_color(self.theme.muted())
-                        .child(kind_label),
-                )
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        panel.set_preview_file(Some(path.clone()), cx);
-                    },
-                )),
+                .children(save_btn)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(StudioEvent::PreviewArtifact(id_preview.clone()));
+                })),
             );
         }
-        if self.active_project_id.is_none()
-            && let Some(first) = files.first()
-            && let Some(parent_dir) =
-                crate::ports::resolve_safe_parent_dir(&first.path)
-            && parent_dir.parent().is_some()
-            && !crate::ports::is_same_or_overlapping_dir(
-                &parent_dir,
-                &self.store_root,
-            )
-        {
-            let first_path = first.path.clone();
-            column = column.child(
-                div().w_full().pt(self.theme.space(8.)).child(
-                    theme::Button::new(
-                        "deliverables-promote-project",
-                        self.t("deliverables.promote_project"),
-                    )
-                    .variant(theme::ControlVariant::Secondary)
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener(move |panel, _, _, cx| {
-                            panel.register_deliverable_folder_as_project(
-                                &first_path,
-                                cx,
-                            );
-                        }),
-                    ),
-                ),
-            );
-        }
-        column.into_any_element()
-    }
 
-    fn preview_view(
-        &self,
-        path: &str,
-        preview: &PreviewBody,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) -> impl IntoElement {
-        let name = crate::ports::basename(path);
-        let external_path = path.to_owned();
-        let body = match preview {
-            PreviewBody::Text(text) => div()
-                .p(self.theme.space(12.))
-                .text_xs()
-                .child(text.clone())
-                .into_any_element(),
-            PreviewBody::Image(image) => div()
-                .p(self.theme.space(12.))
-                .child(img(image.clone()).w_full())
-                .into_any_element(),
-            PreviewBody::Notice(key) => div()
-                .p(self.theme.space(12.))
-                .text_xs()
-                .text_color(self.theme.muted())
-                .child(self.t(key))
-                .into_any_element(),
-        };
-        let back_button = self.icon_tooltip_button(
-            "preview-back",
-            "preview-back-tip",
-            self.t("chat.back"),
-            theme::icons::arrow_left().size(px(14.)),
-            theme::ControlVariant::Ghost,
-            |panel, _, cx| {
-                panel.set_preview_file(None, cx);
-            },
-            window,
-            cx,
-        );
-        let reveal_path = external_path.clone();
-        let reveal_button = self.icon_tooltip_button(
-            "preview-reveal-folder",
-            "preview-reveal-folder-tip",
-            self.t("board.reveal_folder"),
-            theme::icons::folder_open().size(px(14.)),
-            theme::ControlVariant::Ghost,
-            move |panel, _, cx| {
-                panel.reveal_file(&reveal_path, cx);
-            },
-            window,
-            cx,
-        );
-        let open_button =
-            flowy_agent::can_open_with_default_app(&external_path).then(|| {
-                self.icon_tooltip_button(
-                    "preview-open-external",
-                    "preview-open-external-tip",
-                    self.t("deliverables.open_external"),
-                    theme::icons::external_link().size(px(14.)),
-                    theme::ControlVariant::Ghost,
-                    move |panel, _, cx| {
-                        panel.open_file_externally(&external_path, cx);
-                    },
-                    window,
-                    cx,
-                )
-            });
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(8.))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(self.theme.space(6.))
-                    .px(self.theme.space(12.))
-                    .py(self.theme.space(8.))
-                    .border_b_1()
-                    .border_color(self.theme.line())
-                    .child(back_button)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(name),
-                    )
-                    .child(reveal_button)
-                    .children(open_button),
-            )
-            .child(body)
+        section.into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PREVIEW_BYTES, PreviewBody, load_preview};
+    use super::compute_drawer_width;
     use crate::panel::StudioPanel;
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -1176,46 +1489,25 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_reports_a_notice() {
-        let preview = load_preview("flowy-definitely-absent-98765.txt");
-        assert!(matches!(
-            preview,
-            PreviewBody::Notice("chat.preview_missing")
-        ));
-    }
+    fn drawer_width_clamps_responsively_across_viewports_and_dock() {
+        // 1280px with dock open: 1280 - 248 - 420 = 612px available -> compact 360, wide 563.2
+        assert_eq!(compute_drawer_width(1280.0, true, false), (360.0, true));
+        let (wide_1280, can_wide_1280) =
+            compute_drawer_width(1280.0, true, true);
+        assert!(can_wide_1280);
+        assert!((wide_1280 - 563.2).abs() < 0.01);
 
-    #[test]
-    fn binary_content_reports_a_notice() {
-        let path = scratch("binary.dat");
-        std::fs::write(&path, [0u8, 1, 2, 3]).expect("write");
-        assert!(matches!(
-            load_preview(path.to_str().expect("utf8")),
-            PreviewBody::Notice("chat.preview_binary")
-        ));
-        let _ = std::fs::remove_file(path);
-    }
+        // 960px with dock open: 960 - 248 - 420 = 292px available -> clamps below WIDE_MIN_W
+        let (narrow_open, can_wide_narrow) =
+            compute_drawer_width(960.0, true, true);
+        assert!(!can_wide_narrow);
+        assert!((narrow_open - 292.0).abs() < 0.01);
 
-    #[test]
-    fn text_content_is_returned_as_text() {
-        let path = scratch("note.txt");
-        std::fs::write(&path, "hello").expect("write");
-        match load_preview(path.to_str().expect("utf8")) {
-            PreviewBody::Text(text) => assert_eq!(text, "hello"),
-            _ => panic!("expected a text preview"),
-        }
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn oversized_content_reports_a_notice() {
-        let path = scratch("big.txt");
-        let data = vec![b'a'; (MAX_PREVIEW_BYTES + 1) as usize];
-        std::fs::write(&path, &data).expect("write");
-        assert!(matches!(
-            load_preview(path.to_str().expect("utf8")),
-            PreviewBody::Notice("chat.preview_too_large")
-        ));
-        let _ = std::fs::remove_file(path);
+        // 960px with dock hidden: 960 - 0 - 420 = 540px -> wide toggle unlocked
+        let (narrow_dock_hidden, can_wide_hidden) =
+            compute_drawer_width(960.0, false, true);
+        assert!(can_wide_hidden);
+        assert!((narrow_dock_hidden - 480.0).abs() < 0.01);
     }
 
     #[test]

@@ -353,8 +353,9 @@ fn resolve_safe_local(path: &Path, expect_dir: bool) -> Option<PathBuf> {
     }
 }
 
-/// Validates and canonicalizes a local regular file path for external open or
-/// preview, rejecting UNC shares, device namespaces, URLs, relative paths,
+/// Validates and canonicalizes a local regular file path.
+///
+/// Rejects UNC shares, device namespaces, URLs, relative paths,
 /// unsafe ancestor reparse targets, and leaf symlinks / NTFS junctions.
 #[must_use]
 pub fn resolve_safe_local_file(raw: &str) -> Option<PathBuf> {

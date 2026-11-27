@@ -11,6 +11,12 @@ pub use model::{
     ArtifactAvailability, Category, LibraryItem, LibraryModel, LibrarySort,
     LibraryUsage, LibraryView,
 };
+pub use preview::MAX_LOCAL_PREVIEW_BYTES;
+pub(crate) use preview::{
+    TablePreview, is_text_preview_ext, parse_delimited_table,
+    pretty_json_if_valid,
+};
+pub(crate) use preview_view::render_table_preview;
 pub use preview_view::{PreviewEvent, PreviewPanel};
 pub(crate) use view::artifact_file_icon;
 pub use view::{LibraryEvent, LibraryPanel};

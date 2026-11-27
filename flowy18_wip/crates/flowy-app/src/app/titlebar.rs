@@ -191,6 +191,9 @@ impl FlowyApp {
             return;
         }
         self.dock_visible = !self.dock_visible;
+        let visible = self.dock_visible;
+        self.studio
+            .update(cx, |panel, cx| panel.set_dock_visible(visible, cx));
         cx.notify();
     }
 

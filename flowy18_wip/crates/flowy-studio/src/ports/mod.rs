@@ -25,11 +25,13 @@ pub use local_env::{
     probe_local_env,
 };
 pub(crate) use local_path::{
-    canonical_path_key, is_link_or_unsafe_reparse, is_same_or_overlapping_dir,
-    is_unsafe_local_path, resolve_safe_local_dir, resolve_safe_local_file,
-    resolve_safe_parent_dir,
+    canonical_path_key, is_same_or_overlapping_dir, is_unsafe_local_path,
+    resolve_safe_local_dir, resolve_safe_parent_dir,
 };
-pub use local_path::{display_path, display_path_str};
+pub use local_path::{
+    display_path, display_path_str, is_link_or_unsafe_reparse,
+    resolve_safe_local_file,
+};
 pub use trace::{
     RedactedTraceEntry, TraceLevel, collect_session_traces,
     format_traces_jsonl, redact_trace_text,
