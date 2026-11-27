@@ -125,15 +125,9 @@
   - 覆盖：新增 `allows_a_redirected_ancestor_but_rejects_a_link_at_or_below_the_root`，
     用免权限的 `mklink /J` 造 junction；`symlink_dir` 在普通账户上需要开发者模式，
     原有几条链接用例在本机会直接跳过。
-  - **已加诊断（2026-11-24）**：unix 的 `openat` 失败现已按 `rustix::io::Errno::LOOP`
-    翻译成明确错误——「root 之上是软链」与「root 及以下是链接」分开报，前者带
-    `BLOCKED.md` 指引。注意不能用 `ErrorKind::FilesystemLoop`，该变体在 rustc 1.100
-    仍属 unstable（`io_error_more`）。`Errno::LOOP` 这条路已用 `--target
-    x86_64-unknown-linux-gnu` 单独编过验证。
-  - 待办（A 项，已延后）：**unix 分支没有同改**。`artifact_source::open` 的 unix 实现仍用
-    `openat + NOFOLLOW` 逐级打开 root 组件，祖先里只要有一层软链就返回 `ELOOP`，
-    导入同样会失败。默认数据根在 `~/Library/Application Support`（macOS）或
-    `~/.local/share`（Linux），家目录正常时碰不到；会踩的是家目录本身被软链、
-    或数据目录被重定向的环境。注意 `/var` 不是触发条件——只在输出目录落进
-    `/var/folders` 的临时区时才会中，默认不走那里。本轮只放宽了 Windows，
-    因为本机无法验证 unix；新用例因此标成 `#[cfg(windows)]`。
+  - **Unix（Wave 3.1）已对齐**。宿主分配的输出 root 上方允许目录软链，例如
+    重定向的家目录或数据目录。root 本身与下级目录、最终文件仍逐级用目录 FD +
+    `NOFOLLOW` 打开。Linux 拒绝目录软链时可能返回 `ENOTDIR`，`ELOOP` 仍有独立诊断。
+  - **验证**。`ArtifactStore::prepare` 的 Unix 回归覆盖经祖先软链导入、提交以及读回
+    产物字节。`artifact_source` 保留 root、内部目录和最终文件拒链用例。
+    `flowy18-ui.yml` 的 Linux 核心测试作业运行这些用例。

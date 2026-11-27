@@ -496,6 +496,24 @@ fn same_delivery_key_reuses_identical_content_and_rejects_changes() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn imports_artifact_through_a_redirected_output_ancestor() {
+    let scratch = Scratch::new();
+    let store = store(&scratch.0);
+    let report = b"# redirected report\n";
+    fs::write(scratch.0.join("workspace/outputs/report.md"), report).unwrap();
+    let redirected = scratch.0.join("redirected");
+    std::os::unix::fs::symlink(scratch.0.join("workspace"), &redirected)
+        .unwrap();
+
+    let mut import = request(&scratch.0, "report.md", "report");
+    import.source_root = redirected.join("outputs");
+    let receipt = store.prepare(import).unwrap();
+    store.commit_delivery(&commit(&receipt)).unwrap();
+    assert_eq!(store.read_payload(&receipt.artifact_id).unwrap(), report);
+}
+
 #[test]
 fn rejects_traversal_and_symlinked_sources() {
     let scratch = Scratch::new();

@@ -113,22 +113,14 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     })
 }
 
-/// `openat` reports a symbolic link as `ELOOP`, which reads like a malformed
-/// path rather than the real cause. `ErrorKind::FilesystemLoop` would name it,
-/// but that variant is still unstable, so match the normalized errno instead.
-/// Name the two sites separately: a link above the root is the harmful case
-/// (this platform still requires real directories there, see `BLOCKED.md`), a
-/// link at or below the root is the intended rejection.
 #[cfg(unix)]
-fn explain_unix_link(error: rustix::io::Errno, above_root: bool) -> io::Error {
-    if error != rustix::io::Errno::LOOP {
-        return error.into();
+fn explain_unix_link(error: rustix::io::Errno) -> io::Error {
+    if error == rustix::io::Errno::LOOP {
+        return invalid(
+            "publisher path is a symbolic link or contains a symbolic link loop",
+        );
     }
-    invalid(if above_root {
-        "publisher path above the root is a symbolic link; this platform still requires real directories above the root (see BLOCKED.md)"
-    } else {
-        "publisher directory is a link or reparse point"
-    })
+    error.into()
 }
 
 #[cfg(unix)]
@@ -138,20 +130,28 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
     if !root.is_absolute() {
         return Err(invalid("host output root must be absolute"));
     }
-    let flags =
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let strict_flags = directory_flags | OFlags::NOFOLLOW;
     let mut directories = vec![File::open("/")?];
-    for component in root.components() {
+    let mut root_components = root.components().peekable();
+    while let Some(component) = root_components.next() {
         match component {
             Component::RootDir => {}
             Component::Normal(part) => {
+                // The host may redirect its data directory above the raw
+                // output root. Open the root itself without following links.
+                let flags = if root_components.peek().is_none() {
+                    strict_flags
+                } else {
+                    directory_flags
+                };
                 let opened = openat(
                     directories.last().expect("root handle exists"),
                     part,
                     flags,
                     Mode::empty(),
                 )
-                .map_err(|error| explain_unix_link(error, true))?;
+                .map_err(explain_unix_link)?;
                 directories.push(File::from(opened));
             }
             _ => {
@@ -166,10 +166,10 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
         let opened = openat(
             directories.last().expect("root handle exists"),
             component.as_os_str(),
-            flags,
+            strict_flags,
             Mode::empty(),
         )
-        .map_err(|error| explain_unix_link(error, false))?;
+        .map_err(explain_unix_link)?;
         directories.push(File::from(opened));
     }
     let opened = openat(
@@ -181,7 +181,7 @@ pub fn open(root: &Path, relative: &Path) -> io::Result<PinnedSource> {
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
-    .map_err(|error| explain_unix_link(error, false))?;
+    .map_err(explain_unix_link)?;
     let file = File::from(opened);
     if !file.metadata()?.is_file() {
         return Err(invalid("publisher source is not a regular file"));
@@ -420,9 +420,6 @@ mod tests {
         }
     }
 
-    /// Windows only: the unix branch of `open` still walks the root components
-    /// with `NOFOLLOW`, so a redirected ancestor is rejected there. Mirroring
-    /// the relaxation needs a unix test run; tracked in `BLOCKED.md`.
     #[cfg(windows)]
     #[test]
     fn windows_allows_a_redirected_ancestor_but_rejects_a_link_at_or_below_the_root()
@@ -453,22 +450,13 @@ mod tests {
 
     #[cfg(any(windows, unix))]
     #[test]
-    fn rejects_a_link_at_the_raw_output_root_and_each_ancestor() {
+    fn rejects_a_link_at_the_output_root_or_an_internal_directory() {
         let scratch = Scratch::new();
         let direct_link = scratch.0.join("output-link");
         if !symlink_directory(&scratch.0.join("outputs"), &direct_link) {
             return;
         }
         assert!(open(&direct_link, Path::new("nested/report.csv")).is_err());
-        let parent_link = scratch.0.join("parent-link");
-        assert!(symlink_directory(&scratch.0.join("outputs"), &parent_link));
-        // Windows allows a redirected ancestor above the root; the dedicated
-        // junction test covers it. Unix still follows the exact-component rule
-        // here, so the assertion stays for that target only.
-        #[cfg(unix)]
-        assert!(
-            open(&parent_link.join("nested"), Path::new("report.csv")).is_err()
-        );
         assert!(
             open(&scratch.0, Path::new("output-link/nested/report.csv"))
                 .is_err()
