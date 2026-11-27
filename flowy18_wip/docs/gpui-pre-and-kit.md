@@ -110,6 +110,7 @@ panel.set_prompt_text(..)  // 写（入队）
 | RTL 根方向 | `.rtl()` / `.ltr()` | 只有全局 `LayoutDirection` |
 | 输入框构造上下文 | `"EditableText"` | `"Input"` |
 | 修饰键 | `secondary-` | `ctrl-`（`gpui-pre` 的 `Keystroke::parse` 不认 `secondary`） |
+| 可视细滚动条与 UIA `ScrollPattern` | 原生滚动条 + 默认 UIA `Scroll` | **使用 [`flowy-ui/src/scroll.rs`](../crates/flowy-ui/src/scroll.rs) 的 `scroll_area` / `scroll_list_host`**（基于显式着色的 `gpui_kit::base::Scrollbar` + `ScrollA11yHost`），并由 [`patches/accesskit_windows`](../patches/accesskit_windows/FLOWY_PATCH.md) 通过 `[patch.crates-io]` 注入 Windows UIA `IScrollProvider`；`gpui-pre 0.3.14` 本身无补丁 |
 
 系统托盘**不在缺口里**：`gpui-tray 0.3.0` 用 `gpui-kit` feature 桥接类型图，其真包就是
 `gpui-pre`，图标 / 菜单类型一致，托盘已恢复。三个平台各有宿主：Windows 通知区域、
@@ -179,7 +180,7 @@ window.focus_next(cx);   // 兜底
 
 
 1. **`w_full()` 在 `justify_center` 的行里会塌成内容宽**。改用 `flex_1().min_w_0()`。
-2. **`scrollbar_width(px(0.))` 会让滚动彻底失效**，不是隐藏滚动条。
+2. **`scrollbar_width(px(0.))` 会让滚动彻底失效**，不是隐藏滚动条。新界面与重构视口统一使用 [`flowy-ui/src/scroll.rs`](../crates/flowy-ui/src/scroll.rs) 的 `scroll_area`（支持 `.horizontal()` / `.both_axes()` / `.max_h_viewport()` / `.scrollbar_inset()`）或 `scroll_list_host`（`gpui::list` 宿主），提供仅溢出显示的 4px→6px 主题细胶囊滑块、正常流 `scrollbar_inset` 包装与 Windows UIA `ScrollView` + 合成 `ScrollBar` 暴露；无障碍标签统一使用带「滚动区 / scroll area」区分的 `a11y.scroll_*` 键避免 `AMBIGUOUS_TARGET`，`accesskit_windows` 升级至原生支持 `IScrollProvider` 后即可移除本地 `[patch.crates-io]` 补丁（退出判据见 [`FLOWY_PATCH.md`](../patches/accesskit_windows/FLOWY_PATCH.md)）。
 3. **`viewport_size()` 缩窗后不更新**，不要拿它算响应式断点。
 4. **`absolute().left().bottom()` 定位不可靠**。提示文字这类叠层要用
    flex 容器 + padding，不要用绝对定位。

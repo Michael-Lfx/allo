@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.20 更新）**：**直接先读 §28（`origin/main@b0c55cc18` + `feat/flowy18-work-capability-provider`：`ToolProvider` 有状态扩展底座、通用 `Ask` 审批、`Deferred`/`tool_search` 与最新模块布局）**，并对照 §27 与 §27.1（PR #512 与 `#514–#528` 十六连 PR 主干全账、Wave 2 五大核心模块目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（Router/Work 隔离与有状态 `ToolProvider` 扩展接入规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§27.1 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流与扩展接缝状态与 §28 不一致处，**一律以 §28 为准**。
+> **现役唯一入口（2026-11-27 修订 9.21 更新）**：**直接先读 §29（`origin/main@768bbd155` · `PR #530–#531` 合流与可视细滚动条 + Windows UIA `ScrollPattern` 契约）** 与 **§28（`PR #530` `ToolProvider` / `Ask` / `tool_search` 有状态扩展底座与最新模块布局）**，并对照 §27 与 §27.1（PR #512 与 `#514–#529` 十六连 PR 主干全账、Wave 2 五大核心目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511 合流基线与 S5/安全/IO/唤醒队列收口）、§25（PR #507 假评分下线、Dot 分阶段气泡与单条引用 703/703 基线）、§24（PR #504 桌面壳可靠化与类 GPT Dot 净化）、§23（PR #503 七项修复）、§22（PR #498 合入 + 修订 9.13 真云端 UX 收口）、§21（PR-2B Router UI 接线）、§19（PR-2A 冻结 `AgentHandle` 契约表）、§20（PR #497 看板/资料库/快搜收口）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)（Router/Work 隔离与有状态 `ToolProvider` 扩展接入规范）、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§28 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流与滚动/扩展契约与 §29 不一致处，**一律以 §29 为准**。
 
 ---
 
@@ -882,5 +882,21 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
 - **新增 / 扩展模块映射**：
   - `flowy-agent-core/src/tools/`：新增 `provider.rs`（81 行）与 `search.rs`（634 行），增强 `registry.rs`、`builtin.rs`、`adapter.rs`、`engine.rs`、`loop_runner.rs`。
   - `flowy-agent/src/handle/`：从 14 文件增至 15 文件（新增 `provider_tests.rs` 971 行），增强 `mod.rs`、`guards.rs`、`submit.rs`、`router.rs`。
-- **复核实测真值（`origin/main@b0c55cc18` 等价代码树）**：`cargo fmt --all -- --check` 0 diff；`flowy-agent-core` **146 passed / 2 ignored**；`flowy-agent -- --test-threads=1` **285 passed / 4 ignored**（含 6 项 `provider_tests`）；`flowy-studio` **175 passed / 2 ignored**；`flowy-ui` **46 + 2 passed**；`flowy-desktop --locked` PASS；5-Crate `--all-targets clippy -D warnings` 0 告警；8 份文档链接/Mermaid/`0` CRLF 与 `check-ui-contracts.mjs` 全库扫描全部通过（详情见 [`证据.md`](证据.md) §11.46）。
+- **复核实测真值（`origin/main@b0c55cc18` 等价代码树）**：`cargo fmt --all -- --check` 0 diff；`flowy-agent-core` **146 passed / 2 ignored**；`flowy-agent -- --test-threads=1` **285 passed / 4 ignored**（含 6 项 `provider_tests`）；`flowy-studio` **175 passed / 2 ignored**；`flowy-ui` **46 + 2 passed**；`flowy-desktop --locked` PASS；5-Crate `--all-targets clippy -D warnings` 0 告警；8 份文档链接/Mermaid/`0` CRLF 与 `check-ui-contracts.mjs` 全库扫描全部通过（详情见 [`证据.md`](证据.md) §11.46；该分支已作为 **`PR #530` @ `58f88471a`** 合入 `main`）。
+
+---
+
+## 29. 可视细滚动条滑块与 Windows UIA ScrollPattern 收口（2026-11-27 · `PR #531` @ `768bbd155` · 修订 9.21）
+
+- **主干与工作树现状**：`PR #530`（`58f88471a`，`ToolProvider` 扩展底座 + 修订 9.20 文档）与 `PR #531`（`768bbd155`，可视细滚动条与 Windows UIA `ScrollPattern`）均已合入 `origin/main`（全部并发特性 worktree 均已完工并合流 `main`）。
+- **核心契约速查（新增/调整滚动容器必读）**：
+  1. **常规垂直/水平/双轴容器**：一律使用 [`flowy_ui::scroll_area`](../../../crates/flowy-ui/src/scroll.rs) 替代裸 `.overflow_*_scroll().scrollbar_width(...)`；下拉/快搜等按内容收缩上限容器使用 `.max_h_viewport(px(...))`，圆角底部容器配 `.scrollbar_inset(px(8.))`，直接传给视口内层的 flex 样式使用 `.viewport_style(|v| ...)`，外部仅挂载 `.a11y_label(self.t("a11y.scroll_*"))`。
+  2. **`gpui::list(...)` 宿主**：一律用 [`flowy_ui::scroll_list_host`](../../../crates/flowy-ui/src/scroll.rs) 包裹，保持原有 `ListState` 绑定与虚拟化绘制性能。
+  3. **无障碍防重名规范**：所有滚动区 `a11y.scroll_*` 键在 23 语种词典（当前对称 **986 键**）中统一带「滚动区 / scroll area」语义后缀，避免与按钮、选项卡或卡片撞名触发 UIA `AMBIGUOUS_TARGET`；未溢出时不绘制滑块且自动剥离 `ScrollUp/Down/Left/Right/SetScrollOffset` 动作及合成 `ScrollBar` 节点。
+  4. **补丁退出路径**：[`patches/accesskit_windows`](../../../patches/accesskit_windows/FLOWY_PATCH.md)（`0.34.0` `[patch.crates-io]`，workspace 已 `exclude`）仅补充 `IScrollProvider` 与 COM 单测；`gpui-pre 0.3.14` 本身零修改，后续升级包含原生 `IScrollProvider` 的 `accesskit_windows` 后直接删除补丁目录与 `[patch.crates-io]` 即可。
+- **已接入 vs 留后盘点**：
+  - **已接入 12 处高频视口**：`overview/mod.rs` 宽窄 `board-scroll` ×2、`overview/inspector.rs`（`trace` / `preview` / `overview` / `timeline`）、`feed/mod.rs` `chat-feed`、`library/view.rs` `library-scroll`、`library/preview_view.rs` `preview-scroll`、`deliverables.rs` `deliverables-scroll`、`dock.rs` `dock-scroll`、`quick_search.rs` `quick-search-list`。
+  - **留后 ~26 处低频容器**：设置页、Create/Automation 副页及辅助面板等低频原生 `overflow_*_scroll` 容器可按需渐进迁入 `ScrollArea`。
+- **实测基线与后续优先项**：`PR #531` 在 `origin/main@58f88471a` rebase 后通过 `check-ui-contracts`（24/24 + 全仓）、`cargo fmt --check`、6-Crate 单测（`flowy-ui` 50+2 / `flowy-i18n` 9 / `flowy-shell` 11 / `flowy-studio` 175[2 ignored] / `flowy-app` 67 / `flowy-desktop` 1）、`patches/accesskit_windows` COM `scroll` 单测（1/1）、`--workspace --all-targets clippy -D warnings` 0 告警，以及真机 `ui-shot.ps1` E2E（Scenario A 高压看板 `30/30` 步含无头 `agent-desktop scroll` 与 4 分辨率暗亮双主题 + Scenario B 空看板 `5/5` 负向检查，`APPDATA_RESTORED`、`log_error_count == 0`，详见 [`证据.md`](证据.md) §11.47）。后续业务优先级仍按 [`BLOCKED.md`](BLOCKED.md) §6 执行：低频滚区扩面、OS 沙箱 `Enforced` 真机挂载、具体扩展 Provider（定时/MCP/可执行 Skill）与 `Create`/`skills.rs` 接线（`persona.rs` 暂缓，V6 §5 仍硬阻塞）。
+- **暖构建 Worktree 状态**：全工作区并行分支已并入 `origin/main@768bbd155`；`.agents/worktrees/feat-router-kernel`（build dir `Temp\flowy18-router-build`）与 `.agents/worktrees/fix-windows-hotpatch`（build dir `Temp\flowy18-s4-build`）按热复用约定保留，切新特性分支直接 `git fetch origin && git checkout -b <next> origin/main` 复用（严禁双 worktree 共用同一 `CARGO_BUILD_BUILD_DIR`）。
 
