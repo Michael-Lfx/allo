@@ -360,6 +360,26 @@ fn same_row_kind(old: &ChatLine, new: &ChatLine) -> bool {
     }
 }
 
+const fn line_affects_deliverables_cache(line: &ChatLine) -> bool {
+    match line {
+        ChatLine::User { .. }
+        | ChatLine::FileChange { .. }
+        | ChatLine::FileChanges { .. }
+        | ChatLine::Artifact { .. }
+        | ChatLine::Verification { .. }
+        | ChatLine::ToolResult { is_error: true, .. } => true,
+        ChatLine::Assistant { .. }
+        | ChatLine::Reasoning { .. }
+        | ChatLine::Tool { .. }
+        | ChatLine::ToolCall { .. }
+        | ChatLine::ToolResult {
+            is_error: false, ..
+        }
+        | ChatLine::Status { .. }
+        | ChatLine::TaskReceipt { .. } => false,
+    }
+}
+
 impl ChatFeed {
     pub(crate) fn new(
         ui: UiContext,
@@ -866,13 +886,6 @@ impl ChatFeed {
             // Saved sessions may have been measured with another theme/locale.
             self.list.remeasure_items(0..self.lines.len());
         }
-        if self.lines == lines {
-            if changed_session {
-                self.refresh_deliverables_cache();
-                cx.notify();
-            }
-            return;
-        }
         let old_len = self.lines.len();
         let new_len = lines.len();
         let prefix = self
@@ -881,6 +894,13 @@ impl ChatFeed {
             .zip(&lines)
             .take_while(|(old, new)| old == new)
             .count();
+        if prefix == old_len && old_len == new_len {
+            if changed_session {
+                self.refresh_deliverables_cache();
+                cx.notify();
+            }
+            return;
+        }
         let suffix = self.lines[prefix..]
             .iter()
             .rev()
@@ -889,6 +909,13 @@ impl ChatFeed {
             .count();
         let old_end = old_len - suffix;
         let new_end = new_len - suffix;
+        let deliverables_dirty = changed_session
+            || self.lines[prefix..old_end]
+                .iter()
+                .any(line_affects_deliverables_cache)
+            || lines[prefix..new_end]
+                .iter()
+                .any(line_affects_deliverables_cache);
         let old_top = self.list.logical_scroll_top();
         let top_id = self.row_ids.get(old_top.item_ix).copied();
         let mut ids = self.row_ids[..prefix].to_vec();
@@ -932,7 +959,9 @@ impl ChatFeed {
         self.list.remeasure_items(prefix..new_end);
         self.row_ids = ids;
         self.lines = lines;
-        self.refresh_deliverables_cache();
+        if deliverables_dirty {
+            self.refresh_deliverables_cache();
+        }
         cx.notify();
     }
 
@@ -4659,5 +4688,150 @@ mod tests {
             cx.debug_bounds("verify-open-deliverables").is_none(),
             "switching back to s1 must keep quick-open button hidden"
         );
+    }
+
+    #[test]
+    fn line_affects_deliverables_cache_matches_only_deliverable_and_error_rows()
+    {
+        assert!(!line_affects_deliverables_cache(&ChatLine::Assistant {
+            text: "hi".into(),
+        }));
+        assert!(!line_affects_deliverables_cache(&ChatLine::Reasoning {
+            text: "thinking".into(),
+            duration_secs: 1,
+            live: true,
+        }));
+        assert!(!line_affects_deliverables_cache(&ChatLine::ToolCall {
+            name: "read_file".into(),
+            target: "/tmp/a.md".into(),
+            call_id: "c1".into(),
+            running: true,
+        }));
+        assert!(!line_affects_deliverables_cache(&ChatLine::ToolResult {
+            text: "ok".into(),
+            is_error: false,
+        }));
+        assert!(!line_affects_deliverables_cache(&ChatLine::Status {
+            text: "done".into(),
+        }));
+
+        assert!(line_affects_deliverables_cache(&ChatLine::User {
+            text: "next".into(),
+        }));
+        assert!(line_affects_deliverables_cache(&ChatLine::ToolResult {
+            text: "failed".into(),
+            is_error: true,
+        }));
+        assert!(line_affects_deliverables_cache(&ChatLine::Artifact {
+            artifact_id: "art-1".into(),
+        }));
+        assert!(line_affects_deliverables_cache(&ChatLine::Verification {
+            report_id: "r1".into(),
+            artifact_path: "/tmp/a.pptx".into(),
+            artifact_hash: "h".into(),
+            ok: true,
+            issues: Vec::new(),
+            semantic_hint: None,
+            override_used: false,
+            provenance_warnings: Vec::new(),
+            source_session_id: None,
+        }));
+        assert!(line_affects_deliverables_cache(&ChatLine::FileChanges {
+            files: Vec::new(),
+        }));
+    }
+
+    #[gpui::test]
+    fn streaming_text_deltas_preserve_deliverable_cache_and_refresh_on_verdict(
+        cx: &mut TestAppContext,
+    ) {
+        let i18n = I18n::embedded("Flowy");
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            ChatFeed::new(ui, i18n.clone(), Some("s-stream".into()), cx)
+        });
+
+        let mut rows = vec![
+            ChatLine::User {
+                text: "build deck".into(),
+            },
+            ChatLine::FileChanges {
+                files: vec![flowy_agent::FileEntry {
+                    path: r"C:\Work\deck.pptx".into(),
+                    change: flowy_agent::FileChangeKind::Add,
+                    added: 10,
+                    removed: 0,
+                    binary: false,
+                }],
+            },
+            ChatLine::User {
+                text: "stream commentary".into(),
+            },
+            ChatLine::Assistant {
+                text: "Starting".into(),
+            },
+        ];
+
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(
+                Some("s-stream".into()),
+                ChatHistory {
+                    rows: rows.clone(),
+                    streaming: Some(3),
+                    status: TurnStatus::Running,
+                },
+                cx,
+            );
+            assert_eq!(feed.all_deliverable_items().map_or(0, |v| v.len()), 1);
+            assert!(!feed.has_trace_attention());
+        });
+
+        // Pure Assistant text growth bypasses cache rebuild and keeps all cached deliverables.
+        if let ChatLine::Assistant { text } = &mut rows[3] {
+            text.push_str(" ... more markdown tokens");
+        }
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(
+                Some("s-stream".into()),
+                ChatHistory {
+                    rows: rows.clone(),
+                    streaming: Some(3),
+                    status: TurnStatus::Running,
+                },
+                cx,
+            );
+            assert_eq!(feed.all_deliverable_items().map_or(0, |v| v.len()), 1);
+            assert!(!feed.has_trace_attention());
+        });
+
+        // Appending a failed verification or tool error marks cache dirty and refreshes immediately.
+        rows.push(ChatLine::Verification {
+            report_id: "r-fail".into(),
+            artifact_path: r"C:\Work\deck.pptx".into(),
+            artifact_hash: "h2".into(),
+            ok: false,
+            issues: vec![flowy_agent::VerificationIssue {
+                code: "formula_error".into(),
+                field: "Slide 2".into(),
+            }],
+            semantic_hint: None,
+            override_used: false,
+            provenance_warnings: Vec::new(),
+            source_session_id: None,
+        });
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(
+                Some("s-stream".into()),
+                ChatHistory {
+                    rows: rows.clone(),
+                    streaming: None,
+                    status: TurnStatus::Completed,
+                },
+                cx,
+            );
+            assert!(feed.is_path_failed(r"C:\Work\deck.pptx"));
+            assert_eq!(feed.failed_verifications().len(), 1);
+            assert!(feed.has_trace_attention());
+        });
     }
 }

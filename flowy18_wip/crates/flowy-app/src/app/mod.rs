@@ -1648,8 +1648,10 @@ impl FlowyApp {
         self.user_menu = false;
         self.archive_undo.clear();
         self.notice = None;
-        self.studio
-            .update(cx, flowy_studio::StudioPanel::reset_session);
+        self.studio.update(cx, |panel, cx| {
+            panel.reset_session(cx);
+            panel.set_dock_visible(true, cx);
+        });
         self.gallery.page = 0;
         self.gallery.idea_note = false;
         self.skills.category = None;
