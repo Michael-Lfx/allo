@@ -54,6 +54,6 @@ Windows 推荐启动步骤：
 - **Windows Agent 避坑红线**：
   - 必须经 `.\scripts\dev-hotpatch.ps1` 启动热补丁，**不要**手敲裸 `dx serve --hot-patch` 或手动注入 `RUSTC_WRAPPER=sccache` / `-Clinker=...`。
   - 同一 worktree 内**严禁并发运行多个 `cargo`**（会争抢 `build.noindex` 锁）；避免在同一次调试中交替跑 `-p flowy-studio -p flowy-agent` 与单独 `-p flowy-agent`（Cargo 特征统一哈希不同，首次切换会触发一次额外依赖重编）。
-  - 若工作区目录带有 Windows `Low Mandatory Level`（例如残留沙箱 ACL），默认 `build.noindex` 会触发构建脚本 `0xc0000142`、直接运行 `target/debug/flowy-app.exe` 会被拒托盘；应为该 worktree 设置独占 `$env:CARGO_BUILD_BUILD_DIR` 指向干净的临时目录，并从无低完整性标签目录启动实测副本。
+  - 若工作区目录带有 Windows `Low Mandatory Level`（例如残留沙箱 ACL），默认 `build.noindex` 会触发构建脚本 `0xc0000142`、直接运行 `target/debug/flowy-app.exe` 会被拒托盘；应为当前工作目录设置互不冲突的 `$env:CARGO_BUILD_BUILD_DIR` 指向干净的临时目录，并从无低完整性标签目录启动实测副本。
   - 不要删除 `scripts/dx-capture-wrapper/target/`（重编 `dx-capture-wrapper.exe` 会改变 Cargo 的 `RUSTC_WRAPPER` 指纹并触发 `desktop-dev` 依赖重编）。
   - 不要删掉 `crates/flowy-desktop/Cargo.toml` 中对 `flowy-i18n` / `flowy-studio` / `flowy-ui` 的直接依赖——它们用于让 `dx 0.7.10` 的 1-hop 监听器覆盖全部 UI crate。
