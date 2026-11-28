@@ -1,7 +1,7 @@
 # 交接给下一个 agent
 
-> **现役唯一入口（2026-11-27 修订 9.23 更新）**：**直接先读 §31（`origin/main@f40a16275` · `PR #533–#545` 主干最新底座：15 Crate `flowy-automation`、Linux/macOS 沙箱 CI、`check-docs-and-scroll.mjs` `rawScrollAllowlist` 30 处存量冻结、`build-dir` 代次 GC/`worktree-gc`/`nextest.toml` 与下一步低频滚区/扩展契约）**，并对照 **§30（`PR #534` @ `2b783e385` `ToolProvider` 硬化与异步 drain 隔离）**、**§29（`PR #531` 可视细滚动条与 Windows UIA `ScrollPattern` 契约）**、**§28（`PR #530` 扩展底座与模块布局）** 与 §27 / §27.1（PR #512 与 `#514–#529` 主干全账、Wave 2 目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511）、§25（703/703 基线）、§24（PR #504）、§23（PR #503）、§22（PR #498 + 修订 9.13）、§21（PR-2B）、§19（PR-2A 契约）、§20（PR #497）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
-> §1–§30 保留 2026-11-24～27 演进底稿作历史与契约备查；凡分支/合流、工程门禁与滚动/扩展契约与 §31 不一致处，**一律以 §31 为准**。
+> **现役唯一入口（2026-11-28 修订 9.24 更新）**：**直接先读 §32（`PR #546–#547` [`origin/main@604691e65`] + `feat/studio-scroll-area` 全域低频 `ScrollArea` 收口：23 语种 **1,043 键**、`rawScrollAllowlist` 由 30 处收缩至仅 3 处显式特例 [`overlays.rs:875` 与 `markdown.rs:745,850`]、水平自适应高与 `InsetScrollbarHandle` 分轴契约、下一步重点转回 Windows AppContainer 与首个真实 `ToolProvider`）**，并对照 **§31（`origin/main@f40a16275` 15 Crate / Linux & macOS 沙箱 CI / 门禁与 `nextest`）**、**§30（`PR #534` @ `2b783e385` `ToolProvider` 硬化与异步 drain 隔离）**、**§29（`PR #531` 可视细滚动条与 Windows UIA `ScrollPattern` 契约）**、**§28（`PR #530` 扩展底座与模块布局）** 与 §27 / §27.1（PR #512 与 `#514–#529` 主干全账、Wave 2 目录映射、`dispatch_receipt_id` 完结与 `persona.rs` 暂缓），再按需查 §26（PR #505–#511）、§25（703/703 基线）、§24（PR #504）、§23（PR #503）、§22（PR #498 + 修订 9.13）、§21（PR-2B）、§19（PR-2A 契约）、§20（PR #497）、[`../router-work-and-tool-extension.md`](../router-work-and-tool-extension.md)、§5（环境与 UIA 踩坑实录）、§15.4（仓库硬约束）与 [`gpui-pre-and-kit.md`](../../gpui-pre-and-kit.md)。
+> §1–§31 保留 2026-11-24～27 演进底稿作历史与契约备查；凡当前主干滚动白名单、语种键数与下一阶段优先级与 §32 不一致处，**一律以 §32 为准**。
 
 ---
 
@@ -928,4 +928,18 @@ cargo check --manifest-path flowy18_wip/Cargo.toml --locked -p flowy-desktop  # 
      - **Batch 1**：迁入 `flowy-app` 全部 **17 处（10 文件）** 将 `flowy-app` 白名单清零——注意 `theme::dialog`（`gallery:570` / `invite:124` / `projects:317`）与 `theme::menu`（`settings:468`）须**外包壳+内嵌 `scroll_area` 双层拆解**（`ScrollArea` 未实现 `InteractiveElement` / 会破坏 `Role::Dialog`、`Role::Menu` 与键导）；`max_h` 弹层使用 `.max_h_viewport(...)`；`skills:381` 需先在 `ScrollArea` 上暴露 `.on_scroll(...)` 转发；`appearance:57` 与 `settings:568` 外包父容器补齐 `.flex().flex_col()`；同步补全 23 语种 pure-LF `a11y.scroll_*` 键。
      - **Batch 2 边界**：`flowy-studio` 可安全迁移 10 处常规/水平视口（`studio:253` 亦走 `theme::menu` 拆解，`drawer_preview:942` 补底部滑块让位边距）；`overlays.rs:875` 保留基础设施豁免防双层滚条，[`markdown.rs`](../../../crates/flowy-studio/src/markdown.rs#L745) 两处横向块在未给 `markdown::render` 传入消息/轮次盐值前切勿强迁（防 `next_control: Cell::new(0)` 重置引起跨气泡 `ScrollHandle` 串台）。
   2. **按既有 `ToolProvider` 契约扩展真实能力切片 & Windows AppContainer**：`persona.rs` 个性化继续**暂缓**，V6 外发（[`BLOCKED.md`](BLOCKED.md) §5）继续**硬阻塞**。
+
+---
+
+## 32. `ScrollArea` 低频全域收口、`flowy-ui` 水平/内缩契约与 1,043 键基线（2026-11-28 · `PR #546–#547` + `feat/studio-scroll-area` · 修订 9.24）
+
+- **主干与本批落点**：自 `origin/main@f40a16275` 起，**`PR #546`**（`6bc2b231d`，修订 9.23 账本）与 **Batch 1 `PR #547`**（`604691e65`，清零 `flowy-app` 17 处原生滚区并新增 `ScrollArea::on_scroll` 与 `InsetScrollbarHandle`）均已合并入 `main`；当前分支 `feat/studio-scroll-area` 完成 **Batch 2**（`flowy-ui/src/scroll.rs` 骨架硬化 + `flowy-studio` 安全 10 处全迁 + 23 语种 pure-LF 对称增至 **1,043 键** + 修订 9.24 台账对齐）。
+- **新增 `ScrollArea` / 水平 / 弹层刚性契约（后续 UI 开发必读）**：
+  1. **无定高水平滚动区禁止内层 `.flex_1()`**：`ScrollArea::render` 仅在非 `ScrollbarAxis::Horizontal` 时挂 `viewport.flex_1()`（[`scroll.rs`](../../../crates/flowy-ui/src/scroll.rs)），水平视口贴合底边须搭配 `.pb(px(14.))` 为 `10px` 命中轨 + `4–6px` 滑块留出边距；并严禁 `.horizontal().max_h_viewport(...)` 组合（有 `debug_assert!` 拦错，跨轴限高请改用 `.both_axes()`）。
+  2. **`InsetScrollbarHandle` 分轴与显式宽保护**：`InsetScrollbarHandle` 按 `ScrollbarAxis` 分别缩 `Y`/`X` 跨度，短水平栏永不坍塌为 `0px`；`.max_h_viewport(...)` 仅在未设置宽度时才默认 `.w_full()`，调用方传入 `.w(px(...))` 不会被静默覆盖。
+  3. **`rawScrollAllowlist` 最终稳态（仅余 3 处显式特例）**：[`check-docs-and-scroll.mjs`](../../../scripts/check-docs-and-scroll.mjs) 白名单已从 21 文件 30 处压缩至仅剩 **2 文件 3 处**：[`overlays.rs#L875`](../../../crates/flowy-ui/src/overlays.rs#L875)（基础设施防双滚条）与 [`markdown.rs#L745`](../../../crates/flowy-studio/src/markdown.rs#L745), `#L850`（须先传消息/轮次稳定盐再讨论迁入 `ScrollArea`）。其余 `flowy-app` 与 `flowy-studio` 均维持 **0 存量**，CI 通过 `check-fast.mjs` 自动拦截任何新增裸 `.overflow_*_scroll(...)` 或 `.scrollbar_width(...)`。
+  4. **测试覆盖**：`ScrollArea::debug_selector` 仅在 `test-support` 调试生效；`flowy-studio` (`panel/tests.rs` + `pending_card.rs` + `preview_view.rs`) 与 `flowy-ui` 均以真实 `VisualTestContext` 绘制/双帧测量与 `debug_bounds` / `ScrollHandle` 断言锁死。
+- **下一步优先级**：
+  1. **Windows AppContainer 真机沙箱强隔离接入**与**首个真实业务 `ToolProvider`**（如 MCP / 可执行 Skill 接入 §30 契约：`version()`、锁外预装配与 `ToolExposure::Deferred`）。
+  2. （按需）为 `markdown::render` 引入每条消息唯一 ID 盐值后再评估消除最后 2 处桌面内容区原生横向滚条；`persona.rs` 个性化继续**暂缓**，V6 外发（[`BLOCKED.md`](BLOCKED.md) §5）继续**硬阻塞**。
 
