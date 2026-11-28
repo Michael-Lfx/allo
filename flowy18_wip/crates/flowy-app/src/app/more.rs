@@ -250,6 +250,7 @@ impl FlowyApp {
                     }
                 })),
             );
+        let body_max_h = (frame.height.min(px(640.)) - px(180.)).max(px(80.));
         dialog_shell(
             self,
             "import-memory-dialog",
@@ -258,7 +259,12 @@ impl FlowyApp {
             cx,
         )
         .child(self.dialog_title("more.import_title", cx))
-        .child(dialog_body("import-memory-scroll", body))
+        .child(self.dialog_body(
+            "import-memory-scroll",
+            body_max_h,
+            "a11y.scroll_import_memory",
+            body,
+        ))
         .child(self.dialog_actions(
             "cancel-import",
             "confirm-import",
@@ -311,9 +317,15 @@ impl FlowyApp {
                 count,
                 140.,
             ));
+        let body_max_h = (frame.height.min(px(640.)) - px(180.)).max(px(80.));
         dialog_shell(self, "add-knowledge-dialog", "more.add_title", frame, cx)
             .child(self.dialog_title("more.add_title", cx))
-            .child(dialog_body("add-knowledge-scroll", body))
+            .child(self.dialog_body(
+                "add-knowledge-scroll",
+                body_max_h,
+                "a11y.scroll_add_knowledge",
+                body,
+            ))
             .child(self.dialog_actions(
                 "cancel-knowledge",
                 "save-knowledge",
@@ -626,6 +638,7 @@ fn dialog_shell(
     theme::dialog(id, app.t(title), theme, &app.ui, cx)
         .w(frame.width.min(px(480.)))
         .max_h(frame.height.min(px(640.)))
+        .overflow_hidden()
         .shadow_md()
         .px_6()
         .pt_4()
@@ -638,14 +651,21 @@ fn dialog_shell(
         }))
 }
 
-fn dialog_body(id: &'static str, fields: impl IntoElement) -> impl IntoElement {
-    div()
-        .id(id)
-        .w_full()
-        .min_h_0()
-        .flex_auto()
-        .overflow_y_scroll()
-        .child(fields)
+impl FlowyApp {
+    fn dialog_body(
+        &self,
+        id: &'static str,
+        max_h: gpui::Pixels,
+        a11y_key: &'static str,
+        fields: impl IntoElement,
+    ) -> impl IntoElement {
+        theme::scroll_area(id, &self.theme)
+            .a11y_label(self.t(a11y_key))
+            .w_full()
+            .max_h_viewport(max_h)
+            .scrollbar_inset(px(8.))
+            .child(fields)
+    }
 }
 
 fn dialog_fields() -> gpui::Div {

@@ -226,14 +226,12 @@ impl FlowyApp {
         query: &str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut column = div()
-            .id("settings-nav")
+        let mut column = theme::scroll_area("settings-nav", &self.theme)
+            .a11y_label(self.t("a11y.scroll_settings_nav"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .pb_3();
+            .scrollbar_inset(px(6.))
+            .viewport_style(|s| s.flex().flex_col().pb_3());
         column = column.child(self.link_list(TOP, query, cx));
         for (title, pages) in GROUPS {
             if !group_visible(self, pages, query) {
@@ -456,21 +454,16 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut menu = theme::menu(
-            "language-menu",
-            self.t("settings.language"),
-            &self.theme,
-            &self.ui,
-            cx,
-        )
-        .w(px(240.))
-        .max_h(px(320.))
-        .overflow_y_scroll()
-        .w(px(260.));
+        let mut list = theme::scroll_area("language-menu-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_language_menu"))
+            .w_full()
+            .max_h_viewport(px(320.))
+            .scrollbar_inset(px(6.))
+            .viewport_style(|s| s.p_1().flex().flex_col());
         for locale in Locale::ALL {
             let selected = self.i18n.locale() == locale;
             let id = SharedString::from(format!("locale-{}", locale.code()));
-            menu = menu.child(
+            list = list.child(
                 // Omit `Role::MenuItemRadio` and `.aria_toggled(...)` so
                 // `accesskit_consumer::is_invocable()` keeps Windows UIA InvokePattern.
                 theme::interactive(id, locale.endonym(), &self.theme)
@@ -502,7 +495,17 @@ impl FlowyApp {
                     })),
             );
         }
-        menu
+        theme::menu(
+            "language-menu",
+            self.t("settings.language"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(260.))
+        .p_0()
+        .overflow_hidden()
+        .child(list)
     }
 
     fn toggle_row(
@@ -561,17 +564,14 @@ impl FlowyApp {
             .as_ref()
             .and_then(|session| session.user_id)
             .map_or_else(|| "—".into(), |id| id.to_string());
-        div().flex_1().min_h_0().child(
-            div()
-                .id("settings-account")
-                .size_full()
-                .overflow_y_scroll()
-                .px_8()
-                .pt_4()
-                .pb_8()
-                .flex()
-                .flex_col()
-                .gap_6()
+        div().flex_1().min_h_0().flex().flex_col().child(
+            theme::scroll_area("settings-account", &self.theme)
+                .a11y_label(self.t("a11y.scroll_settings_account"))
+                .flex_1()
+                .min_h_0()
+                .viewport_style(|s| {
+                    s.px_8().pt_4().pb_8().flex().flex_col().gap_6()
+                })
                 .child(self.account_profile_row(&name, &initial, cx))
                 .child(self.account_plan_card(cx))
                 .child(

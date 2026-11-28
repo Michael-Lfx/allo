@@ -82,18 +82,19 @@ impl FlowyApp {
                     .bg(self.theme.card())
                     .shadow_lg()
                     .child(self.login_brand_pane(cx))
-                    .child(
-                        div()
-                            .id("login-panel")
+                    .child({
+                        let pad_x = self.theme.space(32.);
+                        let pad_y = self.theme.space(24.);
+                        theme::scroll_area("login-panel", &self.theme)
+                            .a11y_label(self.t("a11y.scroll_login_panel"))
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .overflow_y_scroll()
+                            .scrollbar_inset(px(8.))
                             .bg(self.theme.card())
-                            .px(self.theme.space(32.))
-                            .py(self.theme.space(24.))
-                            .flex()
-                            .flex_col()
+                            .viewport_style(move |s| {
+                                s.px(pad_x).py(pad_y).flex().flex_col()
+                            })
                             .child(
                                 div()
                                     .w_full()
@@ -148,8 +149,8 @@ impl FlowyApp {
                                     .when(!on_otp, |el| {
                                         el.child(self.login_diagnose(busy, cx))
                                     }),
-                            ),
-                    ),
+                            )
+                    }),
             )
     }
 
@@ -247,16 +248,22 @@ impl FlowyApp {
 
     pub(super) fn legal_layer(
         &self,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let super::state::ActiveDialog::Legal(doc) = self.active_dialog else {
             return div().id("legal-layer-empty").into_any_element();
         };
+        let max_h = self
+            .theme
+            .modal_size(window.viewport_size())
+            .height
+            .min(px(520.));
         theme::modal_layer(
             "legal-layer",
             &self.theme,
             &self.ui,
-            self.legal_dialog(doc, cx),
+            self.legal_dialog(doc, max_h, cx),
         )
         .into_any_element()
     }
@@ -264,8 +271,10 @@ impl FlowyApp {
     fn legal_dialog(
         &self,
         doc: LegalDoc,
+        dialog_max_h: gpui::Pixels,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let body_max_h = (dialog_max_h - px(160.)).max(px(80.));
         theme::dialog(
             "legal-dialog",
             self.t(doc.title_key()),
@@ -274,7 +283,8 @@ impl FlowyApp {
             cx,
         )
         .w(px(560.))
-        .max_h(px(520.))
+        .max_h(dialog_max_h)
+        .overflow_hidden()
         .rounded(self.theme.modal_radius())
         .bg(self.theme.card())
         .shadow_lg()
@@ -295,18 +305,17 @@ impl FlowyApp {
                 .child(self.t(doc.title_key())),
         )
         .child(
-            div()
-                .id("legal-body")
-                .flex_1()
-                .min_h(px(180.))
-                .max_h(px(360.))
-                .overflow_y_scroll()
+            theme::scroll_area("legal-body", &self.theme)
+                .a11y_label(self.t("a11y.scroll_legal_document"))
+                .min_h(px(180.).min(body_max_h))
+                .max_h_viewport(body_max_h)
+                .scrollbar_inset(px(8.))
                 .rounded_lg()
                 .border_1()
                 .border_color(self.theme.line())
                 .bg(self.theme.soft())
-                .px_4()
-                .py_3()
+                .overflow_hidden()
+                .viewport_style(|s| s.px_4().py_3())
                 .child(
                     div()
                         .text_size(self.theme.body_size())

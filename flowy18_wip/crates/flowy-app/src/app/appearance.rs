@@ -48,19 +48,16 @@ impl FlowyApp {
     }
 
     pub(super) fn appearance_body(&self, cx: &Context<'_, Self>) -> gpui::Div {
-        let mut page = div().relative().flex_1().min_h_0();
+        let gap = self.theme.space(20.);
+        let mut page = div().relative().flex_1().min_h_0().flex().flex_col();
         page = page.child(
-            div()
-                .id("appearance")
+            theme::scroll_area("appearance", &self.theme)
+                .a11y_label(self.t("a11y.scroll_appearance"))
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
-                .px_8()
-                .pt_2()
-                .pb_8()
-                .flex()
-                .flex_col()
-                .gap(self.theme.space(20.))
+                .viewport_style(move |s| {
+                    s.px_8().pt_2().pb_8().flex().flex_col().gap(gap)
+                })
                 .child(self.theme_block(cx))
                 .child(self.accent_block(cx))
                 .child(self.font_block(cx))

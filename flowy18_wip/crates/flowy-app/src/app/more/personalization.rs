@@ -55,11 +55,10 @@ impl FlowyApp {
                     .render(&self.theme, window),
             )
             .child(
-                div()
-                    .id("more-scroll")
+                ui::scroll_area("more-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_personalization"))
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .child(
                         content_column(inset).pb_6().child(tabs).child(panel),
                     ),

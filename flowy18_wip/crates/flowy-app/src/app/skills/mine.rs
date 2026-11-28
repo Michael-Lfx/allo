@@ -240,17 +240,19 @@ impl FlowyApp {
                 )
                 .into_any_element()
         } else {
-            div()
-                .id(if tab == MySkillsTab::Saved {
+            theme::scroll_area(
+                if tab == MySkillsTab::Saved {
                     "my-skills-saved-scroll"
                 } else {
                     "my-skills-installed-scroll"
-                })
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(cards)
-                .into_any_element()
+                },
+                &self.theme,
+            )
+            .a11y_label(self.t("a11y.scroll_my_skills_list"))
+            .flex_1()
+            .min_h_0()
+            .child(cards)
+            .into_any_element()
         };
         div()
             .flex_1()
@@ -700,11 +702,10 @@ impl FlowyApp {
                             )),
                     ),
             );
-        div()
-            .id("my-skill-details-scroll")
+        theme::scroll_area("my-skill-details-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_my_skill_details"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .child(
                 div()
                     .w_full()

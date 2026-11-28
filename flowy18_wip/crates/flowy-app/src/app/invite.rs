@@ -101,17 +101,27 @@ impl FlowyApp {
 
     pub(super) fn invite_layer(
         &self,
+        window: &gpui::Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let max_h = self
+            .theme
+            .modal_size(window.viewport_size())
+            .height
+            .min(px(640.));
         theme::modal_layer(
             "invite-layer",
             &self.theme,
             &self.ui,
-            self.invite_card(cx),
+            self.invite_card(max_h, cx),
         )
     }
 
-    fn invite_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn invite_card(
+        &self,
+        max_h: gpui::Pixels,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         theme::dialog(
             "invite-card",
             self.t("invite.title"),
@@ -120,38 +130,44 @@ impl FlowyApp {
             cx,
         )
         .w(px(440.))
-        .max_h(px(640.))
-        .overflow_y_scroll()
+        .max_h(max_h)
+        .overflow_hidden()
         .bg(self.theme.card())
         .rounded(self.theme.modal_radius())
         .shadow_md()
-        .px_6()
-        .pt_4()
-        .pb_5()
         .flex()
         .flex_col()
-        .gap_3()
         .on_click(cx.listener(|_app, _event, _window, cx| {
             cx.stop_propagation();
         }))
-        .child(self.invite_close(cx))
-        .child(self.invite_body(cx))
-        .children(self.invite.status.map(|key| {
-            let text = if key == "invite.deep_link_received" {
-                if let Some(code) = &self.invite.inbound_code {
-                    self.tf(key, &[("code", code)])
-                } else {
-                    self.t(key)
-                }
-            } else {
-                self.t(key)
-            };
-            div()
-                .text_size(self.theme.caption_size())
-                .text_color(self.theme.muted())
-                .child(text)
-        }))
-        .child(self.invite_footer(cx))
+        .child(
+            theme::scroll_area("invite-card-scroll", &self.theme)
+                .a11y_label(self.t("a11y.scroll_invite_dialog"))
+                .w_full()
+                .max_h_viewport(max_h)
+                .scrollbar_inset(px(8.))
+                .viewport_style(|s| {
+                    s.px_6().pt_4().pb_5().flex().flex_col().gap_3()
+                })
+                .child(self.invite_close(cx))
+                .child(self.invite_body(cx))
+                .children(self.invite.status.map(|key| {
+                    let text = if key == "invite.deep_link_received" {
+                        if let Some(code) = &self.invite.inbound_code {
+                            self.tf(key, &[("code", code)])
+                        } else {
+                            self.t(key)
+                        }
+                    } else {
+                        self.t(key)
+                    };
+                    div()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .child(text)
+                }))
+                .child(self.invite_footer(cx)),
+        )
     }
 
     fn invite_close(&self, cx: &Context<'_, Self>) -> impl IntoElement {
