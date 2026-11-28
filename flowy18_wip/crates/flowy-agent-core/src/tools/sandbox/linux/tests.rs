@@ -149,16 +149,30 @@ async fn linux_bwrap_prepares_private_host_auth_before_launch() {
         SandboxPolicy::for_workspace(cwd.clone()),
         Some(auth.clone()),
     );
-    let result = env
-        .exec(
-            "stat -c '%d:%i' ../auth",
-            ShellExecOptions {
-                timeout: Some(5.0),
-                ..ShellExecOptions::default()
-            },
-        )
+    let shell = env.exec(
+        r"set -e
+          stat -c '%d:%i' ../auth
+          : > ready
+          while [ ! -f saved ]; do sleep 0.02; done
+          test ! -e ../auth/synthetic-credential",
+        ShellExecOptions {
+            timeout: Some(8.0),
+            ..ShellExecOptions::default()
+        },
+    );
+    let save_session = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !cwd.join("ready").is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .unwrap();
+        .expect("sandbox started with a masked auth directory");
+        fs::write(auth.join("synthetic-credential"), "fixture").unwrap();
+        fs::write(cwd.join("saved"), "").unwrap();
+    };
+    let (result, ()) = tokio::join!(shell, save_session);
+    let result = result.unwrap();
 
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
     let metadata = auth.metadata().unwrap();
@@ -166,6 +180,7 @@ async fn linux_bwrap_prepares_private_host_auth_before_launch() {
     assert_ne!(result.stdout.trim(), "");
     assert_ne!(result.stdout.trim(), host_identity);
     assert_eq!(metadata.permissions().mode() & 0o077, 0);
+    assert!(auth.join("synthetic-credential").is_file());
 }
 
 #[test]
