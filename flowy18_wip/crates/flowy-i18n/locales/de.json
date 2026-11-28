@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "Scrollbereich Details meiner Fähigkeit",
   "a11y.scroll_skills_catalog": "Scrollbereich Fähigkeitskatalog",
   "a11y.scroll_skill_shelf_dialog": "Scrollbereich Dialog Fähigkeitsvorschau",
-  "a11y.scroll_skill_dialog": "Scrollbereich Fähigkeitsdialog"
+  "a11y.scroll_skill_dialog": "Scrollbereich Fähigkeitsdialog",
+  "a11y.scroll_automation_canvas": "Scrollbereich Automatisierungsfläche",
+  "a11y.scroll_automation_manager": "Scrollbereich Automatisierungsverwaltung",
+  "a11y.scroll_composer_add_menu": "Scrollbereich Eingabe-Hinzufügen-Menü",
+  "a11y.scroll_source_code": "Scrollbereich Quelltextvorschau",
+  "a11y.scroll_home_stage": "Scrollbereich Startseite",
+  "a11y.scroll_table_preview": "Scrollbereich Tabellenvorschau",
+  "a11y.scroll_pending_cards": "Scrollbereich ausstehende Bestätigungskarten",
+  "a11y.scroll_tool_command_preview": "Scrollbereich Befehls-Vorschau",
+  "a11y.scroll_background_tasks": "Scrollbereich Hintergrundaufgaben",
+  "a11y.scroll_model_menu": "Scrollbereich Modellauswahlmenü"
 }

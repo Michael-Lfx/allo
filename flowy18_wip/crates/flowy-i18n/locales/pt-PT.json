@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "Área de rolagem dos detalhes da minha competência",
   "a11y.scroll_skills_catalog": "Área de rolagem do catálogo de competências",
   "a11y.scroll_skill_shelf_dialog": "Área de rolagem da pré-visualização de competência",
-  "a11y.scroll_skill_dialog": "Área de rolagem da caixa de diálogo de competência"
+  "a11y.scroll_skill_dialog": "Área de rolagem da caixa de diálogo de competência",
+  "a11y.scroll_automation_canvas": "Área de rolagem da área de automações",
+  "a11y.scroll_automation_manager": "Área de rolagem da gestão de automações",
+  "a11y.scroll_composer_add_menu": "Área de rolagem do menu adicionar do editor",
+  "a11y.scroll_source_code": "Área de rolagem da pré-visualização do código-fonte",
+  "a11y.scroll_home_stage": "Área de rolagem do ecrã inicial",
+  "a11y.scroll_table_preview": "Área de rolagem da pré-visualização da tabela",
+  "a11y.scroll_pending_cards": "Área de rolagem dos cartões pendentes de confirmação",
+  "a11y.scroll_tool_command_preview": "Área de rolagem da pré-visualização do comando",
+  "a11y.scroll_background_tasks": "Área de rolagem das tarefas em segundo plano",
+  "a11y.scroll_model_menu": "Área de rolagem do menu de seleção de modelo"
 }

@@ -231,7 +231,7 @@ impl crate::panel::StudioPanel {
     }
 
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut menu = theme::menu(
+        let outer = theme::menu(
             "model-list-content",
             self.t("model.menu_title"),
             &self.theme,
@@ -245,12 +245,18 @@ impl crate::panel::StudioPanel {
         .border_color(self.theme.line())
         .rounded_xl()
         .shadow_md()
-        .p(self.theme.space(8.))
-        .flex()
-        .flex_col()
-        .gap(self.theme.space(4.))
-        .max_h(px(420.))
-        .overflow_y_scroll();
+        .p_0()
+        .overflow_hidden();
+
+        let pad = self.theme.space(8.);
+        let gap = self.theme.space(4.);
+        let mut menu = theme::scroll_area("model-menu-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_model_menu"))
+            .debug_selector(|| "model-menu-scroll".to_owned())
+            .w_full()
+            .max_h_viewport(px(420.))
+            .scrollbar_inset(px(6.))
+            .viewport_style(move |s| s.p(pad).flex().flex_col().gap(gap));
         for row in &self.tiers {
             let tier = row.tier;
             let selected = row.selected;
@@ -369,7 +375,7 @@ impl crate::panel::StudioPanel {
                     ),
                 ),
         );
-        menu
+        outer.child(menu)
     }
 
     fn dismiss_model_info(&mut self, cx: &mut Context<'_, Self>) {

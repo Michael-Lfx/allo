@@ -366,21 +366,15 @@ impl StudioPanel {
         let show_anonymous_active = self.show_anonymous_active_work();
         let total = self.popover_total_count();
 
-        let mut panel = div()
-            .id("bg-tasks-panel")
-            .occlude()
-            .w(px(380.))
-            .max_h(px(380.))
-            .overflow_y_scroll()
-            .bg(self.theme.card())
-            .border_1()
-            .border_color(self.theme.line())
-            .rounded_xl()
-            .shadow_md()
-            .p(self.theme.space(10.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(6.))
+        let pad = self.theme.space(10.);
+        let gap = self.theme.space(6.);
+        let mut panel = theme::scroll_area("bg-tasks-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_background_tasks"))
+            .debug_selector(|| "bg-tasks-scroll".to_owned())
+            .w_full()
+            .max_h_viewport(px(380.))
+            .scrollbar_inset(px(6.))
+            .viewport_style(move |s| s.p(pad).flex().flex_col().gap(gap))
             .child(
                 div()
                     .w_full()
@@ -514,7 +508,17 @@ impl StudioPanel {
             );
         }
 
-        panel
+        div()
+            .id("bg-tasks-panel")
+            .occlude()
+            .w(px(380.))
+            .bg(self.theme.card())
+            .border_1()
+            .border_color(self.theme.line())
+            .rounded_xl()
+            .shadow_md()
+            .overflow_hidden()
+            .child(panel)
     }
 
     fn bg_section_heading(&self, key: &'static str) -> impl IntoElement {

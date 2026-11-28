@@ -666,6 +666,7 @@ impl StudioPanel {
                                 truncated_rows: *truncated_rows,
                             },
                             self.theme,
+                            self.t("a11y.scroll_table_preview"),
                         ))
                         .when(*truncated_rows, |col| {
                             col.child(
@@ -936,13 +937,24 @@ impl StudioPanel {
                         )
                     })
                     .child(
-                        div()
-                            .id("drawer-source-scroll")
+                        theme::scroll_area("drawer-source-scroll", &self.theme)
+                            .horizontal()
+                            .a11y_label(self.t("a11y.scroll_source_code"))
+                            .debug_selector(|| {
+                                "drawer-source-scroll".to_owned()
+                            })
                             .w_full()
-                            .overflow_x_scroll()
-                            .text_xs()
-                            .text_color(self.theme.ink())
-                            .font_family(crate::markdown::mono_font().family)
+                            .viewport_style({
+                                let ink = self.theme.ink();
+                                let font_family =
+                                    crate::markdown::mono_font().family;
+                                move |s| {
+                                    s.pb(px(14.))
+                                        .text_xs()
+                                        .text_color(ink)
+                                        .font_family(font_family)
+                                }
+                            })
                             .child(bounded),
                     ),
             )

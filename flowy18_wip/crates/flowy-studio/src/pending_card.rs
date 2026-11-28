@@ -205,30 +205,41 @@ impl StudioPanel {
         if routed_cards.is_empty() {
             return div().into_any_element();
         }
+        self.render_pending_cards_stack(&session_id, routed_cards, cx)
+    }
+
+    pub(crate) fn render_pending_cards_stack(
+        &self,
+        session_id: &str,
+        routed_cards: Vec<flowy_agent::RoutedPendingCard>,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
         let child_titles: std::collections::HashMap<String, String> =
-            if self.agent.session_role(&session_id)
+            if self.agent.session_role(session_id)
                 == flowy_agent::SessionRole::Router
             {
                 self.agent
-                    .child_works(&session_id)
+                    .child_works(session_id)
                     .into_iter()
                     .map(|w| (w.work_id, w.title))
                     .collect()
             } else {
                 std::collections::HashMap::new()
             };
-        let mut stack = div()
-            .id("pending-cards-stack")
+        let pad_x = self.theme.space(32.);
+        let pad_b = self.theme.space(8.);
+        let gap = self.theme.space(8.);
+        let mut stack = theme::scroll_area("pending-cards-stack", &self.theme)
+            .a11y_label(self.t("a11y.scroll_pending_cards"))
+            .debug_selector(|| "pending-cards-stack".to_owned())
             .flex_1()
             .min_w_0()
             .max_w(px(crate::STAGE_MAX_W))
-            .max_h(px(320.))
-            .overflow_y_scroll()
-            .px(self.theme.space(32.))
-            .pb(self.theme.space(8.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(8.));
+            .max_h_viewport(px(320.))
+            .scrollbar_inset(px(6.))
+            .viewport_style(move |s| {
+                s.px(pad_x).pb(pad_b).flex().flex_col().gap(gap)
+            });
         for routed in &routed_cards {
             let owner_id = routed.owner_session_id.as_str();
             let root_id = routed.root_session_id.as_str();
@@ -601,20 +612,30 @@ impl StudioPanel {
             )
         })
         .when(!preview.is_empty(), |card| {
+            let pad_x = self.theme.space(10.);
+            let pad_y = self.theme.space(6.);
+            let ink = self.theme.ink();
             card.child(
-                div()
-                    .id(("tool-approval-preview", card_hash))
-                    .w_full()
-                    .max_h(px(140.))
-                    .overflow_y_scroll()
-                    .px(self.theme.space(10.))
-                    .py(self.theme.space(6.))
-                    .rounded_lg()
-                    .bg(self.theme.soft())
-                    .text_xs()
-                    .text_color(self.theme.ink())
-                    .whitespace_normal()
-                    .child(preview),
+                theme::scroll_area(
+                    ("tool-approval-preview", card_hash),
+                    &self.theme,
+                )
+                .a11y_label(self.t("a11y.scroll_tool_command_preview"))
+                .debug_selector(|| "tool-approval-preview".to_owned())
+                .w_full()
+                .max_h_viewport(px(140.))
+                .scrollbar_inset(px(6.))
+                .rounded_lg()
+                .bg(self.theme.soft())
+                .overflow_hidden()
+                .viewport_style(move |s| {
+                    s.px(pad_x)
+                        .py(pad_y)
+                        .text_xs()
+                        .text_color(ink)
+                        .whitespace_normal()
+                })
+                .child(preview),
             )
         })
         .child(
@@ -1094,6 +1115,10 @@ mod tests {
                         cx,
                     )
                 });
+                let multiline_preview = (0..18)
+                    .map(|i| format!("echo step_{i} ./dist/asset_{i}.txt"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let approval = self.panel.update(cx, |panel, cx| {
                     panel.render_tool_approval_card(
                         "s-test",
@@ -1104,9 +1129,28 @@ mod tests {
                         "workspace/build",
                         "abc123",
                         "将修改工作区文件",
-                        "Remove-Item -Recurse ./dist",
+                        &multiline_preview,
                         cx,
                     )
+                });
+                let routed: Vec<flowy_agent::RoutedPendingCard> = (0..4)
+                    .map(|i| flowy_agent::RoutedPendingCard {
+                        root_session_id: "s-test".into(),
+                        owner_session_id: "s-test".into(),
+                        owner_role: flowy_agent::SessionRole::Standard,
+                        card: PendingCard::ToolApproval {
+                            card_id: format!("stack-card-{i}"),
+                            tool_name: "powershell".into(),
+                            command_preview: multiline_preview.clone(),
+                            args_hash: format!("hash-{i}"),
+                            risk_reason: "修改工作区构建产物".into(),
+                            target_summary: "workspace/build".into(),
+                            created_at_ms: 1_760_000_000_000 + i,
+                        },
+                    })
+                    .collect();
+                let cards_stack = self.panel.update(cx, |panel, cx| {
+                    panel.render_pending_cards_stack("s-test", routed, cx)
                 });
                 div()
                     .size_full()
@@ -1116,6 +1160,7 @@ mod tests {
                     .child(disambig)
                     .child(empty_disambig)
                     .child(approval)
+                    .child(cards_stack)
             }
         }
         let panel_clone = panel.clone();
@@ -1133,6 +1178,24 @@ mod tests {
                 .debug_bounds("chat-pending-tool-approval-card")
                 .is_some(),
             "tool approval card must paint"
+        );
+        let cmd_bounds = preview_cx
+            .debug_bounds("tool-approval-preview")
+            .expect("tool-approval-preview bounds");
+        assert!(
+            (cmd_bounds.size.height - px(140.)).abs() < px(1.)
+                && cmd_bounds.size.width > px(100.),
+            "multiline command preview ScrollArea must cap at 140px; got {:?}",
+            cmd_bounds.size
+        );
+        let stack_bounds = preview_cx
+            .debug_bounds("pending-cards-stack")
+            .expect("pending-cards-stack bounds");
+        assert!(
+            (stack_bounds.size.height - px(320.)).abs() < px(1.)
+                && stack_bounds.size.width > px(200.),
+            "pending-cards-stack ScrollArea must cap at 320px; got {:?}",
+            stack_bounds.size
         );
         drop(panel);
         let _ = std::fs::remove_dir_all(&root);

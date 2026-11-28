@@ -790,12 +790,13 @@ impl Render for PreviewPanel {
         } else if let Some(table) =
             self.document.as_ref().and_then(|doc| doc.table_data())
         {
-            body = body.child(
-                div()
-                    .w_full()
-                    .p(px(16.))
-                    .child(render_table_preview(table, t)),
-            );
+            body = body.child(div().w_full().p(px(16.)).child(
+                render_table_preview(
+                    table,
+                    t,
+                    self.t("a11y.scroll_table_preview"),
+                ),
+            ));
         } else if let Some(text) =
             self.document.as_ref().and_then(|doc| doc.code_text())
         {
@@ -918,6 +919,7 @@ fn table_cell_units(text: &str) -> usize {
 pub fn render_table_preview(
     table: preview::TablePreview<'_>,
     t: ui::ResolvedTheme,
+    scroll_label: impl Into<gpui::SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
     let preview::TablePreview {
         headers,
@@ -1005,10 +1007,12 @@ pub fn render_table_preview(
         .border_color(t.line())
         .overflow_hidden()
         .child(
-            div()
-                .id("preview-table-scroll")
+            ui::scroll_area("preview-table-scroll", &t)
+                .horizontal()
+                .a11y_label(scroll_label)
+                .debug_selector(|| "preview-table-scroll".to_owned())
                 .w_full()
-                .overflow_x_scroll()
+                .viewport_style(|s| s.pb(px(14.)))
                 .child(table_rows),
         )
 }
@@ -1315,7 +1319,22 @@ mod tests {
                 assert_eq!(table.rows.len(), 2);
                 assert!(!table.truncated_rows);
             });
-            assert!(cx.debug_bounds("preview-table").is_some());
+            let table_bounds = cx
+                .debug_bounds("preview-table")
+                .expect("preview-table bounds");
+            let scroll_bounds = cx
+                .debug_bounds("preview-table-scroll")
+                .expect("preview-table-scroll bounds");
+            assert!(
+                table_bounds.size.height >= gpui::px(50.),
+                "horizontal table ScrollArea must preserve height; got {:?}",
+                table_bounds.size
+            );
+            assert!(
+                scroll_bounds.size.height >= gpui::px(40.),
+                "preview-table-scroll must preserve non-collapsed height; got {:?}",
+                scroll_bounds.size
+            );
             assert!(cx.debug_bounds("preview-zoom-in").is_none());
         }
         let (panel, cx) =

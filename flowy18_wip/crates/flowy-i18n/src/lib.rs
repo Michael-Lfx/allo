@@ -614,6 +614,48 @@ mod tests {
     }
 
     #[test]
+    fn batch2_scroll_area_a11y_labels_are_localized_across_all_locales() {
+        let mut i18n = I18n::embedded("Flowy");
+        let keys = [
+            "a11y.scroll_automation_canvas",
+            "a11y.scroll_automation_manager",
+            "a11y.scroll_composer_add_menu",
+            "a11y.scroll_source_code",
+            "a11y.scroll_home_stage",
+            "a11y.scroll_table_preview",
+            "a11y.scroll_pending_cards",
+            "a11y.scroll_tool_command_preview",
+            "a11y.scroll_background_tasks",
+            "a11y.scroll_model_menu",
+        ];
+        i18n.set_locale(Locale::ZhCn);
+        assert_eq!(i18n.t("a11y.scroll_home_stage"), "主页工作台滚动区");
+        assert_eq!(i18n.t("a11y.scroll_model_menu"), "模型选择菜单滚动区");
+        i18n.set_locale(Locale::En);
+        assert_eq!(i18n.t("a11y.scroll_home_stage"), "Home stage scroll area");
+        assert_eq!(
+            i18n.t("a11y.scroll_model_menu"),
+            "Model selection menu scroll area"
+        );
+        for locale in Locale::ALL {
+            i18n.set_locale(locale);
+            for key in keys {
+                let text = i18n.t(key);
+                assert!(!text.is_empty(), "{}: {key}", locale.code());
+                assert_ne!(text, key, "{}: {key}", locale.code());
+                if locale != Locale::En {
+                    assert_ne!(
+                        text,
+                        i18n.messages[&Locale::En][key],
+                        "{}: {key} fell back to English",
+                        locale.code()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn placeholders_are_replaced() {
         let i18n = I18n::embedded("Flowy");
         let text = i18n.tf("chat.duration_secs", &[("n", "3")]);

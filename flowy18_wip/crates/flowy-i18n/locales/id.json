@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "Area gulir detail keahlian saya",
   "a11y.scroll_skills_catalog": "Area gulir katalog keahlian",
   "a11y.scroll_skill_shelf_dialog": "Area gulir dialog pratinjau keahlian",
-  "a11y.scroll_skill_dialog": "Area gulir dialog keahlian"
+  "a11y.scroll_skill_dialog": "Area gulir dialog keahlian",
+  "a11y.scroll_automation_canvas": "Area gulir kanvas otomatisasi",
+  "a11y.scroll_automation_manager": "Area gulir pengelolaan otomatisasi",
+  "a11y.scroll_composer_add_menu": "Area gulir menu tambah penyusun",
+  "a11y.scroll_source_code": "Area gulir pratinjau kode sumber",
+  "a11y.scroll_home_stage": "Area gulir beranda kerja",
+  "a11y.scroll_table_preview": "Area gulir pratinjau tabel",
+  "a11y.scroll_pending_cards": "Area gulir kartu konfirmasi tertunda",
+  "a11y.scroll_tool_command_preview": "Area gulir pratinjau perintah",
+  "a11y.scroll_background_tasks": "Area gulir tugas latar belakang",
+  "a11y.scroll_model_menu": "Area gulir menu pemilihan model"
 }

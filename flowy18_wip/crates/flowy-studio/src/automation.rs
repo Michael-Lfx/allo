@@ -42,7 +42,7 @@ pub struct AutomationDraft {
     placeholder: SharedString,
     placeholder_color: Option<Rgba>,
     _input_subscription: Subscription,
-    started: bool,
+    pub(crate) started: bool,
     show_modes: bool,
     launch_mode: Option<LaunchMode>,
 }
@@ -166,35 +166,44 @@ impl StudioPanel {
                 )
             })
             .child(
-                div()
-                    .id(if started {
+                ui::scroll_area(
+                    if started {
                         "automation-workflow"
                     } else {
                         "automation-welcome"
-                    })
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(self.theme.space(28.))
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(if started { 708. } else { 920. }))
-                            .mx_auto()
-                            .pt(self.theme.space(if started {
-                                28.
-                            } else {
-                                48.
-                            }))
-                            .pb(self.theme.space(48.))
-                            .flex()
-                            .flex_col()
-                            .child(if started {
-                                self.automation_workflow(cx).into_any_element()
-                            } else {
-                                self.automation_welcome(cx).into_any_element()
-                            }),
-                    ),
+                    },
+                    &self.theme,
+                )
+                .a11y_label(self.t("a11y.scroll_automation_canvas"))
+                .debug_selector(move || {
+                    if started {
+                        "automation-workflow"
+                    } else {
+                        "automation-welcome"
+                    }
+                    .to_owned()
+                })
+                .flex_1()
+                .min_h_0()
+                .viewport_style({
+                    let pad_x = self.theme.space(28.);
+                    move |s| s.px(pad_x)
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(if started { 708. } else { 920. }))
+                        .mx_auto()
+                        .pt(self.theme.space(if started { 28. } else { 48. }))
+                        .pb(self.theme.space(48.))
+                        .flex()
+                        .flex_col()
+                        .child(if started {
+                            self.automation_workflow(cx).into_any_element()
+                        } else {
+                            self.automation_welcome(cx).into_any_element()
+                        }),
+                ),
             )
     }
 

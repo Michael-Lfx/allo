@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "Becerim ayrıntıları kaydırma alanı",
   "a11y.scroll_skills_catalog": "Beceri kataloğu kaydırma alanı",
   "a11y.scroll_skill_shelf_dialog": "Beceri önizleme iletişim kutusu kaydırma alanı",
-  "a11y.scroll_skill_dialog": "Beceri iletişim kutusu kaydırma alanı"
+  "a11y.scroll_skill_dialog": "Beceri iletişim kutusu kaydırma alanı",
+  "a11y.scroll_automation_canvas": "Otomasyon tuvali kaydırma alanı",
+  "a11y.scroll_automation_manager": "Otomasyon yönetimi kaydırma alanı",
+  "a11y.scroll_composer_add_menu": "Düzenleyici ekleme menüsü kaydırma alanı",
+  "a11y.scroll_source_code": "Kaynak kodu önizleme kaydırma alanı",
+  "a11y.scroll_home_stage": "Ana çalışma alanı kaydırma alanı",
+  "a11y.scroll_table_preview": "Tablo önizleme kaydırma alanı",
+  "a11y.scroll_pending_cards": "Onay bekleyen kartlar kaydırma alanı",
+  "a11y.scroll_tool_command_preview": "Komut önizleme kaydırma alanı",
+  "a11y.scroll_background_tasks": "Arka plan görevleri kaydırma alanı",
+  "a11y.scroll_model_menu": "Model seçim menüsü kaydırma alanı"
 }

@@ -3085,3 +3085,271 @@ fn quote_file_from_board_opens_inspected_session_and_attaches_quote(
     drop(panel);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[gpui::test]
+fn batch2_migrated_scroll_areas_render_across_surfaces_and_popovers(
+    cx: &mut TestAppContext,
+) {
+    let root = std::env::temp_dir().join(format!(
+        "flowy-studio-batch2-scroll-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create test root");
+
+    let (panel, vcx) = cx.add_window_view(|window, cx| {
+        let ui = UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+        StudioPanel::new(
+            StudioConfig {
+                product: "Flowy",
+                i18n: I18n::embedded("Flowy"),
+                model: Model::Lite,
+                plan: Plan::Free,
+                model_info_version: String::new(),
+                model_info_open: false,
+                store_root: root.clone(),
+                llm: LlmConfig::default(),
+            },
+            ui,
+            window,
+            cx,
+        )
+    });
+
+    // 1. Home stage (`studio-scroll`)
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let home_bounds = vcx
+        .debug_bounds("studio-scroll")
+        .expect("studio-scroll bounds on Home");
+    assert!(
+        home_bounds.size.height >= gpui::px(200.)
+            && home_bounds.size.width >= gpui::px(300.),
+        "Home studio-scroll collapsed: {:?}",
+        home_bounds.size
+    );
+
+    // 2. Popovers (`composer-add-menu-scroll`, `model-menu-scroll`, `bg-tasks-scroll`)
+    // Open a Chat Router session so bottom composer anchors have full headroom.
+    let sid = panel.update(vcx, |panel, cx| {
+        panel.catalog.replace(vec![flowy_agent::CatalogModel {
+            id: "test-model".into(),
+            name: "Test model".into(),
+            ..Default::default()
+        }]);
+        panel.cloud_ready = true;
+        panel.set_tiers(
+            [Model::Max, Model::Standard, Model::Lite]
+                .into_iter()
+                .map(|tier| crate::TierView {
+                    tier,
+                    pro_badge: tier != Model::Lite,
+                    locked: false,
+                    unavailable: false,
+                    selected: tier == Model::Lite,
+                })
+                .collect(),
+            cx,
+        );
+        panel.set_installed_skills(
+            (0..6)
+                .map(|i| crate::ports::SkillChip {
+                    id: format!("skill-{i}"),
+                    title: format!("Skill {i}"),
+                    summary: "Long enough skill summary for menu overflow"
+                        .into(),
+                    official: true,
+                })
+                .collect(),
+            cx,
+        );
+        let sid = panel.agent.create_router_session().expect("router session");
+        panel.open_session(&sid, cx);
+        sid
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+    panel.update(vcx, |panel, cx| {
+        panel.toggle_popover(ActivePopover::AddMenu);
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let add_bounds = vcx
+        .debug_bounds("composer-add-menu-scroll")
+        .expect("composer-add-menu-scroll bounds");
+    assert!(
+        add_bounds.size.height >= gpui::px(200.)
+            && add_bounds.size.height <= gpui::px(380.)
+            && add_bounds.size.width >= gpui::px(260.),
+        "composer-add-menu-scroll bounds invalid: {:?}",
+        add_bounds.size
+    );
+
+    panel.update(vcx, |panel, cx| {
+        panel.toggle_popover(ActivePopover::ModelMenu);
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let model_bounds = vcx
+        .debug_bounds("model-menu-scroll")
+        .expect("model-menu-scroll bounds");
+    assert!(
+        model_bounds.size.height >= gpui::px(120.)
+            && model_bounds.size.height <= gpui::px(420.)
+            && model_bounds.size.width >= gpui::px(360.),
+        "model-menu-scroll bounds invalid: {:?}",
+        model_bounds.size
+    );
+
+    panel.update(vcx, |panel, cx| {
+        panel.close_all_popovers();
+        panel.popover_works.current_works = (0..6)
+            .map(|i| flowy_agent::ChildWorkSummary {
+                work_id: format!("w-{i}"),
+                root_session_id: sid.clone(),
+                title: format!("Background task {i}"),
+                access_mode: flowy_agent::WorkAccessMode::ReadWrite,
+                origin: flowy_agent::SessionOrigin::Home,
+                workspace_root: None,
+                state: "running".into(),
+                turn_status: flowy_agent::TurnStatus::Running,
+                contract_revision: None,
+                heartbeat: None,
+                pending_cards: Vec::new(),
+                delivered_artifact_ids: Vec::new(),
+                missing_items: Vec::new(),
+                objects: Vec::new(),
+                last_stop_handoff: None,
+                updated_at: 1_760_000_000_000 + i,
+            })
+            .collect();
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    panel.update(vcx, |panel, cx| {
+        panel.toggle_popover(ActivePopover::BgTasks);
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let bg_bounds = vcx
+        .debug_bounds("bg-tasks-scroll")
+        .expect("bg-tasks-scroll bounds");
+    assert!(
+        bg_bounds.size.height >= gpui::px(200.)
+            && bg_bounds.size.height <= gpui::px(380.)
+            && bg_bounds.size.width >= gpui::px(340.),
+        "bg-tasks-scroll bounds invalid: {:?}",
+        bg_bounds.size
+    );
+
+    // 3. Open right drawer (`drawer-source-scroll` + drawer `render_table_preview`)
+    let csv_path = root.join("wide_table.csv");
+    std::fs::write(
+        &csv_path,
+        "column_one,column_two,column_three,column_four,column_five\nval1,val2,val3,val4,val5\nval6,val7,val8,val9,val10\n",
+    )
+    .expect("write csv preview fixture");
+    let rs_path = root.join("wide_source.rs");
+    std::fs::write(
+        &rs_path,
+        format!(
+            "fn wide_function() {{ let long_line = \"{}\"; }}\n",
+            "x".repeat(240)
+        ),
+    )
+    .expect("write code preview fixture");
+
+    panel.update(vcx, |panel, cx| {
+        panel.close_all_popovers();
+        panel.popover_works.current_works.clear();
+        panel.right_drawer_open = true;
+        panel.set_preview_file(
+            Some(csv_path.to_string_lossy().into_owned()),
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let drawer_table_bounds = vcx
+        .debug_bounds("preview-table-scroll")
+        .expect("drawer preview-table-scroll bounds");
+    assert!(
+        drawer_table_bounds.size.height >= gpui::px(40.)
+            && drawer_table_bounds.size.width >= gpui::px(120.),
+        "drawer preview-table-scroll collapsed: {:?}",
+        drawer_table_bounds.size
+    );
+
+    panel.update(vcx, |panel, cx| {
+        panel
+            .set_preview_file(Some(rs_path.to_string_lossy().into_owned()), cx);
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let source_bounds = vcx
+        .debug_bounds("drawer-source-scroll")
+        .expect("drawer-source-scroll bounds");
+    assert!(
+        source_bounds.size.height >= gpui::px(24.)
+            && source_bounds.size.width >= gpui::px(120.),
+        "drawer-source-scroll collapsed: {:?}",
+        source_bounds.size
+    );
+
+    // 4. Automation welcome, workflow, and manager (`automation-welcome`,
+    // `automation-workflow`, `automation-manager-scroll`)
+    panel.update(vcx, |panel, cx| {
+        panel.right_drawer_open = false;
+        panel.set_preview_file(None, cx);
+        panel.set_surface(StudioSurface::Automation, cx);
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let welcome_bounds = vcx
+        .debug_bounds("automation-welcome")
+        .expect("automation-welcome bounds");
+    assert!(
+        welcome_bounds.size.height >= gpui::px(200.)
+            && welcome_bounds.size.width >= gpui::px(300.),
+        "automation-welcome collapsed: {:?}",
+        welcome_bounds.size
+    );
+
+    panel.update(vcx, |panel, cx| {
+        panel.automation.started = true;
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let workflow_bounds = vcx
+        .debug_bounds("automation-workflow")
+        .expect("automation-workflow bounds");
+    assert!(
+        workflow_bounds.size.height >= gpui::px(200.)
+            && workflow_bounds.size.width >= gpui::px(300.),
+        "automation-workflow collapsed: {:?}",
+        workflow_bounds.size
+    );
+
+    panel.update(vcx, |panel, cx| {
+        panel.automation_page = Some(crate::AutomationPage::default());
+        cx.notify();
+    });
+    vcx.update(|window, cx| window.draw(cx).clear(cx));
+    let manager_bounds = vcx
+        .debug_bounds("automation-manager-scroll")
+        .expect("automation-manager-scroll bounds");
+    assert!(
+        manager_bounds.size.height >= gpui::px(200.)
+            && manager_bounds.size.width >= gpui::px(300.),
+        "automation-manager-scroll collapsed: {:?}",
+        manager_bounds.size
+    );
+
+    drop(panel);
+    let _ = std::fs::remove_dir_all(root);
+}
