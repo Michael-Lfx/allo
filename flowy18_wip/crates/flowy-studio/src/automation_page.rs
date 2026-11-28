@@ -151,12 +151,15 @@ impl StudioPanel {
                     .render(&self.theme, window),
             )
             .child(
-                div()
-                    .id("automation-manager-scroll")
+                ui::scroll_area("automation-manager-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_automation_manager"))
+                    .debug_selector(|| "automation-manager-scroll".to_owned())
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px(self.theme.space(24.))
+                    .viewport_style({
+                        let pad_x = self.theme.space(24.);
+                        move |s| s.px(pad_x)
+                    })
                     .child(
                         div()
                             .w_full()

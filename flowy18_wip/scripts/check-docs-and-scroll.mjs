@@ -14,16 +14,7 @@ const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // New files and migrated ScrollArea viewports must stay at 0.
 const rawScrollAllowlist = new Map([
   ["flowy-ui/src/overlays.rs", 1],
-  ["flowy-studio/src/automation.rs", 1],
-  ["flowy-studio/src/automation_page.rs", 1],
-  ["flowy-studio/src/composer_add_menu.rs", 1],
-  ["flowy-studio/src/drawer_preview.rs", 1],
-  ["flowy-studio/src/home.rs", 1],
-  ["flowy-studio/src/library/preview_view.rs", 1],
   ["flowy-studio/src/markdown.rs", 2],
-  ["flowy-studio/src/pending_card.rs", 2],
-  ["flowy-studio/src/router_works.rs", 1],
-  ["flowy-studio/src/studio.rs", 1],
 ]);
 
 // Shrink-only baseline of historical docs/plans links predating this check.

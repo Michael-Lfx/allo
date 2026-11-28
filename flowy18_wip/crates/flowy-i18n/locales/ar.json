@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "منطقة التمرير لتفاصيل مهارتي",
   "a11y.scroll_skills_catalog": "منطقة التمرير لقائمة المهارات",
   "a11y.scroll_skill_shelf_dialog": "منطقة التمرير لنافذة معاينة المهارة",
-  "a11y.scroll_skill_dialog": "منطقة التمرير لنافذة المهارة"
+  "a11y.scroll_skill_dialog": "منطقة التمرير لنافذة المهارة",
+  "a11y.scroll_automation_canvas": "منطقة التمرير للوحة الأتمتة",
+  "a11y.scroll_automation_manager": "منطقة التمرير لإدارة الأتمتة",
+  "a11y.scroll_composer_add_menu": "منطقة التمرير لقائمة إضافة المحرر",
+  "a11y.scroll_source_code": "منطقة التمرير لمعاينة المصدر",
+  "a11y.scroll_home_stage": "منطقة التمرير لمنصة البداية",
+  "a11y.scroll_table_preview": "منطقة التمرير لمعاينة الجدول",
+  "a11y.scroll_pending_cards": "منطقة التمرير لبطاقات التأكيد المعلقة",
+  "a11y.scroll_tool_command_preview": "منطقة التمرير لمعاينة الأمر",
+  "a11y.scroll_background_tasks": "منطقة التمرير لمهام الخلفية",
+  "a11y.scroll_model_menu": "منطقة التمرير لقائمة اختيار النموذج"
 }

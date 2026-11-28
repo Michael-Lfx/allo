@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "我的技能详情滚动区",
   "a11y.scroll_skills_catalog": "技能列表滚动区",
   "a11y.scroll_skill_shelf_dialog": "技能预览弹窗滚动区",
-  "a11y.scroll_skill_dialog": "技能弹窗滚动区"
+  "a11y.scroll_skill_dialog": "技能弹窗滚动区",
+  "a11y.scroll_automation_canvas": "自动化画布滚动区",
+  "a11y.scroll_automation_manager": "自动化管理滚动区",
+  "a11y.scroll_composer_add_menu": "输入框添加菜单滚动区",
+  "a11y.scroll_source_code": "源码预览滚动区",
+  "a11y.scroll_home_stage": "主页工作台滚动区",
+  "a11y.scroll_table_preview": "表格预览滚动区",
+  "a11y.scroll_pending_cards": "待确认卡片滚动区",
+  "a11y.scroll_tool_command_preview": "命令预览滚动区",
+  "a11y.scroll_background_tasks": "后台任务队列滚动区",
+  "a11y.scroll_model_menu": "模型选择菜单滚动区"
 }

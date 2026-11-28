@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "マイスキル詳細のスクロール領域",
   "a11y.scroll_skills_catalog": "スキルカタログのスクロール領域",
   "a11y.scroll_skill_shelf_dialog": "スキルプレビューダイアログのスクロール領域",
-  "a11y.scroll_skill_dialog": "スキルダイアログのスクロール領域"
+  "a11y.scroll_skill_dialog": "スキルダイアログのスクロール領域",
+  "a11y.scroll_automation_canvas": "自動化キャンバスのスクロール領域",
+  "a11y.scroll_automation_manager": "自動化管理のスクロール領域",
+  "a11y.scroll_composer_add_menu": "入力欄の追加メニューのスクロール領域",
+  "a11y.scroll_source_code": "ソースコードプレビューのスクロール領域",
+  "a11y.scroll_home_stage": "ホームステージのスクロール領域",
+  "a11y.scroll_table_preview": "表プレビューのスクロール領域",
+  "a11y.scroll_pending_cards": "確認待ちカードのスクロール領域",
+  "a11y.scroll_tool_command_preview": "コマンドプレビューのスクロール領域",
+  "a11y.scroll_background_tasks": "バックグラウンドタスクのスクロール領域",
+  "a11y.scroll_model_menu": "モデル選択メニューのスクロール領域"
 }

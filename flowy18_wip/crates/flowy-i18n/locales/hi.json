@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "मेरे कौशल विवरण स्क्रॉल क्षेत्र",
   "a11y.scroll_skills_catalog": "कौशल कैटलॉग स्क्रॉल क्षेत्र",
   "a11y.scroll_skill_shelf_dialog": "कौशल पूर्वावलोकन संवाद स्क्रॉल क्षेत्र",
-  "a11y.scroll_skill_dialog": "कौशल संवाद स्क्रॉल क्षेत्र"
+  "a11y.scroll_skill_dialog": "कौशल संवाद स्क्रॉल क्षेत्र",
+  "a11y.scroll_automation_canvas": "ऑटोमेशन कैनवास स्क्रॉल क्षेत्र",
+  "a11y.scroll_automation_manager": "ऑटोमेशन प्रबंधन स्क्रॉल क्षेत्र",
+  "a11y.scroll_composer_add_menu": "कंपोज़र जोड़ें मेनू स्क्रॉल क्षेत्र",
+  "a11y.scroll_source_code": "स्रोत कोड पूर्वावलोकन स्क्रॉल क्षेत्र",
+  "a11y.scroll_home_stage": "होम मंच स्क्रॉल क्षेत्र",
+  "a11y.scroll_table_preview": "तालिका पूर्वावलोकन स्क्रॉल क्षेत्र",
+  "a11y.scroll_pending_cards": "लंबित पुष्टि कार्ड स्क्रॉल क्षेत्र",
+  "a11y.scroll_tool_command_preview": "कमांड पूर्वावलोकन स्क्रॉल क्षेत्र",
+  "a11y.scroll_background_tasks": "पृष्ठभूमि कार्य स्क्रॉल क्षेत्र",
+  "a11y.scroll_model_menu": "मॉडल चयन मेनू स्क्रॉल क्षेत्र"
 }

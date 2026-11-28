@@ -14,14 +14,14 @@ impl crate::panel::StudioPanel {
     ) -> impl IntoElement {
         // The width is left to flex: this column takes whatever the drawer
         // leaves, so an open drawer shrinks it without any pixel math.
-        div()
-            .id("studio-scroll")
+        theme::scroll_area("studio-scroll", &self.theme)
+            .a11y_label(self.t("a11y.scroll_home_stage"))
+            .debug_selector(|| "studio-scroll".to_owned())
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
+            .h_full()
+            .viewport_style(|s| s.flex().flex_col())
             .child(
                 div()
                     .w_full()

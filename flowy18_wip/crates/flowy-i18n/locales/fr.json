@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "Zone de défilement des détails de ma compétence",
   "a11y.scroll_skills_catalog": "Zone de défilement du catalogue de compétences",
   "a11y.scroll_skill_shelf_dialog": "Zone de défilement de l'aperçu de compétence",
-  "a11y.scroll_skill_dialog": "Zone de défilement de la boîte de dialogue de compétence"
+  "a11y.scroll_skill_dialog": "Zone de défilement de la boîte de dialogue de compétence",
+  "a11y.scroll_automation_canvas": "Zone de défilement du canevas d’automatisation",
+  "a11y.scroll_automation_manager": "Zone de défilement de gestion des automatisations",
+  "a11y.scroll_composer_add_menu": "Zone de défilement du menu d’ajout de l’éditeur",
+  "a11y.scroll_source_code": "Zone de défilement de l’aperçu du code source",
+  "a11y.scroll_home_stage": "Zone de défilement de l’espace d’accueil",
+  "a11y.scroll_table_preview": "Zone de défilement de l’aperçu du tableau",
+  "a11y.scroll_pending_cards": "Zone de défilement des cartes en attente de confirmation",
+  "a11y.scroll_tool_command_preview": "Zone de défilement de l’aperçu de la commande",
+  "a11y.scroll_background_tasks": "Zone de défilement des tâches en arrière-plan",
+  "a11y.scroll_model_menu": "Zone de défilement du menu de sélection de modèle"
 }

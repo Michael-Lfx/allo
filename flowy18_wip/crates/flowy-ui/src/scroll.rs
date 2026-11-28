@@ -39,6 +39,7 @@ const THUMB_MIN_LENGTH_PX: f32 = 36.0;
 type ViewportModifier = Box<dyn FnOnce(gpui::Div) -> gpui::Div>;
 type ScrollListener =
     Box<dyn Fn(&ScrollEvent, &mut Window, &mut App) + 'static>;
+type ScrollSelector = Box<dyn FnOnce() -> String + 'static>;
 
 /// Converts a GPUI scroll offset (`0.0` down/right to `-max_px`) and extent
 /// into non-negative AccessKit physical pixel `(min, current, max)` values.
@@ -561,10 +562,41 @@ where
     }
 }
 
+fn inset_axis_span(origin: &mut Pixels, span: &mut Pixels, inset: Pixels) {
+    if inset <= px(0.) || *span <= px(0.) {
+        return;
+    }
+    let shrink = inset * 2.;
+    if *span <= shrink {
+        *origin += *span / 2.;
+        *span = px(0.);
+    } else {
+        *origin += inset;
+        *span -= shrink;
+    }
+}
+
+fn inset_content_span(
+    vp_span: Pixels,
+    content_span: &mut Pixels,
+    inset: Pixels,
+) {
+    if inset <= px(0.) || vp_span <= px(0.) {
+        return;
+    }
+    let shrink = inset * 2.;
+    *content_span = if vp_span <= shrink {
+        px(0.)
+    } else {
+        (*content_span - shrink).max(px(0.))
+    };
+}
+
 #[derive(Clone)]
 struct InsetScrollbarHandle<H> {
     inner: H,
-    inset_y: Pixels,
+    axis: ScrollbarAxis,
+    inset: Pixels,
 }
 
 impl<H: ScrollbarHandle + Clone + 'static> ScrollbarHandle
@@ -572,16 +604,20 @@ impl<H: ScrollbarHandle + Clone + 'static> ScrollbarHandle
 {
     fn viewport_bounds(&self) -> Bounds<Pixels> {
         let mut bounds = self.inner.viewport_bounds();
-        if self.inset_y <= px(0.) || bounds.size.height <= px(0.) {
-            return bounds;
+        if matches!(self.axis, ScrollbarAxis::Vertical | ScrollbarAxis::Both) {
+            inset_axis_span(
+                &mut bounds.origin.y,
+                &mut bounds.size.height,
+                self.inset,
+            );
         }
-        let shrink = self.inset_y * 2.;
-        if bounds.size.height <= shrink {
-            bounds.origin.y += bounds.size.height / 2.;
-            bounds.size.height = px(0.);
-        } else {
-            bounds.origin.y += self.inset_y;
-            bounds.size.height -= shrink;
+        if matches!(self.axis, ScrollbarAxis::Horizontal | ScrollbarAxis::Both)
+        {
+            inset_axis_span(
+                &mut bounds.origin.x,
+                &mut bounds.size.width,
+                self.inset,
+            );
         }
         bounds
     }
@@ -596,18 +632,16 @@ impl<H: ScrollbarHandle + Clone + 'static> ScrollbarHandle
 
     fn content_size(&self) -> Size<Pixels> {
         let mut content = self.inner.content_size();
-        let vp_h = self.inner.viewport_bounds().size.height;
-        if self.inset_y <= px(0.) || vp_h <= px(0.) {
-            return content;
+        let vp_size = self.inner.viewport_bounds().size;
+        if matches!(self.axis, ScrollbarAxis::Vertical | ScrollbarAxis::Both) {
+            // Preserve exact overflow (`content - viewport`) after insetting
+            // the track bounds so non-overflowing panes stay hidden and thumb
+            // drag reaches the true edge.
+            inset_content_span(vp_size.height, &mut content.height, self.inset);
         }
-        let shrink = self.inset_y * 2.;
-        if vp_h <= shrink {
-            content.height = px(0.);
-        } else {
-            // Preserve the exact vertical overflow (`content - viewport`) after
-            // insetting the track bounds so non-overflowing panes stay hidden
-            // and thumb drag still reaches the true bottom edge.
-            content.height = (content.height - shrink).max(px(0.));
+        if matches!(self.axis, ScrollbarAxis::Horizontal | ScrollbarAxis::Both)
+        {
+            inset_content_span(vp_size.width, &mut content.width, self.inset);
         }
         content
     }
@@ -627,13 +661,14 @@ fn flowy_scrollbar<H: ScrollbarHandle + Clone + 'static>(
     axis: ScrollbarAxis,
     theme: ResolvedTheme,
     mode: ScrollbarMode,
-    inset_y: Pixels,
+    inset: Pixels,
 ) -> AnyElement {
     let styles = scrollbar_styles_for(theme);
-    if inset_y > px(0.) {
+    if inset > px(0.) {
         let inset_handle = InsetScrollbarHandle {
             inner: handle.clone(),
-            inset_y,
+            axis,
+            inset,
         };
         Scrollbar::new(&inset_handle)
             .id(id)
@@ -667,6 +702,7 @@ pub struct ScrollArea {
     shell_style: StyleRefinement,
     viewport_modifier: Option<ViewportModifier>,
     on_scroll: Option<ScrollListener>,
+    debug_selector: Option<ScrollSelector>,
     children: Vec<AnyElement>,
 }
 
@@ -700,6 +736,7 @@ pub fn scroll_area(
         shell_style: StyleRefinement::default(),
         viewport_modifier: None,
         on_scroll: None,
+        debug_selector: None,
         children: Vec::new(),
     }
 }
@@ -751,6 +788,8 @@ impl ScrollArea {
 
     /// Configures a content-sized container capped at `max_h` instead of a
     /// flex-grow viewport (used for dropdowns/quick search where rows shrink-wrap).
+    /// Combine with `.both_axes()` (never `.horizontal()`) when horizontal
+    /// overflow also needs to scroll inside a height cap.
     pub const fn max_h_viewport(mut self, max_h: Pixels) -> Self {
         self.max_h = Some(max_h);
         self
@@ -773,6 +812,16 @@ impl ScrollArea {
         listener: impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_scroll = Some(Box::new(listener));
+        self
+    }
+
+    /// Sets a test selector key forwarded to the scrollable viewport in
+    /// `test-support` builds (no-op in release builds).
+    pub fn debug_selector(
+        mut self,
+        selector: impl FnOnce() -> String + 'static,
+    ) -> Self {
+        self.debug_selector = Some(Box::new(selector));
         self
     }
 }
@@ -813,6 +862,9 @@ impl RenderOnce for ScrollArea {
             .track_scroll(&handle)
             .scrollbar_width(px(6.))
             .children(self.children);
+        if let Some(selector) = self.debug_selector {
+            viewport = viewport.debug_selector(selector);
+        }
 
         viewport = match self.axis {
             ScrollbarAxis::Vertical => viewport.overflow_y_scroll(),
@@ -823,10 +875,18 @@ impl RenderOnce for ScrollArea {
         let mut shell = div().id((self.id.clone(), "shell"));
         *shell.style() = self.shell_style;
         shell = shell.relative().flex().flex_col();
+        debug_assert!(
+            !(matches!(self.axis, ScrollbarAxis::Horizontal)
+                && self.max_h.is_some()),
+            "ScrollArea::horizontal() cannot combine with max_h_viewport(); use both_axes()"
+        );
         if let Some(max_h) = self.max_h {
-            shell = shell.w_full().max_h(max_h);
+            if shell.style().size.width.is_none() {
+                shell = shell.w_full();
+            }
+            shell = shell.max_h(max_h);
             viewport = viewport.flex_shrink(1.0).max_h(max_h);
-        } else {
+        } else if !matches!(self.axis, ScrollbarAxis::Horizontal) {
             viewport = viewport.flex_1();
         }
 
@@ -1217,7 +1277,8 @@ mod tests {
                 content: size(px(260.), px(400.)),
                 offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
             },
-            inset_y: px(8.),
+            axis: ScrollbarAxis::Vertical,
+            inset: px(8.),
         };
         assert_eq!(fitting.viewport_bounds().origin.y, px(28.));
         assert_eq!(fitting.viewport_bounds().size.height, px(384.));
@@ -1235,7 +1296,8 @@ mod tests {
                 content: size(px(260.), px(650.)),
                 offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
             },
-            inset_y: px(8.),
+            axis: ScrollbarAxis::Vertical,
+            inset: px(8.),
         };
         let overflow_vp = overflowing.viewport_bounds();
         let overflow_content = overflowing.content_size();
@@ -1248,9 +1310,127 @@ mod tests {
                 content: size(px(100.), px(12.)),
                 offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
             },
-            inset_y: px(8.),
+            axis: ScrollbarAxis::Vertical,
+            inset: px(8.),
         };
         assert_eq!(tiny.viewport_bounds().size.height, px(0.));
         assert_eq!(tiny.content_size().height, px(0.));
+
+        let horiz_short = InsetScrollbarHandle {
+            inner: FakeHandle {
+                vp: Bounds::new(
+                    point(px(10.), px(20.)),
+                    size(px(260.), px(12.)),
+                ),
+                content: size(px(500.), px(12.)),
+                offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
+            },
+            axis: ScrollbarAxis::Horizontal,
+            inset: px(8.),
+        };
+        assert_eq!(horiz_short.viewport_bounds().origin.x, px(18.));
+        assert_eq!(horiz_short.viewport_bounds().size.width, px(244.));
+        assert_eq!(horiz_short.viewport_bounds().size.height, px(12.));
+        assert_eq!(
+            horiz_short.content_size().width
+                - horiz_short.viewport_bounds().size.width,
+            px(240.)
+        );
+    }
+
+    #[gpui::test]
+    fn scroll_area_max_h_viewport_preserves_explicit_width(
+        cx: &mut TestAppContext,
+    ) {
+        struct WidthHarness {
+            theme: ResolvedTheme,
+            handle: ScrollHandle,
+        }
+
+        impl gpui::Render for WidthHarness {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut gpui::Context<'_, Self>,
+            ) -> impl IntoElement {
+                div().w(px(600.)).h(px(400.)).flex().flex_col().child(
+                    scroll_area("test-explicit-width", &self.theme)
+                        .track_scroll(&self.handle)
+                        .w(px(280.))
+                        .max_h_viewport(px(200.))
+                        .child(div().h(px(500.)).w_full()),
+                )
+            }
+        }
+
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let (view, vcx) = cx.add_window_view(|_, _| WidthHarness {
+            theme: dark,
+            handle: ScrollHandle::new(),
+        });
+
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = view.read_with(vcx, |h, _| h.handle.bounds());
+        assert_eq!(bounds.size.width, px(280.0));
+        assert_eq!(bounds.size.height, px(200.0));
+    }
+
+    #[gpui::test]
+    fn scroll_area_horizontal_preserves_intrinsic_height_and_overflows(
+        cx: &mut TestAppContext,
+    ) {
+        struct HorizontalHarness {
+            theme: ResolvedTheme,
+            handle: ScrollHandle,
+        }
+
+        impl gpui::Render for HorizontalHarness {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut gpui::Context<'_, Self>,
+            ) -> impl IntoElement {
+                div().w(px(240.)).h(px(300.)).flex().flex_col().child(
+                    scroll_area("test-horizontal-scroll", &self.theme)
+                        .horizontal()
+                        .track_scroll(&self.handle)
+                        .a11y_label("Test horizontal scroll area")
+                        .w_full()
+                        .viewport_style(|s| s.pb(px(14.)))
+                        .child(div().w(px(640.)).h(px(56.))),
+                )
+            }
+        }
+
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let (view, vcx) = cx.add_window_view(|_, _| HorizontalHarness {
+            theme: dark,
+            handle: ScrollHandle::new(),
+        });
+
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = view.read_with(vcx, |h, _| h.handle.bounds());
+        let max_offset = view.read_with(vcx, |h, _| h.handle.max_offset());
+        assert!(
+            bounds.size.height >= px(56.0),
+            "horizontal auto-height ScrollArea must not collapse in flex_col; got {:?}",
+            bounds.size
+        );
+        assert!(
+            max_offset.x > px(300.0),
+            "horizontal ScrollArea must expose horizontal overflow; got {max_offset:?}",
+        );
     }
 }

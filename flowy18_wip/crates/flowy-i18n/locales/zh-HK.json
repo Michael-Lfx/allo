@@ -1031,5 +1031,15 @@
   "a11y.scroll_my_skill_details": "我的技能詳情捲動區",
   "a11y.scroll_skills_catalog": "技能清單捲動區",
   "a11y.scroll_skill_shelf_dialog": "技能預覽彈窗捲動區",
-  "a11y.scroll_skill_dialog": "技能彈窗捲動區"
+  "a11y.scroll_skill_dialog": "技能彈窗捲動區",
+  "a11y.scroll_automation_canvas": "自動化畫布捲動區",
+  "a11y.scroll_automation_manager": "自動化管理捲動區",
+  "a11y.scroll_composer_add_menu": "輸入框加入選單捲動區",
+  "a11y.scroll_source_code": "原始碼預覽捲動區",
+  "a11y.scroll_home_stage": "主頁工作台捲動區",
+  "a11y.scroll_table_preview": "表格預覽捲動區",
+  "a11y.scroll_pending_cards": "待確認卡片捲動區",
+  "a11y.scroll_tool_command_preview": "命令預覽捲動區",
+  "a11y.scroll_background_tasks": "背景任務佇列捲動區",
+  "a11y.scroll_model_menu": "模型選擇選單捲動區"
 }

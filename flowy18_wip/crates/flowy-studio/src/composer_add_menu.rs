@@ -14,13 +14,25 @@ impl StudioPanel {
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let pad = self.theme.space(8.0);
         self.popover_card("composer-add-menu-panel", 296.0, 8.0, 4.0)
-            .max_h(px(380.))
-            .overflow_y_scroll()
-            .child(self.workspace_section(cx))
-            .child(self.skills_section(cx))
-            .child(self.connectors_section())
-            .child(self.preferences_section(cx))
+            .p_0()
+            .overflow_hidden()
+            .child(
+                theme::scroll_area("composer-add-menu-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_composer_add_menu"))
+                    .debug_selector(|| "composer-add-menu-scroll".to_owned())
+                    .w_full()
+                    .max_h_viewport(px(380.))
+                    .scrollbar_inset(px(6.))
+                    .viewport_style(move |s| {
+                        s.p(pad).flex().flex_col().gap(px(4.))
+                    })
+                    .child(self.workspace_section(cx))
+                    .child(self.skills_section(cx))
+                    .child(self.connectors_section())
+                    .child(self.preferences_section(cx)),
+            )
     }
 
     fn add_menu_section(
