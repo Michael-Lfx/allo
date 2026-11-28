@@ -555,6 +555,65 @@ mod tests {
     }
 
     #[test]
+    fn batch1_scroll_area_a11y_labels_are_localized_across_all_locales() {
+        let mut i18n = I18n::embedded("Flowy");
+        let keys = [
+            "a11y.scroll_appearance",
+            "a11y.scroll_ideas_gallery",
+            "a11y.scroll_idea_dialog",
+            "a11y.scroll_invite_dialog",
+            "a11y.scroll_login_panel",
+            "a11y.scroll_legal_document",
+            "a11y.scroll_personalization",
+            "a11y.scroll_import_memory",
+            "a11y.scroll_add_knowledge",
+            "a11y.scroll_project_dialog",
+            "a11y.scroll_settings_nav",
+            "a11y.scroll_language_menu",
+            "a11y.scroll_settings_account",
+            "a11y.scroll_my_skills_list",
+            "a11y.scroll_my_skill_details",
+            "a11y.scroll_skills_catalog",
+            "a11y.scroll_skill_shelf_dialog",
+            "a11y.scroll_skill_dialog",
+        ];
+        i18n.set_locale(Locale::ZhCn);
+        assert_eq!(i18n.t("a11y.scroll_appearance"), "外观设置滚动区");
+        assert_eq!(i18n.t("a11y.scroll_skills_catalog"), "技能列表滚动区");
+        i18n.set_locale(Locale::En);
+        assert_eq!(
+            i18n.t("a11y.scroll_appearance"),
+            "Appearance settings scroll area"
+        );
+        assert_eq!(
+            i18n.t("a11y.scroll_skills_catalog"),
+            "Skills catalog scroll area"
+        );
+        i18n.set_locale(Locale::De);
+        assert!(i18n.t("a11y.scroll_import_memory").contains("Erinnerung"));
+        i18n.set_locale(Locale::Th);
+        assert!(i18n.t("a11y.scroll_import_memory").contains("ความจำ"));
+        i18n.set_locale(Locale::Vi);
+        assert!(i18n.t("a11y.scroll_import_memory").contains("trí nhớ"));
+        for locale in Locale::ALL {
+            i18n.set_locale(locale);
+            for key in keys {
+                let text = i18n.t(key);
+                assert!(!text.is_empty(), "{}: {key}", locale.code());
+                assert_ne!(text, key, "{}: {key}", locale.code());
+                if locale != Locale::En {
+                    assert_ne!(
+                        text,
+                        i18n.messages[&Locale::En][key],
+                        "{}: {key} fell back to English",
+                        locale.code()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn placeholders_are_replaced() {
         let i18n = I18n::embedded("Flowy");
         let text = i18n.tf("chat.duration_secs", &[("n", "3")]);

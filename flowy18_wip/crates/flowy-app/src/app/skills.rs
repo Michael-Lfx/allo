@@ -375,9 +375,9 @@ impl FlowyApp {
             .flex_col()
             .child(self.skills_header(window, cx))
             .child(
-                div()
-                    .id("skills-scroll")
+                theme::scroll_area("skills-scroll", &self.theme)
                     .track_scroll(&self.skills.scroll)
+                    .a11y_label(self.t("a11y.scroll_skills_catalog"))
                     .on_scroll(cx.listener(|app, _event, window, cx| {
                         // The built-in scroller updates the offset before this
                         // listener, so the bottom can be checked in this event.
@@ -390,7 +390,6 @@ impl FlowyApp {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .child(content),
             )
     }
@@ -974,7 +973,9 @@ impl FlowyApp {
             .flex_col()
             .child(self.shelf_dialog_header(&skill, cx))
             .when(has_body, |dialog| {
-                dialog.child(self.shelf_dialog_body(&skill))
+                let body_max_h =
+                    px(240.).min((frame.height - px(240.)).max(px(80.)));
+                dialog.child(self.shelf_dialog_body(&skill, body_max_h))
             }),
         )
         .into_any_element()
@@ -1237,21 +1238,28 @@ impl FlowyApp {
         Some(self.tf("skills.installs", &[("count", &count)]))
     }
 
-    fn shelf_dialog_body(&self, skill: &ShelfCard) -> impl IntoElement {
-        div()
-            .id("skill-shelf-body")
-            .min_h_0()
-            .max_h(px(240.))
-            .overflow_y_scroll()
-            .px_5()
-            .pt_4()
-            .pb_5()
+    fn shelf_dialog_body(
+        &self,
+        skill: &ShelfCard,
+        max_h: Pixels,
+    ) -> impl IntoElement {
+        let body_size = self.theme.body_size();
+        let ink = self.theme.ink();
+        theme::scroll_area("skill-shelf-body", &self.theme)
+            .a11y_label(self.t("a11y.scroll_skill_shelf_dialog"))
+            .max_h_viewport(max_h)
+            .scrollbar_inset(px(8.))
             .border_t_1()
             .border_color(self.theme.line())
-            .text_size(self.theme.body_size())
-            .line_height(self.theme.body_size() * 1.55)
-            .text_color(self.theme.ink())
-            .whitespace_normal()
+            .viewport_style(move |s| {
+                s.px_5()
+                    .pt_4()
+                    .pb_5()
+                    .text_size(body_size)
+                    .line_height(body_size * 1.55)
+                    .text_color(ink)
+                    .whitespace_normal()
+            })
             .child(skill.summary.clone())
     }
 
@@ -1319,7 +1327,11 @@ impl FlowyApp {
         .flex()
         .flex_col()
         .child(self.skill_dialog_header(skill, cx))
-        .child(self.skill_dialog_body(skill, cx))
+        .child(self.skill_dialog_body(
+            skill,
+            (frame.height - px(240.)).max(px(80.)),
+            cx,
+        ))
     }
 
     pub(super) fn skill_script_confirm_layer(
@@ -1490,6 +1502,7 @@ impl FlowyApp {
     ) -> impl IntoElement {
         div()
             .w_full()
+            .flex_shrink_0()
             .px_6()
             .pt_5()
             .pb_5()
@@ -1959,19 +1972,17 @@ impl FlowyApp {
     fn skill_dialog_body(
         &self,
         skill: &Skill,
+        max_h: Pixels,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut body = div()
-            .id("skill-dialog-body")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px_6()
-            .pt_5()
-            .pb_6()
-            .flex()
-            .flex_col()
-            .gap_4()
+        let mut body = theme::scroll_area("skill-dialog-body", &self.theme)
+            .a11y_label(self.t("a11y.scroll_skill_dialog"))
+            .w_full()
+            .max_h_viewport(max_h)
+            .scrollbar_inset(px(8.))
+            .viewport_style(|s| {
+                s.px_6().pt_5().pb_6().flex().flex_col().gap_4()
+            })
             .child(
                 div()
                     .text_size(self.theme.body_size())

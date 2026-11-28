@@ -495,15 +495,11 @@ impl FlowyApp {
     }
 
     fn idea_grid(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut grid = div()
-            .id("idea-grid")
+        let mut grid = theme::scroll_area("idea-grid", &self.theme)
+            .a11y_label(self.t("a11y.scroll_ideas_gallery"))
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_wrap()
-            .gap_3()
-            .content_start();
+            .viewport_style(|s| s.flex().flex_wrap().gap_3().content_start());
         for item in GALLERY {
             if !self.gallery.idea_filter.matches(item.kind) {
                 continue;
@@ -567,51 +563,63 @@ impl FlowyApp {
         theme::dialog("idea-card", self.t(item.key), &self.theme, &self.ui, cx)
             .w(frame.width)
             .max_h(frame.height)
-            .overflow_y_scroll()
+            .overflow_hidden()
             .rounded(self.theme.modal_radius())
             .bg(self.theme.card())
             .shadow_md()
-            .p_5()
             .flex()
             .flex_col()
-            .gap_3()
             .on_click(cx.listener(|_app, _event, _window, cx| {
                 cx.stop_propagation();
             }))
-            .child(self.idea_heading(item, cx))
             .child(
-                div()
-                    .text_size(self.theme.body_size())
-                    .text_color(self.theme.muted())
-                    .whitespace_normal()
-                    .child(self.t(item.body)),
-            )
-            .child(idea_stage(self, item, cx))
-            .when(self.gallery.idea_note && item.kind == Kind::Video, |card| {
-                card.child(
-                    div()
-                        .text_size(self.theme.caption_size())
-                        .text_color(self.theme.muted())
-                        .child(self.t("gallery.play_later")),
-                )
-            })
-            .child(
-                div().flex().justify_end().child(
-                    theme::Button::new("idea-use", self.t("gallery.use"))
-                        .variant(theme::ControlVariant::Primary)
-                        .render(
-                            &self.theme,
-                            cx.listener(move |app, _event, _window, cx| {
-                                cx.stop_propagation();
-                                app.active_dialog =
-                                    super::state::ActiveDialog::None;
-                                app.gallery.idea_note = false;
-                                app.fill_prompt_key(body, cx);
-                            }),
+                theme::scroll_area("idea-card-scroll", &self.theme)
+                    .a11y_label(self.t("a11y.scroll_idea_dialog"))
+                    .w_full()
+                    .max_h_viewport(frame.height)
+                    .scrollbar_inset(px(8.))
+                    .viewport_style(|s| s.p_5().flex().flex_col().gap_3())
+                    .child(self.idea_heading(item, cx))
+                    .child(
+                        div()
+                            .text_size(self.theme.body_size())
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(self.t(item.body)),
+                    )
+                    .child(idea_stage(self, item, cx))
+                    .when(
+                        self.gallery.idea_note && item.kind == Kind::Video,
+                        |card| {
+                            card.child(
+                                div()
+                                    .text_size(self.theme.caption_size())
+                                    .text_color(self.theme.muted())
+                                    .child(self.t("gallery.play_later")),
+                            )
+                        },
+                    )
+                    .child(
+                        div().flex().justify_end().child(
+                            theme::Button::new(
+                                "idea-use",
+                                self.t("gallery.use"),
+                            )
+                            .variant(theme::ControlVariant::Primary)
+                            .render(
+                                &self.theme,
+                                cx.listener(move |app, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    app.active_dialog =
+                                        super::state::ActiveDialog::None;
+                                    app.gallery.idea_note = false;
+                                    app.fill_prompt_key(body, cx);
+                                }),
+                            ),
                         ),
-                ),
+                    )
+                    .child(self.similar_row(item, cx)),
             )
-            .child(self.similar_row(item, cx))
     }
 
     fn idea_heading(

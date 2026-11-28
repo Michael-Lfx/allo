@@ -314,86 +314,96 @@ impl FlowyApp {
         .w(px(360.))
         .max_w(frame.width)
         .max_h(frame.height)
-        .overflow_y_scroll()
+        .overflow_hidden()
         .bg(self.theme.canvas())
         .rounded(self.theme.modal_radius())
         .shadow_md()
-        .px(px(18.))
-        .pt_3()
-        .pb(px(16.))
         .flex()
         .flex_col()
-        .gap_0()
         .on_click(cx.listener(|_app, _event, _window, cx| {
             cx.stop_propagation();
         }))
-        .child(self.project_create_close(cx))
         .child(
-            div()
+            theme::scroll_area("project-create-scroll", &self.theme)
+                .a11y_label(self.t("a11y.scroll_project_dialog"))
                 .w_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_2()
+                .max_h_viewport(frame.height)
+                .scrollbar_inset(px(8.))
+                .viewport_style(|s| {
+                    s.px(px(18.)).pt_3().pb(px(16.)).flex().flex_col().gap_0()
+                })
+                .child(self.project_create_close(cx))
                 .child(
                     div()
-                        .size(px(40.))
-                        .rounded(px(12.))
-                        .bg(self.theme.tab_selected_bg())
+                        .w_full()
                         .flex()
+                        .flex_col()
                         .items_center()
-                        .justify_center()
+                        .gap_2()
                         .child(
-                            theme::icons::briefcase_business().size(px(18.)),
+                            div()
+                                .size(px(40.))
+                                .rounded(px(12.))
+                                .bg(self.theme.tab_selected_bg())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    theme::icons::briefcase_business()
+                                        .size(px(18.)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(self.theme.ink())
+                                .child(self.t(self.project_create.title_key)),
                         ),
                 )
                 .child(
                     div()
-                        .text_size(px(18.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(self.theme.ink())
-                        .child(self.t(self.project_create.title_key)),
-                ),
-        )
-        .child(
-            div()
-                .mt(px(20.))
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(px(16.))
-                .child(
-                    div()
+                        .mt(px(20.))
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .child(self.project_field_label("project.name"))
+                        .gap(px(16.))
                         .child(
-                            theme::TextField::new(
-                                "project-name",
-                                self.t("project.name"),
-                                self.project_create.name.clone(),
-                            )
-                            .placeholder(self.t("project.name_placeholder"))
-                            .quiet()
-                            .render(&self.theme, cx)
-                            .min_h(px(34.)),
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(self.project_field_label("project.name"))
+                                .child(
+                                    theme::TextField::new(
+                                        "project-name",
+                                        self.t("project.name"),
+                                        self.project_create.name.clone(),
+                                    )
+                                    .placeholder(
+                                        self.t("project.name_placeholder"),
+                                    )
+                                    .quiet()
+                                    .render(&self.theme, cx)
+                                    .min_h(px(34.)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    self.project_field_label("project.folder"),
+                                )
+                                .child(self.project_folder_button(folder, cx)),
                         ),
                 )
-                .child(
+                .children(self.project_create.status.map(|key| {
+                    let message = self.t(key);
                     div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(self.project_field_label("project.folder"))
-                        .child(self.project_folder_button(folder, cx)),
-                ),
-        )
-        .children(self.project_create.status.map(|key| {
-            let message = self.t(key);
-            div()
                 .id("project-create-error")
                 .role(gpui::Role::Alert)
                 // gpui-pre has no `aria_live`; the role still announces the
@@ -402,59 +412,60 @@ impl FlowyApp {
                 .text_color(self.theme.danger())
                 .whitespace_normal()
                 .child(message)
-        }))
-        .child(
-            div()
-                .mt(px(16.))
-                .w_full()
-                .flex()
-                .gap_3()
+                }))
                 .child(
-                    // The button draws its own rounded border; the wrapper only
-                    // sizes the slot so both footer buttons share the width.
-                    div().flex_1().min_h(px(34.)).child(
-                        theme::Button::new(
-                            "cancel-project-create",
-                            self.t("more.cancel"),
-                        )
-                        .variant(theme::ControlVariant::Secondary)
-                        .full_width()
-                        .render(
-                            &self.theme,
-                            cx.listener(|app, _event, _window, cx| {
-                                cx.stop_propagation();
-                                app.close_project_create(cx);
-                            }),
-                        ),
-                    ),
-                )
-                .child(
-                    div().flex_1().min_h(px(34.)).child(
-                        theme::Button::new(
-                            "submit-project-create",
-                            self.t(
-                                if self
-                                    .project_create
-                                    .editing_project_id
-                                    .is_some()
-                                {
-                                    "project.save"
-                                } else {
-                                    "project.create"
-                                },
+                    div()
+                        .mt(px(16.))
+                        .w_full()
+                        .flex()
+                        .gap_3()
+                        .child(
+                            // The button draws its own rounded border; the wrapper only
+                            // sizes the slot so both footer buttons share the width.
+                            div().flex_1().min_h(px(34.)).child(
+                                theme::Button::new(
+                                    "cancel-project-create",
+                                    self.t("more.cancel"),
+                                )
+                                .variant(theme::ControlVariant::Secondary)
+                                .full_width()
+                                .render(
+                                    &self.theme,
+                                    cx.listener(|app, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        app.close_project_create(cx);
+                                    }),
+                                ),
                             ),
                         )
-                        .variant(theme::ControlVariant::Primary)
-                        .disabled(!can_create)
-                        .full_width()
-                        .render(
-                            &self.theme,
-                            cx.listener(|app, _event, _window, cx| {
-                                cx.stop_propagation();
-                                app.submit_project_create(cx);
-                            }),
+                        .child(
+                            div().flex_1().min_h(px(34.)).child(
+                                theme::Button::new(
+                                    "submit-project-create",
+                                    self.t(
+                                        if self
+                                            .project_create
+                                            .editing_project_id
+                                            .is_some()
+                                        {
+                                            "project.save"
+                                        } else {
+                                            "project.create"
+                                        },
+                                    ),
+                                )
+                                .variant(theme::ControlVariant::Primary)
+                                .disabled(!can_create)
+                                .full_width()
+                                .render(
+                                    &self.theme,
+                                    cx.listener(|app, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        app.submit_project_create(cx);
+                                    }),
+                                ),
+                            ),
                         ),
-                    ),
                 ),
         )
     }

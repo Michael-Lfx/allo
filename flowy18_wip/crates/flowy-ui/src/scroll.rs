@@ -12,7 +12,7 @@ use std::fmt;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, EntityId, GlobalElementId,
     Hsla, InspectorElementId, InteractiveElement, IntoElement, ParentElement,
-    Pixels, Point, ScrollHandle, SharedString, Size, Stateful,
+    Pixels, Point, ScrollEvent, ScrollHandle, SharedString, Size, Stateful,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, accesskit,
     div, point, prelude::*, px,
 };
@@ -37,6 +37,8 @@ const THUMB_ACTIVE_INSET_PX: f32 = 2.0;
 const THUMB_MIN_LENGTH_PX: f32 = 36.0;
 
 type ViewportModifier = Box<dyn FnOnce(gpui::Div) -> gpui::Div>;
+type ScrollListener =
+    Box<dyn Fn(&ScrollEvent, &mut Window, &mut App) + 'static>;
 
 /// Converts a GPUI scroll offset (`0.0` down/right to `-max_px`) and extent
 /// into non-negative AccessKit physical pixel `(min, current, max)` values.
@@ -559,6 +561,66 @@ where
     }
 }
 
+#[derive(Clone)]
+struct InsetScrollbarHandle<H> {
+    inner: H,
+    inset_y: Pixels,
+}
+
+impl<H: ScrollbarHandle + Clone + 'static> ScrollbarHandle
+    for InsetScrollbarHandle<H>
+{
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        let mut bounds = self.inner.viewport_bounds();
+        if self.inset_y <= px(0.) || bounds.size.height <= px(0.) {
+            return bounds;
+        }
+        let shrink = self.inset_y * 2.;
+        if bounds.size.height <= shrink {
+            bounds.origin.y += bounds.size.height / 2.;
+            bounds.size.height = px(0.);
+        } else {
+            bounds.origin.y += self.inset_y;
+            bounds.size.height -= shrink;
+        }
+        bounds
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.inner.offset()
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        self.inner.set_offset(offset);
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        let mut content = self.inner.content_size();
+        let vp_h = self.inner.viewport_bounds().size.height;
+        if self.inset_y <= px(0.) || vp_h <= px(0.) {
+            return content;
+        }
+        let shrink = self.inset_y * 2.;
+        if vp_h <= shrink {
+            content.height = px(0.);
+        } else {
+            // Preserve the exact vertical overflow (`content - viewport`) after
+            // insetting the track bounds so non-overflowing panes stay hidden
+            // and thumb drag still reaches the true bottom edge.
+            content.height = (content.height - shrink).max(px(0.));
+        }
+        content
+    }
+
+    fn start_drag(&self) {
+        self.inner.start_drag();
+    }
+
+    fn end_drag(&self) {
+        self.inner.end_drag();
+    }
+}
+
 fn flowy_scrollbar<H: ScrollbarHandle + Clone + 'static>(
     id: ElementId,
     handle: &H,
@@ -568,30 +630,24 @@ fn flowy_scrollbar<H: ScrollbarHandle + Clone + 'static>(
     inset_y: Pixels,
 ) -> AnyElement {
     let styles = scrollbar_styles_for(theme);
-    let bar = Scrollbar::new(handle)
-        .id(id)
-        .axis(axis)
-        .mode(mode)
-        .styles(move |_| styles);
     if inset_y > px(0.) {
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .py(inset_y)
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .w_full()
-                    .child(bar.viewport_from_layout()),
-            )
+        let inset_handle = InsetScrollbarHandle {
+            inner: handle.clone(),
+            inset_y,
+        };
+        Scrollbar::new(&inset_handle)
+            .id(id)
+            .axis(axis)
+            .mode(mode)
+            .styles(move |_| styles)
             .into_any_element()
     } else {
-        bar.into_any_element()
+        Scrollbar::new(handle)
+            .id(id)
+            .axis(axis)
+            .mode(mode)
+            .styles(move |_| styles)
+            .into_any_element()
     }
 }
 
@@ -610,6 +666,7 @@ pub struct ScrollArea {
     inset_y: Pixels,
     shell_style: StyleRefinement,
     viewport_modifier: Option<ViewportModifier>,
+    on_scroll: Option<ScrollListener>,
     children: Vec<AnyElement>,
 }
 
@@ -642,6 +699,7 @@ pub fn scroll_area(
         inset_y: px(0.),
         shell_style: StyleRefinement::default(),
         viewport_modifier: None,
+        on_scroll: None,
         children: Vec::new(),
     }
 }
@@ -708,6 +766,15 @@ impl ScrollArea {
         self.viewport_modifier = Some(Box::new(modify));
         self
     }
+
+    /// Attaches a scroll-event listener directly to the inner scrollable viewport.
+    pub fn on_scroll(
+        mut self,
+        listener: impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_scroll = Some(Box::new(listener));
+        self
+    }
 }
 
 impl Styled for ScrollArea {
@@ -761,6 +828,10 @@ impl RenderOnce for ScrollArea {
             viewport = viewport.flex_shrink(1.0).max_h(max_h);
         } else {
             viewport = viewport.flex_1();
+        }
+
+        if let Some(listener) = self.on_scroll {
+            viewport = viewport.on_scroll(listener);
         }
 
         let viewport = attach_parent_scroll_actions(
@@ -1028,5 +1099,158 @@ mod tests {
         let scrolled_offset =
             view.read_with(vcx, |h, _| h.max_h_handle.offset());
         assert!(scrolled_offset.y < px(-200.0));
+    }
+
+    #[gpui::test]
+    fn scroll_area_forwards_on_scroll_listener(cx: &mut TestAppContext) {
+        use gpui::{PlatformInput, ScrollDelta, ScrollEvent};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+
+        struct OnScrollHarness {
+            theme: ResolvedTheme,
+            handle: ScrollHandle,
+            calls: Arc<AtomicUsize>,
+            offset_updated_before_cb: Arc<AtomicBool>,
+        }
+
+        impl gpui::Render for OnScrollHarness {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut gpui::Context<'_, Self>,
+            ) -> impl IntoElement {
+                let calls = Arc::clone(&self.calls);
+                let cb_handle = self.handle.clone();
+                let updated = Arc::clone(&self.offset_updated_before_cb);
+                div().w(px(300.)).h(px(200.)).flex().flex_col().child(
+                    scroll_area("test-on-scroll", &self.theme)
+                        .track_scroll(&self.handle)
+                        .a11y_label("Test scroll listener")
+                        .flex_1()
+                        .min_h_0()
+                        .on_scroll(move |_event, _window, _cx| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            if cb_handle.offset().y < px(0.) {
+                                updated.store(true, Ordering::Relaxed);
+                            }
+                        })
+                        .child(div().h(px(700.)).w_full()),
+                )
+            }
+        }
+
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let offset_updated_before_cb = Arc::new(AtomicBool::new(false));
+        let (view, vcx) = cx.add_window_view(|_, _| OnScrollHarness {
+            theme: dark,
+            handle: ScrollHandle::new(),
+            calls: Arc::clone(&calls),
+            offset_updated_before_cb: Arc::clone(&offset_updated_before_cb),
+        });
+
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let center = view.read_with(vcx, |h, _| h.handle.bounds().center());
+        vcx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::Scroll(ScrollEvent {
+                    position: center,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        });
+        assert!(
+            calls.load(Ordering::Relaxed) >= 1,
+            "on_scroll callback must fire on viewport wheel input"
+        );
+        assert!(
+            offset_updated_before_cb.load(Ordering::Relaxed),
+            "scroller must update handle.offset() before on_scroll runs"
+        );
+    }
+
+    #[test]
+    fn inset_scrollbar_handle_preserves_zero_overflow_and_full_extent() {
+        use gpui::size;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct FakeHandle {
+            vp: Bounds<Pixels>,
+            content: Size<Pixels>,
+            offset: Rc<Cell<Point<Pixels>>>,
+        }
+
+        impl ScrollbarHandle for FakeHandle {
+            fn viewport_bounds(&self) -> Bounds<Pixels> {
+                self.vp
+            }
+            fn offset(&self) -> Point<Pixels> {
+                self.offset.get()
+            }
+            fn set_offset(&self, offset: Point<Pixels>) {
+                self.offset.set(offset);
+            }
+            fn content_size(&self) -> Size<Pixels> {
+                self.content
+            }
+        }
+
+        let fitting = InsetScrollbarHandle {
+            inner: FakeHandle {
+                vp: Bounds::new(
+                    point(px(10.), px(20.)),
+                    size(px(260.), px(400.)),
+                ),
+                content: size(px(260.), px(400.)),
+                offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
+            },
+            inset_y: px(8.),
+        };
+        assert_eq!(fitting.viewport_bounds().origin.y, px(28.));
+        assert_eq!(fitting.viewport_bounds().size.height, px(384.));
+        assert!(
+            fitting.content_size().height
+                <= fitting.viewport_bounds().size.height
+        );
+
+        let overflowing = InsetScrollbarHandle {
+            inner: FakeHandle {
+                vp: Bounds::new(
+                    point(px(10.), px(20.)),
+                    size(px(260.), px(400.)),
+                ),
+                content: size(px(260.), px(650.)),
+                offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
+            },
+            inset_y: px(8.),
+        };
+        let overflow_vp = overflowing.viewport_bounds();
+        let overflow_content = overflowing.content_size();
+        assert_eq!(overflow_vp.size.height, px(384.));
+        assert_eq!(overflow_content.height - overflow_vp.size.height, px(250.));
+
+        let tiny = InsetScrollbarHandle {
+            inner: FakeHandle {
+                vp: Bounds::new(point(px(0.), px(0.)), size(px(100.), px(12.))),
+                content: size(px(100.), px(12.)),
+                offset: Rc::new(Cell::new(point(px(0.), px(0.)))),
+            },
+            inset_y: px(8.),
+        };
+        assert_eq!(tiny.viewport_bounds().size.height, px(0.));
+        assert_eq!(tiny.content_size().height, px(0.));
     }
 }

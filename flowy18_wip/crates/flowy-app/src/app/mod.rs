@@ -1235,7 +1235,9 @@ impl Render for FlowyApp {
             state::ActiveDialog::SkillScriptConfirm => {
                 root.child(self.skill_script_confirm_layer(window, cx))
             }
-            state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
+            state::ActiveDialog::Invite => {
+                root.child(self.invite_layer(window, cx))
+            }
             state::ActiveDialog::ProjectCreate => {
                 root.child(self.projects_layer(window, cx))
             }
@@ -1246,7 +1248,9 @@ impl Render for FlowyApp {
             state::ActiveDialog::Import | state::ActiveDialog::Knowledge => {
                 root.child(self.more_layer(window, cx))
             }
-            state::ActiveDialog::Legal(_) => root.child(self.legal_layer(cx)),
+            state::ActiveDialog::Legal(_) => {
+                root.child(self.legal_layer(window, cx))
+            }
             state::ActiveDialog::ArtifactPreview => {
                 root.child(self.artifact_preview_layer(cx))
             }
