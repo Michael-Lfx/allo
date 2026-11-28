@@ -13,7 +13,7 @@
 | `实现对照.md` | **每个重要环节：我们选了什么 / 对比方案是什么 / 为什么不选 / 证据在哪。** 想挑刺先读这份 |
 | `最终方案.md` | **结论稿（修订 9.24）。** 要动手只读这份：分层、work、能力包、执行、调度、核验、记忆、待人卡、边界、观测、§12.1–§12.21 演进与落地账本（含 `PR #530–#545` 修订 9.22–9.23）、**§12.22 `PR #546–#547` 与 Batch 2（`feat/studio-scroll-area`）低频滚区全域迁入 `ScrollArea`（含 `InsetScrollbarHandle` 按轴内缩、水平自适应高与显式豁免收窄至 3 处）与 1,043 键基线收口账本（修订 9.24）** |
 | `证据.md` | **全部实测记录（§11.1–§11.50）。** 数字、可重跑目录、真机日志审计、独立内核审查反例闭环、真云端结构化 L3 实测、§11.32–§11.49 实测总账（含 `PR #533–#545`）、**§11.50 `PR #546–#547` 与 Batch 2（`feat/studio-scroll-area`）5-Crate Clippy/4-Crate 全量单测/双主题真实 `ScrollPattern` E2E 实测总账（23 语种 1,043 键、`rawScrollAllowlist` 3 处）**及被推翻的结论 |
-| `跨平台沙箱与进程回收预留方案.md` | **【跨平台预留蓝图】** Windows 优先通用层（`RunFence` 两阶段回收 + MIT 净室 `shell_policy` + 诚实 `SandboxAvailability`）与 macOS Seatbelt / Linux `bwrap`（已在 `#536`/`#538` 实机接入并记入 §6–§7）/ Windows AppContainer 接入规格与验收矩阵 |
+| `跨平台沙箱与进程回收预留方案.md` | **【跨平台 Shell 沙箱与进程回收】** 首页列出 Linux Bubblewrap、macOS Seatbelt 与 Windows 当前状态。第 6–7 节记录 Unix 接入、代理与凭据边界，第 8 节记录经典 PowerShell 的 AppContainer 可行性。后续规格与历史验收矩阵保留在同一文档。 |
 | `参照.md` | 五款工作台横评、AutoLoop 借鉴分级、sub agent 与 super agent 的区别、**§10.5 OpenAI Dot 四轮实测对照与老爷爷对抗审查分级** |
 | `先记.md` | 六件暂时不做的事，每件写明「什么时候该回来看」 |
 | `审查交接.md` | **【历史快照】** 2026-11-23 交给外部审查者的材料，含审查结论与修正清单 |

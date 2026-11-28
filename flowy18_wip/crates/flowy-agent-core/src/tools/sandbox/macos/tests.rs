@@ -3,6 +3,7 @@ use super::{availability, shell_override};
 use crate::tools::SandboxPolicy;
 use rpi_tools::{ExecutionErrorCode, ShellExecOptions};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -52,7 +53,7 @@ async fn macos_seatbelt_filters_environment_and_blocks_network_when_requested()
     let addr = listener.local_addr().unwrap();
     let connect = format!("/usr/bin/nc -z -w 1 127.0.0.1 {}", addr.port());
     let policy = SandboxPolicy::for_workspace(cwd.to_path_buf());
-    let allowed = unix::execution_env(cwd, policy.clone())
+    let allowed = unix::execution_env(cwd, policy.clone(), None)
         .exec(
             &connect,
             ShellExecOptions {
@@ -63,18 +64,21 @@ async fn macos_seatbelt_filters_environment_and_blocks_network_when_requested()
         .await
         .unwrap();
     assert_eq!(allowed.exit_code, 0, "{}", allowed.stderr);
-    let env = unix::execution_env(cwd, policy.with_network(false));
+    let env = unix::execution_env(cwd, policy.with_network(false), None);
     let command = format!(
-        r#"set -e; test -z "$FLOWY_LLM_API_KEY"; if {connect} 2>/dev/null; then exit 12; fi; printf isolated"#
+        r#"set -e; test -z "$FLOWY_LLM_API_KEY"; test -z "$http_proxy"; if {connect} 2>/dev/null; then exit 12; fi; printf isolated"#
     );
     let result = env
         .exec(
             &command,
             ShellExecOptions {
-                env: Some(HashMap::from([(
-                    "FLOWY_LLM_API_KEY".to_owned(),
-                    "synthetic-environment-value".to_owned(),
-                )])),
+                env: Some(HashMap::from([
+                    (
+                        "FLOWY_LLM_API_KEY".to_owned(),
+                        "synthetic-environment-value".to_owned(),
+                    ),
+                    ("http_proxy".to_owned(), format!("http://{addr}")),
+                ])),
                 timeout: Some(5.0),
                 ..ShellExecOptions::default()
             },
@@ -83,6 +87,70 @@ async fn macos_seatbelt_filters_environment_and_blocks_network_when_requested()
         .unwrap();
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
     assert_eq!(result.stdout, "isolated");
+}
+
+#[tokio::test]
+#[ignore = "requires macOS Seatbelt, sandbox-exec, and system curl"]
+async fn macos_seatbelt_requests_through_safe_proxy() {
+    assert!(availability().is_enforced());
+    let cwd = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let env = unix::execution_env(
+        cwd,
+        SandboxPolicy::for_workspace(cwd.to_path_buf()),
+        None,
+    );
+    let request = env.exec(
+        "/usr/bin/curl -q -fsS --max-time 4 http://proxy-fixture.invalid/check",
+        ShellExecOptions {
+            env: Some(HashMap::from([("http_proxy".to_owned(), proxy)])),
+            inherit_env: false,
+            timeout: Some(6.0),
+            ..ShellExecOptions::default()
+        },
+    );
+    let serve = async {
+        let mut socket = tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("test proxy accept failed: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("curl reached the local proxy");
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(&socket);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            line.trim_end(),
+            "GET http://proxy-fixture.invalid/check HTTP/1.1"
+        );
+        loop {
+            line.clear();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nproxy-ready").unwrap();
+    };
+    let (result, ()) = tokio::join!(request, serve);
+    let result = result.unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "proxy-ready");
 }
 
 #[tokio::test]
@@ -98,6 +166,7 @@ async fn macos_seatbelt_reaps_on_cancel_and_timeout() {
         let env = unix::execution_env(
             cwd,
             SandboxPolicy::for_workspace(cwd.to_path_buf()),
+            None,
         );
         let cancel = CancellationToken::new();
         let running = env.exec(

@@ -4,6 +4,7 @@ use rpi_tools::{ExecutionEnv, ExecutionErrorCode, ShellExecOptions};
 use std::collections::HashMap;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -54,7 +55,7 @@ fn active_env(
         },
         "integration tests require a working nonprivileged Bubblewrap"
     );
-    unix::execution_env(workspace, policy)
+    unix::execution_env(workspace, policy, None)
 }
 
 fn collect_descendants(pid: u32, descendants: &mut Vec<u32>) {
@@ -132,6 +133,98 @@ printf isolated"#,
         .unwrap();
     assert_eq!(result.exit_code, 0, "{}", result.stderr);
     assert_eq!(result.stdout, "isolated");
+}
+
+#[tokio::test]
+#[ignore = "requires nonprivileged Bubblewrap with mount and PID namespaces"]
+async fn linux_bwrap_prepares_private_host_auth_before_launch() {
+    assert!(availability().is_enforced());
+    let scratch = Scratch::new();
+    let cwd = scratch.workspace();
+    let auth = scratch.0.join("auth");
+    assert!(!auth.exists());
+
+    let env = unix::execution_env(
+        &cwd,
+        SandboxPolicy::for_workspace(cwd.clone()),
+        Some(auth.clone()),
+    );
+    let shell = env.exec(
+        r"set -e
+          stat -c '%d:%i' ../auth
+          : > ready
+          while [ ! -f saved ]; do sleep 0.02; done
+          test ! -e ../auth/synthetic-credential",
+        ShellExecOptions {
+            timeout: Some(8.0),
+            ..ShellExecOptions::default()
+        },
+    );
+    let save_session = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !cwd.join("ready").is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("sandbox started with a masked auth directory");
+        fs::write(auth.join("synthetic-credential"), "fixture").unwrap();
+        fs::write(cwd.join("saved"), "").unwrap();
+    };
+    let (result, ()) = tokio::join!(shell, save_session);
+    let result = result.unwrap();
+
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    let metadata = auth.metadata().unwrap();
+    let host_identity = format!("{}:{}", metadata.dev(), metadata.ino());
+    assert_ne!(result.stdout.trim(), "");
+    assert_ne!(result.stdout.trim(), host_identity);
+    assert_eq!(metadata.permissions().mode() & 0o077, 0);
+    assert!(auth.join("synthetic-credential").is_file());
+}
+
+#[test]
+fn host_auth_preparation_rejects_a_file() {
+    let scratch = Scratch::new();
+    let auth = scratch.0.join("auth");
+    fs::write(&auth, "fixture").unwrap();
+    let error = super::prepare_host_auth(&auth).unwrap_err();
+    assert_eq!(error.code, ExecutionErrorCode::SpawnError);
+    assert_eq!(fs::read_to_string(auth).unwrap(), "fixture");
+}
+
+#[tokio::test]
+#[ignore = "requires nonprivileged Bubblewrap with mount and PID namespaces"]
+async fn linux_bwrap_forwards_safe_proxy_environment() {
+    let scratch = Scratch::new();
+    let cwd = scratch.workspace();
+    let env = active_env(&cwd, SandboxPolicy::for_workspace(cwd.clone()));
+    let result = env
+        .exec(
+            r#"test "$https_proxy" = 'http://127.0.0.1:18080' &&
+               test "$NO_PROXY" = 'localhost,.internal' &&
+               test -z "$ALL_PROXY" && printf proxy-ready"#,
+            ShellExecOptions {
+                env: Some(HashMap::from([
+                    (
+                        "https_proxy".to_owned(),
+                        "http://127.0.0.1:18080".to_owned(),
+                    ),
+                    ("NO_PROXY".to_owned(), "localhost,.internal".to_owned()),
+                    (
+                        "ALL_PROXY".to_owned(),
+                        "http://synthetic:secret@127.0.0.1:18080".to_owned(),
+                    ),
+                ])),
+                inherit_env: false,
+                timeout: Some(5.0),
+                ..ShellExecOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "proxy-ready");
 }
 
 #[tokio::test]

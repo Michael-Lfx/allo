@@ -23,6 +23,57 @@ const SHELL_ENV: [&str; 8] = [
     "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "TERM",
 ];
 
+const PROXY_ENV: [&str; 8] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+fn shell_env_allowed(name: &str, value: &str, allow_network: bool) -> bool {
+    if SHELL_ENV.contains(&name) {
+        return true;
+    }
+    if !allow_network || !PROXY_ENV.contains(&name) {
+        return false;
+    }
+    if value.contains(['@', '?', '#', '\\'])
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return false;
+    }
+    if matches!(name, "NO_PROXY" | "no_proxy") || value.is_empty() {
+        return true;
+    }
+    let explicit = value.split_once("://");
+    let authority = explicit.map_or(value, |(_, authority)| authority);
+    if authority
+        .strip_suffix('/')
+        .unwrap_or(authority)
+        .contains('/')
+    {
+        return false;
+    }
+    let endpoint = if explicit.is_some() {
+        std::borrow::Cow::Borrowed(value)
+    } else {
+        std::borrow::Cow::Owned(format!("http://{value}"))
+    };
+    reqwest::Url::parse(&endpoint).is_ok_and(|url| {
+        matches!(
+            url.scheme(),
+            "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+        ) && url.has_host()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && matches!(url.path(), "" | "/")
+    })
+}
+
 pub(super) fn probe(mut command: Command) -> bool {
     let Ok(mut child) = command
         .env_clear()
@@ -52,10 +103,21 @@ pub(super) fn probe(mut command: Command) -> bool {
 pub(in crate::tools) fn execution_env(
     cwd: &Path,
     policy: SandboxPolicy,
+    host_auth: Option<PathBuf>,
 ) -> Arc<dyn ExecutionEnv> {
     let inner = OsExecutionEnv::with_cwd(cwd.to_path_buf());
     if detect_sandbox_availability().is_enforced() {
-        Arc::new(SandboxedExecutionEnv { inner, policy })
+        #[cfg(target_os = "macos")]
+        let policy = match host_auth {
+            Some(path) => policy.with_protected_path(path),
+            None => policy,
+        };
+        Arc::new(SandboxedExecutionEnv {
+            inner,
+            policy,
+            #[cfg(target_os = "linux")]
+            host_auth,
+        })
     } else {
         Arc::new(inner)
     }
@@ -64,6 +126,8 @@ pub(in crate::tools) fn execution_env(
 struct SandboxedExecutionEnv {
     inner: OsExecutionEnv,
     policy: SandboxPolicy,
+    #[cfg(target_os = "linux")]
+    host_auth: Option<PathBuf>,
 }
 
 pub(super) fn setup_error(message: impl Into<String>) -> ExecutionError {
@@ -112,9 +176,17 @@ impl Shell for SandboxedExecutionEnv {
         }
         #[cfg(target_os = "linux")]
         let shell = {
+            let host_auth = self
+                .host_auth
+                .as_deref()
+                .map(super::linux::prepare_host_auth)
+                .transpose()?
+                .map(checked_path)
+                .transpose()?;
             policy.protected_paths.clear();
             for path in &self.policy.protected_paths {
                 match path.canonicalize() {
+                    Ok(path) if host_auth.as_ref() == Some(&path) => {}
                     Ok(path) => {
                         policy.protected_paths.push(checked_path(path)?);
                     }
@@ -126,7 +198,7 @@ impl Shell for SandboxedExecutionEnv {
                     }
                 }
             }
-            super::linux::shell_override(&policy, &cwd)
+            super::linux::shell_override(&policy, &cwd, host_auth.as_deref())
         };
         #[cfg(target_os = "macos")]
         let (shell, _profile) = super::macos::shell_override(&policy)?;
@@ -135,18 +207,18 @@ impl Shell for SandboxedExecutionEnv {
 
         let mut env = HashMap::new();
         if options.inherit_env {
-            for name in SHELL_ENV {
-                if let Ok(value) = std::env::var(name) {
+            for name in SHELL_ENV.into_iter().chain(PROXY_ENV) {
+                if let Ok(value) = std::env::var(name)
+                    && shell_env_allowed(name, &value, policy.allow_network)
+                {
                     env.insert(name.to_owned(), value);
                 }
             }
         }
         if let Some(overrides) = options.env.take() {
-            env.extend(
-                overrides
-                    .into_iter()
-                    .filter(|(name, _)| SHELL_ENV.contains(&name.as_str())),
-            );
+            env.extend(overrides.into_iter().filter(|(name, value)| {
+                shell_env_allowed(name, value, policy.allow_network)
+            }));
         }
         options.inherit_env = false;
         options.env = Some(env);
@@ -355,3 +427,6 @@ impl FileSystem for SandboxedExecutionEnv {
 }
 
 impl ExecutionEnv for SandboxedExecutionEnv {}
+
+#[cfg(test)]
+mod tests;

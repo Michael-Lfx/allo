@@ -274,6 +274,14 @@ pub fn macos_seatbelt_profile(policy: &SandboxPolicy) -> String {
 /// optional credential directory (e.g. `~/.aws`) does not exist on the host.
 #[must_use]
 pub fn linux_bwrap_args(policy: &SandboxPolicy, cwd: &Path) -> Vec<String> {
+    linux_bwrap_args_with_auth(policy, cwd, None)
+}
+
+fn linux_bwrap_args_with_auth(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    host_auth: Option<&Path>,
+) -> Vec<String> {
     let mut args = vec![
         "--die-with-parent".to_owned(),
         "--new-session".to_owned(),
@@ -339,6 +347,12 @@ pub fn linux_bwrap_args(policy: &SandboxPolicy, cwd: &Path) -> Vec<String> {
             args.push("/dev/null".to_owned());
             args.push(rendered);
         }
+    }
+    if let Some(path) = host_auth {
+        args.extend([
+            "--tmpfs".to_owned(),
+            path.to_string_lossy().into_owned(),
+        ]);
     }
     if !policy.allow_network {
         args.push("--unshare-net".to_owned());

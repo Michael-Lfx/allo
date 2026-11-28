@@ -32,6 +32,7 @@ pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
     let env = crate::tools::sandbox::unix_execution_env(
         cwd,
         crate::tools::sandbox::SandboxPolicy::for_workspace(cwd.to_path_buf()),
+        None,
     );
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let env: Arc<dyn ExecutionEnv> =
@@ -77,9 +78,12 @@ pub fn pi_shell_definition_for_host(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use crate::tools::sandbox::{SandboxPolicy, unix_execution_env};
-        let policy = SandboxPolicy::for_workspace(cwd.to_path_buf())
-            .with_protected_path(data_root.join("auth"));
-        bash_definition(unix_execution_env(cwd, policy))
+        let policy = SandboxPolicy::for_workspace(cwd.to_path_buf());
+        bash_definition(unix_execution_env(
+            cwd,
+            policy,
+            Some(data_root.join("auth")),
+        ))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
